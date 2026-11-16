@@ -10,7 +10,7 @@ import urllib.request
 
 from gi.repository import GLib
 
-from core.config import CONFIG, CONFIG_DIR, THEME, get_network_show_bar_speed
+from core.config import CONFIG, CONFIG_DIR, THEME, get_cc_panel_style, get_network_show_bar_speed
 from core.state import STATE
 from core.i18n import get_active_language
 from core import probe, log
@@ -1538,11 +1538,52 @@ class Panel(BasePanel):
 
         return cards
 
+    def _build_bt_cyberpunk(self, canvas: Canvas, bt: dict, is_it: bool) -> list:
+        pwr_btn = ActionBtn("RF OFF", "bt:power:off", tone="danger_soft") if bt["powered"] else ActionBtn("RF ON", "bt:power:on", tone="apply", active=True)
+        scan_btn = ActionBtn("SCAN 15S", "bt:scan", tone="select", active=bt["scanning"]) if bt["powered"] else ""
+        acts = [a for a in [StateBadge(bt["powered"], "BLUEZ ON", "OFF"), scan_btn, pwr_btn] if a]
+        b = Box("SHORT-RANGE RF // BLUEZ CONTROLLER & PAIRED LINKS", icon="\uf294", actions=acts, elected=bool(bt["powered"]))
+        b.add_row(" ")
+        if not bt["available"]:
+            b.add_row(f"  {Txt('[BLUEZ]──► bluetoothctl not available on system.', role='inactive')}")
+        elif not bt["powered"]:
+            b.add_row(f"  {Txt('[BLUEZ]──► Controller powered OFF. Click [RF ON] to engage.', role='inactive')}")
+        elif not bt["paired"]:
+            b.add_row(f"  {Txt('[PAIRED]──► No paired devices.', role='inactive')}")
+        else:
+            rows = []
+            for d in bt["paired"]:
+                isc = bool(d["connected"])
+                mac = d["mac"]
+                bat = f"{int(d['battery'])}%" if d.get("battery") is not None else "-"
+                act = ActionBtn("DISC", "bt:disc:" + mac, tone="danger_soft") if isc else ActionBtn("LINK", "bt:conn:" + mac, tone="apply")
+                rows.append([
+                    f"{Txt('▶━' if isc else '┣━', role='vitality' if isc else 'structure')} {Txt(canvas.truncate_plain(d['name'], 20), role='focus')}",
+                    Txt(mac, role="schema"),
+                    StateBadge(isc, "LINKED", "IDLE"),
+                    Txt(bat, role="intent"),
+                    f"{act} {ActionBtn('x', 'bt:remove:' + mac, tone='danger_soft')}",
+                ])
+            b.add_table(headers=[], widths=[24, 18, 12, 8, "flex"], rows=rows, aligns=["left", "left", "left", "left", "right"])
+            disc = bt.get("discovered", [])
+            if disc or bt["scanning"]:
+                def _fill_disc(bx: Box):
+                    for d in disc[:8]:
+                        bx.add_row(f"  {Txt('├─', role='structure')} {Txt(canvas.truncate_plain(d['name'], 24), role='val')}  {Txt(d['mac'], role='schema')}", right_markup=ActionBtn("PAIR & TRUST", "bt:pair:" + d["mac"], tone="apply"))
+                    if not disc:
+                        bx.add_row(f"  {Txt('Scanning RF spectrum...', role='inactive')}")
+                b.add_collapsible(self, "bt_disc_cyber", f"DISCOVERED DEVICES ({len(disc)})", _fill_disc)
+        b.add_row(" ")
+        return [b]
+
     def _build_bt_cards(self, canvas: Canvas) -> list:
         is_it = (get_active_language() == "it")
 
         with _NET_LOCK:
             bt = copy.deepcopy(_NET_STATE["bt"])
+
+        if get_cc_panel_style() == "cyberpunk":
+            return self._build_bt_cyberpunk(canvas, bt, is_it)
 
         st_badge = StateBadge(bt["powered"], "ACCESO" if is_it else "ON", "SPENTO" if is_it else "OFF")
         box = Box(

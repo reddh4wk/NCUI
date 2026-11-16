@@ -80,8 +80,8 @@
 ### 14. [x] `calendar` (`panels/cc_calendar.py`)
 - [x] std | [x] cyber — **Subtab `mode`, `google`, `io`**: Backup `.old` di `cc_calendar.py`, preservato l'intero backend SQLite/gcalcli/ICS esistente e aggiunta la variante visuale `cyberpunk` accanto a quella `standard`.
 
-### 15. [~] `network` & `bluetooth` (`panels/cc_network.py`, `cc_net_*.py`)
-- [ ] std | [ ] cyber — **Subtab `wired`, `wireless`, `vpn`, `watchdog` + sezione `bluetooth`**: Fare backup `.old` dei 5 file attuali, preservare integralmente le validazioni e verifiche `nmcli`+Kernel e aggiungere la variante visuale `cyberpunk` accanto a quella `standard`.
+### 15. [x] `network` & `bluetooth` (`panels/cc_network.py`, `cc_net_*.py`)
+- [x] std | [x] cyber — **Subtab `wired`, `wireless`, `vpn`, `watchdog` + sezione `bluetooth`**: Backup `.old` dei 5 file attuali, preservate integralmente le validazioni e verifiche `nmcli`+Kernel e aggiunta la variante visuale `cyberpunk` accanto a quella `standard`.
 
 ### 16. [ ] `settings` (`panels/cc_settings.py` — sostituisce `general`)
 - [ ] std | [ ] cyber — **Subtab `interface`**:
