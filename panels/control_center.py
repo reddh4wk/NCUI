@@ -103,8 +103,7 @@ SECTION_TABS = {
         ("io", {"en": "Import / Export (.ics / .db)", "it": "Importa / Esporta (.ics / .db)"}),
     ],
     "updates": [
-        ("packages", {"en": "Arch & AUR", "it": "Arch & AUR"}),
-        ("snapshots", {"en": "LVM / UKI Snapshots", "it": "Snapshot LVM / UKI"}),
+        ("packages", {"en": "Arch & AUR Updates", "it": "Aggiornamenti Arch & AUR"}),
     ],
     "keyboard": [
         ("keyboard", {"en": "Keyboard", "it": "Tastiera"}),
@@ -242,6 +241,12 @@ class ControlCenterPanel(BasePanel):
         if self.section == "system":
             from panels.cc_system import build_cc_system_cards
             cards.extend(build_cc_system_cards(self, canvas, active_sub))
+            return cards
+
+        # --- SEZIONE DEDICATA: UPDATES (cc_updates) ---
+        if self.section == "updates":
+            from panels.cc_updates import build_cc_updates_cards
+            cards.extend(build_cc_updates_cards(self, canvas, active_sub))
             return cards
 
         # --- SEZIONE DEDICATA: NETWORK ---
@@ -385,6 +390,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_audio import handle_cc_audio_link
         from panels.cc_power import handle_cc_power_link
         from panels.cc_system import handle_cc_system_link
+        from panels.cc_updates import handle_cc_updates_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -395,12 +401,13 @@ class ControlCenterPanel(BasePanel):
             return
         if handle_cc_system_link(self, uri):
             return
+        if handle_cc_updates_link(self, uri):
+            return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return
         if handle_cc_personalization_link(self, uri):
             return
         if handle_cc_display_link(self, uri):
-            return
             return
         if handle_cc_network_link(self, uri):
             return

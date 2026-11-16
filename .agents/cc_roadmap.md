@@ -51,8 +51,8 @@
 - [x] std | [x] cyber — **Subtab `storage`**: Struttura dischi e partizioni (`lsblk`), volumi logici LVM (`vgs`/`lvs`), salute NVMe SMART (`smartctl`), e stato di mount/spazio disponibile del NAS `NASUS` (`10.10.0.20`).
 - [x] std | [x] cyber — **Subtab `backup`**: Stato degli snapshot LVM (`nc-snapshot`) e spazio CoW disponibile; verifica dello stato della Recovery (`duskcity`) e delle **Golden Image** (richiede verifica preliminare che il NAS sia montato); monitoraggio e trigger dei backup configurazioni a Torre di Hanoi tramite `nc-nas-conf.sh` (richiede NAS montato).
 
-### 8. [ ] `updates` (`panels/cc_updates.py`)
-- [ ] std | [ ] cyber — **Subtab `packages`**: Report generabile manualmente sullo stato degli aggiornamenti di sistema: pacchetti ufficiali Arch (`checkupdates`), pacchetti AUR (`paru -Qua`), pacchetti orfani (`pacman -Qdtq`), pulizia cache (`paccache`) e lancio aggiornamento protetto in terminale.
+### 8. [x] `updates` (`panels/cc_updates.py`)
+- [x] std | [x] cyber — **Subtab `packages`**: Report generabile manualmente sullo stato degli aggiornamenti di sistema: pacchetti ufficiali Arch (`checkupdates`), pacchetti AUR (`paru -Qua`), pacchetti orfani (`pacman -Qdtq`), pulizia cache (`paccache`) e lancio aggiornamento protetto in terminale.
 
 ### 9. [ ] `auth` (`panels/cc_auth.py`)
 - [ ] std | [ ] cyber — **Subtab `tpm`**: Stato UEFI Secure Boot (`sbctl status`, verifica firma immagini UKI), stato slot LUKS2 (`cryptsetup luksDump`) e binding con i registri PCR del chip TPM2 (`systemd-cryptenroll`).
