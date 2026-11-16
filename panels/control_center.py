@@ -231,6 +231,12 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_audio_cards(self, canvas, active_sub))
             return cards
 
+        # --- SEZIONE DEDICATA: POWER (cc_power) ---
+        if self.section == "power":
+            from panels.cc_power import build_cc_power_cards
+            cards.extend(build_cc_power_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -333,11 +339,14 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_personalization import handle_cc_personalization_prompt
         from panels.cc_display import handle_cc_display_prompt
         from panels.cc_apps import handle_cc_apps_prompt
+        from panels.cc_power import handle_cc_power_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
             return
         if handle_cc_display_prompt(self, action_id, text):
             return
         if handle_cc_apps_prompt(self, action_id, text):
+            return
+        if handle_cc_power_prompt(self, action_id, text):
             return
         if handle_cc_personalization_prompt(self, action_id, text):
             return
@@ -364,11 +373,14 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_display import handle_cc_display_link
         from panels.cc_apps import handle_cc_apps_link
         from panels.cc_audio import handle_cc_audio_link
+        from panels.cc_power import handle_cc_power_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
             return
         if handle_cc_audio_link(self, uri):
+            return
+        if handle_cc_power_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return

@@ -39,10 +39,10 @@
 - [x] std | [x] cyber — **Subtab `mixer`**: Controllo individuale dei flussi applicativi attivi (`sink-inputs`) e parametri runtime PipeWire (`pw-metadata` quantum / sample-rate per bassa latenza gaming o Hi-Res audio).
 - [x] std | [x] cyber — **Subtab `devices`**: Profili hardware delle schede audio (`pactl list cards`, commutazione profili Analog Stereo / Digital IEC958 / Pro Audio / Codec Bluetooth A2DP/HSP).
 
-### 6. [ ] `power` (`panels/cc_power.py`)
-- [ ] std | [ ] cyber — **Subtab `general`**: CPU frequency governor (`cpupower` / `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`), Energy Performance Preference (EPP), boost clock toggle (CPB) e telemetria consumi/temperature CPU/GPU.
-- [ ] std | [ ] cyber — **Subtab `ups`**: Telemetria e configurazione **NUT Server** (`upsc`): configurazione IP/nome dell'UPS (es. `ecoflow@10.10.0.20`), visualizzazione carico in Watt, percentuale batteria, autonomia residua, tensione IN/OUT, soglie di allarme, configurazione graceful shutdown e notifiche di sistema personalizzate.
-- [ ] std | [ ] cyber — **Subtab `wakeup`**: Timeout di inattività, spegnimento schermo DPMS e blocco automatico sessione (`swayidle` / `hypridle`) integrati col comando di screen lock.
+### 6. [x] `power` (`panels/cc_power.py`)
+- [x] std | [x] cyber — **Subtab `general`**: CPU frequency governor (`cpupower` / `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`), Energy Performance Preference (EPP), boost clock toggle (CPB) e telemetria consumi/temperature CPU/GPU.
+- [x] std | [x] cyber — **Subtab `ups`**: Telemetria e configurazione **NUT Server** (`upsc`): configurazione IP/nome dell'UPS (es. `ecoflow@10.10.0.20`), visualizzazione carico in Watt, percentuale batteria, autonomia residua, tensione IN/OUT, soglie di allarme, configurazione graceful shutdown e notifiche di sistema personalizzate.
+- [x] std | [x] cyber — **Subtab `wakeup`**: Timeout di inattività, spegnimento schermo DPMS e blocco automatico sessione (`swayidle` / `hypridle`) integrati col comando di screen lock.
 
 ### 7. [ ] `system` (`panels/cc_system.py`)
 - [ ] std | [ ] cyber — **Subtab `about`**: Riepilogo hardware e sistema operativo (`Nightcity`), stato doppio kernel (`linux-cachyos` / `linux-cachyos-hardened`), versione bootloader Limine e uptime.

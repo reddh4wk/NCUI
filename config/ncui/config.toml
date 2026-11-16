@@ -3,7 +3,7 @@ language = "it"# "en", "it", o qualsiasi file <lang>.toml in locales/ o ~/.confi
 log_file = "/tmp/nc-ui.log"
 log_level = 3
 enable_hover_tooltips = false
-terminal = "auto" # "auto" cerca ghostty, kitty, foot, alacritty
+terminal = "ghostty"# "auto" cerca ghostty, kitty, foot, alacritty
 
 [control_center]
 width_px = 960
