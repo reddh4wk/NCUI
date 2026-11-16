@@ -52,7 +52,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-h", "--help", action="store_true", help="Mostra questo messaggio di aiuto ed esce.")
     parser.add_argument("-s", "--section", type=str, default="", help="ID sezione Control Center o pannello popup (es. keyboard, network).")
     parser.add_argument("-t", "--subtab", type=str, default="", help="ID della subtab interna (es. shortcuts, wired).")
-    parser.add_argument("-S", "--style", choices=["standard", ""], default="", help="Forza lo stile del pannello.")
     parser.add_argument("-m", "--mode", choices=["settings", "popup"], default="settings", help="Modalità finestra: 'settings' o 'popup'.")
     parser.add_argument("-o", "--output", type=str, default="", help="Percorso del file PNG di output.")
     parser.add_argument("-e", "--expanded", action="store_true", help="Forza vista espansa (popup).")
@@ -117,8 +116,7 @@ def main() -> int:
             output_path = pos[1]
         else:
             sub_slug = f"_{subtab}" if subtab else ""
-            st_slug = f"_{args.style}" if args.style else ""
-            output_path = f"/tmp/nc_review_{section}{sub_slug}{st_slug}.png"
+            output_path = f"/tmp/nc_review_{section}{sub_slug}.png"
 
     output_path = os.path.abspath(os.path.expanduser(output_path))
     out_dir = os.path.dirname(output_path)
@@ -171,11 +169,6 @@ def main() -> int:
     prev_lang = get_active_language()
     if args.lang in ("en", "it"):
         reload_locale(args.lang)
-        
-    prev_style = None
-    if args.style in ("standard",):
-        prev_style = STATE.get("control_center", "panel_style", "standard")
-        STATE.set("control_center", "panel_style", args.style)
 
     if subtab:
         if args.mode == "settings":
@@ -187,7 +180,7 @@ def main() -> int:
         STATE.set(section, "expanded", True)
 
     _msg_info(
-        f"Rendering {C_BOLD}{args.mode}:{section}{('/' + subtab) if subtab else ''}{C_RESET}{C_LAVENDER} [{args.style or 'current style'}] -> {output_path}",
+        f"Rendering {C_BOLD}{args.mode}:{section}{('/' + subtab) if subtab else ''}{C_RESET} -> {output_path}",
         quiet=args.quiet,
     )
 
@@ -288,8 +281,6 @@ def main() -> int:
     finally:
         if args.lang in ("en", "it") and prev_lang != args.lang:
             reload_locale(prev_lang)
-        if args.style and prev_style is not None:
-            STATE.set("control_center", "panel_style", prev_style)
         if broadway_proc is not None:
             try:
                 broadway_proc.terminate()

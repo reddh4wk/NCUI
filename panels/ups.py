@@ -12,20 +12,7 @@ from panels.cc_power import _collect_ups_data
 def _battery_glyph(charge: int | None) -> str:
     if charge is None:
         return "█"
-    if charge <= 10:
-        return "▂"
-    elif charge <= 25:
-        return "▃"
-    elif charge <= 40:
-        return "▄"
-    elif charge <= 55:
-        return "▅"
-    elif charge <= 70:
-        return "▆"
-    elif charge <= 85:
-        return "▇"
-    else:
-        return "█"
+    return next((g for lim, g in ((10, "▂"), (25, "▃"), (40, "▄"), (55, "▅"), (70, "▆"), (85, "▇")) if charge <= lim), "█")
 
 
 class Panel(BasePanel):

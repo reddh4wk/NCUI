@@ -310,14 +310,6 @@ def _update_toml_key_in_section(
             pass
 
 
-def get_cc_panel_style() -> str:
-    return "standard"
-
-
-def set_cc_panel_style(style: str = "standard") -> str:
-    return "standard"
-
-
 def get_hide_unavailable_settings() -> bool:
     from core.state import STATE
     st_val = STATE.get("control_center", "hide_unavailable_settings", None)
