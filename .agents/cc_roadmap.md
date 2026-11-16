@@ -24,9 +24,9 @@
 - [x] std | [x] cyber — **Subtab `wallpaper`**: Rivedere la bozza presente in `cc_integrations.py` (`nc_util_desktop.sh`, slideshow, unicolor, profili e shader CMatrix ASCII/Katakana) rendendola completamente autonoma dentro `cc_personalization.py`.
 - [x] std | [x] cyber — **Subtab `waybar`**: Personalizzazione completa della barra Waybar (ordine/sezioni widget `left`/`center`/`right`, larghezze percentuali dinamiche di `niri/window` e `custom/media`, opzioni pillola di rete e comando blocco schermo, partendo dal backup `.old` di `cc_waybar.py`).
 
-### 3. [~] `display` (`panels/cc_display.py`)
-- [ ] std | [ ] cyber — **Subtab `layout`**: Mappa spaziale interattiva multi-monitor Niri (`NiriOutputMap`), allineamento automatico, coordinate logiche e risoluzione nativa (scorporare da `cc_integrations.py`).
-- [ ] std | [ ] cyber — **Subtab `scaling`**: Fattore di scala frazionario/intero, modalità hardware (`width x height @ Hz`), Variable Refresh Rate (**VRR** in Niri `config.kdl`), filtro luce blu / **Night Light** (`wlsunset` / `gammastep` con temperatura K e orari) e timeout **DPMS**.
+### 3. [x] `display` (`panels/cc_display.py`)
+- [x] std | [x] cyber — **Subtab `layout`**: Mappa spaziale interattiva multi-monitor Niri (`NiriOutputMap`), allineamento automatico, coordinate logiche e risoluzione nativa (scorporare da `cc_integrations.py`).
+- [x] std | [x] cyber — **Subtab `scaling`**: Fattore di scala frazionario/intero, modalità hardware (`width x height @ Hz`), Variable Refresh Rate (**VRR** in Niri `config.kdl`), filtro luce blu / **Night Light** (`wlsunset` / `gammastep` con temperatura K e orari) e timeout **DPMS**.
 
 ### 4. [~] `apps` (`panels/cc_apps.py`)
 - [ ] std | [ ] cyber — **Subtab `floating`**: Gestore regole finestre floating di Niri (`window-rule` in `~/.config/niri/config.kdl` e picker finestre attive), reso autonomo da `cc_integrations.py`.

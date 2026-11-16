@@ -240,9 +240,9 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_calendar_cards(self, canvas, active_sub))
             return cards
 
-        # --- SEZIONE DEDICATA: DISPLAY (nc_util_desktop.sh) ---
+        # --- SEZIONE DEDICATA: DISPLAY (cc_display) ---
         if self.section == "display":
-            from panels.cc_integrations import build_cc_display_cards
+            from panels.cc_display import build_cc_display_cards
             cards.extend(build_cc_display_cards(self, canvas, active_sub))
             return cards
 
@@ -325,7 +325,10 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_integrations import handle_cc_integrations_prompt
         from panels.cc_keyboard import handle_cc_keyboard_prompt
         from panels.cc_personalization import handle_cc_personalization_prompt
+        from panels.cc_display import handle_cc_display_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
+            return
+        if handle_cc_display_prompt(self, action_id, text):
             return
         if handle_cc_personalization_prompt(self, action_id, text):
             return
@@ -349,9 +352,15 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_integrations import handle_cc_integrations_link
         from panels.cc_keyboard import handle_cc_keyboard_link
         from panels.cc_personalization import handle_cc_personalization_link
+        from panels.cc_display import handle_cc_display_link
         if handle_cc_keyboard_link(self, uri):
             return
+        if self.section == "display" and handle_cc_display_link(self, uri):
+            return
         if handle_cc_personalization_link(self, uri):
+            return
+        if handle_cc_display_link(self, uri):
+            return
             return
         if handle_cc_network_link(self, uri):
             return
