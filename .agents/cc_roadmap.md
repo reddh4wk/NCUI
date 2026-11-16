@@ -28,10 +28,10 @@
 - [x] std | [x] cyber — **Subtab `layout`**: Mappa spaziale interattiva multi-monitor Niri (`NiriOutputMap`), allineamento automatico, coordinate logiche e risoluzione nativa (scorporare da `cc_integrations.py`).
 - [x] std | [x] cyber — **Subtab `scaling`**: Fattore di scala frazionario/intero, modalità hardware (`width x height @ Hz`), Variable Refresh Rate (**VRR** in Niri `config.kdl`), filtro luce blu / **Night Light** (`wlsunset` / `gammastep` con temperatura K e orari) e timeout **DPMS**.
 
-### 4. [~] `apps` (`panels/cc_apps.py`)
-- [ ] std | [ ] cyber — **Subtab `floating`**: Gestore regole finestre floating di Niri (`window-rule` in `~/.config/niri/config.kdl` e picker finestre attive), reso autonomo da `cc_integrations.py`.
-- [ ] std | [ ] cyber — **Subtab `mime`**: Gestore associazioni `xdg-mime` / `xdg-settings` per Browser Web, Emulatore Terminale, File Manager, Editor di Testo/Codice, Lettore PDF, Visualizzatore Immagini e Player Audio/Video.
-- [ ] std | [ ] cyber — **Subtab `autostart`**: Gestione voci `spawn-at-startup` in `~/.config/niri/config.kdl`, gestione servizi utente (`systemctl --user`), e ispettore in sola lettura dei servizi di sistema attivi/falliti (`systemctl list-units --type=service`).
+### 4. [x] `apps` (`panels/cc_apps.py`)
+- [x] std | [x] cyber — **Subtab `floating`**: Gestore regole finestre floating di Niri (`window-rule` in `~/.config/niri/config.kdl` e picker finestre attive), reso autonomo da `cc_integrations.py`.
+- [x] std | [x] cyber — **Subtab `mime`**: Gestore associazioni `xdg-mime` / `xdg-settings` per Browser Web, Emulatore Terminale, File Manager, Editor di Testo/Codice, Lettore PDF, Visualizzatore Immagini e Player Audio/Video.
+- [x] std | [x] cyber — **Subtab `autostart`**: Gestione voci `spawn-at-startup` in `~/.config/niri/config.kdl`, gestione servizi utente (`systemctl --user`), e ispettore in sola lettura dei servizi di sistema attivi/falliti (`systemctl list-units --type=service`).
 
 ### 5. [ ] `sound` (`panels/cc_audio.py`)
 - [ ] std | [ ] cyber — **Subtab `output`**: Periferiche di uscita PipeWire (DAC USB, HDMI, Bluetooth), elezione sink predefinito, volume, mute, test canali e over-amplification.

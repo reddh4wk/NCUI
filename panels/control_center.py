@@ -257,10 +257,10 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_personalization_cards(self, canvas, active_sub))
             return cards
 
-        # --- SEZIONE DEDICATA: APPS -> NIRI FLOATING RULES (nc_util_floater.sh) ---
-        if self.section == "apps" and active_sub == "floating":
-            from panels.cc_integrations import build_cc_floater_cards
-            cards.extend(build_cc_floater_cards(self, canvas))
+        # --- SEZIONE DEDICATA: APPS (cc_apps) ---
+        if self.section == "apps":
+            from panels.cc_apps import build_cc_apps_cards
+            cards.extend(build_cc_apps_cards(self, canvas, active_sub))
             return cards
 
         # --- SEZIONE DEDICATA: PERSONALIZATION -> THEME & COLORS (Trasparenza Live + [Apply]) ---
@@ -326,9 +326,12 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_keyboard import handle_cc_keyboard_prompt
         from panels.cc_personalization import handle_cc_personalization_prompt
         from panels.cc_display import handle_cc_display_prompt
+        from panels.cc_apps import handle_cc_apps_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
             return
         if handle_cc_display_prompt(self, action_id, text):
+            return
+        if handle_cc_apps_prompt(self, action_id, text):
             return
         if handle_cc_personalization_prompt(self, action_id, text):
             return
@@ -353,7 +356,10 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_keyboard import handle_cc_keyboard_link
         from panels.cc_personalization import handle_cc_personalization_link
         from panels.cc_display import handle_cc_display_link
+        from panels.cc_apps import handle_cc_apps_link
         if handle_cc_keyboard_link(self, uri):
+            return
+        if handle_cc_apps_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return
