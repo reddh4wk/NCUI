@@ -85,7 +85,7 @@ SECTION_TABS = {
     ],
     "power": [
         ("general", {"en": "Power Profiles", "it": "Profili Energetici"}),
-        ("ups", {"en": "EcoFlow / NUT UPS", "it": "UPS EcoFlow / NUT"}),
+        ("ups", {"en": "NUT Server / UPS", "it": "NUT Server / UPS"}),
         ("wakeup", {"en": "Idle & Lock", "it": "Standby & Blocco"}),
     ],
     "mouse": [
@@ -152,6 +152,7 @@ class ControlCenterPanel(BasePanel):
             "storage": "system",
             "audio": "sound",
             "general": "settings",
+            "ups": "power",
         }
         norm_sec = sec_map.get(initial_section, initial_section)
         if norm_sec not in SECTION_BLUEPRINTS:
@@ -160,8 +161,15 @@ class ControlCenterPanel(BasePanel):
                 norm_sec = "system"
         self.section = norm_sec
         self.set_state("active_section", self.section)
+        if initial_section == "ups":
+            self.set_subtab("ups")
 
     def set_section(self, sec_id: str) -> None:
+        if sec_id == "ups":
+            self.section = "power"
+            self.set_state("active_section", "power")
+            self.set_subtab("ups")
+            return
         if sec_id in SECTION_BLUEPRINTS:
             self.section = sec_id
             self.set_state("active_section", sec_id)

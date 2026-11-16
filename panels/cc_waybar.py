@@ -39,6 +39,7 @@ KNOWN_WAYBAR_WIDGETS = {
     "custom/netcycle":      {"label": "Network & Bluetooth",   "icon": "\uf6ff", "desc": "LAN, Wi-Fi, Bluetooth & VPN status"},
     "custom/cpu":           {"label": "CPU Telemetry",         "icon": "\uf2db", "desc": "CPU load percentage, temperature & top processes"},
     "custom/ram":           {"label": "RAM Telemetry",         "icon": "\uf538", "desc": "Memory allocation, cache, swap & top processes"},
+    "custom/ups":           {"label": "NUT Server / UPS",      "icon": "\uf240", "desc": "Generic NUT UPS battery, load, runtime & blackout alert"},
     "custom/notifications": {"label": "Notification Center",   "icon": "\uf0f3", "desc": "Notification history & glowing alert bell"},
     "custom/session":       {"label": "Power & Screen Lock",   "icon": "\uf011", "desc": "Lock screen, suspend, logout, reboot & poweroff menu"},
 }
@@ -279,6 +280,47 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
     len_box.add_row(Txt(hint, role="schema"))
     cards.append(len_box)
 
+    # ── CARD 4: TELEGRAM WIDGET OPTIONS (custom/telegram) ──
+    tg_glow = bool(STATE.get("waybar", "telegram_glow", True))
+    tg_trig = str(STATE.get("waybar", "telegram_trigger", "both")).lower()
+    if tg_trig not in ("both", "title", "notif"):
+        tg_trig = "both"
+
+    tg_badge = StateBadge(tg_glow, "CYAN GLOW: ON", "GLOW: OFF", on_tone="ok")
+    tg_box = Box(
+        "Opzioni Widget Telegram (custom/telegram)" if is_it else "Telegram Desktop Widget (custom/telegram)",
+        icon="\ue217",
+        actions=[
+            tg_badge,
+            ActionBtn("\uf002 Focus Finestra" if is_it else "\uf002 Focus Window", "cc_wb:tg_focus", tone="select"),
+        ],
+        elected=tg_glow,
+    )
+    tg_box.add_row(" ")
+    tg_box.add_kv(
+        "Effetto Glowing Ciano (#00f0ff)" if is_it else "Electric Cyan Glow Effect (#00f0ff)",
+        StateBadge(tg_glow, "ABILITATO" if is_it else "ENABLED", "DISATTIVO" if is_it else "DISABLED", on_tone="ok"),
+        right_markup=f"{SelectPill('ON', 'cc_wb:tg_glow:1', selected=tg_glow)} {SelectPill('OFF', 'cc_wb:tg_glow:0', selected=not tg_glow)}",
+    )
+    trig_pills = " ".join([
+        SelectPill("Entrambi" if is_it else "Both", "cc_wb:tg_trig:both", selected=(tg_trig == "both")),
+        SelectPill("Titolo Finestra" if is_it else "Window Title", "cc_wb:tg_trig:title", selected=(tg_trig == "title")),
+        SelectPill("Notifiche Attive" if is_it else "Active Notifications", "cc_wb:tg_trig:notif", selected=(tg_trig == "notif")),
+    ])
+    tg_box.add_kv(
+        "Criterio Attivazione Glow" if is_it else "Glow Trigger Mode",
+        Txt(tg_trig.upper(), role="intent"),
+        right_markup=trig_pills,
+    )
+    tg_box.add_row(
+        f"  {Txt('•', role='schema')} " +
+        ("Rileva: conteggio nel titolo finestra Niri [es. '- (5)'] e/o notifiche di Telegram non lette."
+         if is_it else
+         "Detects: unread count in Niri window title [e.g. '- (5)'] and/or unread Telegram notifications.")
+    )
+    tg_box.add_row(" ")
+    cards.append(tg_box)
+
     return cards
 
 
@@ -509,6 +551,26 @@ def handle_cc_waybar_link(cc_panel, uri: str) -> bool:
             pass
         if cc_panel.shell:
             cc_panel.shell.refresh_view()
+        return True
+
+    if act.startswith("tg_glow:"):
+        val = (act.split(":", 1)[1] == "1")
+        STATE.set("waybar", "telegram_glow", val)
+        if cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return True
+
+    if act.startswith("tg_trig:"):
+        trig_val = act.split(":", 1)[1]
+        if trig_val in ("both", "title", "notif"):
+            STATE.set("waybar", "telegram_trigger", trig_val)
+        if cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return True
+
+    if act == "tg_focus":
+        from core import probe
+        probe.spawn_bg(["sh", "-c", "id=$(niri msg -j windows 2>/dev/null | jq -r '.[] | select((.app_id // \"\") | test(\"telegram\"; \"i\")) | .id' | head -n1); if [ -n \"$id\" ]; then niri msg action focus-window --id \"$id\"; else nohup sh -c 'Telegram || telegram-desktop' >/dev/null 2>&1 & fi"])
         return True
 
     if act.startswith("up:") or act.startswith("down:"):

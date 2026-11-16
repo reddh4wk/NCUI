@@ -41,6 +41,7 @@ DEFAULT_PANEL_TO_WB_MODULE = {
     "notifications": "custom/notifications",
     "session": "custom/session",
     "power": "custom/power",
+    "ups": "custom/ups",
     "storage": "custom/storage",
 }
 

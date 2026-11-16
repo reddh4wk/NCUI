@@ -39,9 +39,11 @@ def main():
     pill = panel.get_bar_pill()
     text = pill.get("text", "")
     _save_pill_cache(panel_id, text)
+    default_cls = "module-nc-empty" if not text else "module-nc"
     print(json.dumps({
         "text": text,
-        "class": pill.get("class", "module-nc"),
+        "tooltip": pill.get("tooltip", ""),
+        "class": pill.get("class", default_cls),
     }))
 
 

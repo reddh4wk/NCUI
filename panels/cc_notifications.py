@@ -63,6 +63,16 @@ def delete_notif(target_id: str) -> None:
     save_notifs(notifs)
 
 
+def clear_app_notifs(app_name: str) -> None:
+    notifs = load_notifs()
+    tgt = str(app_name or "").strip().lower()
+    for n in notifs:
+        a = str(n.get("app_name") or n.get("app") or "").strip().lower()
+        if a == tgt:
+            n["deleted"] = True
+    save_notifs(notifs)
+
+
 # =====================================================================
 # BACKEND CONFIG / RULES HELPERS
 # =====================================================================
@@ -74,6 +84,7 @@ def _load_rules() -> dict:
         "quiet_window": "23:00-07:00",
         "min_urgency": "low",
         "muted_apps": [],
+        "group_by_app": False,
     }
     if os.path.exists(RULES_FILE):
         try:
@@ -163,6 +174,12 @@ def _build_system_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     b.add_kv("Quiet Presets", " ".join(SelectPill(w, f"cc_notif:quiet_win:{w}", selected=(rules["quiet_window"] == w)) for w in ("22:00-07:00", "23:00-07:00", "00:00-08:00")))
     m_pills = " ".join(SelectPill(str(n), f"cc_notif:max:{n}", selected=(max_n == n)) for n in (25, 50, 100, 200))
     b.add_kv("History Limit", Txt(f"{max_n} items ({len(active)} active / {len(total)} total)", role="intent"), right_markup=m_pills)
+    grp_active = bool(rules.get("group_by_app", False))
+    b.add_kv(
+        "Raggruppa per App" if is_it else "Group by Application",
+        StateBadge(grp_active, "RAGGRUPPATE" if is_it else "GROUPED", "CRONOLOGICO" if is_it else "CHRONOLOGICAL", on_tone="ok"),
+        right_markup=f"{SelectPill('ON', 'cc_notif:group_app:1', selected=grp_active)} {SelectPill('OFF', 'cc_notif:group_app:0', selected=not grp_active)}"
+    )
 
     def _fill_hist(bx: Box):
         for n in reversed(active[-8:]):
@@ -188,6 +205,8 @@ def _build_system_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
     b.add_row(f"  {Txt('[DND MODE]   ──►', role='vitality')} {StateBadge(rules['dnd'], 'SILENT', 'ACTIVE')}  {SelectPill('ENABLE', 'cc_notif:dnd:1', selected=rules['dnd'])} {SelectPill('DISABLE', 'cc_notif:dnd:0', selected=not rules['dnd'])}")
     b.add_row(f"  {Txt('[QUIET WIN]  ──►', role='intent')} {SelectPill('SCHEDULE', 'cc_notif:quiet_toggle', selected=rules['quiet_enabled'])} {Txt(rules['quiet_window'], role='focus')}  " + " ".join(SelectPill(w, f"cc_notif:quiet_win:{w}", selected=(rules["quiet_window"] == w)) for w in ("22:00-07:00", "23:00-07:00")))
     b.add_row(f"  {Txt('[RING LIMIT] ──►', role='schema')} {Txt(f'{max_n} MAX ({len(active)} LIVE)', role='focus')}  " + " ".join(SelectPill(str(n), f"cc_notif:max:{n}", selected=(max_n == n)) for n in (25, 50, 100, 200)))
+    grp_active = bool(rules.get("group_by_app", False))
+    b.add_row(f"  {Txt('[APP GROUPING] ──►', role='vitality')} {StateBadge(grp_active, 'CLUSTERED', 'FLAT')}  {SelectPill('ON', 'cc_notif:group_app:1', selected=grp_active)} {SelectPill('OFF', 'cc_notif:group_app:0', selected=not grp_active)}")
 
     def _fill_hist(bx: Box):
         for n in reversed(active[-6:]):
@@ -315,6 +334,11 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
         rules["min_urgency"] = arg
         _save_rules(rules)
         _MSG = f"Minimum notification urgency set to {arg}."
+    elif cmd == "group_app":
+        val = (arg == "1")
+        rules["group_by_app"] = val
+        _save_rules(rules)
+        _MSG = "Raggruppamento per applicazione abilitato." if (val and is_it) else ("Application grouping enabled." if val else ("Raggruppamento disabilitato (cronologico)." if is_it else "Application grouping disabled (chronological)."))
     elif cmd == "mute_app" and arg:
         muted = set(a.lower() for a in rules.get("muted_apps", []))
         muted.add(arg.lower())

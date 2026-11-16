@@ -154,6 +154,7 @@ DEFAULT_CONFIG = {
             "display":       2000,
             "clipboard":     0,
             "power":         3000,
+            "ups":           3000,
             "storage":       5000,
             "session":       0,
         }
@@ -165,7 +166,16 @@ DEFAULT_CONFIG = {
         "wan": {"primary_ip": "", "primary_label": "Primary WAN", "failover_label": "Failover WAN"},
         "watchdog": [],
     },
-    "power": {"nut": {"enabled": False, "ups_name": ""}},
+    "power": {
+        "nut": {
+            "enabled": False,
+            "host": "127.0.0.1",
+            "port": 3493,
+            "ups_name": "",
+            "poll_interval": 5,
+            "low_pct": 20,
+        }
+    },
     "storage": {"nas": {"enabled": False, "host": "", "ssh_user": ""}},
 }
 
@@ -479,7 +489,10 @@ def estimate_waybar_free_chars_budget() -> dict:
         "custom/cpu": 88,
         "custom/ram": 88,
         "custom/notifications": 54,
+        "custom/ups": 115,
+        "custom/telegram": 52,
         "custom/session": 52,
+        "tray": 0,
     }
     for m in active_mods:
         if m in ("niri/window", "custom/media"):

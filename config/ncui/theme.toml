@@ -43,7 +43,7 @@ focus = "#ffffff"
 focus_val = "#e2eafc"
 
 # 4. Tono Ciano — UI (tabs, selection, user-input)
-intent = "#00f0ff"
+intent = "#00f0ff"#89dceb"#00f0ff"#ff2a9d"#00f0ff"#ffeb19"#00f0ff"#00ff73"#00f0ff"
 intent_soft = "#4db8c4"
 intent_bg = "#002a3a"
 
@@ -71,7 +71,7 @@ fault_bg = "#36050b"
 primary = "#ffffff"
 secondary = "#8c9bba"
 muted = "#5f657b"
-accent = "#00f0ff"
+accent = "#00f0ff"#89dceb"#00f0ff"#ff2a9d"#00f0ff"#ffeb19"#00f0ff"#00ff73"#00f0ff"
 info = "#00f0ff"
 
 # Stati semantici cornici nc-boxes (Grafite a riposo, Bianco su Hover/Header)

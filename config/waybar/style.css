@@ -5,7 +5,7 @@
 }
 
 window#waybar {
-    background-color: rgba(24, 24, 26, 0.85);
+    background-color: rgba(13, 13, 15, 0.90);
     border-radius: 50px;
     color: #e0e0e0;
 }
@@ -43,6 +43,33 @@ tooltip {
     }
 }
 
+@keyframes nc-glow-pulse-telegram {
+    0% {
+        background-color: rgba(255, 255, 255, 0.08);
+        box-shadow:
+            0 0 0 0 rgba(0, 240, 255, 0.0),
+            inset 0 0 0 0 rgba(0, 240, 255, 0.0);
+    }
+    40% {
+        background-color: rgba(0, 240, 255, 0.30);
+        box-shadow:
+            0 0 7px 2px rgba(0, 240, 255, 0.75),
+            inset 0 0 6px 1px rgba(0, 240, 255, 0.85);
+    }
+    80% {
+        background-color: rgba(255, 255, 255, 0.08);
+        box-shadow:
+            0 0 0 0 rgba(0, 240, 255, 0.0),
+            inset 0 0 0 0 rgba(0, 240, 255, 0.0);
+    }
+    100% {
+        background-color: rgba(255, 255, 255, 0.08);
+        box-shadow:
+            0 0 0 0 rgba(0, 240, 255, 0.0),
+            inset 0 0 0 0 rgba(0, 240, 255, 0.0);
+    }
+}
+
 #workspaces {
     background-color: rgba(20, 20, 20, 0.85);
     border-radius: 999px;
@@ -75,7 +102,7 @@ tooltip {
 #clock,
 #cpu,
 #memory,
-#tray,
+#custom-telegram,
 #custom-cliphist,
 #custom-screenshot,
 #custom-settings,
@@ -84,6 +111,7 @@ tooltip {
 #custom-netcycle,
 #custom-cpu,
 #custom-ram,
+#custom-ups,
 #custom-calendar,
 #custom-notifications,
 #custom-session,
@@ -100,7 +128,7 @@ tooltip {
 #clock:hover,
 #cpu:hover,
 #memory:hover,
-#tray:hover,
+#custom-telegram:hover,
 #custom-cliphist:hover,
 #custom-screenshot:hover,
 #custom-settings:hover,
@@ -109,6 +137,7 @@ tooltip {
 #custom-netcycle:hover,
 #custom-cpu:hover,
 #custom-ram:hover,
+#custom-ups:hover,
 #custom-calendar:hover,
 #custom-notifications:hover,
 #custom-session:hover,
@@ -116,7 +145,7 @@ tooltip {
 eventbox:hover > #clock,
 eventbox:hover > #cpu,
 eventbox:hover > #memory,
-eventbox:hover > #tray,
+eventbox:hover > #custom-telegram,
 eventbox:hover > #custom-cliphist,
 eventbox:hover > #custom-screenshot,
 eventbox:hover > #custom-settings,
@@ -125,6 +154,7 @@ eventbox:hover > #custom-audio,
 eventbox:hover > #custom-netcycle,
 eventbox:hover > #custom-cpu,
 eventbox:hover > #custom-ram,
+eventbox:hover > #custom-ups,
 eventbox:hover > #custom-calendar,
 eventbox:hover > #custom-notifications,
 eventbox:hover > #custom-session,
@@ -149,14 +179,23 @@ eventbox:hover > .module-nc {
     background-color: rgba(255, 102, 102, 0.15);
 }
 
-#tray {
-    background: rgba(255, 255, 255, 0.05);
+#tray,
+#tray * {
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    min-height: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    opacity: 0;
 }
 
 #custom-audio,
 #custom-netcycle,
 #custom-cpu,
-#custom-ram {
+#custom-ram,
+#custom-ups {
     font-weight: bold;
     padding-top: 2px;
 }
@@ -181,6 +220,16 @@ eventbox:hover > .module-nc {
     animation-iteration-count: infinite;
 }
 
+#custom-telegram.unread {
+    background-image: none;
+    background-clip: padding-box;
+    color: #00f0ff;
+    animation-name: nc-glow-pulse-telegram;
+    animation-duration: 3.2s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+}
+
 #custom-media {
     color: #cccccc;
     background: transparent;
@@ -192,7 +241,55 @@ eventbox:hover > .module-nc {
     margin: 2px 4px;
 }
 
-#custom-media.module-nc-media-empty {
+@keyframes nc-glow-crit {
+    0% {
+        background-color: rgba(255, 33, 63, 0.22);
+        box-shadow: 0 0 0 0 rgba(255, 33, 63, 0.0);
+    }
+    40% {
+        background-color: rgba(255, 33, 63, 0.45);
+        box-shadow:
+            0 0 8px 2px rgba(255, 33, 63, 0.85),
+            inset 0 0 6px 1px rgba(255, 33, 63, 0.90);
+    }
+    80% {
+        background-color: rgba(255, 33, 63, 0.22);
+        box-shadow: 0 0 0 0 rgba(255, 33, 63, 0.0);
+    }
+    100% {
+        background-color: rgba(255, 33, 63, 0.22);
+        box-shadow: 0 0 0 0 rgba(255, 33, 63, 0.0);
+    }
+}
+
+#custom-ups.online {
+    color: #00ff73;
+}
+
+#custom-ups.on-battery {
+    color: #ffeb19;
+    background-color: rgba(255, 235, 25, 0.18);
+    box-shadow: inset 0 0 4px rgba(255, 235, 25, 0.45);
+}
+
+#custom-ups.low-battery {
+    color: #ffffff;
+    animation-name: nc-glow-crit;
+    animation-duration: 1.6s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+}
+
+#custom-ups.offline {
+    color: #ff213f;
+    background-color: rgba(255, 33, 63, 0.14);
+}
+
+#custom-media.module-nc-media-empty,
+#custom-ups.module-nc-empty,
+#custom-ups.empty,
+#custom-telegram.module-nc-empty,
+#custom-telegram.empty {
     padding: 0;
     margin: 0;
     min-width: 0;
