@@ -72,10 +72,10 @@
 - [x] std | [x] cyber — **Subtab `general`**: Configurazione mouse in `~/.config/niri/config.kdl` (left-handed mode, natural scroll, middle-click emulation, scroll factor).
 - [x] std | [x] cyber — **Subtab `pointer`**: Velocità puntatore (`accel-speed` `-1.0 .. +1.0`), profilo di accelerazione (`adaptive` vs `flat`) e impostazioni touchpad (`tap`, `dwt`, `natural-scroll`).
 
-### 13. [ ] `accounts` (`panels/cc_accounts.py`)
-- [ ] std | [ ] cyber — **Subtab `profile`**: Identità utente (`UID`/`GID`, Home, Login Shell `zsh`/`bash`, cambio shell e cambio password in terminale).
-- [ ] std | [ ] cyber — **Subtab `groups`**: Appartenenza ai gruppi di sistema critici (`wheel`, `docker`, `libvirt`, `wireshark`, `video`, `input`, `uucp`) con toggle di aggiunta/rimozione.
-- [ ] std | [ ] cyber — **Subtab `sessions`**: Sessioni attive (`loginctl list-sessions`), stato seat/TTY e terminazione sessioni appese.
+### 13. [x] `accounts` (`panels/cc_accounts.py`)
+- [x] std | [x] cyber — **Subtab `profile`**: Identità utente (`UID`/`GID`, Home, Login Shell `zsh`/`bash`, cambio shell e cambio password in terminale).
+- [x] std | [x] cyber — **Subtab `groups`**: Appartenenza ai gruppi di sistema critici (`wheel`, `docker`, `libvirt`, `wireshark`, `video`, `input`, `uucp`) con toggle di aggiunta/rimozione.
+- [x] std | [x] cyber — **Subtab `sessions`**: Sessioni attive (`loginctl list-sessions`), stato seat/TTY e terminazione sessioni appese.
 
 ### 14. [~] `calendar` (`panels/cc_calendar.py`)
 - [ ] std | [ ] cyber — **Subtab `mode`, `google`, `io`**: Fare backup `.old` di `cc_calendar.py`, preservare l'intero backend SQLite/gcalcli/ICS esistente e aggiungere la variante visuale `cyberpunk` accanto a quella `standard`.

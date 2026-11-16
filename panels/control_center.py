@@ -273,6 +273,12 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_mouse_cards(self, canvas, active_sub))
             return cards
 
+        # --- SEZIONE DEDICATA: ACCOUNTS (cc_accounts) ---
+        if self.section == "accounts":
+            from panels.cc_accounts import build_cc_accounts_cards
+            cards.extend(build_cc_accounts_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -425,6 +431,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_datetime import handle_cc_datetime_link
         from panels.cc_notifications import handle_cc_notifications_link
         from panels.cc_mouse import handle_cc_mouse_link
+        from panels.cc_accounts import handle_cc_accounts_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -444,6 +451,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_notifications_link(self, uri):
             return
         if handle_cc_mouse_link(self, uri):
+            return
+        if handle_cc_accounts_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return
