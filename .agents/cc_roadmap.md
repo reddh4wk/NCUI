@@ -33,11 +33,11 @@
 - [x] std | [x] cyber — **Subtab `mime`**: Gestore associazioni `xdg-mime` / `xdg-settings` per Browser Web, Emulatore Terminale, File Manager, Editor di Testo/Codice, Lettore PDF, Visualizzatore Immagini e Player Audio/Video.
 - [x] std | [x] cyber — **Subtab `autostart`**: Gestione voci `spawn-at-startup` in `~/.config/niri/config.kdl`, gestione servizi utente (`systemctl --user`), e ispettore in sola lettura dei servizi di sistema attivi/falliti (`systemctl list-units --type=service`).
 
-### 5. [ ] `sound` (`panels/cc_audio.py`)
-- [ ] std | [ ] cyber — **Subtab `output`**: Periferiche di uscita PipeWire (DAC USB, HDMI, Bluetooth), elezione sink predefinito, volume, mute, test canali e over-amplification.
-- [ ] std | [ ] cyber — **Subtab `input`**: Ingressi microfonici (es. HyperX QuadCast S), elezione source predefinito, guadagno, mute e stato loopback/filtro rumore.
-- [ ] std | [ ] cyber — **Subtab `mixer`**: Controllo individuale dei flussi applicativi attivi (`sink-inputs`) e parametri runtime PipeWire (`pw-metadata` quantum / sample-rate per bassa latenza gaming o Hi-Res audio).
-- [ ] std | [ ] cyber — **Subtab `devices`**: Profili hardware delle schede audio (`pactl list cards`, commutazione profili Analog Stereo / Digital IEC958 / Pro Audio / Codec Bluetooth A2DP/HSP).
+### 5. [x] `sound` (`panels/cc_audio.py`)
+- [x] std | [x] cyber — **Subtab `output`**: Periferiche di uscita PipeWire (DAC USB, HDMI, Bluetooth), elezione sink predefinito, volume, mute, test canali e over-amplification.
+- [x] std | [x] cyber — **Subtab `input`**: Ingressi microfonici (es. HyperX QuadCast S), elezione source predefinito, guadagno, mute e stato loopback/filtro rumore.
+- [x] std | [x] cyber — **Subtab `mixer`**: Controllo individuale dei flussi applicativi attivi (`sink-inputs`) e parametri runtime PipeWire (`pw-metadata` quantum / sample-rate per bassa latenza gaming o Hi-Res audio).
+- [x] std | [x] cyber — **Subtab `devices`**: Profili hardware delle schede audio (`pactl list cards`, commutazione profili Analog Stereo / Digital IEC958 / Pro Audio / Codec Bluetooth A2DP/HSP).
 
 ### 6. [ ] `power` (`panels/cc_power.py`)
 - [ ] std | [ ] cyber — **Subtab `general`**: CPU frequency governor (`cpupower` / `/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor`), Energy Performance Preference (EPP), boost clock toggle (CPB) e telemetria consumi/temperature CPU/GPU.
