@@ -261,6 +261,12 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_datetime_cards(self, canvas, active_sub))
             return cards
 
+        # --- SEZIONE DEDICATA: NOTIFICATIONS (cc_notifications) ---
+        if self.section == "notifications":
+            from panels.cc_notifications import build_cc_notifications_cards
+            cards.extend(build_cc_notifications_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -366,6 +372,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_power import handle_cc_power_prompt
         from panels.cc_system import handle_cc_system_prompt
         from panels.cc_datetime import handle_cc_datetime_prompt
+        from panels.cc_notifications import handle_cc_notifications_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
             return
         if handle_cc_display_prompt(self, action_id, text):
@@ -377,6 +384,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_system_prompt(self, action_id, text):
             return
         if handle_cc_datetime_prompt(self, action_id, text):
+            return
+        if handle_cc_notifications_prompt(self, action_id, text):
             return
         if handle_cc_personalization_prompt(self, action_id, text):
             return
@@ -408,6 +417,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_updates import handle_cc_updates_link
         from panels.cc_auth import handle_cc_auth_link
         from panels.cc_datetime import handle_cc_datetime_link
+        from panels.cc_notifications import handle_cc_notifications_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -423,6 +433,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_auth_link(self, uri):
             return
         if handle_cc_datetime_link(self, uri):
+            return
+        if handle_cc_notifications_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return

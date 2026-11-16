@@ -64,9 +64,9 @@
 - [x] std | [x] cyber — **Subtab `timezone`**: Fuso orario attivo (es. `Europe/Rome`) e selettore rapido per aree geografiche.
 - [x] std | [x] cyber — **Subtab `region`**: Impostazioni `locale.conf` (`LANG`, `LC_TIME`, formato 24h) e formato data nella barra.
 
-### 11. [ ] `notifications` (`panels/cc_notifications.py`)
-- [ ] std | [ ] cyber — **Subtab `system`**: Modalità Non Disturbare (DND), programmazione oraria silenziosa, limite massimo notifiche in cronologia, test invio notifica (`nc_util_notify.sh`) e pulizia archivio.
-- [ ] std | [ ] cyber — **Subtab `apps`**: Regole di filtro/soppressione notifiche per singola applicazione e livello di urgenza.
+### 11. [x] `notifications` (`panels/cc_notifications.py`)
+- [x] std | [x] cyber — **Subtab `system`**: Modalità Non Disturbare (DND), programmazione oraria silenziosa, limite massimo notifiche in cronologia, test invio notifica (`nc_util_notify.sh`) e pulizia archivio.
+- [x] std | [x] cyber — **Subtab `apps`**: Regole di filtro/soppressione notifiche per singola applicazione e livello di urgenza.
 
 ### 12. [ ] `mouse` (`panels/cc_mouse.py`)
 - [ ] std | [ ] cyber — **Subtab `general`**: Configurazione mouse in `~/.config/niri/config.kdl` (left-handed mode, natural scroll, middle-click emulation, scroll factor).
