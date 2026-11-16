@@ -17,7 +17,6 @@ from core.config import (
     _unique_existing_paths,
     _update_toml_key_in_section,
     apply_waybar_transparency,
-    get_cc_panel_style,
     get_ui_transparency_pct,
     set_ui_transparency_pct,
 )
@@ -254,41 +253,9 @@ def _build_theme_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_theme_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    cards = _feedback_cards()
-    trans_pct = get_ui_transparency_pct()
-    box_style = str(THEME["ascii"].get("box_style", "rounded"))
-    typo = THEME["typography"]
-
-    b = Box(
-        "CRT PHOSPHOR & CHROMATIC CALIBRATION CONSOLE",
-        icon="\uf53f",
-        actions=[ActionBtn("\uf00c SYNC WAYBAR", "cc:trans_apply", tone="apply", active=True)],
-        scroll_action="cc:trans_scroll",
-        elected=True,
-    )
-    b.add_row(" ")
-    tr_sl = Slider(trans_pct, "cc:trans", min_val=0, max_val=95, width=20, show_pct=True, step_buttons=True, step=5)
-    b.add_row(f"  {Txt('[ALPHA DAC]──►', role='intent')} {tr_sl}")
-    b.add_row(f"  {Txt('[BOX STYLE]──►', role='schema')} " + " ".join(SelectPill(s.upper(), f"cc_pers:box_style:{s}", selected=(box_style == s)) for s in ("rounded", "sharp", "heavy", "double")))
-    b.add_section("SEMANTIC COLOR PHOSPHOR GUNS")
-    acc_presets = [("CYAN", "#00f0ff"), ("MATRIX", "#00ff73"), ("AMBER", "#ffeb19"), ("MAGENTA", "#ff2a9d"), ("ICE", "#89dceb")]
-    b.add_row(f"  {Txt('[INTENT] ───►', role='schema')} " + " ".join(SelectPill(lbl, f"cc_pers:set_color:accent:{hx}", selected=(THEME['colors'].get('intent', '').lower() == hx)) for lbl, hx in acc_presets) + f" {ActionBtn('HEX..', 'cc_pers:prompt_color:accent', tone='neutral')}")
-    b.add_row(f"  {Txt('[BOX RINGS]─►', role='schema')} {ActionBtn('SELECTED..', 'cc_pers:prompt_color:box_selected', tone='select')} {ActionBtn('ELECTED..', 'cc_pers:prompt_color:box_elected', tone='apply')} {ActionBtn('HIGHLIGHT..', 'cc_pers:prompt_color:box_highlight', tone='neutral')}")
-    b.add_row(f"  {Txt('[THRESHOLDS]►', role='schema')} {ActionBtn('NORM..', 'cc_pers:prompt_th:normal', tone='apply')} {ActionBtn('WARN..', 'cc_pers:prompt_th:warning', tone='warn')} {ActionBtn('ALERT..', 'cc_pers:prompt_th:alert', tone='danger_soft')} {ActionBtn('CRIT..', 'cc_pers:prompt_th:critical', tone='danger_soft')}")
-    b.add_section("GLYPH RASTERIZER & XCURSOR")
-    b.add_row(
-        f"  {Txt('[FONT]', role='schema')} {Txt(typo.get('font_family', 'Courier') + ' ' + str(typo.get('font_size', 11)) + 'pt', role='focus')}  "
-        + " ".join(SelectPill(f"{sz}", f"cc_pers:font_size:{sz}", selected=(int(typo.get("font_size", 11)) == sz)) for sz in (10, 11, 12, 13))
-        + f"  {ActionBtn('FONT..', 'cc_pers:prompt_font', tone='neutral')}  {ActionBtn('CURSOR..', 'cc_pers:prompt_cursor', tone='neutral')}"
-    )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 # =====================================================================
-# SUBTAB 2: THEME CREATOR TOOL (standard + cyberpunk)
+# SUBTAB 2: THEME CREATOR TOOL
 # =====================================================================
 
 def _list_saved_themes() -> list[str]:
@@ -345,40 +312,6 @@ def _build_creator_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     cards.append(p_box)
     return cards
 
-
-def _build_creator_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    cards = _feedback_cards()
-    asc = THEME["ascii"]
-    saved = _list_saved_themes()
-    ch = asc.get("chars", {})
-
-    b = Box(
-        "ASCII GLYPH SYNTHESIZER // THEME.TOML CAD",
-        icon="\uf1fc",
-        actions=[ActionBtn("+ SNAPSHOT THEME", "cc_pers:save_theme_prompt", tone="apply", active=True)],
-        elected=True,
-    )
-    b.add_row(" ")
-    tl = ch.get("tl", "╭")
-    tr = ch.get("tr", "╮")
-    bl = ch.get("bl", "╰")
-    br = ch.get("br", "╯")
-    hc = ch.get("h", "─")
-    vc = ch.get("v", "│")
-    b.add_row(f"  {Txt(tl + hc * 18 + '[ LIVE PRIMITIVE MATRIX ]' + hc * 18 + tr, role='structure')}")
-    b.add_row(f"  {Txt(vc, role='structure')} TITLE  : {SelectPill('[ ]', 'cc_pers:tbrk:[ : ]', selected=(asc['title_brackets']==['[ ',' ]']))} {SelectPill(':: ::', 'cc_pers:tbrk::: ::', selected=(asc['title_brackets']==[':: ',' ::']))} {SelectPill('< >', 'cc_pers:tbrk:< : >', selected=(asc['title_brackets']==['< ',' >']))}")
-    b.add_row(f"  {Txt(vc, role='structure')} BUTTON : {SelectPill('[btn]', 'cc_pers:bbrk:[:]', selected=(asc['button_brackets']==['[',']']))} {SelectPill('<btn>', 'cc_pers:bbrk:<:>', selected=(asc['button_brackets']==['<','>']))} {SelectPill('{btn}', 'cc_pers:bbrk:{:}', selected=(asc['button_brackets']==['{','}']))}")
-    b.add_row(f"  {Txt(vc, role='structure')} SLIDER : {SelectPill('#/-', 'cc_pers:slglyph:#:-', selected=(asc['slider_fill']=='#'))} {SelectPill('█/░', 'cc_pers:slglyph:█:░', selected=(asc['slider_fill']=='█'))} {ActionBtn('CORNERS..', 'cc_pers:prompt_corners', tone='neutral')} {ActionBtn('IMPORT..', 'cc_pers:import_theme_prompt', tone='select')}")
-    b.add_row(f"  {Txt(bl + hc * 61 + br, role='structure')}")
-    b.add_section(f"THEME VAULT ({len(saved)} TOML FILES)")
-    if not saved:
-        b.add_row(f"  {Txt('[ VAULT EMPTY — CLICK + SNAPSHOT THEME ]', role='inactive')}")
-    else:
-        for nm in saved[:6]:
-            b.add_row(f"  {Txt('┣━ ' + nm + '.toml', role='focus')}", right_markup=f"{ActionBtn('LOAD', f'cc_pers:load_theme:{nm}', tone='apply')} {ActionBtn('DEL', f'cc_pers:del_theme:{nm}', tone='danger_soft')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
 
 
 # =====================================================================
@@ -449,45 +382,17 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_wallpaper_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    outputs_data = _get_niri_outputs()
-    out_names = sorted(outputs_data.keys())
-    target_out = str(STATE.get("desktop", "target_out", "all"))
-    cm_col = str(STATE.get("desktop", "cm_color", "green"))
-    cm_spd = str(STATE.get("desktop", "cm_speed", "4"))
-    cm_jp = bool(STATE.get("desktop", "cm_jp", True))
-
-    cards = _feedback_cards()
-    b = Box(
-        "COMPOSITOR FRAMEBUFFER & CMATRIX SHADER PIPELINE",
-        icon="\uf03e",
-        actions=[ActionBtn("\uf04b LAUNCH MATRIX", "cc_desk:cm_launch", tone="apply", active=True)],
-        elected=True,
-    )
-    b.add_row(" ")
-    out_btns = " ".join([SelectPill("ALL", "cc_desk:target:all", selected=(target_out == "all"))] + [SelectPill(o, f"cc_desk:target:{o}", selected=(target_out == o)) for o in out_names])
-    b.add_row(f"  {Txt('[OUTPUT BUS]──►', role='intent')} {out_btns}")
-    b.add_row(f"  {Txt('[TRANSPORT] ──►', role='schema')} {ActionBtn('IMG..', 'cc_desk:prompt_img', tone='select')} {ActionBtn('NEXT', 'cc_desk:next', tone='select')} {ActionBtn('PAUSE', 'cc_desk:pause', tone='warn')} {ActionBtn('RESUME', 'cc_desk:resume', tone='apply')} {ActionBtn('SWAP', 'cc_desk:swap', tone='neutral')} {ActionBtn('STOP', 'cc_desk:stop', tone='danger_soft')}")
-    b.add_section("KATAKANA / ASCII RAIN SHADER MATRIX")
-    b.add_row(f"  {Txt('[CHARSET] ───►', role='schema')} {SelectPill('KATAKANA JP' if cm_jp else 'ASCII', 'cc_desk:cm_toggle_jp', selected=cm_jp)}  " + " ".join(SelectPill(c.upper(), f"cc_desk:cm_col:{c}", selected=(cm_col == c)) for c in ("green", "cyan", "red", "magenta")))
-    b.add_row(f"  {Txt('[CLK SPEED] ─►', role='schema')} " + " ".join(SelectPill(f"x{s}", f"cc_desk:cm_spd:{s}", selected=(cm_spd == str(s))) for s in (1, 2, 4, 6, 8)) + f"  {ActionBtn('UNICOLOR CYBER', 'cc_desk:solid:cyber', tone='neutral')} {ActionBtn('HEX..', 'cc_desk:prompt_hex', tone='neutral')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
-# PUBLIC ENTRY POINTS (Single Backend, Dual View)
+# PUBLIC ENTRY POINTS
 # =====================================================================
 
 def build_cc_personalization_cards(cc_panel, canvas: Canvas, active_sub: str = "theme") -> list:
     is_it = (get_active_language() == "it")
-    style = get_cc_panel_style()
 
     if active_sub == "creator":
-        return _build_creator_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_creator_standard(cc_panel, canvas, is_it)
+        return _build_creator_standard(cc_panel, canvas, is_it)
     if active_sub == "wallpaper":
-        return _build_wallpaper_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_wallpaper_standard(cc_panel, canvas, is_it)
+        return _build_wallpaper_standard(cc_panel, canvas, is_it)
     if active_sub == "waybar":
         wb_mode = str(cc_panel.get_state("wb_sub_view", "layout"))
         toggle_row = Box("Waybar Sub-View", icon="\uf0db")
@@ -498,7 +403,7 @@ def build_cc_personalization_cards(cc_panel, canvas: Canvas, active_sub: str = "
         )
         toggle_row.add_row(" ")
         return [toggle_row] + build_cc_waybar_cards(cc_panel, canvas, active_sub=wb_mode)
-    return _build_theme_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_theme_standard(cc_panel, canvas, is_it)
+    return _build_theme_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_personalization_link(cc_panel, uri: str) -> bool:

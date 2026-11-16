@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import copy
 
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import (
@@ -22,89 +21,11 @@ from panels.cc_network import (
 )
 
 
-def _build_wifi_cyberpunk(panel, canvas: Canvas, wifi: dict, is_it: bool) -> list:
-    cards = []
-    if not wifi["available"]:
-        b = Box("802.11 RF SPECTRUM // RADIO & SSID SCANNER", icon="\uf1eb", elected=True)
-        b.add_row(" ")
-        b.add_row(f"  {Txt('[NMCLI]──► UNAVAILABLE (NetworkManager not installed)', role='inactive')}")
-        b.add_row(" ")
-        cards.append(b)
-        cards.append(Divider("SHORT-RANGE RF // BLUEZ CONTROLLER", icon="\uf294"))
-        cards.extend(panel._build_bt_cards(canvas))
-        return cards
-
-    wifi_devs = [i["name"] for i in get_interfaces_fast() if i["kind"] == "wifi"]
-    primary_wdev = wifi_devs[0] if wifi_devs else ""
-    pwr_btn = ActionBtn("RF OFF", "wifi:radio:off", tone="danger_soft") if wifi["enabled"] else ActionBtn("RF ON", "wifi:radio:on", tone="apply", active=True)
-    acts = [StateBadge(wifi["enabled"], "TX ON", "TX OFF", on_tone="ok"), pwr_btn]
-    if primary_wdev:
-        acts.append(ActionBtn(f"IFACE {primary_wdev}", f"net:jump_iface:{primary_wdev}", tone="select"))
-
-    b = Box("802.11 RF // WIFI SPECTRUM", icon="\uf1eb", actions=acts, elected=True)
-    b.add_row(" ")
-    if not wifi["enabled"]:
-        b.add_row(f"  {Txt('[RADIO]──► SOFTWARE RF KILL ACTIVE', role='inactive')}")
-    else:
-        nets = wifi.get("networks", [])
-        active_net = next((n for n in nets if n.get("in_use") or n.get("active")), None)
-        b.add_row(
-            f"  {Txt('[LINK]  ──►', role='vitality')} {Txt(active_net['ssid'] if active_net else 'DISCONNECTED', role='focus')}",
-            right_markup=f"{ActionBtn('+ HIDDEN SSID', 'wifi:prompt_hidden', tone='neutral')} {ActionBtn('HOTSPOT AP', 'wifi:prompt_hotspot', tone='select')} {ActionBtn('RESCAN', 'wifi:rescan', tone='apply')}",
-        )
-        ps_cur = str(wifi.get("powersave", "unknown"))
-        b.add_row(
-            f"  {Txt('[PWR]   ──►', role='schema')} {SelectPill('LOW-LATENCY', 'wifi:powersave:2', selected=(ps_cur == 'off'))} {SelectPill('POWERSAVE', 'wifi:powersave:3', selected=(ps_cur == 'on'))}"
-        )
-        b.add_section(f"DETECTED ACCESS POINTS ({len(nets)})")
-        rows = []
-        max_bar = max(0, len(SIGNAL_BARS) - 1)
-        for n in nets[:8]:
-            sig_pct = int(n.get("signal", 0))
-            bars = SIGNAL_BARS[min(max_bar, max(0, sig_pct // 25))] if SIGNAL_BARS else f"{sig_pct}%"
-            ssid = n["ssid"]
-            sec = n.get("security") or "open"
-            is_a = bool(n.get("in_use") or n.get("active"))
-            act = f"{ActionBtn('DISC', 'wifi:disc:' + ssid, tone='danger_soft')} {ActionBtn('FORGET', 'wifi:forget:' + ssid, tone='neutral')}" if is_a else ActionBtn("LINK", f"wifi:conn:{ssid}:{sec}", tone="apply")
-            rows.append([
-                f"{Txt('▶━' if is_a else '┣━', role='vitality' if is_a else 'structure')} {Txt(canvas.truncate_plain(ssid, 22), role='focus')}",
-                Txt(bars, role="vitality" if n["signal"] > 55 else "attention"),
-                Txt(sec[:10], role="schema"),
-                act,
-            ])
-        if rows:
-            b.add_table(headers=[], widths=[26, 8, 14, "flex"], rows=rows, aligns=["left", "left", "left", "right"])
-        else:
-            b.add_row(f"  {Txt('No SSIDs cached — click [RESCAN].', role='inactive')}")
-
-        with _NET_LOCK:
-            saved_p = copy.deepcopy(_NET_STATE.get("saved_wifi_profiles", []))
-        if saved_p:
-            def _fill_saved(bx: Box):
-                for sn in saved_p[:8]:
-                    suuid = sn["uuid"]
-                    ac = (str(sn.get("autoconnect", "yes")).lower() == "yes")
-                    ac_v = "no" if ac else "yes"
-                    bx.add_row(
-                        f"  {Txt('├─', role='structure')} {Txt(sn['name'][:22], role='focus')}",
-                        right_markup=f"{SelectPill('AUTO', f'wifi:toggle_auto:{suuid}:{ac_v}', selected=ac)} {ActionBtn('UP', 'wifi:up_uuid:' + suuid, tone='apply')} {ActionBtn('x', 'wifi:del_uuid:' + suuid, tone='danger_soft')}",
-                    )
-            b.add_collapsible(panel, "wifi_saved_cyber", f"STORED WIFI CREDENTIALS ({len(saved_p)})", _fill_saved)
-    b.add_row(" ")
-    cards.append(b)
-    cards.append(Divider("SHORT-RANGE RF // BLUEZ CONTROLLER", icon="\uf294"))
-    cards.extend(panel._build_bt_cards(canvas))
-    return cards
-
-
 def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
     is_it = (get_active_language() == "it")
 
     with _NET_LOCK:
         wifi = copy.deepcopy(_NET_STATE["wifi"])
-
-    if get_cc_panel_style() == "cyberpunk":
-        return _build_wifi_cyberpunk(panel, canvas, wifi, is_it)
 
     cards = []
     if not wifi["available"]:

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import copy
 
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from core import probe
 from ui.canvas import Canvas
@@ -34,69 +33,12 @@ def _read_wireguard_live_info() -> list[str]:
     return out_lines
 
 
-def _build_vpn_cyberpunk(panel, canvas: Canvas, vpns: list, proxy: dict, is_it: bool) -> list:
-    cards = []
-    any_up = any(v["active"] for v in vpns)
-    b = Box(
-        "VPN TUNNELS // WIREGUARD & OVPN",
-        icon="\uf132",
-        actions=[
-            StateBadge(any_up, "TUNNEL UP", "STANDBY", on_tone="ok"),
-            ActionBtn("+ WG", "vpn:prompt_import:wireguard", tone="select"),
-            ActionBtn("+ OVPN", "vpn:prompt_import:openvpn", tone="neutral"),
-        ],
-        elected=True,
-    )
-    b.add_row(" ")
-    if not vpns:
-        b.add_row(f"  {Txt('[TUNNELS]──► NONE CONFIGURED IN NETWORKMANAGER', role='inactive')}")
-    else:
-        rows = []
-        for v in vpns:
-            vu = v["uuid"]
-            isl = bool(v["active"])
-            is_ac = (str(v.get("autoconnect", "no")).lower() == "yes")
-            ac_v = "no" if is_ac else "yes"
-            sp_v = "no" if v["split_tunnel"] else "yes"
-            updn = ActionBtn("DOWN", f"vpn:down:{vu}", tone="danger_soft") if isl else ActionBtn("UP", f"vpn:up:{vu}", tone="apply")
-            rows.append([
-                f"{Txt('▶━' if isl else '┣━', role='vitality' if isl else 'structure')} {Txt(canvas.truncate_plain(v['name'], 20), role='focus')}",
-                StateBadge(isl, "ACTIVE", "IDLE", on_tone="ok"),
-                SelectPill("SPLIT", f"vpn:toggle_split:{vu}:{sp_v}", selected=bool(v["split_tunnel"])),
-                f"{SelectPill('AUTO', f'vpn:toggle_auto:{vu}:{ac_v}', selected=is_ac)} {ActionBtn('DNS', f'vpn:dns_prompt:{vu}', tone='neutral')} {updn} {ActionBtn('x', f'vpn:del:{vu}', tone='danger_soft')}",
-            ])
-        b.add_table(headers=[], widths=[24, 12, 12, "flex"], rows=rows, aligns=["left", "left", "left", "right"])
-
-    wg_live = _read_wireguard_live_info()
-    if wg_live:
-        def _fill_wg(bx: Box):
-            for ln in wg_live[:6]:
-                bx.add_row(f"  {Txt('├─', role='structure')} {Txt(ln, role='vitality')}")
-        b.add_collapsible(panel, "vpn_wg_live", f"KERNEL WG / TUN INTERFACES ({len(wg_live)})", _fill_wg)
-
-    p_mode = str(proxy.get("mode", "none"))
-    b.add_section("EGRESS PROXY MATRIX (ENV / SYSTEM)")
-    pm_pills = " ".join(SelectPill(lbl, f"net:proxy_mode:{k}", selected=(p_mode == k)) for k, lbl in (("none", "DIRECT"), ("manual", "MANUAL"), ("auto", "PAC AUTO")))
-    b.add_row(f"  {Txt('[MODE]  ──►', role='intent')} {pm_pills}")
-    if p_mode == "manual":
-        b.add_row(f"  {Txt('[HTTP]  ──►', role='schema')} {Txt(proxy.get('http') or 'unset', role='focus')}", right_markup=ActionBtn("EDIT HTTP..", "net:prompt_proxy_http", tone="select"))
-        b.add_row(f"  {Txt('[SOCKS] ──►', role='schema')} {Txt(proxy.get('socks') or 'unset', role='val')}", right_markup=ActionBtn("EDIT SOCKS..", "net:prompt_proxy_socks", tone="neutral"))
-    elif p_mode == "auto":
-        b.add_row(f"  {Txt('[PAC]   ──►', role='schema')} {Txt(proxy.get('pac_url') or 'unset', role='focus')}", right_markup=ActionBtn("EDIT PAC..", "net:prompt_proxy_pac", tone="select"))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_vpn_tab_cards(panel, canvas: Canvas) -> list:
     is_it = (get_active_language() == "it")
 
     with _NET_LOCK:
         vpns = copy.deepcopy(_NET_STATE["vpns"])
         proxy = copy.deepcopy(_NET_STATE["proxy"])
-
-    if get_cc_panel_style() == "cyberpunk":
-        return _build_vpn_cyberpunk(panel, canvas, vpns, proxy, is_it)
 
     cards = []
 

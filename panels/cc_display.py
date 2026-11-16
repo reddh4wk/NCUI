@@ -4,7 +4,6 @@ import os
 import re
 import time
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from core.state import STATE
 from panels.display import NiriOutputMap, resolve_script_path, run_desktop_cli
@@ -103,7 +102,7 @@ def _toggle_niri_vrr(out_name: str, enable: bool) -> tuple[bool, str]:
 
 
 # =====================================================================
-# SUBTAB 1: LAYOUT (Standard + Cyberpunk)
+# SUBTAB 1: LAYOUT
 # =====================================================================
 
 def _build_layout_standard(cc_panel, canvas: Canvas, outputs_data: dict, is_it: bool) -> list:
@@ -163,31 +162,9 @@ def _build_layout_standard(cc_panel, canvas: Canvas, outputs_data: dict, is_it: 
     return cards
 
 
-def _build_layout_cyberpunk(cc_panel, canvas: Canvas, outputs_data: dict, is_it: bool) -> list:
-    cards = _feedback_cards()
-    b = Box(
-        "GPU CRTC TOPOLOGY // MULTI-HEAD FRAMEBUFFER BUS",
-        icon="\uf108",
-        actions=[ActionBtn("AUTO-ALIGN ALL", "cc_desk:pos_auto_all", tone="select")],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[NVIDIA RTX 3090 CRTC]', role='vitality')} ═╦═ {Txt('[DISPLAYPORT / HDMI BUS]', role='schema')}")
-    for out_name, info in sorted(outputs_data.items()):
-        logical = info.get("logical")
-        is_on = logical is not None
-        st_b = StateBadge(is_on, "ACTIVE", "OFF")
-        geom = f"{logical['width']}x{logical['height']} @({logical['x']},{logical['y']})" if is_on else "POWERED DOWN"
-        acts = f"{ActionBtn('MAX', f'cc_desk:res_max:{out_name}', tone='apply')} {ActionBtn('POS..', f'cc_desk:pos_prompt:{out_name}', tone='neutral')} " if is_on else ""
-        acts += ActionBtn("OFF" if is_on else "ON", f"cc_desk:power:{out_name}:{'off' if is_on else 'on'}", tone="danger_soft" if is_on else "apply")
-        b.add_row(f"     {Txt('╠═►', role='structure')} {Txt(f'{out_name:<8}', role='intent')} {st_b} {Txt(geom, role='focus' if is_on else 'inactive')}", right_markup=acts)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 # =====================================================================
-# SUBTAB 2: SCALING, VRR, NIGHT LIGHT & DPMS (Standard + Cyberpunk)
+# SUBTAB 2: SCALING, VRR, NIGHT LIGHT & DPMS
 # =====================================================================
 
 def _build_scaling_standard(cc_panel, canvas: Canvas, outputs_data: dict, is_it: bool) -> list:
@@ -258,49 +235,17 @@ def _build_scaling_standard(cc_panel, canvas: Canvas, outputs_data: dict, is_it:
     return cards
 
 
-def _build_scaling_cyberpunk(cc_panel, canvas: Canvas, outputs_data: dict, is_it: bool) -> list:
-    cards = _feedback_cards()
-    nl = _get_night_light_state()
-    dpms_min = int(STATE.get("display", "dpms_timeout", 10) or 10)
-
-    b = Box(
-        "CRTC TIMING SYNTHESIZER // SCALING, VRR & KELVIN FILTER",
-        icon="\uf186",
-        actions=[StateBadge(nl["active"], f"{nl['temp']}K", "6500K", on_tone="warn")],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(
-        f"  {Txt('[KELVIN FILTER]─►', role='attention')} {SelectPill('WLSUNSET', 'cc_desk:nl:' + ('off' if nl['active'] else 'on'), selected=nl['active'])} "
-        f"{Slider(nl['temp'], 'cc_desk:nl_temp', min_val=2500, max_val=6500, width=14, show_pct=False, step_buttons=True, step=500)}  "
-        f"{Txt('[DPMS]', role='schema')} {SelectPill('10m', 'cc_desk:dpms:10', selected=(dpms_min==10))} {ActionBtn('PWR OFF', 'cc_desk:dpms_now', tone='warn')}"
-    )
-    b.add_section("OUTPUT CLOCK & FRACTIONAL SCALING MATRIX")
-    for out_name, info in sorted(outputs_data.items()):
-        logical = info.get("logical")
-        if not logical:
-            continue
-        cur_scale = float(logical.get("scale", 1.0))
-        vrr_on = bool(info.get("vrr_enabled", False))
-        sc_btns = " ".join(SelectPill(f"{sv:g}x", f"cc_desk:scale:{out_name}:{sv:g}", selected=(abs(cur_scale - sv) < 0.03)) for sv in (1.0, 1.25, 1.5, 2.0))
-        b.add_row(f"  {Txt(f'[{out_name}]', role='intent')} {sc_btns}  {SelectPill('VRR', f'cc_desk:vrr:{out_name}:' + ('off' if vrr_on else 'on'), selected=vrr_on)}  {ActionBtn('MAX HZ', f'cc_desk:res_max:{out_name}', tone='apply')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
-# PUBLIC ENTRY POINTS (Single Backend, Dual View)
+# PUBLIC ENTRY POINTS
 # =====================================================================
 
 def build_cc_display_cards(cc_panel, canvas: Canvas, active_sub: str = "layout") -> list:
     is_it = (get_active_language() == "it")
-    style = get_cc_panel_style()
     outputs_data = get_niri_outputs_data()
 
     if active_sub == "scaling":
-        return _build_scaling_cyberpunk(cc_panel, canvas, outputs_data, is_it) if style == "cyberpunk" else _build_scaling_standard(cc_panel, canvas, outputs_data, is_it)
-    return _build_layout_cyberpunk(cc_panel, canvas, outputs_data, is_it) if style == "cyberpunk" else _build_layout_standard(cc_panel, canvas, outputs_data, is_it)
+        return _build_scaling_standard(cc_panel, canvas, outputs_data, is_it)
+    return _build_layout_standard(cc_panel, canvas, outputs_data, is_it)
 
 
 def handle_cc_display_link(cc_panel, uri: str) -> bool:

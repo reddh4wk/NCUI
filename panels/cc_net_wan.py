@@ -2,7 +2,6 @@
 import copy
 import os
 
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from core import probe
 from ui.canvas import Canvas
@@ -66,77 +65,6 @@ def _read_listening_sockets(limit: int = 10) -> list[tuple[str, str, str]]:
     return rows
 
 
-def _build_wan_cyberpunk(panel, canvas: Canvas, ifaces: list[dict], wan: dict, pings: dict, routes: list, is_it: bool) -> list:
-    cards = []
-    wan_ip = str(wan.get("ip") or "scanning...")
-    badge_s = wan.get("badge") or "PROBING"
-    b = Box(
-        "WAN & WATCHDOG // EGRESS & DNS",
-        icon="\uf0ac",
-        actions=[
-            StateBadge(bool(wan.get("ip")), badge_s, "OFFLINE", on_tone="ok"),
-            ActionBtn("PROBE", "net:refresh_wan", tone="select"),
-            ActionBtn("FLUSH DNS", "net:flush_dns", tone="neutral"),
-        ],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[WAN EGRESS]──►', role='vitality')} {Txt(wan_ip, role='focus')}  {Txt(str(wan.get('isp') or ''), role='schema')}")
-    dns_l, dom = _read_resolv_conf()
-    b.add_row(f"  {Txt('[RESOLV DNS]──►', role='intent')} {Txt(', '.join(dns_l[:3]) or 'dhcp/unset', role='focus')}  {Txt(dom, role='schema')}")
-
-    b.add_section("ICMP RTT WATCHDOG")
-    targets = get_watchdog_targets(ifaces)
-    wd_rows = []
-    for t in targets:
-        host = t["host"]
-        name = canvas.truncate_plain(t.get("name", host), 18)
-        p_info = pings.get(host)
-        if p_info and p_info.get("ok"):
-            ms = float(p_info.get("ms", 0.0))
-            bar_v = min(100.0, max(6.0, (ms / 100.0) * 100.0))
-            rtt_s = f"{ms:5.1f}ms"
-            rtt_role = "vitality" if ms < 25 else "attention"
-        elif p_info is not None:
-            bar_v = 100.0
-            rtt_s = "TIMEOUT"
-            rtt_role = "fault"
-        else:
-            bar_v = 0.0
-            rtt_s = "idle"
-            rtt_role = "inactive"
-        rm_b = ActionBtn("x", f"net:del_ping:{host}", tone="danger_soft") if len(targets) > 1 else ""
-        wd_rows.append([
-            Txt(name, role="focus"),
-            Txt(host, role="schema"),
-            ProgressBar(bar_v, width=12),
-            Txt(rtt_s, role=rtt_role),
-            rm_b,
-        ])
-    b.add_table(headers=[], widths=[18, 16, 16, 10, "flex"], rows=wd_rows, aligns=["left", "left", "left", "left", "right"])
-    b.add_row(f"  {Txt('[TARGETS]  ──►', role='schema')}", right_markup=f"{ActionBtn('+ ADD HOST..', 'net:prompt_add_ping', tone='neutral')} {ActionBtn('PING ALL', 'net:refresh_ping', tone='apply')}")
-
-    def _fill_routes(bx: Box):
-        for r in routes[:8]:
-            bx.add_row(f"  {Txt('├─', role='structure')} {Txt(canvas.truncate_plain(str(r), 64), role='schema')}")
-        if not routes:
-            bx.add_row(f"  {Txt('No kernel routes cached.', role='inactive')}")
-
-    socks = _read_listening_sockets(limit=8)
-
-    def _fill_socks(bx: Box):
-        for proto, addr, proc in socks:
-            bx.add_row(f"  {Txt('├─', role='structure')} {Txt(f'{proto:<6}', role='intent')} {Txt(f'{addr:<24}', role='focus')} {Txt(proc, role='schema')}")
-        if not socks:
-            bx.add_row(f"  {Txt('No listening sockets reported.', role='inactive')}")
-
-    b.add_collapsible(panel, "wan_routes_cyber", f"KERNEL ROUTING TABLE ({len(routes)})", _fill_routes)
-    b.add_collapsible(panel, "wan_socks_cyber", f"LISTENING SOCKETS ({len(socks)})", _fill_socks)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
     is_it = (get_active_language() == "it")
 
@@ -144,9 +72,6 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
         wan = copy.deepcopy(_NET_STATE["wan"])
         pings = copy.deepcopy(_NET_STATE["pings"])
         routes = list(_NET_STATE["routes"])
-
-    if get_cc_panel_style() == "cyberpunk":
-        return _build_wan_cyberpunk(panel, canvas, ifaces, wan, pings, routes, is_it)
 
     cards = []
 

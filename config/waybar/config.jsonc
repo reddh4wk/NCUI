@@ -39,7 +39,7 @@
     },
     "niri/window": {
         "format": "{title}",
-        "max-length": 151,
+        "max-length": 147,
         "tooltip": false
     },
     "custom/settings": {

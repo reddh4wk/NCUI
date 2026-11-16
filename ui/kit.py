@@ -7,7 +7,7 @@ COMPACT_KEY_WIDTH = 12
 
 
 # =====================================================================
-# SORGENTE SEMANTICA UNICA DEI COLORI (7 Assi Cyberpunk)
+# SORGENTE SEMANTICA UNICA DEI COLORI (7 Assi Semantici)
 # =====================================================================
 def get_semantic_palette() -> dict[str, str]:
     c = THEME.get("colors", {})

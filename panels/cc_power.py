@@ -11,7 +11,6 @@ from core.config import (
     ROOT_DIR,
     _unique_existing_paths,
     _update_toml_key_in_section,
-    get_cc_panel_style,
     get_screen_lock_cmd,
 )
 from core.i18n import get_active_language, t
@@ -449,22 +448,6 @@ def _build_general_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_general_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_cpu_power()
-    cards = _feedback_cards()
-    b = Box("VRM & P-STATE POWER RAIL // CPU/GPU VOLTAGE BUS", icon="\uf0e7", elected=True)
-    b.add_row(" ")
-    gov_btns = " ".join(SelectPill(g.upper(), f"cc_pwr:gov:{g}", selected=(st["gov"] == g)) for g in st["avail_gov"][:4])
-    b.add_row(f"  {Txt('[P-STATE GOV]──►', role='intent')} {gov_btns}")
-    if st["boost"] in ("0", "1"):
-        b_on = st["boost"] == "1"
-        b.add_row(f"  {Txt('[CORE BOOST] ──►', role='schema')} {SelectPill('TURBO ON', 'cc_pwr:boost:1', selected=b_on)} {SelectPill('CLAMP OFF', 'cc_pwr:boost:0', selected=not b_on)}")
-    if st["gpu_info"]:
-        b.add_row(f"  {Txt('[GPU VRM]    ──►', role='vitality')} {Txt(st['gpu_info'], role='focus')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 # =====================================================================
 # SUBTAB 2: NUT SERVER / UPS (Generic, Dual View)
@@ -479,8 +462,8 @@ def _ups_status_badge(u: dict) -> str:
     return Badge(u["status_text"].upper(), style=tone_map.get(u["css_state"], "info"))
 
 
-def _build_ups_connection_rows(b: Box, u: dict, is_it: bool, cyber: bool) -> None:
-    en_pills = f"{SelectPill('ENABLED' if not cyber else 'ON', 'cc_pwr:nut_en:1', selected=u['enabled'])} {SelectPill('DISABLED' if not cyber else 'OFF', 'cc_pwr:nut_en:0', selected=not u['enabled'])}"
+def _build_ups_connection_rows(b: Box, u: dict, is_it: bool) -> None:
+    en_pills = f"{SelectPill('ENABLED', 'cc_pwr:nut_en:1', selected=u['enabled'])} {SelectPill('DISABLED', 'cc_pwr:nut_en:0', selected=not u['enabled'])}"
     b.add_kv("NUT Monitor", en_pills, requires=["upsc"])
 
     b.add_kv(
@@ -512,7 +495,7 @@ def _build_ups_connection_rows(b: Box, u: dict, is_it: bool, cyber: bool) -> Non
     b.add_kv("Waybar Polling", poll_pills)
 
 
-def _append_ups_adaptive_sections(b: Box, cc_panel, u: dict, is_it: bool, cyber: bool) -> None:
+def _append_ups_adaptive_sections(b: Box, cc_panel, u: dict, is_it: bool) -> None:
     if not u["enabled"]:
         b.add_kv("Telemetry", Txt(t("ups.disabled_hint", "NUT UPS monitor is disabled."), role="inactive"))
     elif not u["reachable"]:
@@ -579,7 +562,7 @@ def _append_ups_adaptive_sections(b: Box, cc_panel, u: dict, is_it: bool, cyber:
             b.add_collapsible(
                 cc_panel,
                 "pwr_ups_identity",
-                ("IDENTITA DISPOSITIVO" if cyber else "Identita Dispositivo") if is_it else ("DEVICE IDENTITY" if cyber else "Device Identity"),
+                "Identita Dispositivo" if is_it else "Device Identity",
                 _build_identity,
             )
 
@@ -598,7 +581,7 @@ def _append_ups_adaptive_sections(b: Box, cc_panel, u: dict, is_it: bool, cyber:
     b.add_collapsible(
         cc_panel,
         "pwr_ups_wb_cfg",
-        ("WAYBAR POPUP SETTINGS" if cyber else "Impostazioni Popup Waybar") if is_it else ("WAYBAR POPUP SETTINGS" if cyber else "Waybar Popup Settings"),
+        "Impostazioni Popup Waybar" if is_it else "Waybar Popup Settings",
         _build_wb_settings,
     )
 
@@ -610,7 +593,7 @@ def _append_ups_adaptive_sections(b: Box, cc_panel, u: dict, is_it: bool, cyber:
         b.add_collapsible(
             cc_panel,
             "pwr_ups_raw",
-            f"RAW DIAGNOSTICS ({len(u['raw'])} vars)" if cyber else f"Raw Diagnostics ({len(u['raw'])} variables)",
+            f"Raw Diagnostics ({len(u['raw'])} variables)",
             _build_raw_diag,
         )
 
@@ -626,100 +609,26 @@ def _build_ups_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
         elected=u["enabled"],
     )
     conn_box.add_row(" ")
-    _build_ups_connection_rows(conn_box, u, is_it, cyber=False)
+    _build_ups_connection_rows(conn_box, u, is_it)
     conn_box.add_row(" ")
     cards.append(conn_box)
 
     tele_title = f"Telemetria UPS ({u['target']})" if (is_it and u["target"]) else (f"UPS Telemetry ({u['target']})" if u["target"] else "UPS Telemetry")
     tele_box = Box(tele_title, icon="\uf240", elected=u["reachable"])
     tele_box.add_row(" ")
-    _append_ups_adaptive_sections(tele_box, cc_panel, u, is_it, cyber=False)
+    _append_ups_adaptive_sections(tele_box, cc_panel, u, is_it)
     tele_box.add_row(" ")
     cards.append(tele_box)
     return cards
 
-
-def _build_ups_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    u = _collect_ups_data()
-    cards = _feedback_cards()
-
-    target_lbl = u["target"] or "UNBOUND"
-    conn_box = Box(
-        f"NUT DAEMON LINK // {target_lbl}",
-        icon="\uf1e6",
-        actions=[_ups_status_badge(u), ActionBtn("SYNC", "cc_pwr:refresh", tone="neutral")],
-        elected=u["enabled"],
-    )
-    conn_box.add_row(" ")
-    _build_ups_connection_rows(conn_box, u, is_it, cyber=True)
-    conn_box.add_row(" ")
-    cards.append(conn_box)
-
-    tele_box = Box(f"POWER BUS TELEMETRY // {u['model'] or target_lbl}", icon="\uf240", elected=u["reachable"])
-    tele_box.add_row(" ")
-    if u["reachable"]:
-        pwr_s = f" / {u['realpower']}W" if u["realpower"] else ""
-        vin_s = f"{u['vin']}V" if u["vin"] else "--"
-        vout_s = f"{u['vout']}V" if u["vout"] else "--"
-        tele_box.add_row(
-            f"  {Txt('[GRID]──►', role='schema')} {Txt(vin_s, role='val')} "
-            f"{Txt('──► [UPS BUS] ──►', role='intent')} {Txt(vout_s + pwr_s, role='focus')}"
-        )
-    _append_ups_adaptive_sections(tele_box, cc_panel, u, is_it, cyber=True)
-    tele_box.add_row(" ")
-    cards.append(tele_box)
-    return cards
-
-
-# =====================================================================
-# SUBTAB 3: WAKEUP, IDLE & LOCK
-# =====================================================================
-
-def _build_wakeup_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_idle_state()
-    cards = _feedback_cards()
-    box = Box(
-        "Standby, Blocco Automatico & Caffeine" if is_it else "Idle Timeout, Auto-Lock & Caffeine Override",
-        icon="\uf186",
-        actions=[StateBadge(st["caffeine"], "CAFFEINE ON", "IDLE ACTIVE", on_tone="warn")],
-        elected=True,
-    )
-    box.add_row(" ")
-    box.add_kv("Idle Daemon", StateBadge(st["idle_daemon"] != "Stopped", st["idle_daemon"].upper(), "STOPPED"))
-    box.add_kv("Auto-Lock Timeout", " ".join(SelectPill(f"{m}m" if m else "Off", f"cc_pwr:idle_min:{m}", selected=(st["idle_min"] == m)) for m in (5, 10, 15, 30, 0)))
-    box.add_kv("DPMS Screen Off", " ".join(SelectPill(f"{m}m" if m else "Off", f"cc_pwr:dpms_min:{m}", selected=(st["dpms_min"] == m)) for m in (10, 15, 30, 60, 0)))
-    box.add_kv("Awake / Caffeine", f"{SelectPill('Keep Awake', 'cc_pwr:caffeine:on', selected=st['caffeine'])} {SelectPill('Allow Idle', 'cc_pwr:caffeine:off', selected=not st['caffeine'])}")
-    box.add_kv("Lock Screen Command", Txt(st["lock_cmd"] or "Not set (Waybar Options)", role="focus" if st["lock_cmd"] else "attention"), right_markup=ActionBtn("Lock Now", "cc_pwr:lock_now", tone="apply"))
-    box.add_row(" ")
-    cards.append(box)
-    return cards
-
-
-def _build_wakeup_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_idle_state()
-    cards = _feedback_cards()
-    b = Box("SLEEP WATCHDOG TIMER // SWAYIDLE & CAFFEINE INHIBITOR", icon="\uf186", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[WATCHDOG] ──►', role='intent')} {StateBadge(st['idle_daemon'] != 'Stopped', st['idle_daemon'].upper(), 'STOPPED')}  {SelectPill('CAFFEINE OVERRIDE', 'cc_pwr:caffeine:' + ('off' if st['caffeine'] else 'on'), selected=st['caffeine'])}")
-    b.add_row(f"  {Txt('[LOCK TMR] ──►', role='schema')} " + " ".join(SelectPill(f"{m}m" if m else "OFF", f"cc_pwr:idle_min:{m}", selected=(st["idle_min"] == m)) for m in (5, 10, 15, 30, 0)) + f"  {ActionBtn('LOCK NOW', 'cc_pwr:lock_now', tone='apply')}")
-    b.add_row(f"  {Txt('[DPMS OFF] ──►', role='schema')} " + " ".join(SelectPill(f"{m}m" if m else "OFF", f"cc_pwr:dpms_min:{m}", selected=(st["dpms_min"] == m)) for m in (10, 15, 30, 60, 0)))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-# =====================================================================
-# PUBLIC ENTRY POINTS & ACTION HANDLERS
-# =====================================================================
 
 def build_cc_power_cards(cc_panel, canvas: Canvas, active_sub: str = "general") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "ups":
-        return _build_ups_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_ups_standard(cc_panel, canvas, is_it)
+        return _build_ups_standard(cc_panel, canvas, is_it)
     if active_sub == "wakeup":
-        return _build_wakeup_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_wakeup_standard(cc_panel, canvas, is_it)
-    return _build_general_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_general_standard(cc_panel, canvas, is_it)
+        return _build_wakeup_standard(cc_panel, canvas, is_it)
+    return _build_general_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_power_link(cc_panel, uri: str) -> bool:

@@ -5,7 +5,6 @@ import os
 import shlex
 import time
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, StateBadge, Txt
@@ -89,30 +88,30 @@ def _start_scan(cc_panel) -> None:
     probe.run_async(_worker, on_done=_done)
 
 
-def _add_package_lists(b: Box, cc_panel, is_it: bool, cyber: bool) -> None:
+def _add_package_lists(b: Box, cc_panel, is_it: bool) -> None:
     off, aur, orph = _STATE["official"], _STATE["aur"], _STATE["orphans"]
 
     def _fill_off(bx: Box):
         for ln in off[:40]:
-            bx.add_row(f"  {Txt('├─' if cyber else '•', role='structure')} {Txt(ln, role='focus')}")
+            bx.add_row(f"  {Txt('•', role='structure')} {Txt(ln, role='focus')}")
         if not off:
             bx.add_row(f"  {Txt('System is up to date.' if not is_it else 'Sistema aggiornato.', role='vitality')}")
 
     def _fill_aur(bx: Box):
         for ln in aur[:40]:
-            bx.add_row(f"  {Txt('├─' if cyber else '•', role='structure')} {Txt(ln, role='intent')}")
+            bx.add_row(f"  {Txt('•', role='structure')} {Txt(ln, role='intent')}")
         if not aur:
             bx.add_row(f"  {Txt('No pending AUR updates.' if not is_it else 'Nessun pacchetto AUR in coda.', role='schema')}")
 
     def _fill_orph(bx: Box):
         for ln in orph[:40]:
-            bx.add_row(f"  {Txt('├─' if cyber else '•', role='structure')} {Txt(ln, role='attention')}")
+            bx.add_row(f"  {Txt('•', role='structure')} {Txt(ln, role='attention')}")
         if not orph:
             bx.add_row(f"  {Txt('No orphan packages.' if not is_it else 'Nessun pacchetto orfano.', role='vitality')}")
 
-    lbl_off = f"ARCH OFFICIAL REPOS ({len(off)})" if cyber else (f"Pacchetti Ufficiali Arch ({len(off)})" if is_it else f"Official Arch Updates ({len(off)})")
-    lbl_aur = f"AUR / PARU QUEUE ({len(aur)})" if cyber else (f"Pacchetti AUR / paru ({len(aur)})" if is_it else f"AUR Updates ({len(aur)})")
-    lbl_orph = f"ORPHAN PACKAGES ({len(orph)})" if cyber else (f"Pacchetti Orfani ({len(orph)})" if is_it else f"Orphan Packages ({len(orph)})")
+    lbl_off = f"Pacchetti Ufficiali Arch ({len(off)})" if is_it else f"Official Arch Updates ({len(off)})"
+    lbl_aur = f"Pacchetti AUR / paru ({len(aur)})" if is_it else f"AUR Updates ({len(aur)})"
+    lbl_orph = f"Pacchetti Orfani ({len(orph)})" if is_it else f"Orphan Packages ({len(orph)})"
     b.add_collapsible(cc_panel, "upd_off", lbl_off, _fill_off)
     b.add_collapsible(cc_panel, "upd_aur", lbl_aur, _fill_aur)
     b.add_collapsible(cc_panel, "upd_orph", lbl_orph, _fill_orph)
@@ -147,35 +146,7 @@ def _build_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
         right_markup=ActionBtn("Save PkgList", "cc_upd:save_pkglist", tone="apply"),
         requires=[_PKGLIST_SCRIPT],
     )
-    _add_package_lists(b, cc_panel, is_it, cyber=False)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    cards = _feedback_cards()
-    scan_btn = ActionBtn("SCANNING.." if _STATE["scanning"] else "RUN SCAN", "cc_upd:scan", tone="apply", active=not _STATE["scanning"])
-    b = Box("PACMAN / AUR NETFEED // PACKAGE MANIFEST & CACHE DECK", icon="\uf187", actions=[scan_btn, ActionBtn("UPGRADE TERM", "cc_upd:upgrade_term", tone="select")], elected=True)
-    b.add_row(" ")
-    off_n, aur_n, orph_n = len(_STATE["official"]), len(_STATE["aur"]), len(_STATE["orphans"])
-    b.add_row(
-        f"  {Txt('[SYNC STATE]─►', role='intent')} "
-        f"{Txt(f'ARCH:{off_n}', role='vitality' if not off_n else 'attention')}  "
-        f"{Txt(f'AUR:{aur_n}', role='intent')}  "
-        f"{Txt(f'ORPH:{orph_n}', role='focus')}  "
-        f"{Txt('CACHE:' + _STATE['cache_info'], role='schema')}"
-    )
-    b.add_row(
-        f"  {Txt('[MAINT]──────►', role='schema')} {ActionBtn('PACCACHE -RK2', 'cc_upd:paccache', tone='warn')} "
-        + (ActionBtn("PRUNE ORPHANS", "cc_upd:rm_orphans", tone="danger_soft") if orph_n else ""),
-        requires=["paccache"],
-    )
-    b.add_row(
-        f"  {Txt('[PKGLIST]────►', role='schema')} {ActionBtn('NC-PKGLIST-SAVE', 'cc_upd:save_pkglist', tone='apply')}",
-        requires=[_PKGLIST_SCRIPT],
-    )
-    _add_package_lists(b, cc_panel, is_it, cyber=True)
+    _add_package_lists(b, cc_panel, is_it)
     b.add_row(" ")
     cards.append(b)
     return cards
@@ -183,7 +154,7 @@ def _build_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
 
 def build_cc_updates_cards(cc_panel, canvas: Canvas, active_sub: str = "packages") -> list:
     is_it = (get_active_language() == "it")
-    return _build_cyberpunk(cc_panel, canvas, is_it) if get_cc_panel_style() == "cyberpunk" else _build_standard(cc_panel, canvas, is_it)
+    return _build_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_updates_link(cc_panel, uri: str) -> bool:

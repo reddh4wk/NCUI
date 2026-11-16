@@ -5,7 +5,6 @@
 import os
 import re
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, ProgressBar, SelectPill, StateBadge, Txt
@@ -196,22 +195,6 @@ def _build_general_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_general_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_mouse_state()
-    cards = _feedback_cards()
-    b = Box("INPUT MATRIX // MOUSE TOPOLOGY & SCROLL VECTOR", icon="\uf245", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[LEFT-HANDED] ──►', role='schema')} {StateBadge(st['left_handed'], 'SINISTRORSE', 'STANDARD')}", right_markup=_toggle_pair("cc_mouse:flag:left-handed:1", "cc_mouse:flag:left-handed:0", st["left_handed"]), requires=["niri"])
-    b.add_row(f"  {Txt('[NAT-SCROLL]  ──►', role='schema')} {StateBadge(st['natural_scroll'], 'INVERTED', 'CLASSIC')}", right_markup=_toggle_pair("cc_mouse:flag:natural-scroll:1", "cc_mouse:flag:natural-scroll:0", st["natural_scroll"]), requires=["niri"])
-    b.add_row(f"  {Txt('[MID-EMUL]    ──►', role='schema')} {StateBadge(st['middle_emulation'], 'L+R CHORD', 'OFF')}", right_markup=_toggle_pair("cc_mouse:flag:middle-emulation:1", "cc_mouse:flag:middle-emulation:0", st["middle_emulation"]), requires=["niri"])
-    b.add_row(f"  {Txt('[HOVER FOCUS] ──►', role='intent')} {StateBadge(st['focus_follows_mouse'], 'SLOPPY', 'CLICK')}", right_markup=_toggle_pair("cc_mouse:inflag:focus-follows-mouse:1", "cc_mouse:inflag:focus-follows-mouse:0", st["focus_follows_mouse"]), requires=["niri"])
-    sf_pills = " ".join(SelectPill(f"{v:.1f}x", f"cc_mouse:sf:{v:.1f}", selected=(abs(st["scroll_factor"] - v) < 0.05)) for v in (0.5, 1.0, 1.5, 2.0))
-    sf_val = st["scroll_factor"]
-    b.add_row(f"  {Txt('[SCROLL MULT] ──►', role='vitality')} {Txt(f'{sf_val:.2f}x', role='focus')}", right_markup=sf_pills, requires=["niri"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 def _build_pointer_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     st = _collect_mouse_state()
@@ -242,37 +225,11 @@ def _build_pointer_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_pointer_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_mouse_state()
-    cards = _feedback_cards()
-    bar_pct = (st["accel_speed"] + 1.0) * 50.0
-    as_str = f"{st['accel_speed']:+.2f}"
-    b = Box("BALLISTICS DECK // LIBINPUT POINTER CURVE & TOUCHPAD", icon="\uf192", elected=True)
-    b.add_row(" ")
-    b.add_row(
-        f"  {Txt('[ACCEL GAIN]──►', role='vitality')} {ProgressBar(bar_pct, width=18)} {Txt(as_str, role='focus')}",
-        right_markup=f"{ActionBtn('-0.1', 'cc_mouse:accel_step:-0.1', tone='select')} {ActionBtn('+0.1', 'cc_mouse:accel_step:+0.1', tone='select')}",
-        requires=["niri"],
-    )
-    b.add_row(f"  {Txt('[CURVE MODE]──►', role='intent')} {Txt(st['accel_profile'].upper(), role='focus')}", right_markup=f"{SelectPill('ADAPTIVE', 'cc_mouse:prof:adaptive', selected=(st['accel_profile'] == 'adaptive'))} {SelectPill('FLAT (1:1)', 'cc_mouse:prof:flat', selected=(st['accel_profile'] == 'flat'))}", requires=["niri"])
-
-    def _fill_tp(bx: Box):
-        bx.add_row(f"  {Txt('├─ tap:', role='structure')} {StateBadge(st['tp_tap'], 'ENABLED', 'OFF')}", right_markup=_toggle_pair("cc_mouse:tp:tap:1", "cc_mouse:tp:tap:0", st["tp_tap"]), requires=["niri"])
-        bx.add_row(f"  {Txt('├─ dwt:', role='structure')} {StateBadge(st['tp_dwt'], 'GUARDED', 'OFF')}", right_markup=_toggle_pair("cc_mouse:tp:dwt:1", "cc_mouse:tp:dwt:0", st["tp_dwt"]), requires=["niri"])
-        bx.add_row(f"  {Txt('└─ nat:', role='structure')} {StateBadge(st['tp_natural_scroll'], 'INVERT', 'STD')}", right_markup=_toggle_pair("cc_mouse:tp:natural-scroll:1", "cc_mouse:tp:natural-scroll:0", st["tp_natural_scroll"]), requires=["niri"])
-
-    b.add_collapsible(cc_panel, "mouse_touchpad", "TOUCHPAD MATRIX (TAP / DWT / SCROLL)", _fill_tp)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_mouse_cards(cc_panel, canvas: Canvas, active_sub: str = "general") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "pointer":
-        return _build_pointer_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_pointer_standard(cc_panel, canvas, is_it)
-    return _build_general_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_general_standard(cc_panel, canvas, is_it)
+        return _build_pointer_standard(cc_panel, canvas, is_it)
+    return _build_general_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_mouse_link(cc_panel, uri: str) -> bool:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import copy
 
-from core.config import get_cc_panel_style, get_network_show_bar_speed
+from core.config import get_network_show_bar_speed
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import (
@@ -21,132 +21,6 @@ from panels.cc_network import (
     _get_feedback,
     _spaced_rows,
 )
-
-
-def _build_wired_cyberpunk(
-    panel,
-    canvas: Canvas,
-    ifaces: list[dict],
-    filtered_ifaces: list[dict],
-    mon_iface: str,
-    sel_iface: str,
-    unit_mode: str,
-    cur_filter: str,
-    is_it: bool,
-    show_bar_spd: bool,
-) -> list:
-    with _NET_LOCK:
-        ip_map = copy.deepcopy(_NET_STATE["ip_map"])
-        nm_cur = copy.deepcopy(_NET_STATE["nm_profiles"].get(sel_iface, {}))
-
-    cards = []
-    fb = _get_feedback(sel_iface)
-    if fb.get("state") in ("ok", "err", "err_banner") and fb.get("msg"):
-        is_ok = (fb["state"] == "ok")
-        fb_b = Box("NETCTL // STATUS" if is_ok else "NETCTL // FAULT", icon="\uf00c" if is_ok else "\uf071")
-        fb_b.add_row(f"  {Txt(fb['msg'], role='vitality' if is_ok else 'fault')}")
-        cards.append(fb_b)
-
-    flt_acts = [
-        SelectPill("ALL", "net:if_filter:all", selected=(cur_filter == "all")),
-        SelectPill("WIRED", "net:if_filter:wired", selected=(cur_filter == "wired")),
-        SelectPill("WIFI", "net:if_filter:wifi", selected=(cur_filter == "wifi")),
-        ActionBtn(unit_mode.upper(), "net:toggle_unit", tone="neutral"),
-    ]
-    b = Box("LINK FABRIC // INTERFACES", icon="\uf6ff", actions=flt_acts, elected=True)
-    b.add_row(" ")
-    rows = []
-    for iface in filtered_ifaces[:10]:
-        name = iface["name"]
-        is_sel = (name == sel_iface)
-        is_up = iface["up"]
-        is_mon = (mon_iface == name)
-        v4s = ip_map.get(name, [])
-        ip_s = v4s[0] if v4s else "no-ip"
-        rx_s = format_speed(iface["rx_rate"], unit_mode)
-        tx_s = format_speed(iface["tx_rate"], unit_mode)
-        acts = ActionBtn("DOWN", f"net:ifdown:{name}", tone="danger_soft") if is_up else ActionBtn("UP", f"net:ifup:{name}", tone="apply")
-        if show_bar_spd:
-            acts = f"{SelectPill('BAR', f'net:mon:{name}', selected=is_mon)} {acts}"
-        rows.append([
-            InspectorCell(name[:12], f"net:sel_iface:{name}", selected=is_sel, is_alive=is_up),
-            StateBadge(is_up, "CARRIER", "DOWN"),
-            Txt(ip_s[:18], role="vitality" if v4s else "inactive"),
-            Txt(f"v {rx_s} ^ {tx_s}", role="schema"),
-            acts,
-        ])
-    b.add_table(headers=[], widths=[16, 12, 18, 22, "flex"], rows=rows, aligns=["left", "left", "left", "left", "right"])
-
-    def _fill_virt(bx: Box):
-        bx.add_row(
-            f"  {Txt('[BRIDGE / VLAN]──►', role='schema')} Create NM virtual interface",
-            right_markup=f"{ActionBtn('+ BRIDGE', 'net:prompt_virtual', tone='select')} {ActionBtn('+ 802.1Q', 'net:prompt_vlan', tone='neutral')}",
-        )
-    b.add_collapsible(panel, "wired_virt_cyber", "VIRTUAL BRIDGES & 802.1Q VLANs", _fill_virt)
-    b.add_row(" ")
-    cards.append(b)
-
-    sel_obj = next((i for i in ifaces if i["name"] == sel_iface), filtered_ifaces[0] if filtered_ifaces else None)
-    if not sel_obj:
-        return cards
-
-    buf_all = panel.get_state("edit_buffer", {})
-    buf = copy.deepcopy(buf_all.get(sel_iface, {}) if isinstance(buf_all, dict) else {})
-    avail_profs = nm_cur.get("available_profiles", [])
-    sel_uuid = nm_cur.get("uuid", "")
-    is_wifi_if = (sel_obj["kind"] == "wifi")
-
-    def _eff(key: str, default=""):
-        return buf[key] if key in buf else nm_cur.get(key, default)
-
-    p_acts = [ActionBtn("+ NEW PROFILE", f"net:nm_prompt_new:{sel_iface}", tone="apply")]
-    if is_wifi_if:
-        p_acts.insert(0, ActionBtn("WIFI SCAN ->", "net:jump_wifi_tab", tone="select"))
-    pb = Box(f"INTERFACE NODE [{sel_iface.upper()}] // NM PROFILES & IPv4/IPv6 DRAFT", icon="\uf085", actions=p_acts)
-    pb.add_row(" ")
-    if not nm_cur.get("nm_running", True):
-        pb.add_row(f"  {Txt('NetworkManager offline.', role='fault')}")
-    elif not avail_profs:
-        pb.add_row(f"  {Txt('[PROFILES]──► NONE', role='attention')}", right_markup=ActionBtn("+ CREATE DEFAULT", f"net:nm_create:{sel_iface}", tone="apply"))
-    else:
-        for pr in avail_profs[:5]:
-            pu = pr["uuid"]
-            isl = bool(pr.get("active"))
-            is_ed = (pu == sel_uuid)
-            is_ac = (str(pr.get("autoconnect", "yes")).lower() == "yes")
-            updn = ActionBtn("DOWN", f"net:nm_down_prof:{sel_iface}:{pu}", tone="danger_soft") if isl else ActionBtn("UP", f"net:nm_up_prof:{sel_iface}:{pu}", tone="apply")
-            ac_val = "no" if is_ac else "yes"
-            pb.add_row(
-                f"  {InspectorCell(canvas.truncate_plain(pr['name'], 18), f'net:nm_sel_prof:{sel_iface}:{pu}', selected=is_ed, is_alive=isl)} {StateBadge(isl, 'LIVE', 'IDLE')}",
-                right_markup=f"{SelectPill('AUTO', f'net:nm_auto_prof:{sel_iface}:{pu}:{ac_val}', selected=is_ac)} {updn} {ActionBtn('x', f'net:nm_del_prof:{sel_iface}:{pu}', tone='danger_soft')}",
-            )
-
-        method = str(_eff("method", "auto"))
-        addrs = ", ".join(_eff("addresses", []) or []) or "auto"
-        gw = str(_eff("gateway", "") or "auto")
-        dns_s = ", ".join(_eff("dns", []) or []) or "auto"
-        pb.add_section(f"IPv4 PARAMETER BUFFER (DIRTY={len(buf)})")
-        m_pills = " ".join(SelectPill(lbl, f"net:buf:{sel_iface}:method:{k}", selected=(method == k)) for k, lbl in (("auto", "DHCP"), ("manual", "STATIC"), ("disabled", "OFF")))
-        pb.add_row(f"  {Txt('[METHOD]  ──►', role='intent')} {m_pills}", right_markup=f"{ActionBtn('RESET', f'net:nm_reset:{sel_iface}', tone='warn')} {ActionBtn('APPLY & UP', f'net:nm_apply:{sel_iface}:{sel_uuid}', tone='apply', active=True)}")
-        pb.add_row(f"  {Txt('[IPv4/GW] ──►', role='schema')} {Txt(addrs[:22], role='focus')}  {Txt('GW:' + gw, role='val')}", right_markup=f"{ActionBtn('EDIT IP..', f'net:prompt:{sel_iface}:addresses', tone='select')} {ActionBtn('EDIT GW..', f'net:prompt:{sel_iface}:gateway', tone='neutral')}")
-        pb.add_row(f"  {Txt('[DNS]     ──►', role='schema')} {Txt(dns_s[:30], role='val')}", right_markup=ActionBtn("EDIT DNS..", f"net:prompt:{sel_iface}:dns", tone="neutral"))
-
-        def _fill_l2_adv(bx: Box):
-            ign = (str(_eff("ignore_auto_dns", "no")).lower() == "yes")
-            nd = (str(_eff("never_default", "no")).lower() == "yes")
-            ign_v = "no" if ign else "yes"
-            nd_v = "no" if nd else "yes"
-            ip6_m = str(_eff("ip6_method", "auto"))
-            mtu = str(_eff("mtu", "auto") or "auto")
-            bx.add_row(f"  {Txt('├─ DNS/ROUTE:', role='structure')} {SelectPill('IGNORE DHCP DNS', f'net:buf:{sel_iface}:ignore_auto_dns:{ign_v}', selected=ign)} {SelectPill('SPLIT (NO DEF GW)', f'net:buf:{sel_iface}:never_default:{nd_v}', selected=nd)}")
-            ip6_p = " ".join(SelectPill(k.upper(), f"net:buf:{sel_iface}:ip6_method:{k}", selected=(ip6_m == k)) for k in ("auto", "manual", "disabled"))
-            bx.add_row(f"  {Txt('├─ IPv6 MODE:', role='structure')} {ip6_p}")
-            bx.add_row(f"  {Txt('└─ L2 MTU:', role='structure')}    {Txt(mtu, role='focus')}", right_markup=ActionBtn("SET MTU..", f"net:prompt:{sel_iface}:mtu", tone="neutral"))
-
-        pb.add_collapsible(panel, "wired_l2_cyber", "L2 / IPv6 / ROUTING OVERRIDES", _fill_l2_adv)
-    pb.add_row(" ")
-    cards.append(pb)
-    return cards
 
 
 def build_wired_tab_cards(
@@ -174,9 +48,6 @@ def build_wired_tab_cards(
 
     if filtered_ifaces and sel_iface not in [i["name"] for i in filtered_ifaces]:
         sel_iface = filtered_ifaces[0]["name"]
-
-    if get_cc_panel_style() == "cyberpunk":
-        return _build_wired_cyberpunk(panel, canvas, ifaces, filtered_ifaces, mon_iface, sel_iface, unit_mode, cur_filter, is_it, show_bar_spd)
 
     cards = []
 

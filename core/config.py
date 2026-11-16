@@ -311,22 +311,11 @@ def _update_toml_key_in_section(
 
 
 def get_cc_panel_style() -> str:
-    from core.state import STATE
-    st_val = STATE.get("control_center", "panel_style", None)
-    if st_val is not None:
-        return str(st_val).strip().lower()
-    return str(CONFIG.get("control_center", {}).get("panel_style", "standard")).strip().lower()
+    return "standard"
 
 
-def set_cc_panel_style(style: str) -> str:
-    from core.state import STATE
-    clean = str(style or "standard").strip().lower()
-    if clean not in ("standard", "cyberpunk"):
-        clean = "standard"
-    STATE.set("control_center", "panel_style", clean)
-    CONFIG.setdefault("control_center", {})["panel_style"] = clean
-    _update_toml_key_in_section("control_center", "panel_style", f'"{clean}"')
-    return clean
+def set_cc_panel_style(style: str = "standard") -> str:
+    return "standard"
 
 
 def get_hide_unavailable_settings() -> bool:

@@ -38,9 +38,9 @@ def _msg_err(text: str) -> None:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     helper_epilog = f"""{C_LAVENDER}Esempi d'uso:{C_RESET}
-  {C_GREEN}# Genera la vista standard o cyberpunk:{C_RESET}
-  nc-shot keyboard shortcuts -S standard -o /tmp/k_std.png
-  nc-shot network wired -S cyberpunk
+  {C_GREEN}# Genera la vista offscreen:{C_RESET}
+  nc-shot keyboard shortcuts -o /tmp/k_std.png
+  nc-shot network wired
 """
     parser = argparse.ArgumentParser(
         prog="nc-shot",
@@ -52,7 +52,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-h", "--help", action="store_true", help="Mostra questo messaggio di aiuto ed esce.")
     parser.add_argument("-s", "--section", type=str, default="", help="ID sezione Control Center o pannello popup (es. keyboard, network).")
     parser.add_argument("-t", "--subtab", type=str, default="", help="ID della subtab interna (es. shortcuts, wired).")
-    parser.add_argument("-S", "--style", choices=["standard", "cyberpunk", ""], default="", help="Forza lo stile del pannello (standard o cyberpunk).")
+    parser.add_argument("-S", "--style", choices=["standard", ""], default="", help="Forza lo stile del pannello.")
     parser.add_argument("-m", "--mode", choices=["settings", "popup"], default="settings", help="Modalità finestra: 'settings' o 'popup'.")
     parser.add_argument("-o", "--output", type=str, default="", help="Percorso del file PNG di output.")
     parser.add_argument("-e", "--expanded", action="store_true", help="Forza vista espansa (popup).")
@@ -173,7 +173,7 @@ def main() -> int:
         reload_locale(args.lang)
         
     prev_style = None
-    if args.style in ("standard", "cyberpunk"):
+    if args.style in ("standard",):
         prev_style = STATE.get("control_center", "panel_style", "standard")
         STATE.set("control_center", "panel_style", args.style)
 

@@ -61,10 +61,10 @@ name = "Cloudflare WAN"
 host = "1.1.1.1"
 
 [power.nut]
-enabled = false
-host = "127.0.0.1"
+enabled = true
+host = "10.99.99.1"
 port = 3493
-ups_name = ""
+ups_name = "ups0"
 poll_interval = 5
 low_pct = 20
 

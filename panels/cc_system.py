@@ -4,7 +4,7 @@ import os
 import re
 import time
 from core import probe
-from core.config import CONFIG, THEME, get_cc_panel_style
+from core.config import CONFIG, THEME
 from core.i18n import get_active_language
 from core.state import STATE
 from ui.canvas import Canvas
@@ -360,22 +360,6 @@ def _build_about_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_about_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    ab = _collect_about_data()
-    cpu = get_cpu_telemetry({})
-    ram = get_ram_telemetry()
-    cards = _feedback_cards()
-
-    b = Box("NIGHTCITY MAINFRAME // HARDWARE & KERNEL IDENTITY", icon="\uf129", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[HOST]  ══►', role='intent')} {Txt(ab['host'] + ' // ARCH LINUX', role='focus')}   {Txt('[UPTIME]', role='schema')} {Txt(ab['uptime'], role='vitality')}")
-    b.add_row(f"  {Txt('[KERNEL]══►', role='vitality')} {Txt(ab['kernel_rel'], role='focus')}  {Badge('DUAL-UKI', style='info')}")
-    b.add_row(f"  {Txt('[BOOT]  ══►', role='schema')} {Txt(ab['limine'], role='val')}  {Txt('[NIRI]', role='schema')} {Txt(ab['niri'], role='val')}")
-    b.add_row(f"  {Txt('[SILICON]═►', role='schema')} {Txt(cpu['model'], role='focus')}  {Txt('RAM: ' + str(ram['total']//(1024**3)) + ' GiB', role='intent')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 def _build_power_tools_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     scripts = _discover_nc_scripts()
@@ -393,25 +377,6 @@ def _build_power_tools_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
             f"{ActionBtn('Run Term', f'cc_sys:run_script:{sc_p}', tone='apply')} {ActionBtn('Args..', f'cc_sys:prompt_script:{sc_p}', tone='select')}",
         ])
     b.add_table(headers=["SCRIPT", "SCOPE", "PATH", "ACTIONS"], widths=[22, 8, 30, "flex"], rows=rows, aligns=["left", "left", "left", "right"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_power_tools_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    scripts = _discover_nc_scripts()
-    cards = _feedback_cards()
-    home = os.path.expanduser("~")
-    b = Box("NETRUNNER SBIN ARSENAL // NC-* EXECUTION DECK", icon="\uf0ad", elected=True)
-    b.add_row(" ")
-    for sc in scripts:
-        p = sc["path"]
-        sname = f"{sc['name']:<22}"
-        short_p = canvas.truncate_plain(p.replace(home, "~"), 30)
-        b.add_row(
-            f"  {Txt('┣━', role='structure')} {Badge(sc['scope'].upper(), style='info')} {Txt(sname, role='focus')} {Txt(short_p, role='schema')}",
-            right_markup=f"{ActionBtn('EXEC', f'cc_sys:run_script:{p}', tone='apply')} {ActionBtn('ARGS..', f'cc_sys:prompt_script:{p}', tone='select')}",
-        )
     b.add_row(" ")
     cards.append(b)
     return cards
@@ -472,51 +437,6 @@ def _build_resources_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_resources_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    cpu = get_cpu_telemetry({})
-    ram = get_ram_telemetry()
-    sort_by = str(STATE.get("system", "cc_proc_sort", "cpu"))
-    procs = get_process_list(sort_by=sort_by, group_by_app=False)[:8]
-    cards = _feedback_cards()
-
-    b = Box(
-        "COMPUTE TELEMETRY // 32-THREAD MATRIX & MEMORY BUS",
-        icon="\uf2db",
-        actions=[
-            SelectPill("CPU", "cc_sys:proc_sort:cpu", selected=(sort_by == "cpu")),
-            SelectPill("RAM", "cc_sys:proc_sort:ram", selected=(sort_by == "ram")),
-            ActionBtn("SYNC", "cc_sys:sync_disks", tone="apply"),
-        ],
-        elected=True,
-    )
-    b.add_row(" ")
-    c_pct, c_tmp = cpu["total_pct"], cpu["temp_c"]
-    r_ug, r_tg = ram["used"] / (1024 ** 3), ram["total"] / (1024 ** 3)
-    b.add_row(f"  {Txt('[CPU BUS]─►', role='vitality')} {ProgressBar(c_pct, width=18)} {Txt(f'{c_pct:4.1f}% {c_tmp:.0f}C', role='focus')}  {Sparkline(cpu['cores_pct'], max_items=32)}")
-    b.add_row(f"  {Txt('[RAM BUS]─►', role='intent')} {ProgressBar(ram['pct'], width=18)} {Txt(f'{r_ug:.1f}/{r_tg:.1f}G', role='focus')}  {Txt('SWP:', role='schema')} {ProgressBar(ram['sw_pct'], width=10)}")
-
-    def _build_sysctl(bx: Box):
-        swp = open("/proc/sys/vm/swappiness").read().strip() if os.path.exists("/proc/sys/vm/swappiness") else "60"
-        drt = open("/proc/sys/vm/dirty_ratio").read().strip() if os.path.exists("/proc/sys/vm/dirty_ratio") else "20"
-        bx.add_row(f"  {Txt('vm.swappiness:', role='schema')} {Txt(swp, role='focus')}", right_markup=" ".join(SelectPill(v, f"cc_sys:sysctl:vm.swappiness:{v}", selected=(swp == v)) for v in ("10", "60", "100")))
-        bx.add_row(f"  {Txt('vm.dirty_ratio:', role='schema')} {Txt(drt, role='focus')}", right_markup=" ".join(SelectPill(v, f"cc_sys:sysctl:vm.dirty_ratio:{v}", selected=(drt == v)) for v in ("5", "10", "20")))
-
-    b.add_collapsible(cc_panel, "sys_sysctl", "SYSCTL KERNEL VM TUNING", _build_sysctl)
-    b.add_section(f"PROCESS SCHEDULER ({sort_by.upper()})")
-    for p in procs:
-        pid = p["pid"]
-        p_cpu = p["cpu"]
-        cname = f"{p['comm'][:16]:<16}"
-        rss_s = f"{format_bytes_short(p['rss']):>6}"
-        b.add_row(
-            f"  {Txt(f'{pid:<6}', role='schema')} {Txt(cname, role='focus')} {Txt(f'{p_cpu:5.1f}%', role='vitality')} {Txt(rss_s, role='intent')}",
-            right_markup=f"{ActionBtn('TERM', f'cc_sys:term:{pid}', tone='warn')} {ActionBtn('KILL', f'cc_sys:kill:{pid}', tone='danger_soft')}",
-        )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def _build_storage_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     st = _collect_storage_data()
     cards = _feedback_cards()
@@ -557,96 +477,21 @@ def _build_storage_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_storage_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    st = _collect_storage_data()
-    cards = _feedback_cards()
-    b = Box("STORAGE FABRIC // NVME, LVM2 & NASUS 10.10.0.20", icon="\uf0a0", actions=[ActionBtn("MOUNT NAS", "cc_sys:mount_nas", tone="apply")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[NASUS]──►', role='intent')} {StateBadge(st['nas_mounted'], 'ONLINE /nas/*', 'OFFLINE')}")
-    b.add_row(f"  {Txt('[SMART]──►', role='schema')} {ActionBtn('NVME SMARTCTL', 'cc_sys:smart_check', tone='select')}", requires=["smartctl"])
-    b.add_section("BLOCK TOPOLOGY")
-    for d in st["blk"][:10]:
-        mp = d.get("mountpoint") or "unmounted"
-        dn = f"{d.get('name', ''):<14}"
-        ds = f"{d.get('size', ''):<7}"
-        df = f"{(d.get('fstype') or '-'):<10}"
-        b.add_row(f"  {Txt('┣━', role='structure')} {Txt(dn, role='focus')} {Txt(ds, role='val')} {Txt(df, role='schema')} {Txt(mp[:24], role='vitality' if d.get('mountpoint') else 'inactive')}")
-    if st["lvs"]:
-        def _build_lvm(bx: Box):
-            for r in st["lvs"][:8]:
-                if len(r) >= 3:
-                    bx.add_row(f"  {Txt('├─', role='structure')} {Txt(f'{r[0]}/{r[1]}', role='focus')} {Txt(r[2], role='val')} {Txt(r[3] if len(r) > 3 else '-', role='intent')}")
-        b.add_collapsible(cc_panel, "sys_lvm", f"LVM2 LOGICAL VOLUMES ({len(st['lvs'])})", _build_lvm)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_backup_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    bk = _collect_backup_data()
-    cards = _feedback_cards()
-
-    snap_box = Box("Snapshot LVM (nc-snapshot.sh) & Golden Image", icon="\uf1c0", actions=[ActionBtn("+ Create Snapshot", "cc_sys:snap_create", tone="apply", active=True)], elected=True)
-    snap_box.add_row(" ")
-    snap_box.add_kv("NAS Mount Gate", StateBadge(bk["nas_mounted"], "NAS MOUNTED", "NAS REQUIRED", on_tone="ok" if bk["nas_mounted"] else "warn"))
-    snap_box.add_kv("Golden Recovery", StateBadge(bk["duskcity_exists"], "DUSKCITY READY", "NOT DETECTED on ESP"))
-    snap_box.add_kv("LVM Snapshots", Txt(f"{len(bk['snaps'])} recorded in /var/lib/nightcity/snapshots", role="val"))
-    snap_box.add_row(" ")
-    cards.append(snap_box)
-
-    han_box = Box(
-        "Backup Configurazioni Torre di Hanoi (nc-nas-conf.sh)",
-        icon="\uf0c7",
-        actions=[ActionBtn("Run Hanoi Backup", "cc_sys:hanoi_backup", tone="select", active=bk["nas_mounted"])],
-    )
-    han_box.add_row(" ")
-    if not bk["nas_mounted"]:
-        han_box.add_row(f"  {Txt('NAS 10.10.0.20 not mounted. Mount NAS first before Golden Image / Hanoi backup.', role='attention')}",
-                        right_markup=ActionBtn("Mount NAS", "cc_sys:mount_nas", tone="apply"))
-    else:
-        han_box.add_row(f"  {Txt('NAS mounted and ready for Tower of Hanoi encrypted sync.', role='vitality')}")
-    if bk["hanoi_env"]:
-        for k, v in list(bk["hanoi_env"].items())[:4]:
-            han_box.add_kv(k, Txt(v, role="val"))
-    han_box.add_row(" ")
-    cards.append(han_box)
-    return cards
-
-
-def _build_backup_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    bk = _collect_backup_data()
-    cards = _feedback_cards()
-    b = Box("RESILIENCE VAULT // LVM SNAPSHOTS, DUSKCITY & HANOI NAS", icon="\uf1c0", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[NAS GATE] ──►', role='intent')} {StateBadge(bk['nas_mounted'], 'MOUNTED', 'UNMOUNTED')} {ActionBtn('MOUNT', 'cc_sys:mount_nas', tone='apply')}")
-    b.add_row(f"  {Txt('[DUSKCITY] ──►', role='schema')} {StateBadge(bk['duskcity_exists'], 'GOLDEN UKI OK', 'NO UKI')}   {Txt('SNAPS:', role='schema')} {Txt(str(len(bk['snaps'])), role='vitality')}")
-    b.add_row(f"  {Txt('[ACTIONS]  ──►', role='schema')} {ActionBtn('NC-SNAPSHOT', 'cc_sys:snap_create', tone='apply')}  {ActionBtn('HANOI SYNC', 'cc_sys:hanoi_backup', tone='select', active=bk['nas_mounted'])}")
-    if bk["hanoi_env"]:
-        def _build_hanoi_meta(bx: Box):
-            for k, v in list(bk["hanoi_env"].items())[:4]:
-                bx.add_kv(k, Txt(v, role="val"))
-        b.add_collapsible(cc_panel, "sys_hanoi_meta", "HANOI BACKUP STATE FILE", _build_hanoi_meta)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
 # PUBLIC ENTRY POINTS
 # =====================================================================
 
 def build_cc_system_cards(cc_panel, canvas: Canvas, active_sub: str = "about") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "power_tools":
-        return _build_power_tools_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_power_tools_standard(cc_panel, canvas, is_it)
+        return _build_power_tools_standard(cc_panel, canvas, is_it)
     if active_sub in ("resources", "cpu", "memory"):
-        return _build_resources_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_resources_standard(cc_panel, canvas, is_it)
+        return _build_resources_standard(cc_panel, canvas, is_it)
     if active_sub == "storage":
-        return _build_storage_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_storage_standard(cc_panel, canvas, is_it)
+        return _build_storage_standard(cc_panel, canvas, is_it)
     if active_sub == "backup":
-        return _build_backup_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_backup_standard(cc_panel, canvas, is_it)
-    return _build_about_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_about_standard(cc_panel, canvas, is_it)
+        return _build_backup_standard(cc_panel, canvas, is_it)
+    return _build_about_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_system_link(cc_panel, uri: str) -> bool:

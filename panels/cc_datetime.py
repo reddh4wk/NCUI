@@ -6,7 +6,6 @@ import re
 import shlex
 import time
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, SelectPill, StateBadge, Txt
@@ -113,19 +112,6 @@ def _build_time_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_time_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_timedate()
-    cards = _feedback_cards()
-    now_s = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    b = Box("CHRONO DAEMON // TIMESYNCD, NTP & RTC MATRIX", icon="\uf017", actions=[ActionBtn("SYNC NOW", "cc_dt:sync_now", tone="apply")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[SYS CLOCK]──►', role='vitality')} {Txt(now_s, role='focus')}  {StateBadge(d['ntp_sync'], 'LOCKED', 'DRIFT')}")
-    b.add_row(f"  {Txt('[NTP POOL] ──►', role='intent')} {SelectPill('AUTO', 'cc_dt:ntp:true', selected=d['ntp'])} {SelectPill('MANUAL', 'cc_dt:ntp:false', selected=not d['ntp'])}  {Txt(d['ntp_srv'], role='schema')}", requires=["timedatectl"])
-    b.add_row(f"  {Txt('[HW RTC]   ──►', role='schema')} {SelectPill('UTC', 'cc_dt:rtc:0', selected=not d['rtc_local'])} {SelectPill('LOCAL', 'cc_dt:rtc:1', selected=d['rtc_local'])}  {ActionBtn('EDIT TIMESYNCD', 'cc_dt:ntp_term', tone='select')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 def _build_timezone_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     d = _probe_timedate()
@@ -147,56 +133,13 @@ def _build_timezone_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_timezone_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_timedate()
-    cards = _feedback_cards()
-    b = Box("GEOTEMPORAL GRID // ZONEINFO SELECTOR", icon="\uf0ac", actions=[ActionBtn("CUSTOM TZ..", "cc_dt:prompt_tz", tone="select")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[ACTIVE ZONE]─►', role='vitality')} {Txt(d['tz'], role='focus')}")
-    b.add_row(f"  {Txt('[PRESETS 1]  ─►', role='schema')} " + " ".join(SelectPill(tz, f"cc_dt:set_tz:{tz}", selected=(d["tz"] == tz)) for tz in _TZ_PRESETS[:3]), requires=["timedatectl"])
-    b.add_row(f"  {Txt('[PRESETS 2]  ─►', role='schema')} " + " ".join(SelectPill(tz, f"cc_dt:set_tz:{tz}", selected=(d["tz"] == tz)) for tz in _TZ_PRESETS[3:]), requires=["timedatectl"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_region_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_timedate()
-    cards = _feedback_cards()
-    b = Box("Impostazioni Regionali & Formato Barra" if is_it else "Region Settings & Bar Clock Format", icon="\uf1ab", elected=True)
-    b.add_row(" ")
-    b.add_kv("LANG (System)", Txt(d["lang"], role="focus"), right_markup=f"{SelectPill('en_US.UTF-8', 'cc_dt:lang:en_US.UTF-8', selected=('en_US' in d['lang']))} {SelectPill('it_IT.UTF-8', 'cc_dt:lang:it_IT.UTF-8', selected=('it_IT' in d['lang']))}", requires=["localectl"])
-    b.add_kv("LC_TIME (24h/12h)", Txt(d["lc_time"], role="val"), right_markup=f"{SelectPill('24h (it_IT)', 'cc_dt:lctime:it_IT.UTF-8', selected=('it_IT' in d['lc_time']))} {SelectPill('POSIX/C', 'cc_dt:lctime:C.UTF-8', selected=(d['lc_time'].startswith('C')))}", requires=["localectl"])
-    b.add_kv("Waybar Clock Format", Txt(d["bar_fmt"], role="intent"))
-    fmt_pills = " ".join(SelectPill(lbl, f"cc_dt:barfmt:{i}", selected=(d["bar_fmt"] == fmt)) for i, (lbl, fmt) in enumerate(_CLOCK_FMTS))
-    b.add_kv("Bar Format Presets", fmt_pills)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_region_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_timedate()
-    cards = _feedback_cards()
-    b = Box("LOCALE & WAYBAR CHRONO FORMATTER", icon="\uf1ab", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[LANG]    ──►', role='focus')} {Txt(d['lang'], role='val')}  {SelectPill('en_US', 'cc_dt:lang:en_US.UTF-8', selected=('en_US' in d['lang']))} {SelectPill('it_IT', 'cc_dt:lang:it_IT.UTF-8', selected=('it_IT' in d['lang']))}", requires=["localectl"])
-    b.add_row(f"  {Txt('[LC_TIME] ──►', role='schema')} {Txt(d['lc_time'], role='val')}  {SelectPill('24H', 'cc_dt:lctime:it_IT.UTF-8', selected=('it_IT' in d['lc_time']))} {SelectPill('C.UTF8', 'cc_dt:lctime:C.UTF-8', selected=(d['lc_time'].startswith('C')))}", requires=["localectl"])
-    b.add_row(f"  {Txt('[WAYBAR]  ──►', role='intent')} {Txt(d['bar_fmt'], role='vitality')}")
-    b.add_row(f"  {Txt('[FORMAT]  ──►', role='schema')} " + " ".join(SelectPill(lbl, f"cc_dt:barfmt:{i}", selected=(d["bar_fmt"] == fmt)) for i, (lbl, fmt) in enumerate(_CLOCK_FMTS)))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_datetime_cards(cc_panel, canvas: Canvas, active_sub: str = "time") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "timezone":
-        return _build_timezone_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_timezone_standard(cc_panel, canvas, is_it)
+        return _build_timezone_standard(cc_panel, canvas, is_it)
     if active_sub == "region":
-        return _build_region_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_region_standard(cc_panel, canvas, is_it)
-    return _build_time_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_time_standard(cc_panel, canvas, is_it)
+        return _build_region_standard(cc_panel, canvas, is_it)
+    return _build_time_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_datetime_link(cc_panel, uri: str) -> bool:

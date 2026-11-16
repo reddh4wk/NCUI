@@ -7,7 +7,6 @@ import os
 import pwd
 import shlex
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, SelectPill, StateBadge, Txt
@@ -121,19 +120,6 @@ def _build_profile_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_profile_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    p = _probe_profile()
-    cards = _feedback_cards()
-    b = Box("OPERATOR IDENTITY // UID, SHELL & CREDENTIAL VAULT", icon="\uf007", actions=[ActionBtn("PASSWD TERM", "cc_acc:passwd", tone="warn")], elected=True)
-    b.add_row(" ")
-    uid_s = f"UID:{p['uid']} GID:{p['gid']}"
-    b.add_row(f"  {Txt('[OPERATOR]──►', role='vitality')} {Txt(p['user'], role='focus')}  {Txt(uid_s, role='schema')}")
-    b.add_row(f"  {Txt('[HOME]    ──►', role='schema')} {Txt(p['home'], role='val')}")
-    b.add_row(f"  {Txt('[SHELL]   ──►', role='intent')} {Txt(p['shell'], role='focus')}  " + " ".join(SelectPill(os.path.basename(sh), f"cc_acc:chsh:{sh}", selected=(p["shell"] == sh)) for sh in p["shells"]), requires=["chsh"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 def _build_groups_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     p = _probe_profile()
@@ -157,87 +143,13 @@ def _build_groups_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_groups_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    p = _probe_profile()
-    grps = _probe_groups(p["user"])
-    cards = _feedback_cards()
-    b = Box(f"CLEARANCE ACLs // POSIX GROUPS FOR {p['user'].upper()}", icon="\uf0c0", elected=True)
-    b.add_row(" ")
-    rows = []
-    for g in grps:
-        gn = g["name"]
-        rows.append([
-            f"{Txt('┣━', role='structure')} {Txt(gn, role='focus')}",
-            Txt(g["desc"][:24], role="schema"),
-            StateBadge(g["member"], "GRANTED", "NONE" if g["exists"] else "NO GRP"),
-            ActionBtn("REVOKE", f"cc_acc:gdel:{gn}", tone="warn") if g["member"] else ActionBtn("GRANT", f"cc_acc:gadd:{gn}", tone="apply", active=g["exists"]),
-        ])
-    b.add_table(headers=[], widths=[16, 26, 14, "flex"], rows=rows, aligns=["left", "left", "left", "right"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_sessions_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    sess = _probe_sessions()
-    cur_sid = os.environ.get("XDG_SESSION_ID", "")
-    cards = _feedback_cards()
-    b = Box("Sessioni Attive (systemd-logind)" if is_it else "Active Login Sessions (loginctl)", icon="\uf108", elected=True)
-    b.add_row(" ")
-    if sess:
-        rows = []
-        for s in sess:
-            sid = s["id"]
-            is_cur = (sid == cur_sid)
-            rows.append([
-                Txt(sid + (" *" if is_cur else ""), role="vitality" if is_cur else "focus"),
-                Txt(s["user"], role="val"),
-                Txt(s["seat"], role="schema"),
-                Txt(s["tty"], role="intent"),
-                ActionBtn("Terminate", f"cc_acc:kill_sess:{sid}", tone="danger_soft", active=not is_cur),
-            ])
-        b.add_table(headers=["SESSION", "USER", "SEAT", "TTY", "ACTION"], widths=[12, 16, 14, 14, "flex"], rows=rows, aligns=["left", "left", "left", "left", "right"])
-    else:
-        b.add_row(f"  {Txt('No logind sessions exposed in current environment (headless / sandbox).', role='schema')}")
-        b.add_kv("Current PID / TTY", Txt(f"PID {os.getpid()} | {os.environ.get('XDG_SESSION_TYPE', 'tty')}", role="val"))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_sessions_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    sess = _probe_sessions()
-    cur_sid = os.environ.get("XDG_SESSION_ID", "")
-    cards = _feedback_cards()
-    b = Box("SEAT & TTY MATRIX // LOGINCTL ACTIVE SESSIONS", icon="\uf108", elected=True)
-    b.add_row(" ")
-    if sess:
-        rows = []
-        for s in sess:
-            sid = s["id"]
-            is_cur = (sid == cur_sid)
-            rows.append([
-                f"{Txt('┣━', role='structure')} {Txt(sid + (' [SELF]' if is_cur else ''), role='vitality' if is_cur else 'focus')}",
-                Txt(s["user"], role="val"),
-                Txt(f"{s['seat']} ({s['tty']})", role="schema"),
-                ActionBtn("TERM", f"cc_acc:kill_sess:{sid}", tone="danger_soft", active=not is_cur),
-            ])
-        b.add_table(headers=[], widths=[18, 14, 24, "flex"], rows=rows, aligns=["left", "left", "left", "right"])
-    else:
-        b.add_row(f"  {Txt('[LOGIND]──►', role='schema')} {Txt('NO BUS SESSIONS VISIBLE', role='inactive')}  {Txt(f'PID:{os.getpid()}', role='focus')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_accounts_cards(cc_panel, canvas: Canvas, active_sub: str = "profile") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "groups":
-        return _build_groups_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_groups_standard(cc_panel, canvas, is_it)
+        return _build_groups_standard(cc_panel, canvas, is_it)
     if active_sub == "sessions":
-        return _build_sessions_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_sessions_standard(cc_panel, canvas, is_it)
-    return _build_profile_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_profile_standard(cc_panel, canvas, is_it)
+        return _build_sessions_standard(cc_panel, canvas, is_it)
+    return _build_profile_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_accounts_link(cc_panel, uri: str) -> bool:

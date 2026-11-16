@@ -4,7 +4,7 @@ import os
 import re
 import time
 from core import probe
-from core.config import CONFIG, _update_toml_key_in_section, get_cc_panel_style
+from core.config import CONFIG, _update_toml_key_in_section
 from core.i18n import get_active_language
 from core.state import STATE
 from panels.display import resolve_script_path
@@ -227,32 +227,6 @@ def _build_floating_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_floating_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    floating_ids = get_niri_floating_rules()
-    active_wins = get_niri_active_windows()
-    cards = _feedback_cards()
-
-    b = Box(
-        "COMPOSITOR WINDOW-RULE FILTER // FLOATING MATRIX",
-        icon="\uf2d2",
-        actions=[ActionBtn("+ INJECT APP-ID", "cc_flt:prompt_add", tone="apply", active=True)],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[KDL RULE ENGINE] ──►', role='intent')} {Badge(f'{len(floating_ids)} FLOATING', style='warn')}  {ActionBtn('LAUNCH FLOATER TUI', 'cc_flt:open_tui', tone='select')}")
-    b.add_section("CONFIGURED FLOATING MATCHERS")
-    for fid in floating_ids:
-        b.add_row(f"  {Txt('┣━ [FLOAT]─►', role='attention')} {Txt(fid, role='focus')}", right_markup=ActionBtn("REMOVE", f"cc_flt:toggle:{fid}", tone="danger_soft"))
-    if active_wins:
-        b.add_section("LIVE WAYLAND CLIENTS")
-        for w in active_wins[:8]:
-            aid = w["app_id"]
-            is_flt = aid in floating_ids
-            b.add_row(f"  {Txt('╠═', role='structure')} {StateBadge(is_flt, 'FLOAT', 'TILED', on_tone='warn')} {Txt(aid, role='focus')}", right_markup=ActionBtn("TOGGLE", f"cc_flt:toggle:{aid}", tone="select"))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 # =====================================================================
 # SUBTAB 2: DEFAULT APPS (MIME)
@@ -286,124 +260,17 @@ def _build_mime_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_mime_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    defs = _query_mime_defaults()
-    cards = _feedback_cards()
-    b = Box("XDG-MIME DISPATCHER SWITCHBOARD // DEFAULT HANDLERS", icon="\uf1b2", elected=True)
-    b.add_row(" ")
-    for key, lbl, mime, cands in MIME_SLOTS:
-        cur = defs.get(key, "unset").replace(".desktop", "")
-        if mime == "nc_terminal":
-            btns = " ".join(SelectPill(c.upper(), f"cc_apps:set_term:{c}", selected=(cur == c)) for c in cands)
-            b.add_row(f"  {Txt(f'[{lbl:<16}]─►', role='schema')} {btns}")
-        else:
-            b.add_row(f"  {Txt(f'[{lbl:<16}]─►', role='schema')} {Txt(cur, role='vitality' if cur != 'unset' else 'inactive')}",
-                      right_markup=ActionBtn("ASSIGN..", f"cc_apps:prompt_mime:{mime}", tone="select"))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-# =====================================================================
-# SUBTAB 3: AUTOSTART & SYSTEMD SERVICES
-# =====================================================================
-
-def _build_autostart_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    spawns = _read_niri_spawns()
-    user_svcs = _read_systemd_services(user=True)
-    sys_svcs = _read_systemd_services(user=False)
-    cards = _feedback_cards()
-
-    sp_box = Box(
-        f"Niri spawn-at-startup ({len(spawns)})",
-        icon="\uf135",
-        actions=[ActionBtn("+ Add Startup..", "cc_apps:prompt_spawn", tone="apply", active=True)],
-        elected=True,
-    )
-    sp_box.add_row(" ")
-    if not spawns:
-        sp_box.add_row(f"  {Txt('No spawn-at-startup rules found.', role='inactive')}")
-    else:
-        for sp in spawns[:12]:
-            sp_idx = sp["idx"]
-            st = StateBadge(not sp["disabled"], "ACTIVE", "DISABLED")
-            t_btn = ActionBtn("Disable" if not sp["disabled"] else "Enable", f"cc_apps:toggle_spawn:{sp_idx}", tone="warn" if not sp["disabled"] else "apply")
-            sp_box.add_row(
-                f"  {st}  {Txt(canvas.truncate_plain(sp['cmd'], 42), role='focus' if not sp['disabled'] else 'inactive')}",
-                right_markup=f"{t_btn} {ActionBtn('x', f'cc_apps:del_spawn:{sp_idx}', tone='danger_soft')}",
-            )
-    sp_box.add_row(" ")
-    cards.append(sp_box)
-
-    sv_box = Box(f"Servizi Utente (systemctl --user) [{len(user_svcs)}]" if is_it else f"User Services (systemctl --user) [{len(user_svcs)}]", icon="\uf085")
-    sv_box.add_row(" ")
-    if not user_svcs:
-        sv_box.add_row(f"  {Txt('No user systemd units active (or dbus unavailable).', role='inactive')}")
-    else:
-        rows = []
-        for sv in user_svcs[:10]:
-            is_act = sv["active"] == "active"
-            u_n = sv["unit"]
-            rows.append([
-                Txt(u_n[:28], role="focus" if is_act else "inactive"),
-                StateBadge(is_act, sv["sub"].upper(), sv["active"].upper()),
-                f"{ActionBtn('Restart', f'cc_apps:svc_user:restart:{u_n}', tone='select')} {ActionBtn('Stop', f'cc_apps:svc_user:stop:{u_n}', tone='danger_soft')}",
-            ])
-        sv_box.add_table(headers=["UNIT", "STATE", "ACTIONS"], widths=[30, 14, "flex"], rows=rows, aligns=["left", "left", "right"])
-
-    def _build_sys_ro(b: Box):
-        if not sys_svcs:
-            b.add_row(f"  {Txt('No system services queried.', role='inactive')}")
-        else:
-            s_rows = [[Txt(s["unit"][:26], role="val"), StateBadge(s["active"] == "active", s["sub"].upper(), "FAILED", on_tone="ok"), Txt(canvas.truncate_plain(s["desc"], 28), role="schema")] for s in sys_svcs[:12]]
-            b.add_table(headers=["SYSTEM UNIT", "STATE", "DESCRIPTION"], widths=[28, 12, "flex"], rows=s_rows)
-
-    sv_box.add_collapsible(cc_panel, "apps_sys_svcs", f"Ispettore Servizi di Sistema (Read-Only) [{len(sys_svcs)}]" if is_it else f"System Services Inspector (Read-Only) [{len(sys_svcs)}]", _build_sys_ro)
-    sv_box.add_row(" ")
-    cards.append(sv_box)
-    return cards
-
-
-def _build_autostart_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    spawns = _read_niri_spawns()
-    user_svcs = _read_systemd_services(user=True)
-    cards = _feedback_cards()
-
-    b = Box(
-        "SESSION INIT SEQUENCER // NIRI SPAWN & SYSTEMD DAEMONS",
-        icon="\uf135",
-        actions=[ActionBtn("+ INJECT SPAWN", "cc_apps:prompt_spawn", tone="apply", active=True)],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[STAGE 1: NIRI SPAWN-AT-STARTUP]', role='intent')}")
-    for sp in spawns[:10]:
-        sp_idx = sp["idx"]
-        st = StateBadge(not sp["disabled"], "RUN", "MASK")
-        b.add_row(f"  {Txt('┣━►', role='structure')} {st} {Txt(canvas.truncate_plain(sp['cmd'], 42), role='focus' if not sp['disabled'] else 'inactive')}",
-                  right_markup=f"{ActionBtn('TOGGLE', f'cc_apps:toggle_spawn:{sp_idx}', tone='neutral')} {ActionBtn('DEL', f'cc_apps:del_spawn:{sp_idx}', tone='danger_soft')}")
-    b.add_section(f"STAGE 2: SYSTEMD USER BUS ({len(user_svcs)} UNITS)")
-    for sv in user_svcs[:6]:
-        u_n = sv["unit"]
-        b.add_row(f"  {Txt('╠═', role='structure')} {StateBadge(sv['active']=='active', sv['sub'].upper(), 'DOWN')} {Txt(u_n[:32], role='val')}",
-                  right_markup=f"{ActionBtn('RESTART', f'cc_apps:svc_user:restart:{u_n}', tone='select')} {ActionBtn('STOP', f'cc_apps:svc_user:stop:{u_n}', tone='danger_soft')}")
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
 # PUBLIC ENTRY POINTS
 # =====================================================================
 
 def build_cc_apps_cards(cc_panel, canvas: Canvas, active_sub: str = "floating") -> list:
     is_it = (get_active_language() == "it")
-    style = get_cc_panel_style()
     if active_sub == "mime":
-        return _build_mime_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_mime_standard(cc_panel, canvas, is_it)
+        return _build_mime_standard(cc_panel, canvas, is_it)
     if active_sub == "autostart":
-        return _build_autostart_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_autostart_standard(cc_panel, canvas, is_it)
-    return _build_floating_cyberpunk(cc_panel, canvas, is_it) if style == "cyberpunk" else _build_floating_standard(cc_panel, canvas, is_it)
+        return _build_autostart_standard(cc_panel, canvas, is_it)
+    return _build_floating_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_apps_link(cc_panel, uri: str) -> bool:

@@ -5,7 +5,6 @@ import glob
 import os
 import shlex
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, StateBadge, Txt
@@ -146,24 +145,6 @@ def _build_tpm_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_tpm_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_tpm_luks()
-    cards = _feedback_cards()
-    b = Box("HARDWARE ROOT OF TRUST // TPM2 PCR, SECURE BOOT & LUKS2", icon="\uf084", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[TPM 2.0]  ──►', role='vitality')} {StateBadge(d['tpm'], 'ONLINE /dev/tpmrm0', 'ABSENT')}   {Txt('UKI IMAGES:', role='schema')} {Txt(str(len(d['ukis'])), role='focus')}")
-    b.add_row(f"  {Txt('[SEC-BOOT] ──►', role='intent')} {StateBadge(d['sb_enabled'], 'ENFORCING', 'DISABLED')}  {ActionBtn('SBCTL VERIFY', 'cc_auth:sbctl_verify', tone='apply')}", requires=["sbctl"])
-    luks_s = ", ".join(dev for dev, _ in d["luks_devs"]) or "crypt-scan-needed"
-    b.add_row(f"  {Txt('[LUKS2]    ──►', role='schema')} {Txt(luks_s, role='focus')}", right_markup=f"{ActionBtn('LUKSDUMP', 'cc_auth:luks_term', tone='select')} {ActionBtn('PCR ENROLL', 'cc_auth:tpm_enroll', tone='warn')}", requires=["cryptsetup"])
-    if d["sb_lines"]:
-        def _fill_sb(bx: Box):
-            for ln in d["sb_lines"]:
-                bx.add_row(f"  {Txt('├─', role='structure')} {Txt(ln, role='schema')}")
-        b.add_collapsible(cc_panel, "auth_sbctl", "SBCTL TELEMETRY", _fill_sb)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 def _build_keys_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     d = _probe_keys()
@@ -205,79 +186,13 @@ def _build_keys_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_keys_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_keys()
-    cards = _feedback_cards()
-    b = Box("CRYPTOGRAPHIC KEYVAULT // SSH-AGENT & GNUPG", icon="\uf084", actions=[ActionBtn("SSH-ADD TERM", "cc_auth:ssh_add", tone="apply")], elected=True)
-    b.add_row(" ")
-    n_ag = len(d["agent"])
-    b.add_row(f"  {Txt('[SSH-AGENT]──►', role='vitality')} {Txt(f'{n_ag} LOADED', role='focus')}   {Txt('PUBFILES:', role='schema')} {Txt(str(len(d['pubs'])), role='intent')}")
-    b.add_section("PUBLIC KEYS (~/.ssh/*.pub)")
-    for pk in d["pubs"][:8]:
-        fn = pk["name"]
-        b.add_row(
-            f"  {Txt('┣━', role='structure')} {Badge(pk['type'][:11], style='info')} {Txt(f'{fn:<20}', role='focus')} {Txt(pk['comment'][:22], role='schema')}",
-            right_markup=ActionBtn("COPY PUB", f"cc_auth:copy_pub:{fn}", tone="select"),
-        )
-    if not d["pubs"]:
-        b.add_row(f"  {Txt('No ~/.ssh/*.pub found.', role='inactive')}")
-
-    def _fill_gpg(bx: Box):
-        for ln in d["gpg"][:8]:
-            bx.add_row(f"  {Txt('├─', role='structure')} {Txt(ln, role='val')}")
-        if not d["gpg"]:
-            bx.add_row(f"  {Txt('No secret keys found.', role='schema')}")
-    b.add_collapsible(cc_panel, "auth_gpg_keys", f"GNUPG SECRET KEYRING ({len(d['gpg'])} lines)", _fill_gpg)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_polkit_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_polkit()
-    cards = _feedback_cards()
-    b = Box(
-        "Polkit Agent, Sudoers & PAM / FIDO2",
-        icon="\uf132",
-        actions=[ActionBtn("Check Sudo (Term)", "cc_auth:sudo_term", tone="select")],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_kv("Polkit Agent", StateBadge(bool(d["agents"]), "RUNNING", "NONE DETECTED"), right_markup=Txt(canvas.truncate_plain(d["agents"][0], 34), role="schema") if d["agents"] else "")
-    b.add_kv("Privilege Group", StateBadge(d["in_wheel"], "wheel ACTIVE", "NO wheel"))
-    b.add_kv("PAM FIDO2 / U2F", StateBadge(d["fido_mod"], "pam_u2f INSTALLED", "pam_u2f MISSING"), right_markup=Badge("u2f_keys OK" if d["fido_keys"] else "no u2f_keys", style="ok" if d["fido_keys"] else "secondary"))
-    b.add_kv(
-        "USBGuard Daemon",
-        StateBadge(d["usb_active"], "ACTIVE", "INACTIVE"),
-        right_markup=ActionBtn("USBGuard Helper (Term)", "cc_auth:usbguard_term", tone="apply"),
-        requires=["usbguard"],
-    )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-def _build_polkit_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    d = _probe_polkit()
-    cards = _feedback_cards()
-    b = Box("PRIVILEGE MATRIX // POLKIT, WHEEL & PAM/FIDO2", icon="\uf132", actions=[ActionBtn("SUDO CHECK", "cc_auth:sudo_term", tone="select")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[POLKIT]   ──►', role='vitality')} {StateBadge(bool(d['agents']), 'AGENT ACTIVE', 'OFFLINE')}  {Txt(canvas.truncate_plain(d['agents'][0], 26) if d['agents'] else '', role='schema')}")
-    b.add_row(f"  {Txt('[WHEEL]    ──►', role='intent')} {StateBadge(d['in_wheel'], 'MEMBER', 'DENIED')}   {Txt('[PAM U2F]', role='schema')} {StateBadge(d['fido_mod'], 'PAM_U2F OK', 'NO PAM_U2F')}")
-    b.add_row(f"  {Txt('[USBGUARD] ──►', role='schema')} {StateBadge(d['usb_active'], 'ENFORCING', 'STOPPED')}  {ActionBtn('USBGUARD HELPER', 'cc_auth:usbguard_term', tone='apply')}", requires=["usbguard"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_auth_cards(cc_panel, canvas: Canvas, active_sub: str = "tpm") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "keys":
-        return _build_keys_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_keys_standard(cc_panel, canvas, is_it)
+        return _build_keys_standard(cc_panel, canvas, is_it)
     if active_sub == "polkit":
-        return _build_polkit_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_polkit_standard(cc_panel, canvas, is_it)
-    return _build_tpm_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_tpm_standard(cc_panel, canvas, is_it)
+        return _build_polkit_standard(cc_panel, canvas, is_it)
+    return _build_tpm_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_auth_link(cc_panel, uri: str) -> bool:

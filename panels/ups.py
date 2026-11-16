@@ -9,6 +9,25 @@ from panels.base import BasePanel
 from panels.cc_power import _collect_ups_data
 
 
+def _battery_glyph(charge: int | None) -> str:
+    if charge is None:
+        return "█"
+    if charge <= 10:
+        return "▂"
+    elif charge <= 25:
+        return "▃"
+    elif charge <= 40:
+        return "▄"
+    elif charge <= 55:
+        return "▅"
+    elif charge <= 70:
+        return "▆"
+    elif charge <= 85:
+        return "▇"
+    else:
+        return "█"
+
+
 class Panel(BasePanel):
     id = "ups"
     icon = "\uf240"
@@ -28,18 +47,17 @@ class Panel(BasePanel):
             return {"text": "", "tooltip": "", "class": "module-nc-empty"}
         if not u["reachable"]:
             return {
-                "text": "[\u2591\u2591\u2591\u2591\u2591] ERR",
+                "text": "▂ ERR",
                 "tooltip": t("ups.unreachable_hint", "NUT server or UPS unreachable."),
                 "class": "module-nc offline",
             }
 
         charge = u["charge"]
+        glyph = _battery_glyph(charge)
         if charge is not None:
-            filled = max(0, min(5, int(round(charge / 20.0))))
-            bar_str = ("\u2588" * filled) + ("\u2591" * (5 - filled))
-            pill_txt = f"[{bar_str}] {charge}%"
+            pill_txt = f"{glyph} {charge}%"
         else:
-            pill_txt = f"[\u2588\u2588\u2588\u2588\u2588] {u['status_raw'] or 'OL'}"
+            pill_txt = f"{glyph} {u['status_raw'] or 'OL'}"
 
         tip_parts = [u["model"] or u["ups_name"] or "UPS", u["status_text"]]
         if u["runtime_str"]:

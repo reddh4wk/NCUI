@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import time
 import uuid
-from core.config import CONFIG_DIR, get_cc_panel_style
+from core.config import CONFIG_DIR
 from core.state import STATE
 from core.i18n import get_active_language
 from core import probe, log
@@ -698,73 +698,6 @@ def import_ics_file(src_path: str) -> tuple[bool, str]:
         return False, f"ICS import failed: {e}"
 
 
-def _build_calendar_cyberpunk(cc_panel, canvas: Canvas, active_sub: str, is_it: bool, init_ok: bool, mode: str, stats: dict, status_msg: str) -> list:
-    cards = []
-    if active_sub == "google":
-        oauth_ok = is_google_authenticated()
-        has_gcal = probe.has_bin("gcalcli")
-        g_user = str(STATE.get("calendar", "gcal_user", "") or "")
-        g_cid = str(STATE.get("calendar", "gcal_client_id", "") or "")
-        g_csec = str(STATE.get("calendar", "gcal_client_secret", "") or "")
-        last_sync = float(STATE.get("calendar", "last_sync_ts", 0.0) or 0.0)
-        sync_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_sync)) if last_sync > 0 else "NEVER"
-
-        b = Box("OAUTH2 TELEMETRY // GCALCLI PIPELINE & CLOUD AUTH", icon="\uf1a0", actions=[StateBadge(oauth_ok, "LINKED", "UNAUTH", on_tone="ok")], elected=oauth_ok)
-        b.add_row(" ")
-        b.add_row(f"  {Txt('[GCALCLI]   ──►', role='vitality')} {StateBadge(has_gcal, 'INSTALLED', 'MISSING')}  {Txt('[TOKEN]', role='schema')} {StateBadge(oauth_ok, 'VALID ~/.gcalcli_oauth', 'NONE')}", requires=["gcalcli"])
-        b.add_row(f"  {Txt('[LAST SYNC] ──►', role='intent')} {Txt(sync_str, role='focus')}", right_markup=ActionBtn("FORCE SYNC", "cc_cal:sync_now", tone="apply"))
-        b.add_section("OAUTH2 CREDENTIAL MATRIX")
-        cid_disp = (g_cid[:18] + "..." + g_cid[-10:]) if len(g_cid) > 32 else (g_cid or "unset")
-        csec_disp = ("*" * 12) if g_csec else "unset"
-        b.add_row(f"  {Txt('├─ EMAIL:', role='schema')}  {Txt(g_user or 'unset', role='focus')}", right_markup=ActionBtn("EDIT EMAIL", "cc_cal:prompt_user", tone="select"))
-        b.add_row(f"  {Txt('├─ CID:', role='schema')}    {Txt(cid_disp, role='val')}", right_markup=ActionBtn("SET CID", "cc_cal:prompt_cid", tone="select"))
-        b.add_row(f"  {Txt('└─ SECRET:', role='schema')} {Txt(csec_disp, role='val')}", right_markup=ActionBtn("SET SECRET", "cc_cal:prompt_csec", tone="select"))
-        b.add_row(f"  {Txt('[AUTH FLOW] ──►', role='schema')} {ActionBtn('START OAUTH2 LOGIN', 'cc_cal:oauth_login', tone='apply')}  {ActionBtn('RESET TOKEN', 'cc_cal:oauth_reset', tone='danger_soft')}")
-
-        def _fill_guide(bx: Box):
-            bx.add_row(f"  {Txt('1. Create Google Cloud project -> console.cloud.google.com/projectcreate', role='intent')}")
-            bx.add_row(f"  {Txt('2. Enable Google Calendar JSON API -> calendar-json.googleapis.com', role='intent')}")
-            bx.add_row(f"  {Txt('3. OAuth Consent External (Test Users) + Desktop App Client ID/Secret', role='intent')}")
-
-        b.add_collapsible(cc_panel, "cal_oauth_guide", "GOOGLE CLOUD SETUP PROTOCOL (3 STEPS)", _fill_guide)
-        b.add_row(" ")
-        cards.append(b)
-        return cards
-
-    if active_sub == "io":
-        b = Box("ARCHIVE I/O BRIDGE // RFC5545 ICS & SQLITE SNAPSHOT", icon="\uf56e", actions=[Badge(f"{stats['total']} EVENTS", style="accent")], elected=True)
-        b.add_row(" ")
-        if status_msg:
-            b.add_row(f"  {Txt('[STATUS]──►', role='vitality')} {Txt(status_msg, role='focus')}")
-        b.add_row(f"  {Txt('[EXPORT .ICS] ──►', role='schema')} {Txt('RFC 5545 Standard Calendar', role='val')}", right_markup=ActionBtn("EXPORT .ICS", "cc_cal:export_ics", tone="select"))
-        b.add_row(f"  {Txt('[EXPORT .DB]  ──►', role='schema')} {Txt('Binary SQLite3 Snapshot', role='val')}", right_markup=ActionBtn("EXPORT .DB", "cc_cal:export_db", tone="neutral"))
-        b.add_row(f"  {Txt('[IMPORT .ICS] ──►', role='schema')} {Txt('Merge external .ics appointments', role='val')}", right_markup=ActionBtn("IMPORT .ICS", "cc_cal:import_ics", tone="apply"))
-        b.add_row(f"  {Txt('[IMPORT .DB]  ──►', role='schema')} {Txt('Restore / merge .db backup', role='val')}", right_markup=ActionBtn("IMPORT .DB", "cc_cal:import_db", tone="neutral"))
-        b.add_row(" ")
-        cards.append(b)
-        return cards
-
-    modes_cyber = [
-        ("local", "LOCAL SQLITE3 ONLY (100% OFFLINE)"),
-        ("google_local", "GOOGLE CLOUD + SQLITE MIRROR"),
-        ("google_cloud", "GOOGLE CLOUD VOLATILE CACHE ONLY"),
-    ]
-    rem_mins = get_reminder_minutes()
-    b = Box("CHRONO ENGINE // SQLITE3 STORAGE, SYNC TOPOLOGY & NOTIFIER", icon="\uf073", actions=[StateBadge(init_ok, "INITIALIZED", "UNINIT")], elected=True)
-    b.add_row(" ")
-    for m_id, m_lbl in modes_cyber:
-        is_sel = init_ok and (mode == m_id)
-        b.add_row(f"  {Txt('┣━' if not is_sel else '▶━', role='vitality' if is_sel else 'structure')} {Txt(m_lbl, role='intent' if is_sel else 'focus')}", right_markup=SelectPill("ACTIVE" if is_sel else "SELECT", f"cc_cal:mode:{m_id}", selected=is_sel))
-    b.add_section("STORAGE & REMINDER DISPATCH")
-    loc_n, ggl_n, tot_n, sz_kb = stats["local"], stats["google"], stats["total"], stats["size_kb"]
-    b.add_row(f"  {Txt('[SQLITE DB] ──►', role='schema')} {Txt(f'{tot_n} EVENTS (LOC:{loc_n} GGL:{ggl_n})  {sz_kb:.1f}KB', role='focus')}", right_markup=ActionBtn("PURGE LOCAL", "cc_cal:clear_local", tone="danger_soft"))
-    r_pills = " ".join(SelectPill("OFF" if p == 0 else f"{p}m", f"cc_cal:rem_set:{p}", selected=(rem_mins == p)) for p in (0, 5, 10, 15, 30, 60))
-    b.add_row(f"  {Txt('[REMINDER]  ──►', role='vitality')} {r_pills} {ActionBtn('CUSTOM..', 'cc_cal:rem_prompt', tone='neutral')}", right_markup=ActionBtn("TEST", "cc_cal:rem_test", tone="select"))
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_calendar_cards(cc_panel, canvas: Canvas, active_sub: str) -> list:
     lang = get_active_language()
     is_it = (lang == "it")
@@ -772,8 +705,6 @@ def build_cc_calendar_cards(cc_panel, canvas: Canvas, active_sub: str) -> list:
     mode = get_calendar_mode()
     stats = get_db_stats()
     status_msg = STATE.get("calendar", "cc_status_msg", "")
-    if get_cc_panel_style() == "cyberpunk":
-        return _build_calendar_cyberpunk(cc_panel, canvas, active_sub, is_it, init_ok, mode, stats, status_msg)
 
     cards = []
 

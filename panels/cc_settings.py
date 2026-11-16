@@ -10,9 +10,7 @@ from core import probe
 from core.config import (
     CONFIG,
     _update_toml_key_in_section,
-    get_cc_panel_style,
     get_hide_unavailable_settings,
-    set_cc_panel_style,
     set_hide_unavailable_settings,
 )
 from core.i18n import get_active_language, set_language
@@ -82,11 +80,10 @@ def _probe_limine() -> dict:
 
 
 # =====================================================================
-# INTERFACE TAB — STANDARD & CYBERPUNK
+# INTERFACE TAB
 # =====================================================================
 
 def _build_interface_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    style = get_cc_panel_style()
     hide_unavail = get_hide_unavailable_settings()
     gen = CONFIG.get("general", {})
     side = str(gen.get("side", "right"))
@@ -97,14 +94,11 @@ def _build_interface_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     cards = _feedback_cards()
 
     b = Box(
-        "Stile Pannelli, Comportamento & Diagnostica" if is_it else "Panel Style, Behavior & Diagnostics",
+        "Comportamento & Diagnostica" if is_it else "Behavior & Diagnostics",
         icon="\uf013",
-        actions=[StateBadge(style == "cyberpunk", "CYBERPUNK VIEW", "STANDARD VIEW")],
         elected=True,
     )
     b.add_row(" ")
-    st_pills = f"{SelectPill('Standard', 'cc_set:style:standard', selected=(style == 'standard'))} {SelectPill('Cyberpunk', 'cc_set:style:cyberpunk', selected=(style == 'cyberpunk'))}"
-    b.add_kv("Control Center Style", Txt(style.upper(), role="vitality"), right_markup=st_pills)
 
     hd_pills = f"{SelectPill('Hide Unavailable', 'cc_set:hide_unavail:1', selected=hide_unavail)} {SelectPill('Show [MISSING] Badge', 'cc_set:hide_unavail:0', selected=not hide_unavail)}"
     b.add_kv("Missing Tools Filter", StateBadge(not hide_unavail, "SHOW BADGE", "HIDDEN"), right_markup=hd_pills)
@@ -133,39 +127,8 @@ def _build_interface_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_interface_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    style = get_cc_panel_style()
-    hide_unavail = get_hide_unavailable_settings()
-    gen = CONFIG.get("general", {})
-    side = str(gen.get("side", "right"))
-    term = str(gen.get("terminal", "auto"))
-    log_lvl = int(gen.get("log_level", 3))
-    lang = get_active_language()
-    log_path, log_tail = _read_log_tail(10)
-    cards = _feedback_cards()
-
-    b = Box("SHELL MATRIX // RENDER STYLE, GATING & TELEMETRY", icon="\uf013", elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[PANEL STYLE]  ──►', role='vitality')} {SelectPill('STANDARD', 'cc_set:style:standard', selected=(style == 'standard'))} {SelectPill('CYBERPUNK', 'cc_set:style:cyberpunk', selected=(style == 'cyberpunk'))}")
-    b.add_row(f"  {Txt('[DEP FILTER]   ──►', role='intent')} {SelectPill('HIDE UNINSTALLED', 'cc_set:hide_unavail:1', selected=hide_unavail)} {SelectPill('BADGE [MISSING]', 'cc_set:hide_unavail:0', selected=not hide_unavail)}")
-    b.add_row(f"  {Txt('[ANCHOR/LANG]  ──►', role='schema')} {SelectPill('LEFT', 'cc_set:side:left', selected=(side == 'left'))} {SelectPill('RIGHT', 'cc_set:side:right', selected=(side == 'right'))}   {SelectPill('EN', 'cc_set:lang:en', selected=(lang == 'en'))} {SelectPill('IT', 'cc_set:lang:it', selected=(lang == 'it'))}")
-    b.add_row(f"  {Txt('[TERMINAL]     ──►', role='schema')} " + " ".join(SelectPill(t_opt.upper(), f"cc_set:term:{t_opt}", selected=(term == t_opt)) for t_opt in ("auto", "ghostty", "kitty", "foot")))
-    b.add_row(f"  {Txt('[LOG LEVEL]    ──►', role='schema')} " + " ".join(SelectPill(f"L{lvl}", f"cc_set:loglevel:{lvl}", selected=(log_lvl == lvl)) for lvl in (0, 1, 2, 3, 4)), right_markup=ActionBtn("FLUSH LOG", "cc_set:clear_log", tone="danger_soft"))
-
-    def _fill_log(bx: Box):
-        for ln in log_tail:
-            bx.add_row(f"  {Txt('├─', role='structure')} {Txt(canvas.truncate_plain(ln, 72), role='schema')}")
-        if not log_tail:
-            bx.add_row(f"  {Txt(f'{log_path}: clean.', role='inactive')}")
-
-    b.add_collapsible(cc_panel, "set_log_tail", f"JOURNAL ({os.path.basename(log_path)})", _fill_log)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
-# BOOT MENU TAB (LIMINE + UKI) — STANDARD & CYBERPUNK
+# BOOT MENU TAB (LIMINE + UKI)
 # =====================================================================
 
 def _build_boot_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
@@ -195,33 +158,11 @@ def _build_boot_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_boot_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    bm = _probe_limine()
-    cards = _feedback_cards()
-    b = Box("EFI BOOTCHAIN // LIMINE.CONF & DUAL-UKI MATRIX", icon="\uf2db", actions=[ActionBtn("EDIT LIMINE TERM", "cc_set:limine_edit", tone="select")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[LIMINE CONF]──►', role='vitality')} {Txt(bm['conf_path'], role='focus')}  {StateBadge(bm['readable'], 'READ OK', 'SUDO GATE')}")
-    to_pills = " ".join(SelectPill(f"{v}s", f"cc_set:limine_to:{v}", selected=(bm["timeout"] == v)) for v in ("0", "3", "5", "10"))
-    b.add_row(f"  {Txt('[TIMEOUT]    ──►', role='schema')} {to_pills}   {Txt('SNAPS:' + str(bm['snaps']), role='intent')}", requires=["limine"])
-    b.add_section("BOOT STATIONS")
-    for idx, entry in enumerate(bm["entries"], start=1):
-        is_def = (str(idx) == bm["default_entry"])
-        b.add_row(
-            f"  {Txt('▶━' if is_def else '┣━', role='vitality' if is_def else 'structure')} {Txt(f'[{idx}] {entry}', role='focus')}",
-            right_markup=SelectPill("DEFAULT" if is_def else "SET DEF", f"cc_set:limine_def:{idx}", selected=is_def),
-            requires=["limine"],
-        )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_settings_cards(cc_panel, canvas: Canvas, active_sub: str = "interface") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "boot":
-        return _build_boot_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_boot_standard(cc_panel, canvas, is_it)
-    return _build_interface_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_interface_standard(cc_panel, canvas, is_it)
+        return _build_boot_standard(cc_panel, canvas, is_it)
+    return _build_interface_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_settings_link(cc_panel, uri: str) -> bool:
@@ -234,10 +175,7 @@ def handle_cc_settings_link(cc_panel, uri: str) -> bool:
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
 
-    if cmd == "style" and arg in ("standard", "cyberpunk"):
-        set_cc_panel_style(arg)
-        _MSG = f"Control Center panel style set to {arg.upper()}."
-    elif cmd == "hide_unavail" and arg in ("0", "1"):
+    if cmd == "hide_unavail" and arg in ("0", "1"):
         val = (arg == "1")
         set_hide_unavailable_settings(val)
         _MSG = f"hide_unavailable_settings = {val}"

@@ -4,7 +4,7 @@ import os
 import re
 import time
 from core import probe
-from core.config import CONFIG_DIR, THEME, get_cc_panel_style
+from core.config import CONFIG_DIR, THEME
 from core.i18n import get_active_language, set_language
 from core.state import STATE
 from ui.canvas import Canvas
@@ -242,7 +242,7 @@ def _feedback_box(is_it: bool) -> list:
 
 
 # =====================================================================
-# SUBTAB 1: KEYBOARD (Standard + Cyberpunk)
+# SUBTAB 1: KEYBOARD
 # =====================================================================
 
 def _build_keyboard_standard(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
@@ -339,57 +339,9 @@ def _build_keyboard_standard(cc_panel, canvas: Canvas, st: dict, is_it: bool) ->
     return cards
 
 
-def _build_keyboard_cyberpunk(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
-    cards = _feedback_box(is_it)
-    macros = _load_macros()
-    rate = st["repeat_rate"]
-    delay = st["repeat_delay"]
-    nl_on = st["numlock"]
-
-    mcu = Box(
-        "CYBERDECK HID // KBD-MCU & POLLING SYNTHESIZER",
-        icon="\uf11c",
-        actions=[ActionBtn("Typing Test..", "cc_kbd:prompt_test", tone="select", active=True)],
-        elected=True,
-    )
-    mcu.add_row(" ")
-    rate_sl = Slider(rate, "cc_kbd:rate", min_val=10, max_val=100, width=18, show_pct=False, step_buttons=True, step=5)
-    del_sl = Slider(delay, "cc_kbd:delay", min_val=150, max_val=1000, width=18, show_pct=False, step_buttons=True, step=50)
-    nl_p = SelectPill("NUMLOCK:ON" if nl_on else "NUMLOCK:OFF", f"cc_kbd:numlock:{'off' if nl_on else 'on'}", selected=nl_on)
-    tr_g = SelectPill("TRK:GLOBAL", "cc_kbd:track:global", selected=(st["track_layout"] == "global"))
-    tr_w = SelectPill("TRK:WINDOW", "cc_kbd:track:window", selected=(st["track_layout"] == "window"))
-    pr_f = ActionBtn("OVERCLOCK 50/200", "cc_kbd:preset:fast", tone="apply")
-    mcu.add_row(f"  {Txt('╭─[ NIRI-HID MCU ]──► RATE PLL:', role='structure')} {rate_sl} {Txt(f'{rate:3d} Hz', role='vitality')}")
-    mcu.add_row(f"  {Txt('│', role='structure')}                   {Txt('DEBOUNCE:', role='intent')} {del_sl} {Txt(f'{delay:4d}ms', role='attention')}")
-    mcu.add_row(f"  {Txt('╰─[ BUS MODES ]─────►', role='structure')} {nl_p}  {tr_g} {tr_w}  {pr_f}")
-    mcu.add_row(f"       {Txt('│ [EEPROM: MACROS]', role='schema')}          {Txt('▼ [RAW EVENT PROBE]', role='schema')}")
-    mcu.add_row(" ")
-    cards.append(mcu)
-
-    probe_box = Box(
-        "MACRO EEPROM & HID EVENT SNIFFER",
-        icon="\uf0e7",
-        actions=[ActionBtn("+ INJECT MACRO", "cc_kbd:prompt_macro", tone="apply")],
-    )
-    probe_box.add_row(" ")
-    for idx, m in enumerate(macros[:5]):
-        probe_box.add_row(
-            f"  {Txt('┣━', role='structure')} {Badge(m.get('combo', ''), style='info')} {Txt('──►', role='intent')} {Txt(m.get('name', '')[:18], role='focus')}",
-            right_markup=f"{ActionBtn('EXEC', f'cc_kbd:run_macro:{idx}', tone='apply')} {ActionBtn('BIND', f'cc_kbd:bind_macro:{idx}', tone='select')} {ActionBtn('DEL', f'cc_kbd:del_macro:{idx}', tone='danger_soft')}",
-        )
-    probe_box.add_section("LIVE WAYLAND / EVDEV SIGNAL CAPTURE")
-    probe_box.add_row(
-        f"  {Txt('[RX]──►', role='vitality')} {ActionBtn('wev probe', 'cc_kbd:launch_wev', tone='select')}  "
-        f"{ActionBtn('libinput sniffer', 'cc_kbd:launch_libinput', tone='neutral')}  "
-        f"{ActionBtn('xkbcli', 'cc_kbd:launch_xkbcli', tone='neutral')}"
-    )
-    probe_box.add_row(" ")
-    cards.append(probe_box)
-    return cards
-
 
 # =====================================================================
-# SUBTAB 2: LAYOUT & LANGUAGE (Standard + Cyberpunk)
+# SUBTAB 2: LAYOUT & LANGUAGE
 # =====================================================================
 
 def _build_layout_standard(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
@@ -438,135 +390,19 @@ def _build_layout_standard(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> l
     return cards
 
 
-def _build_layout_cyberpunk(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
-    cards = _feedback_box(is_it)
-    cur_layouts = [x.strip() for x in st["layout"].split(",") if x.strip()] or ["it"]
-    cur_var = st["variant"]
-    cur_opts = [x.strip() for x in st["options"].split(",") if x.strip()]
-    cur_lang = get_active_language()
-
-    b = Box("XKB SCANCODE MULTIPLEXER // KEYMAP & LOCALE BUS", icon="\uf0ac", elected=True)
-    b.add_row(" ")
-    r1 = " ".join(SelectPill(c.upper(), f"cc_kbd:toggle_layout:{c}", selected=(c in cur_layouts)) for c in ("it", "us", "gb", "de"))
-    r2 = " ".join(SelectPill(c.upper(), f"cc_kbd:toggle_layout:{c}", selected=(c in cur_layouts)) for c in ("fr", "es", "jp"))
-    v1 = " ".join(SelectPill(v or "STD", f"cc_kbd:variant:{v}", selected=(cur_var == v)) for v in ("", "nodeadkeys", "intl"))
-    b.add_row(f"  {Txt('╭─[ KEYMAP BANK ]──►', role='structure')} {r1}")
-    b.add_row(f"  {Txt('├─[ EXTENDED    ]──►', role='structure')} {r2}  {ActionBtn('CUSTOM', 'cc_kbd:prompt_layout', tone='neutral')}")
-    b.add_row(f"  {Txt('╰─[ VARIANT MUX ]──►', role='structure')} {v1}  {SelectPill('CAPS->ESC', 'cc_kbd:toggle_opt:caps:escape', selected=('caps:escape' in cur_opts))}")
-    b.add_row(f"       {Txt('▼ [ACTIVE KEYMAP: ' + ','.join(cur_layouts).upper() + ']', role='vitality')}")
-    b.add_section("NC-UI INTERFACE LOCALE PIPELINE")
-    b.add_row(
-        f"  {Txt('[LOCALE.TOML] ──►', role='schema')}  "
-        f"{SelectPill('EN', 'cc_kbd:ui_lang:en', selected=(cur_lang == 'en'))}  "
-        f"{SelectPill('IT', 'cc_kbd:ui_lang:it', selected=(cur_lang == 'it'))}  "
-        f"{SelectPill('ALT+SHIFT', 'cc_kbd:toggle_opt:grp:alt_shift_toggle', selected=('grp:alt_shift_toggle' in cur_opts))}"
-    )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 # =====================================================================
-# SUBTAB 3: SHORTCUTS (Standard + Cyberpunk)
-# =====================================================================
-
-def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
-    cards = _feedback_box(is_it)
-    binds = st["binds"]
-
-    hdr = Box(
-        f"Scorciatoie Compositor Niri ({len(binds)})" if is_it else f"Niri Compositor Keybindings ({len(binds)})",
-        icon="\uf084",
-        actions=[ActionBtn("+ New Bind..", "cc_kbd:prompt_bind", tone="apply", active=True)],
-        elected=True,
-    )
-    hdr.add_row(" ")
-    hdr.add_kv("Niri Config", Txt(NIRI_CONFIG_FILE, role="val"), right_markup=ActionBtn("Reload Niri", "cc_kbd:reload_niri", tone="select"), requires=["niri"])
-    hdr.add_kv(
-        "NC-UI Quick Inject",
-        f"{ActionBtn('+ Mod+I (CC)', 'cc_kbd:inject_nc:cc', tone='apply')}  "
-        f"{ActionBtn('+ Mod+N (Net)', 'cc_kbd:inject_nc:net', tone='neutral')}  "
-        f"{ActionBtn('+ Mod+V (Clip)', 'cc_kbd:inject_nc:clip', tone='neutral')}",
-    )
-    hdr.add_row(" ")
-    cards.append(hdr)
-
-    b_box = Box("Active Keybindings in config.kdl", icon="\uf0c9")
-    b_box.add_row(" ")
-    if not binds:
-        b_box.add_row(f"  {Txt('No bindings found in config.kdl.', role='inactive')}")
-    else:
-        rows = []
-        for b in binds[:18]:
-            rows.append([
-                Badge(b["combo"], style="info" if b["cat"] == "nc_sys" else "secondary"),
-                Txt(canvas.truncate_plain(b["action"], 44), role="focus"),
-                ActionBtn("x", f"cc_kbd:del_bind:{b['combo']}", tone="danger_soft"),
-            ])
-        b_box.add_table(
-            headers=["SHORTCUT", "NIRI ACTION / SPAWN", "DEL"],
-            widths=[22, "flex", 8],
-            rows=rows,
-            aligns=["left", "left", "right"],
-        )
-
-    def _build_nc_nav(b: Box):
-        b.add_table(
-            headers=["KEYS", "NC-UI NAVIGATION ACTION"],
-            widths=[22, "flex"],
-            rows=[
-                [Txt("Arrows / Tab", role="intent"), Txt("2D Spatial focus across buttons & sliders", role="val")],
-                [Txt("Shift + Left/Right", role="intent"), Txt("Cycle Subtabs / Waybar Bar Surfing", role="val")],
-                [Txt("Shift + Up/Down", role="intent"), Txt("Switch Control Center section / Expand popup", role="val")],
-                [Txt("Enter / Space", role="intent"), Txt("Trigger focused control or prompt", role="val")],
-            ],
-        )
-
-    b_box.add_collapsible(cc_panel, "kbd_nc_nav", "Scorciatoie Interne Navigazione NC-UI" if is_it else "NC-UI Internal 2D Navigation Keys", _build_nc_nav)
-    b_box.add_row(" ")
-    cards.append(b_box)
-    return cards
-
-
-def _build_shortcuts_cyberpunk(cc_panel, canvas: Canvas, st: dict, is_it: bool) -> list:
-    cards = _feedback_box(is_it)
-    binds = st["binds"]
-
-    b = Box(
-        "HOTKEY ROUTING PATCHBAY // NIRI & NC-CTL MATRIX",
-        icon="\uf084",
-        actions=[ActionBtn("+ PATCH BIND", "cc_kbd:prompt_bind", tone="apply", active=True)],
-        elected=True,
-    )
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[QUICK NC-CTL PATCH]', role='schema')}  {ActionBtn('MOD+I -> CC', 'cc_kbd:inject_nc:cc', tone='apply')}  {ActionBtn('MOD+N -> NET', 'cc_kbd:inject_nc:net', tone='select')}  {ActionBtn('MOD+V -> CLIP', 'cc_kbd:inject_nc:clip', tone='neutral')}")
-    b.add_section(f"ACTIVE SIGNAL ROUTES ({len(binds)})")
-    for item in binds[:14]:
-        c = item["combo"]
-        a = canvas.truncate_plain(item["action"], 32)
-        b.add_row(
-            f"  {Badge(c, style='info')} {Txt('══►', role='structure')} {Txt(a, role='focus')}",
-            right_markup=ActionBtn("UNPATCH", f"cc_kbd:del_bind:{c}", tone="danger_soft"),
-        )
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
-# =====================================================================
-# PUBLIC ENTRY POINTS (Single Backend, Dual View)
+# PUBLIC ENTRY POINTS
 # =====================================================================
 
 def build_cc_keyboard_cards(cc_panel, canvas: Canvas, active_sub: str = "keyboard") -> list:
     is_it = (get_active_language() == "it")
-    style = get_cc_panel_style()
     st = _collect_keyboard_state()
 
     if active_sub == "layout":
-        return _build_layout_cyberpunk(cc_panel, canvas, st, is_it) if style == "cyberpunk" else _build_layout_standard(cc_panel, canvas, st, is_it)
+        return _build_layout_standard(cc_panel, canvas, st, is_it)
     if active_sub == "shortcuts":
-        return _build_shortcuts_cyberpunk(cc_panel, canvas, st, is_it) if style == "cyberpunk" else _build_shortcuts_standard(cc_panel, canvas, st, is_it)
-    return _build_keyboard_cyberpunk(cc_panel, canvas, st, is_it) if style == "cyberpunk" else _build_keyboard_standard(cc_panel, canvas, st, is_it)
+        return _build_shortcuts_standard(cc_panel, canvas, st, is_it)
+    return _build_keyboard_standard(cc_panel, canvas, st, is_it)
 
 
 def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:

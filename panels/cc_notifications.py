@@ -6,7 +6,6 @@ import json
 import os
 import re
 from core import probe
-from core.config import get_cc_panel_style
 from core.i18n import get_active_language
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, SelectPill, StateBadge, Txt
@@ -195,32 +194,6 @@ def _build_system_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_system_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    rules = _load_rules()
-    max_n = _get_max_notifications()
-    active = get_active_notifs()
-    cards = _feedback_cards()
-    b = Box("DISPATCH DAEMON // DND, QUIET SCHEDULE & RING BUFFER", icon="\uf0f3", actions=[ActionBtn("TEST PING", "cc_notif:test", tone="apply"), ActionBtn("FLUSH ALL", "cc_notif:clear", tone="danger_soft")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[DND MODE]   ──►', role='vitality')} {StateBadge(rules['dnd'], 'SILENT', 'ACTIVE')}  {SelectPill('ENABLE', 'cc_notif:dnd:1', selected=rules['dnd'])} {SelectPill('DISABLE', 'cc_notif:dnd:0', selected=not rules['dnd'])}")
-    b.add_row(f"  {Txt('[QUIET WIN]  ──►', role='intent')} {SelectPill('SCHEDULE', 'cc_notif:quiet_toggle', selected=rules['quiet_enabled'])} {Txt(rules['quiet_window'], role='focus')}  " + " ".join(SelectPill(w, f"cc_notif:quiet_win:{w}", selected=(rules["quiet_window"] == w)) for w in ("22:00-07:00", "23:00-07:00")))
-    b.add_row(f"  {Txt('[RING LIMIT] ──►', role='schema')} {Txt(f'{max_n} MAX ({len(active)} LIVE)', role='focus')}  " + " ".join(SelectPill(str(n), f"cc_notif:max:{n}", selected=(max_n == n)) for n in (25, 50, 100, 200)))
-    grp_active = bool(rules.get("group_by_app", False))
-    b.add_row(f"  {Txt('[APP GROUPING] ──►', role='vitality')} {StateBadge(grp_active, 'CLUSTERED', 'FLAT')}  {SelectPill('ON', 'cc_notif:group_app:1', selected=grp_active)} {SelectPill('OFF', 'cc_notif:group_app:0', selected=not grp_active)}")
-
-    def _fill_hist(bx: Box):
-        for n in reversed(active[-6:]):
-            app = str(n.get("app") or n.get("notation") or "sys")[:12]
-            ttl = canvas.truncate_plain(str(n.get("title") or n.get("summary") or "(untitled)"), 44)
-            bx.add_row(f"  {Txt('├─', role='structure')} {Badge(app, style='info')} {Txt(ttl, role='focus')}")
-        if not active:
-            bx.add_row(f"  {Txt('Buffer clean.', role='schema')}")
-
-    b.add_collapsible(cc_panel, "notif_hist", f"BUFFER PREVIEW ({len(active)} ACTIVE)", _fill_hist)
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
 
 # =====================================================================
 # DUAL VIEWS — APPS & URGENCY FILTERS
@@ -261,37 +234,11 @@ def _build_apps_standard(cc_panel, canvas: Canvas, is_it: bool) -> list:
     return cards
 
 
-def _build_apps_cyberpunk(cc_panel, canvas: Canvas, is_it: bool) -> list:
-    rules = _load_rules()
-    muted = set(a.lower() for a in rules.get("muted_apps", []))
-    apps = _collected_apps(rules)
-    urg = rules.get("min_urgency", "low")
-    cards = _feedback_cards()
-
-    b = Box("PACKET FILTER // APP WHITELIST & URGENCY GATE", icon="\uf1de", actions=[ActionBtn("+ MUTE APP", "cc_notif:prompt_app", tone="select")], elected=True)
-    b.add_row(" ")
-    b.add_row(f"  {Txt('[MIN URGENCY]─►', role='vitality')} " + " ".join(SelectPill(u.upper(), f"cc_notif:urg:{u}", selected=(urg == u)) for u in ("low", "normal", "critical")))
-    b.add_section("PER-PROCESS DISPATCH RULES")
-    rows = []
-    for a in apps:
-        is_muted = a in muted
-        rows.append([
-            f"{Txt('┣━', role='structure')} {Txt(a, role='focus')}",
-            StateBadge(not is_muted, "PASS", "DROP"),
-            f"{SelectPill('PASS', f'cc_notif:allow_app:{a}', selected=not is_muted)} {SelectPill('DROP', f'cc_notif:mute_app:{a}', selected=is_muted)}",
-        ])
-    b.add_table(headers=[], widths=[22, 14, "flex"], rows=rows, aligns=["left", "left", "right"])
-    b.add_row(" ")
-    cards.append(b)
-    return cards
-
-
 def build_cc_notifications_cards(cc_panel, canvas: Canvas, active_sub: str = "system") -> list:
     is_it = (get_active_language() == "it")
-    cyber = get_cc_panel_style() == "cyberpunk"
     if active_sub == "apps":
-        return _build_apps_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_apps_standard(cc_panel, canvas, is_it)
-    return _build_system_cyberpunk(cc_panel, canvas, is_it) if cyber else _build_system_standard(cc_panel, canvas, is_it)
+        return _build_apps_standard(cc_panel, canvas, is_it)
+    return _build_system_standard(cc_panel, canvas, is_it)
 
 
 def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
