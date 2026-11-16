@@ -46,26 +46,26 @@ def _start_scan(cc_panel) -> None:
     def _worker():
         off = []
         if probe.has_bin("checkupdates"):
-            rc, out, _ = probe.run_cmd_full(["checkupdates"], timeout=25.0)
-            if rc in (0, 2) and out:
+            _, out, _ = probe.run_cmd_full(["checkupdates"], timeout=25.0)
+            if out:
                 off = [ln.strip() for ln in out.splitlines() if ln.strip()]
 
         aur = []
         if probe.has_bin("paru"):
-            rc, out, _ = probe.run_cmd_full(["paru", "-Qua"], timeout=25.0)
-            if rc in (0, 1) and out:
+            _, out, _ = probe.run_cmd_full(["paru", "-Qua"], timeout=25.0)
+            if out:
                 aur = [ln.strip() for ln in out.splitlines() if ln.strip()]
 
         orph = []
         if probe.has_bin("pacman"):
-            rc, out, _ = probe.run_cmd_full(["pacman", "-Qdtq"], timeout=8.0)
+            _, out, _ = probe.run_cmd_full(["pacman", "-Qdtq"], timeout=8.0)
             if out:
                 orph = [ln.strip() for ln in out.splitlines() if ln.strip()]
 
         cache_txt = "unknown"
         if os.path.isdir("/var/cache/pacman/pkg"):
-            rc, out, _ = probe.run_cmd_full(["du", "-sh", "/var/cache/pacman/pkg"], timeout=6.0)
-            if rc == 0 and out:
+            ok, out, _ = probe.run_cmd_full(["du", "-sh", "/var/cache/pacman/pkg"], timeout=6.0)
+            if ok and out:
                 cache_txt = out.split()[0]
 
         return off, aur, orph, cache_txt

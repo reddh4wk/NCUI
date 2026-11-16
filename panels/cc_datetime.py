@@ -47,8 +47,8 @@ def _probe_timedate() -> dict:
         if "/zoneinfo/" in target:
             info["tz"] = target.split("/zoneinfo/", 1)[1]
 
-    rc, out, _ = probe.run_cmd_full(["timedatectl", "show"], timeout=1.5)
-    if rc == 0 and out:
+    ok, out, _ = probe.run_cmd_full(["timedatectl", "show"], timeout=1.5)
+    if ok and out:
         for ln in out.splitlines():
             if "=" in ln:
                 k, v = ln.split("=", 1)
@@ -216,28 +216,28 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
         probe.open_terminal(["bash", "-c", "sudo systemctl restart systemd-timesyncd && timedatectl status; echo; read -p 'Press Enter to close...'"])
         _MSG = "Triggered systemd-timesyncd resync in terminal."
     elif cmd == "ntp" and arg in ("true", "false"):
-        rc, _, err = probe.run_cmd_full(["timedatectl", "set-ntp", arg], timeout=3.0)
-        _MSG = f"timedatectl set-ntp {arg}" if rc == 0 else ""
-        _ERR = "" if rc == 0 else (err or f"timedatectl set-ntp failed (try sudo in terminal)")
+        ok, _, err = probe.run_cmd_full(["timedatectl", "set-ntp", arg], timeout=3.0)
+        _MSG = f"timedatectl set-ntp {arg}" if ok else ""
+        _ERR = "" if ok else (err or "timedatectl set-ntp failed (try sudo in terminal)")
     elif cmd == "rtc" and arg in ("0", "1"):
-        rc, _, err = probe.run_cmd_full(["timedatectl", "set-local-rtc", arg], timeout=3.0)
-        _MSG = f"Set LocalRTC={arg}" if rc == 0 else ""
-        _ERR = "" if rc == 0 else (err or "timedatectl set-local-rtc failed")
+        ok, _, err = probe.run_cmd_full(["timedatectl", "set-local-rtc", arg], timeout=3.0)
+        _MSG = f"Set LocalRTC={arg}" if ok else ""
+        _ERR = "" if ok else (err or "timedatectl set-local-rtc failed")
     elif cmd == "ntp_term":
         probe.open_terminal(["bash", "-c", "${EDITOR:-nano} /etc/systemd/timesyncd.conf"])
         _MSG = "Opened timesyncd.conf in editor."
     elif cmd == "set_tz" and arg:
-        rc, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", arg], timeout=3.0)
-        _MSG = f"Timezone set to {arg}" if rc == 0 else ""
-        _ERR = "" if rc == 0 else (err or f"Failed to set timezone {arg}")
+        ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", arg], timeout=3.0)
+        _MSG = f"Timezone set to {arg}" if ok else ""
+        _ERR = "" if ok else (err or f"Failed to set timezone {arg}")
     elif cmd == "lang" and arg:
-        rc, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LANG={arg}"], timeout=3.0)
-        _MSG = f"Set LANG={arg}" if rc == 0 else ""
-        _ERR = "" if rc == 0 else (err or "localectl set-locale failed")
+        ok, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LANG={arg}"], timeout=3.0)
+        _MSG = f"Set LANG={arg}" if ok else ""
+        _ERR = "" if ok else (err or "localectl set-locale failed")
     elif cmd == "lctime" and arg:
-        rc, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LC_TIME={arg}"], timeout=3.0)
-        _MSG = f"Set LC_TIME={arg}" if rc == 0 else ""
-        _ERR = "" if rc == 0 else (err or "localectl set-locale failed")
+        ok, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LC_TIME={arg}"], timeout=3.0)
+        _MSG = f"Set LC_TIME={arg}" if ok else ""
+        _ERR = "" if ok else (err or "localectl set-locale failed")
     elif cmd == "barfmt" and arg.isdigit():
         idx = int(arg)
         if 0 <= idx < len(_CLOCK_FMTS):
@@ -267,9 +267,9 @@ def handle_cc_datetime_prompt(cc_panel, action_id: str, text: str) -> bool:
     if action_id != "cc_dt_tz" or not text.strip():
         return False
     tz = text.strip()
-    rc, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", tz], timeout=3.0)
-    _MSG = f"Timezone set to {tz}" if rc == 0 else ""
-    _ERR = "" if rc == 0 else (err or f"Invalid or denied timezone: {tz}")
+    ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", tz], timeout=3.0)
+    _MSG = f"Timezone set to {tz}" if ok else ""
+    _ERR = "" if ok else (err or f"Invalid or denied timezone: {tz}")
     if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
     return True

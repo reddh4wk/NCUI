@@ -43,8 +43,8 @@ def _probe_tpm_luks() -> dict:
                 pass
 
     luks_devs = []
-    rc, out, _ = probe.run_cmd_full(["lsblk", "-nrpo", "NAME,FSTYPE,SIZE"], timeout=1.5)
-    if rc == 0 and out:
+    ok, out, _ = probe.run_cmd_full(["lsblk", "-nrpo", "NAME,FSTYPE,SIZE"], timeout=1.5)
+    if ok and out:
         for ln in out.splitlines():
             parts = ln.split()
             if len(parts) >= 2 and parts[1] == "crypto_LUKS":
@@ -75,14 +75,14 @@ def _probe_keys() -> dict:
 
     agent_keys = []
     if os.environ.get("SSH_AUTH_SOCK") and probe.has_bin("ssh-add"):
-        rc, out, _ = probe.run_cmd_full(["ssh-add", "-l"], timeout=1.5)
-        if rc == 0 and out:
+        ok, out, _ = probe.run_cmd_full(["ssh-add", "-l"], timeout=1.5)
+        if ok and out:
             agent_keys = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
 
     gpg_keys = []
     if probe.has_bin("gpg"):
-        rc, out, _ = probe.run_cmd_full(["gpg", "--batch", "--no-tty", "--list-secret-keys", "--keyid-format=short"], timeout=1.5)
-        if rc == 0 and out:
+        ok, out, _ = probe.run_cmd_full(["gpg", "--batch", "--no-tty", "--list-secret-keys", "--keyid-format=short"], timeout=1.5)
+        if ok and out:
             for ln in out.splitlines():
                 s = ln.strip()
                 if s.startswith(("sec", "uid")):
@@ -93,8 +93,8 @@ def _probe_keys() -> dict:
 
 def _probe_polkit() -> dict:
     agents = []
-    rc, out, _ = probe.run_cmd_full(["pgrep", "-af", "polkit|soteria"], timeout=1.5)
-    if rc == 0 and out:
+    ok, out, _ = probe.run_cmd_full(["pgrep", "-af", "polkit|soteria"], timeout=1.5)
+    if ok and out:
         agents = [ln.strip() for ln in out.splitlines() if "pgrep" not in ln][:5]
 
     _, grp_out, _ = probe.run_cmd_full(["id", "-Gn"], timeout=1.5)

@@ -83,8 +83,8 @@ def _load_rules() -> dict:
         except Exception:
             pass
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
-        rc, out, _ = probe.run_cmd_full(["swaync-client", "-D"], timeout=0.8)
-        if rc == 0 and out.strip().lower() in ("true", "false"):
+        ok, out, _ = probe.run_cmd_full(["swaync-client", "-D"], timeout=0.8)
+        if ok and out.strip().lower() in ("true", "false"):
             base["dnd"] = (out.strip().lower() == "true")
     return base
 

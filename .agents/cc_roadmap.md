@@ -68,9 +68,9 @@
 - [x] std | [x] cyber — **Subtab `system`**: Modalità Non Disturbare (DND), programmazione oraria silenziosa, limite massimo notifiche in cronologia, test invio notifica (`nc_util_notify.sh`) e pulizia archivio.
 - [x] std | [x] cyber — **Subtab `apps`**: Regole di filtro/soppressione notifiche per singola applicazione e livello di urgenza.
 
-### 12. [ ] `mouse` (`panels/cc_mouse.py`)
-- [ ] std | [ ] cyber — **Subtab `general`**: Configurazione mouse in `~/.config/niri/config.kdl` (left-handed mode, natural scroll, middle-click emulation, scroll factor).
-- [ ] std | [ ] cyber — **Subtab `pointer`**: Velocità puntatore (`accel-speed` `-1.0 .. +1.0`), profilo di accelerazione (`adaptive` vs `flat`) e impostazioni touchpad (`tap`, `dwt`, `natural-scroll`).
+### 12. [x] `mouse` (`panels/cc_mouse.py`)
+- [x] std | [x] cyber — **Subtab `general`**: Configurazione mouse in `~/.config/niri/config.kdl` (left-handed mode, natural scroll, middle-click emulation, scroll factor).
+- [x] std | [x] cyber — **Subtab `pointer`**: Velocità puntatore (`accel-speed` `-1.0 .. +1.0`), profilo di accelerazione (`adaptive` vs `flat`) e impostazioni touchpad (`tap`, `dwt`, `natural-scroll`).
 
 ### 13. [ ] `accounts` (`panels/cc_accounts.py`)
 - [ ] std | [ ] cyber — **Subtab `profile`**: Identità utente (`UID`/`GID`, Home, Login Shell `zsh`/`bash`, cambio shell e cambio password in terminale).
