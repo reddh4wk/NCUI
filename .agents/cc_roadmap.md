@@ -77,8 +77,8 @@
 - [x] std | [x] cyber — **Subtab `groups`**: Appartenenza ai gruppi di sistema critici (`wheel`, `docker`, `libvirt`, `wireshark`, `video`, `input`, `uucp`) con toggle di aggiunta/rimozione.
 - [x] std | [x] cyber — **Subtab `sessions`**: Sessioni attive (`loginctl list-sessions`), stato seat/TTY e terminazione sessioni appese.
 
-### 14. [~] `calendar` (`panels/cc_calendar.py`)
-- [ ] std | [ ] cyber — **Subtab `mode`, `google`, `io`**: Fare backup `.old` di `cc_calendar.py`, preservare l'intero backend SQLite/gcalcli/ICS esistente e aggiungere la variante visuale `cyberpunk` accanto a quella `standard`.
+### 14. [x] `calendar` (`panels/cc_calendar.py`)
+- [x] std | [x] cyber — **Subtab `mode`, `google`, `io`**: Backup `.old` di `cc_calendar.py`, preservato l'intero backend SQLite/gcalcli/ICS esistente e aggiunta la variante visuale `cyberpunk` accanto a quella `standard`.
 
 ### 15. [~] `network` & `bluetooth` (`panels/cc_network.py`, `cc_net_*.py`)
 - [ ] std | [ ] cyber — **Subtab `wired`, `wireless`, `vpn`, `watchdog` + sezione `bluetooth`**: Fare backup `.old` dei 5 file attuali, preservare integralmente le validazioni e verifiche `nmcli`+Kernel e aggiungere la variante visuale `cyberpunk` accanto a quella `standard`.

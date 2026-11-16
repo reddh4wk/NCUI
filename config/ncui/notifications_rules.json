@@ -1,0 +1,7 @@
+{
+  "dnd": false,
+  "quiet_enabled": false,
+  "quiet_window": "23:00-07:00",
+  "min_urgency": "low",
+  "muted_apps": []
+}
