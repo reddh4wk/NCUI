@@ -60,9 +60,9 @@ SECTION_TABS = {
     ],
     "personalization": [
         ("theme", {"en": "Theme & Colors", "it": "Tema & Colori"}),
+        ("creator", {"en": "Theme Creator", "it": "Creatore Temi"}),
         ("wallpaper", {"en": "Desktop & Matrix", "it": "Sfondi & Matrix"}),
-        ("icons", {"en": "Icons & Cursor", "it": "Icone & Cursore"}),
-        ("fonts", {"en": "Typography", "it": "Tipografia"}),
+        ("waybar", {"en": "Waybar Bar", "it": "Barra Waybar"}),
     ],
     "network": [
         ("wired", {"en": "Interfaces & Profiles", "it": "Interfacce & Profili"}),
@@ -251,10 +251,10 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_waybar_cards(self, canvas, active_sub))
             return cards
 
-        # --- SEZIONE DEDICATA: PERSONALIZATION -> WALLPAPER & MATRIX (nc_util_desktop.sh) ---
-        if self.section == "personalization" and active_sub == "wallpaper":
-            from panels.cc_integrations import build_cc_desktop_wallpaper_cards
-            cards.extend(build_cc_desktop_wallpaper_cards(self, canvas))
+        # --- SEZIONE DEDICATA: PERSONALIZATION ---
+        if self.section == "personalization":
+            from panels.cc_personalization import build_cc_personalization_cards
+            cards.extend(build_cc_personalization_cards(self, canvas, active_sub))
             return cards
 
         # --- SEZIONE DEDICATA: APPS -> NIRI FLOATING RULES (nc_util_floater.sh) ---
@@ -324,7 +324,10 @@ class ControlCenterPanel(BasePanel):
     def on_prompt_submit(self, action_id: str, text: str) -> None:
         from panels.cc_integrations import handle_cc_integrations_prompt
         from panels.cc_keyboard import handle_cc_keyboard_prompt
+        from panels.cc_personalization import handle_cc_personalization_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
+            return
+        if handle_cc_personalization_prompt(self, action_id, text):
             return
         if handle_cc_waybar_prompt(self, action_id, text):
             return
@@ -345,7 +348,10 @@ class ControlCenterPanel(BasePanel):
     def on_link(self, uri: str) -> None:
         from panels.cc_integrations import handle_cc_integrations_link
         from panels.cc_keyboard import handle_cc_keyboard_link
+        from panels.cc_personalization import handle_cc_personalization_link
         if handle_cc_keyboard_link(self, uri):
+            return
+        if handle_cc_personalization_link(self, uri):
             return
         if handle_cc_network_link(self, uri):
             return

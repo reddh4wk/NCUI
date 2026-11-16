@@ -6,6 +6,7 @@ import subprocess
 from core.config import (
     CONFIG,
     ROOT_DIR,
+    get_cc_panel_style,
     get_network_show_bar_speed,
     set_network_show_bar_speed,
     set_waybar_width_pct,
@@ -281,7 +282,68 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
     return cards
 
 
+def _build_waybar_cyberpunk(cc_panel, canvas: Canvas, active_sub: str = "layout") -> list:
+    is_it = (get_active_language() == "it")
+    data = _read_wb_config()
+    left_mods = list(data.get("modules-left", []) or [])
+    center_mods = list(data.get("modules-center", []) or [])
+    right_mods = list(data.get("modules-right", []) or [])
+    active_all = set(left_mods + center_mods + right_mods)
+    budget = estimate_waybar_free_chars_budget()
+    lock_cmd = get_screen_lock_cmd()
+    show_spd = get_network_show_bar_speed()
+
+    cards = []
+    rail = Box(
+        "WAYBAR TELEMETRY RAIL // TOP COMPOSITOR BUS",
+        icon="\uf0db",
+        actions=[ActionBtn("\uf00c SYNC & RELOAD", "cc_wb:apply", tone="apply", active=True)],
+        elected=True,
+    )
+    rail.add_row(" ")
+    rail.add_row(f"  {Txt('╭─[ LEFT RAIL ]─────────┬─[ CENTER ]───────┬─[ RIGHT RAIL ]─────────╮', role='structure')}")
+    l_cnt, c_cnt, r_cnt = len(left_mods), len(center_mods), len(right_mods)
+    rail.add_row(
+        f"  {Txt('│', role='structure')} {Badge(f'{l_cnt} MODS', style='info')}               "
+        f"{Txt('│', role='structure')} {Badge(f'{c_cnt} MODS', style='accent')}         "
+        f"{Txt('│', role='structure')} {Badge(f'{r_cnt} MODS', style='info')}              {Txt('│', role='structure')}"
+    )
+    rail.add_row(f"  {Txt('╰───────────────────────┴───────────────────┴────────────────────────╯', role='structure')}")
+    win_pct, med_pct = budget["window_pct"], budget["media_pct"]
+    rail.add_row(
+        f"  {Txt('WIN BAR:', role='schema')} {Slider(win_pct, 'cc_wb:win_pct', min_val=5, max_val=100, width=14, show_pct=True)}  "
+        f"{Txt('MEDIA:', role='schema')} {Slider(med_pct, 'cc_wb:med_pct', min_val=5, max_val=100, width=14, show_pct=True)}"
+    )
+    rail.add_row(
+        f"  {Txt('LOCK:', role='schema')} {Txt(lock_cmd or 'UNSET', role='focus' if lock_cmd else 'attention')} "
+        f"{ActionBtn('EDIT..', 'cc_wb:prompt_lock_cmd', tone='select')}  "
+        f"{SelectPill('NET SPEED:ON' if show_spd else 'NET SPEED:OFF', 'cc_wb:net_spd:' + ('off' if show_spd else 'on'), selected=show_spd)}"
+    )
+    rail.add_row(" ")
+    cards.append(rail)
+
+    for sec_key, sec_lbl, mods in [("left", "LEFT RAIL", left_mods), ("center", "CENTER RAIL", center_mods), ("right", "RIGHT RAIL", right_mods)]:
+        sb = Box(f"SIGNAL SLOTS // {sec_lbl} ({len(mods)})", icon="\uf0c9")
+        sb.add_row(" ")
+        if not mods:
+            sb.add_row(f"  {Txt('[ EMPTY RAIL ]', role='inactive')}")
+        for idx, m_id in enumerate(mods):
+            meta = KNOWN_WAYBAR_WIDGETS.get(m_id, {"label": m_id, "icon": "\uf12e"})
+            up_b = ActionBtn("\u2191", f"cc_wb:up:{sec_key}:{idx}", tone="neutral") if idx > 0 else Txt(" ", role="structure")
+            dn_b = ActionBtn("\u2193", f"cc_wb:down:{sec_key}:{idx}", tone="neutral") if idx < len(mods) - 1 else Txt(" ", role="structure")
+            mv = f"{SelectPill('L', f'cc_wb:move:{m_id}:left', selected=(sec_key == 'left'))} {SelectPill('C', f'cc_wb:move:{m_id}:center', selected=(sec_key == 'center'))} {SelectPill('R', f'cc_wb:move:{m_id}:right', selected=(sec_key == 'right'))}"
+            sb.add_row(
+                f"  {Txt(f'[{idx + 1:02d}]', role='intent')} {Txt(meta['icon'] + ' ' + meta['label'], role='focus')} {Txt(m_id, role='schema')}",
+                right_markup=f"{up_b} {dn_b} {mv} {ActionBtn('x', f'cc_wb:remove:{m_id}', tone='danger_soft')}",
+            )
+        sb.add_row(" ")
+        cards.append(sb)
+    return cards
+
+
 def build_cc_waybar_cards(cc_panel, canvas: Canvas, active_sub: str = "layout") -> list:
+    if get_cc_panel_style() == "cyberpunk":
+        return _build_waybar_cyberpunk(cc_panel, canvas, active_sub)
     if active_sub == "options":
         return _build_waybar_options_tab(cc_panel, canvas)
 
