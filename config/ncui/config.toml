@@ -60,7 +60,7 @@ host = "1.1.1.1"
 
 [power.nut]
 enabled = true
-ups_name = "ecoflow@10.10.0.20"
+ups_name = "nut@10.99.99.1"
 
 [storage.nas]
 enabled = true

@@ -113,9 +113,10 @@ SECTION_TABS = {
     ],
     "system": [
         ("about", {"en": "About This PC", "it": "Info sul Sistema"}),
-        ("cpu", {"en": "CPU & Processes", "it": "CPU & Processi"}),
-        ("memory", {"en": "RAM & Swap", "it": "RAM & Swap"}),
+        ("power_tools", {"en": "NC Power Tools", "it": "NC Power Tools"}),
+        ("resources", {"en": "CPU, RAM & Procs", "it": "CPU, RAM & Proc."}),
         ("storage", {"en": "Disks & NASUS", "it": "Dischi & NASUS"}),
+        ("backup", {"en": "Snapshots & Backup", "it": "Snapshot & Backup"}),
     ],
     "general": [
         ("boot", {"en": "Boot Menu (Limine)", "it": "Menu di Avvio (Limine)"}),
@@ -237,6 +238,12 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_power_cards(self, canvas, active_sub))
             return cards
 
+        # --- SEZIONE DEDICATA: SYSTEM (cc_system) ---
+        if self.section == "system":
+            from panels.cc_system import build_cc_system_cards
+            cards.extend(build_cc_system_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -340,6 +347,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_display import handle_cc_display_prompt
         from panels.cc_apps import handle_cc_apps_prompt
         from panels.cc_power import handle_cc_power_prompt
+        from panels.cc_system import handle_cc_system_prompt
         if handle_cc_keyboard_prompt(self, action_id, text):
             return
         if handle_cc_display_prompt(self, action_id, text):
@@ -347,6 +355,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_apps_prompt(self, action_id, text):
             return
         if handle_cc_power_prompt(self, action_id, text):
+            return
+        if handle_cc_system_prompt(self, action_id, text):
             return
         if handle_cc_personalization_prompt(self, action_id, text):
             return
@@ -374,6 +384,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_apps import handle_cc_apps_link
         from panels.cc_audio import handle_cc_audio_link
         from panels.cc_power import handle_cc_power_link
+        from panels.cc_system import handle_cc_system_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -381,6 +392,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_audio_link(self, uri):
             return
         if handle_cc_power_link(self, uri):
+            return
+        if handle_cc_system_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return

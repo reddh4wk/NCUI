@@ -44,12 +44,12 @@
 - [x] std | [x] cyber — **Subtab `ups`**: Telemetria e configurazione **NUT Server** (`upsc`): configurazione IP/nome dell'UPS (es. `ecoflow@10.10.0.20`), visualizzazione carico in Watt, percentuale batteria, autonomia residua, tensione IN/OUT, soglie di allarme, configurazione graceful shutdown e notifiche di sistema personalizzate.
 - [x] std | [x] cyber — **Subtab `wakeup`**: Timeout di inattività, spegnimento schermo DPMS e blocco automatico sessione (`swayidle` / `hypridle`) integrati col comando di screen lock.
 
-### 7. [ ] `system` (`panels/cc_system.py`)
-- [ ] std | [ ] cyber — **Subtab `about`**: Riepilogo hardware e sistema operativo (`Nightcity`), stato doppio kernel (`linux-cachyos` / `linux-cachyos-hardened`), versione bootloader Limine e uptime.
-- [ ] std | [ ] cyber — **Subtab `power_tools`**: Pannello di controllo, configurazione parametri ed esecuzione assistita degli script custom `nc-*` presenti in `/usr/local/sbin/` (o nella cartella di progetto `ncscripts`).
-- [ ] std | [ ] cyber — **Subtab `resources`**: Telemetria estesa 960px per CPU (per-core sparklines, frequenze, loadavg) e RAM/Swap, gestore processi top (ordinamento CPU/RAM, ricerca, `SIGTERM`/`SIGKILL`), e tuning parametri `sysctl` (`vm.swappiness`, ZRAM, ` dirty_ratio`).
-- [ ] std | [ ] cyber — **Subtab `storage`**: Struttura dischi e partizioni (`lsblk`), volumi logici LVM (`vgs`/`lvs`), salute NVMe SMART (`smartctl`), e stato di mount/spazio disponibile del NAS `NASUS` (`10.10.0.20`).
-- [ ] std | [ ] cyber — **Subtab `backup`**: Stato degli snapshot LVM (`nc-snapshot`) e spazio CoW disponibile; verifica dello stato della Recovery (`duskcity`) e delle **Golden Image** (richiede verifica preliminare che il NAS sia montato); monitoraggio e trigger dei backup configurazioni a Torre di Hanoi tramite `nc-nas-conf.sh` (richiede NAS montato).
+### 7. [x] `system` (`panels/cc_system.py`)
+- [x] std | [x] cyber — **Subtab `about`**: Riepilogo hardware e sistema operativo (`Nightcity`), stato doppio kernel (`linux-cachyos` / `linux-cachyos-hardened`), versione bootloader Limine e uptime.
+- [x] std | [x] cyber — **Subtab `power_tools`**: Pannello di controllo, configurazione parametri ed esecuzione assistita degli script custom `nc-*` presenti in `/usr/local/sbin/` (o nella cartella di progetto `ncscripts`).
+- [x] std | [x] cyber — **Subtab `resources`**: Telemetria estesa 960px per CPU (per-core sparklines, frequenze, loadavg) e RAM/Swap, gestore processi top (ordinamento CPU/RAM, ricerca, `SIGTERM`/`SIGKILL`), e tuning parametri `sysctl` (`vm.swappiness`, ZRAM, ` dirty_ratio`).
+- [x] std | [x] cyber — **Subtab `storage`**: Struttura dischi e partizioni (`lsblk`), volumi logici LVM (`vgs`/`lvs`), salute NVMe SMART (`smartctl`), e stato di mount/spazio disponibile del NAS `NASUS` (`10.10.0.20`).
+- [x] std | [x] cyber — **Subtab `backup`**: Stato degli snapshot LVM (`nc-snapshot`) e spazio CoW disponibile; verifica dello stato della Recovery (`duskcity`) e delle **Golden Image** (richiede verifica preliminare che il NAS sia montato); monitoraggio e trigger dei backup configurazioni a Torre di Hanoi tramite `nc-nas-conf.sh` (richiede NAS montato).
 
 ### 8. [ ] `updates` (`panels/cc_updates.py`)
 - [ ] std | [ ] cyber — **Subtab `packages`**: Report generabile manualmente sullo stato degli aggiornamenti di sistema: pacchetti ufficiali Arch (`checkupdates`), pacchetti AUR (`paru -Qua`), pacchetti orfani (`pacman -Qdtq`), pulizia cache (`paccache`) e lancio aggiornamento protetto in terminale.
