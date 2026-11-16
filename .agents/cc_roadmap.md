@@ -59,10 +59,10 @@
 - [x] std | [x] cyber — **Subtab `keys`**: Identità SSH caricate in `ssh-agent` (`ssh-add -l`), chiavi pubbliche in `~/.ssh/*.pub` con copia rapida, e stato chiavi GPG (`gpg --list-secret-keys`).
 - [x] std | [x] cyber — **Subtab `polkit`**: Stato dell'agente di autenticazione Polkit in esecuzione, verifica configurazione `sudoers` / gruppo `wheel` e regole PAM/FIDO2.
 
-### 10. [ ] `datetime` (`panels/cc_datetime.py`)
-- [ ] std | [ ] cyber — **Subtab `time`**: Stato sincronizzazione `systemd-timesyncd` (`timedatectl status`), toggle NTP, server pool NTP e stato orologio hardware RTC.
-- [ ] std | [ ] cyber — **Subtab `timezone`**: Fuso orario attivo (es. `Europe/Rome`) e selettore rapido per aree geografiche.
-- [ ] std | [ ] cyber — **Subtab `region`**: Impostazioni `locale.conf` (`LANG`, `LC_TIME`, formato 24h) e formato data nella barra.
+### 10. [x] `datetime` (`panels/cc_datetime.py`)
+- [x] std | [x] cyber — **Subtab `time`**: Stato sincronizzazione `systemd-timesyncd` (`timedatectl status`), toggle NTP, server pool NTP e stato orologio hardware RTC.
+- [x] std | [x] cyber — **Subtab `timezone`**: Fuso orario attivo (es. `Europe/Rome`) e selettore rapido per aree geografiche.
+- [x] std | [x] cyber — **Subtab `region`**: Impostazioni `locale.conf` (`LANG`, `LC_TIME`, formato 24h) e formato data nella barra.
 
 ### 11. [ ] `notifications` (`panels/cc_notifications.py`)
 - [ ] std | [ ] cyber — **Subtab `system`**: Modalità Non Disturbare (DND), programmazione oraria silenziosa, limite massimo notifiche in cronologia, test invio notifica (`nc_util_notify.sh`) e pulizia archivio.
