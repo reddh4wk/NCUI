@@ -117,9 +117,9 @@ SECTION_TABS = {
         ("storage", {"en": "Disks & NASUS", "it": "Dischi & NASUS"}),
         ("backup", {"en": "Snapshots & Backup", "it": "Snapshot & Backup"}),
     ],
-    "general": [
+    "settings": [
+        ("interface", {"en": "UI Style & Behavior", "it": "Stile UI & Comportamento"}),
         ("boot", {"en": "Boot Menu (Limine)", "it": "Menu di Avvio (Limine)"}),
-        ("ncui", {"en": "NC-UI Behavior", "it": "Comportamento NC-UI"}),
     ],
 }
 
@@ -151,7 +151,7 @@ class ControlCenterPanel(BasePanel):
             "ram": "system",
             "storage": "system",
             "audio": "sound",
-            "settings": "system",
+            "general": "settings",
         }
         norm_sec = sec_map.get(initial_section, initial_section)
         if norm_sec not in SECTION_BLUEPRINTS:
@@ -277,6 +277,12 @@ class ControlCenterPanel(BasePanel):
         if self.section == "accounts":
             from panels.cc_accounts import build_cc_accounts_cards
             cards.extend(build_cc_accounts_cards(self, canvas, active_sub))
+            return cards
+
+        # --- SEZIONE DEDICATA: SETTINGS (cc_settings) ---
+        if self.section == "settings":
+            from panels.cc_settings import build_cc_settings_cards
+            cards.extend(build_cc_settings_cards(self, canvas, active_sub))
             return cards
 
         # --- SEZIONE DEDICATA: NETWORK ---
@@ -432,6 +438,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_notifications import handle_cc_notifications_link
         from panels.cc_mouse import handle_cc_mouse_link
         from panels.cc_accounts import handle_cc_accounts_link
+        from panels.cc_settings import handle_cc_settings_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -453,6 +460,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_mouse_link(self, uri):
             return
         if handle_cc_accounts_link(self, uri):
+            return
+        if handle_cc_settings_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return

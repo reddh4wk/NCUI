@@ -126,7 +126,7 @@ CONTROL_CENTER_SECTIONS = [
     ("updates",         "\uf0aa"),
     ("keyboard",        "\uf11c"),
     ("system",          "\uf129"),
-    ("general",         "\uf013"),
+    ("settings",        "\uf013"),
 ]
 
 

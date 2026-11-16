@@ -83,9 +83,9 @@
 ### 15. [x] `network` & `bluetooth` (`panels/cc_network.py`, `cc_net_*.py`)
 - [x] std | [x] cyber — **Subtab `wired`, `wireless`, `vpn`, `watchdog` + sezione `bluetooth`**: Backup `.old` dei 5 file attuali, preservate integralmente le validazioni e verifiche `nmcli`+Kernel e aggiunta la variante visuale `cyberpunk` accanto a quella `standard`.
 
-### 16. [ ] `settings` (`panels/cc_settings.py` — sostituisce `general`)
-- [ ] std | [ ] cyber — **Subtab `interface`**:
+### 16. [x] `settings` (`panels/cc_settings.py` — sostituisce `general`)
+- [x] std | [x] cyber — **Subtab `interface`**:
   - **Selettore Stile Pannelli Control Center:** Commutazione globale immediata tra set di pannelli **`standard`** e **`cyberpunk`**.
   - **Filtro Pacchetti Non Installati (`hide_unavailable_settings`):** Toggle per nascondere automaticamente o mostrare (con badge `[MISSING]`) le impostazioni nei vari pannelli i cui pacchetti sottostanti non sono installati sul sistema corrente.
   - Lato di ancoraggio del Control Center (`left` / `right`), lingua interfaccia (`en` / `it`), terminale preferito e livello di log (`/tmp/nc-ui.log`).
-- [ ] std | [ ] cyber — **Subtab `boot`**: Gestione del menu di avvio **Limine** (`/boot/limine.conf` o `/efi/limine/limine.conf`), selezione entry predefinita (`linux-cachyos`, `linux-cachyos-hardened`, `Golden Image Recovery`, `Windows`), timeout di boot e stato UKI.
+- [x] std | [x] cyber — **Subtab `boot`**: Gestione del menu di avvio **Limine** (`/boot/limine.conf` o `/efi/limine/limine.conf`), selezione entry predefinita (`linux-cachyos`, `linux-cachyos-hardened`, `Golden Image Recovery`, `Windows`), timeout di boot e stato UKI.
