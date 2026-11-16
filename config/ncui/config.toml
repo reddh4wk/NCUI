@@ -1,0 +1,72 @@
+[general]
+language = "it"# "en", "it", o qualsiasi file <lang>.toml in locales/ o ~/.config/nc-ui/locales/
+log_file = "/tmp/nc-ui.log"
+log_level = 3
+enable_hover_tooltips = false
+terminal = "auto" # "auto" cerca ghostty, kitty, foot, alacritty
+
+[control_center]
+width_px = 960
+side = "right" # "left" oppure "right"
+
+[capture]
+action = "clipboard" # "clipboard" | "satty" | "save" | "clipboard_satty"
+
+[panels.refresh_ms]
+calendar      = 0
+notifications = 0
+ram           = 2000
+cpu           = 2000
+network       = 1500
+audio         = 0
+capture       = 0
+display       = 2000
+clipboard     = 0
+power         = 3000
+storage       = 5000
+
+[network]
+# "auto" rileva tutte le interfacce fisiche e tunnel attivi
+monitored_interfaces = "auto"
+default_speed_unit = "bytes" # "bytes" (kB/s, MB/s) oppure "bits" (kb/s, Mb/s)
+show_bar_speed = false       # true mostra download/upload e interfaccia sulla Waybar, false mostra solo le 3 icone
+
+[network.wan]
+# Lascia primary_ip = "" su macchine generiche per disattivare il rilevamento failover
+primary_ip = "212.97.58.189"
+primary_label = "FTTH Primary"
+failover_label = "4G Failover"
+
+# Nodi monitorati nel Tab Diagnostica. Se la lista è vuota, usa Default Gateway + 1.1.1.1
+[[network.watchdog]]
+name = "EVA01 Router"
+host = "10.10.0.1"
+
+[[network.watchdog]]
+name = "AdGuard DNS"
+host = "10.10.0.2"
+
+[[network.watchdog]]
+name = "Cudy Switch"
+host = "10.10.0.3"
+
+[[network.watchdog]]
+name = "NASUS UGREEN"
+host = "10.10.0.20"
+
+[[network.watchdog]]
+name = "Cloudflare WAN"
+host = "1.1.1.1"
+
+[power.nut]
+enabled = true
+ups_name = "ecoflow@10.10.0.20"
+
+[storage.nas]
+enabled = true
+host = "10.10.0.20"
+ssh_user = "damiano"
+
+[waybar_widgets]
+media_width_pct = 65
+window_width_pct = 35

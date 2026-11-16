@@ -1,0 +1,94 @@
+[typography]
+font_family = "Courier"
+font_size = 11
+font_weight = "bold"
+
+[geometry]
+compact_cols = 44
+expanded_cols = 96
+panel_padding = 10
+card_spacing = 6
+screen_margin = 12
+sidebar_nav_cols = 24
+popup_gap_top = 4
+popup_max_height = 900
+window_border_width = 1
+window_border_radius = 16
+
+[ascii]
+# Stili disponibili: "rounded" (╭─╮), "sharp" (┌─┐), "heavy" (┏━┓), "double" (╔═╗)
+box_style = "rounded"
+title_brackets = ["[ ", " ]"]
+button_brackets = ["[", "]"]
+slider_brackets = ["[", "]"]
+slider_fill = "#"
+slider_empty = "-"
+sparkline_chars = "▁▂▃▄▅▆▇█"
+
+[colors]
+window_bg = "rgba(13, 13, 15, 0.90)"
+window_border = "rgba(255, 255, 255, 0.12)"
+background = "#09090b"
+
+# 1. Tono Grafite — INERZIA (frame, grid, none)
+structure = "#43495c"
+structure_bg = "#1a1c23"
+inactive = "#5f657b"
+
+# 2. Tono Ardesia — METADATO (keys, headers, split)
+schema = "#8c9bba"
+
+# 3. Tono Bianco — DATO (focus, values, titles)
+focus = "#ffffff"
+focus_val = "#e2eafc"
+
+# 4. Tono Ciano — UI (tabs, selection, user-input)
+intent = "#00f0ff"
+intent_soft = "#4db8c4"
+intent_bg = "#002a3a"
+
+# 5. Tono Verde — HW/OS (up, active, done)
+vitality = "#00ff73"
+vitality_soft = "#4fac73"
+vitality_bg = "#002813"
+
+# 6. Tono Giallo — MUTAZIONE (dirty, failover, warn)
+attention = "#ffeb19"
+attention_soft = "#c7b848"
+attention_bg = "#332d00"
+
+# 7a. Tono Fucsia — INTERRUZIONE (stop, kill, down)
+interrupt = "#ff2a9d"
+interrupt_rest = "#bd5b86"
+interrupt_bg = "#3a091d"
+
+# 7b. Tono Rosso — GUASTO (timeout, err, crit)
+fault = "#ff213f"
+fault_soft = "#c94f5f"
+fault_bg = "#36050b"
+
+# Mapping globale legacy / core
+primary = "#ffffff"
+secondary = "#8c9bba"
+muted = "#5f657b"
+accent = "#00f0ff"
+info = "#00f0ff"
+
+# Stati semantici cornici nc-boxes (Grafite a riposo, Bianco su Hover/Header)
+box_inactive = "#43495c"
+box_elected = "#43495c"
+box_highlight = "#ffffff"
+box_selected = "#ffffff"
+
+# Stile Command Line / Prompt / Password Bar
+input_bg = "#0c0c0e"
+input_fg = "#ffffff"
+input_placeholder = "#5f657b"
+input_border = "#43495c"
+input_border_focus = "#00f0ff"
+
+[colors.thresholds]
+normal = "#00ff73"
+warning = "#ffeb19"
+alert = "#ff2a9d"
+critical = "#ff213f"

@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from core.config import CONFIG
+from panels.base import load_panel
+
+ACTIVE_POPUP_FILE = "/tmp/nc_ui_active_popup.json"
+LEAVE_STAMP_FILE = "/tmp/nc_ui_last_leave.json"
+
+
+def _read_json(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_json(path: str, data: dict) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _remove_file(path: str) -> None:
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8") as f:
+            stat_str = f.read()
+            if ") Z " in stat_str:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _kill_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(15):
+            if not _is_pid_alive(pid):
+                return
+            time.sleep(0.01)
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def _detach_from_waybar() -> None:
+    try:
+        pid = os.fork()
+        if pid > 0:
+            os._exit(0)
+    except Exception:
+        pass
+    try:
+        os.setsid()
+    except Exception:
+        pass
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    except Exception:
+        pass
+    try:
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+        log_path = CONFIG.get("general", {}).get("log_file", "/tmp/nc-ui.log")
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.dup2(devnull_fd, 0)
+        os.dup2(devnull_fd, 1)
+        os.dup2(log_fd, 2)
+        if devnull_fd > 2:
+            os.close(devnull_fd)
+        if log_fd > 2:
+            os.close(log_fd)
+    except Exception:
+        pass
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print("Uso: nc-ctl <popup|settings|action> <panel_id> [args...] [--x <px>]")
+        sys.exit(0)
+
+    cmd = args[0]
+    target = args[1].strip() if len(sys.argv) > 2 else "network"
+
+    if cmd == "action":
+        if target == "capture":
+            active_info = _read_json(ACTIVE_POPUP_FILE)
+            old_pid = int(active_info.get("pid", 0))
+            if old_pid and _is_pid_alive(old_pid):
+                _kill_pid(old_pid)
+                _remove_file(ACTIVE_POPUP_FILE)
+        act = args[2] if len(args) > 2 else ""
+        extra = args[3:] if len(args) > 3 else []
+        panel = load_panel(target)
+        panel.on_bar_action(act, extra)
+        sys.exit(0)
+
+    mode = "settings" if cmd == "settings" else "popup"
+
+    anchor_x = None
+    if "--x" in args:
+        idx = args.index("--x")
+        if idx + 1 < len(args):
+            try:
+                anchor_x = int(args[idx + 1])
+            except ValueError:
+                pass
+
+    active_info = _read_json(ACTIVE_POPUP_FILE)
+    old_pid = int(active_info.get("pid", 0))
+    old_panel = active_info.get("panel_id", "")
+    old_mode = active_info.get("mode", "")
+
+    if old_pid and _is_pid_alive(old_pid):
+        _kill_pid(old_pid)
+        _remove_file(ACTIVE_POPUP_FILE)
+        if old_panel == target and old_mode == mode:
+            sys.exit(0)
+    else:
+        leave_info = _read_json(LEAVE_STAMP_FILE)
+        if (
+            mode == "popup"
+            and leave_info.get("panel_id") == target
+            and (time.time() - float(leave_info.get("ts", 0.0))) < 0.32
+        ):
+            _remove_file(LEAVE_STAMP_FILE)
+            sys.exit(0)
+
+    _detach_from_waybar()
+
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk, GLib
+    try:
+        from gi.repository import GLibUnix
+        _unix_signal_add = GLibUnix.signal_add
+    except (ImportError, AttributeError):
+        _unix_signal_add = GLib.unix_signal_add
+
+    from ui.shell import ShellWindow
+
+    _write_json(ACTIVE_POPUP_FILE, {
+        "pid": os.getpid(),
+        "panel_id": target,
+        "mode": mode,
+        "ts": time.time(),
+    })
+
+    win_ref = {"win": None}
+
+    def _cleanup_and_quit(*_a):
+        cur = _read_json(ACTIVE_POPUP_FILE)
+        if int(cur.get("pid", 0)) == os.getpid():
+            _remove_file(ACTIVE_POPUP_FILE)
+        if win_ref["win"] is not None:
+            try:
+                win_ref["win"].hide()
+                win_ref["win"].destroy()
+            except Exception:
+                pass
+        Gtk.main_quit()
+        GLib.timeout_add(120, lambda: os._exit(0))
+        return False
+
+    _unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, _cleanup_and_quit)
+    _unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, _cleanup_and_quit)
+
+    try:
+        win = ShellWindow(panel_id=target, mode=mode, anchor_x=anchor_x)
+        win_ref["win"] = win
+        win.connect("destroy", lambda *_: _cleanup_and_quit())
+        win.show_all()
+        Gtk.main()
+    finally:
+        cur = _read_json(ACTIVE_POPUP_FILE)
+        if int(cur.get("pid", 0)) == os.getpid():
+            _remove_file(ACTIVE_POPUP_FILE)
+        os._exit(0)
+
+
+if __name__ == "__main__":
+    main()

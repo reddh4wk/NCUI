@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+import tempfile
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from panels.base import load_panel
+
+PILL_CACHE_FILE = "/tmp/nc_waybar_pills.json"
+
+
+def _save_pill_cache(panel_id: str, text: str) -> None:
+    data = {}
+    if os.path.exists(PILL_CACHE_FILE):
+        try:
+            with open(PILL_CACHE_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+        except Exception:
+            pass
+    data[panel_id] = text
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir="/tmp", prefix="nc_pills_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, PILL_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def main():
+    panel_id = sys.argv[1].strip() if len(sys.argv) > 1 else "network"
+    panel = load_panel(panel_id)
+    pill = panel.get_bar_pill()
+    text = pill.get("text", "")
+    _save_pill_cache(panel_id, text)
+    print(json.dumps({
+        "text": text,
+        "class": pill.get("class", "module-nc"),
+    }))
+
+
+if __name__ == "__main__":
+    main()
