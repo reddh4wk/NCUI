@@ -249,6 +249,12 @@ class ControlCenterPanel(BasePanel):
             cards.extend(build_cc_updates_cards(self, canvas, active_sub))
             return cards
 
+        # --- SEZIONE DEDICATA: AUTH (cc_auth) ---
+        if self.section == "auth":
+            from panels.cc_auth import build_cc_auth_cards
+            cards.extend(build_cc_auth_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -391,6 +397,7 @@ class ControlCenterPanel(BasePanel):
         from panels.cc_power import handle_cc_power_link
         from panels.cc_system import handle_cc_system_link
         from panels.cc_updates import handle_cc_updates_link
+        from panels.cc_auth import handle_cc_auth_link
         if handle_cc_keyboard_link(self, uri):
             return
         if handle_cc_apps_link(self, uri):
@@ -402,6 +409,8 @@ class ControlCenterPanel(BasePanel):
         if handle_cc_system_link(self, uri):
             return
         if handle_cc_updates_link(self, uri):
+            return
+        if handle_cc_auth_link(self, uri):
             return
         if self.section == "display" and handle_cc_display_link(self, uri):
             return

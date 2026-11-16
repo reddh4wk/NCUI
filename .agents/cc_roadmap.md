@@ -54,10 +54,10 @@
 ### 8. [x] `updates` (`panels/cc_updates.py`)
 - [x] std | [x] cyber — **Subtab `packages`**: Report generabile manualmente sullo stato degli aggiornamenti di sistema: pacchetti ufficiali Arch (`checkupdates`), pacchetti AUR (`paru -Qua`), pacchetti orfani (`pacman -Qdtq`), pulizia cache (`paccache`) e lancio aggiornamento protetto in terminale.
 
-### 9. [ ] `auth` (`panels/cc_auth.py`)
-- [ ] std | [ ] cyber — **Subtab `tpm`**: Stato UEFI Secure Boot (`sbctl status`, verifica firma immagini UKI), stato slot LUKS2 (`cryptsetup luksDump`) e binding con i registri PCR del chip TPM2 (`systemd-cryptenroll`).
-- [ ] std | [ ] cyber — **Subtab `keys`**: Identità SSH caricate in `ssh-agent` (`ssh-add -l`), chiavi pubbliche in `~/.ssh/*.pub` con copia rapida, e stato chiavi GPG (`gpg --list-secret-keys`).
-- [ ] std | [ ] cyber — **Subtab `polkit`**: Stato dell'agente di autenticazione Polkit in esecuzione, verifica configurazione `sudoers` / gruppo `wheel` e regole PAM/FIDO2.
+### 9. [x] `auth` (`panels/cc_auth.py`)
+- [x] std | [x] cyber — **Subtab `tpm`**: Stato UEFI Secure Boot (`sbctl status`, verifica firma immagini UKI), stato slot LUKS2 (`cryptsetup luksDump`) e binding con i registri PCR del chip TPM2 (`systemd-cryptenroll`).
+- [x] std | [x] cyber — **Subtab `keys`**: Identità SSH caricate in `ssh-agent` (`ssh-add -l`), chiavi pubbliche in `~/.ssh/*.pub` con copia rapida, e stato chiavi GPG (`gpg --list-secret-keys`).
+- [x] std | [x] cyber — **Subtab `polkit`**: Stato dell'agente di autenticazione Polkit in esecuzione, verifica configurazione `sudoers` / gruppo `wheel` e regole PAM/FIDO2.
 
 ### 10. [ ] `datetime` (`panels/cc_datetime.py`)
 - [ ] std | [ ] cyber — **Subtab `time`**: Stato sincronizzazione `systemd-timesyncd` (`timedatectl status`), toggle NTP, server pool NTP e stato orologio hardware RTC.
