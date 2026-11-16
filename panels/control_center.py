@@ -219,6 +219,12 @@ class ControlCenterPanel(BasePanel):
         hdr_box.add_row(" ")
         cards.append(hdr_box)
 
+        # --- SEZIONE DEDICATA: KEYBOARD ---
+        if self.section == "keyboard":
+            from panels.cc_keyboard import build_cc_keyboard_cards
+            cards.extend(build_cc_keyboard_cards(self, canvas, active_sub))
+            return cards
+
         # --- SEZIONE DEDICATA: NETWORK ---
         if self.section == "network":
             cards.extend(build_cc_network_cards(self, canvas, active_sub))
@@ -317,6 +323,9 @@ class ControlCenterPanel(BasePanel):
 
     def on_prompt_submit(self, action_id: str, text: str) -> None:
         from panels.cc_integrations import handle_cc_integrations_prompt
+        from panels.cc_keyboard import handle_cc_keyboard_prompt
+        if handle_cc_keyboard_prompt(self, action_id, text):
+            return
         if handle_cc_waybar_prompt(self, action_id, text):
             return
         if handle_cc_network_prompt(self, action_id, text):
@@ -335,6 +344,9 @@ class ControlCenterPanel(BasePanel):
 
     def on_link(self, uri: str) -> None:
         from panels.cc_integrations import handle_cc_integrations_link
+        from panels.cc_keyboard import handle_cc_keyboard_link
+        if handle_cc_keyboard_link(self, uri):
+            return
         if handle_cc_network_link(self, uri):
             return
         if handle_cc_calendar_link(self, uri):

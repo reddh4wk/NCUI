@@ -13,10 +13,10 @@
 
 ## Ordine di Esecuzione Sezioni (Una Sezione alla volta)
 
-### 1. [ ] `keyboard` (`panels/cc_keyboard.py`) — PRIORITÀ 1
-- [ ] std | [ ] cyber — **Subtab `keyboard`**: Repeat rate/delay live in `~/.config/niri/config.kdl`, NumLock on boot, area di test, **Macro Manager** e **Key Capture / Event Inspector** (cattura e diagnostica di tasti speciali/multimediali non mappati out-of-the-box tramite `wev` / `libinput debug-events`).
-- [ ] std | [ ] cyber — **Subtab `layout`**: Visualizzazione layout XKB attivi (`it`, `us`), selezione rapida di layout e varianti regionali, creazione/iniezione di layout custom e selettore lingua interfaccia NC-UI.
-- [ ] std | [ ] cyber — **Subtab `shortcuts`**: Configuratore visuale delle scorciatoie di `niri` (`~/.config/niri/config.kdl`), inclusi i lanci rapidi di `nc-ctl` e la configurazione dei tasti di navigazione da tastiera della barra e del Control Center.
+### 1. [x] `keyboard` (`panels/cc_keyboard.py`) — PRIORITÀ 1
+- [x] std | [x] cyber — **Subtab `keyboard`**: Repeat rate/delay live in `~/.config/niri/config.kdl`, NumLock on boot, area di test, **Macro Manager** e **Key Capture / Event Inspector** (cattura e diagnostica di tasti speciali/multimediali non mappati out-of-the-box tramite `wev` / `libinput debug-events`).
+- [x] std | [x] cyber — **Subtab `layout`**: Visualizzazione layout XKB attivi (`it`, `us`), selezione rapida di layout e varianti regionali, creazione/iniezione di layout custom e selettore lingua interfaccia NC-UI.
+- [x] std | [x] cyber — **Subtab `shortcuts`**: Configuratore visuale delle scorciatoie di `niri` (`~/.config/niri/config.kdl`), inclusi i lanci rapidi di `nc-ctl` e la configurazione dei tasti di navigazione da tastiera della barra e del Control Center.
 
 ### 2. [~] `personalization` (`panels/cc_personalization.py`)
 - [ ] std | [ ] cyber — **Subtab `theme`**: Trasparenza globale UI (preservare sincronizzazione Waybar), selettore live `box_style` (`rounded`, `sharp`, `heavy`, `double`), palette `accent`, colori soglia (`normal`, `warning`, `alert`, `critical`) e colori semantici di **selezione (`box_selected`), elezione (`box_elected`) ed evidenziazione (`box_highlight`)** in `theme.toml`. Personalizzazione di ogni icona testuale di sistema, tema e dimensione del cursore in Niri/GTK, e selezione/calibrazione dimensione del font (solo font monospace).

@@ -130,12 +130,35 @@ def main() -> int:
             return 2
 
     os.environ["NC_UI_OFFSCREEN"] = "1"
+    broadway_proc = None
 
     try:
         import cairo
         import gi
         gi.require_version("Gtk", "3.0")
         from gi.repository import Gtk, Gdk, GLib
+
+        if not Gtk.init_check()[0]:
+            import shutil, subprocess, time
+            if shutil.which("broadwayd") and os.environ.get("NC_SHOT_BW_CHILD") != "1":
+                env_bw = os.environ.copy()
+                env_bw["XDG_RUNTIME_DIR"] = "/tmp"
+                broadway_proc = subprocess.Popen(
+                    ["broadwayd", ":5"],
+                    env=env_bw,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.25)
+                child_env = env_bw.copy()
+                child_env["GDK_BACKEND"] = "broadway"
+                child_env["BROADWAY_DISPLAY"] = ":5"
+                child_env["NC_SHOT_BW_CHILD"] = "1"
+                rc = subprocess.call([sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env=child_env)
+                return rc
+            if not Gtk.init_check()[0]:
+                _msg_err("Impossibile inizializzare GTK3.")
+                return 3
     except Exception as e:
         _msg_err(f"Impossibile inizializzare GTK3 / Cairo: {e}")
         return 3
@@ -267,6 +290,15 @@ def main() -> int:
             reload_locale(prev_lang)
         if args.style and prev_style is not None:
             STATE.set("control_center", "panel_style", prev_style)
+        if broadway_proc is not None:
+            try:
+                broadway_proc.terminate()
+                broadway_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    broadway_proc.kill()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
