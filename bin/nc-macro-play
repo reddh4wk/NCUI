@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""NC-UI Kernel /dev/uinput Gaming Macro Player (`bin/nc-macro-play`)."""
+
+import fcntl
+import glob
+import json
+import os
+import re
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+MACROS_FILE = os.path.expanduser("~/.config/nc-ui/macros.json")
+UINPUT_PATH = "/dev/uinput"
+ACTIVE_PID_FILE = "/tmp/nc_macro_play_active.pid"
+_PANIC_KEYCODES = {"F12": 88, "Pause": 119}
+
+# Linux x86_64 uinput/input ioctl constants (verified against <linux/uinput.h>)
+UI_DEV_CREATE = 0x5501
+UI_DEV_DESTROY = 0x5502
+UI_DEV_SETUP = 0x405C5503
+UI_SET_EVBIT = 0x40045564
+UI_SET_KEYBIT = 0x40045565
+EV_SYN = 0x00
+EV_KEY = 0x01
+SYN_REPORT = 0
+BUS_VIRTUAL = 0x06
+_EV_STRUCT = struct.Struct("@qqHHi")
+
+_RUNNING = True
+
+
+def _stop_handler(_sig, _frm):
+    global _RUNNING
+    _RUNNING = False
+
+
+def _load_macro(target: str) -> dict | None:
+    if not os.path.exists(MACROS_FILE):
+        return None
+    try:
+        with open(MACROS_FILE, "r", encoding="utf-8") as f:
+            macros = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(macros, list):
+        return None
+    for idx, m in enumerate(macros):
+        if str(m.get("id", "")) == target or str(idx) == target or str(m.get("name", "")) == target:
+            m["_resolved_id"] = str(m.get("id") or idx)
+            return m
+    return None
+
+
+def _emit(fd: int, ev_type: int, code: int, value: int) -> None:
+    now = time.time()
+    sec = int(now)
+    usec = int((now - sec) * 1_000_000)
+    pkt = struct.pack("@qqHHi", sec, usec, ev_type, code, value)
+    os.write(fd, pkt)
+
+
+def _send_key(fd: int, code: int, value: int) -> None:
+    _emit(fd, EV_KEY, code, value)
+    _emit(fd, EV_SYN, SYN_REPORT, 0)
+
+
+def _compile_timeline(macro: dict) -> list[tuple[float, int, int]]:
+    steps = macro.get("steps") or []
+    t_mode = str(macro.get("timing_mode", "recorded"))
+    fixed_ms = max(5, int(macro.get("fixed_delay_ms", 25) or 25))
+    speed = max(0.1, float(macro.get("speed_mult", 1.0) or 1.0))
+
+    events = []
+    cur_ms = 0.0
+    for st in steps:
+        kc = int(st.get("keycode", 0) or 0)
+        if kc <= 0 or kc >= 256:
+            continue
+        if t_mode == "zero":
+            events.append((cur_ms, kc, 1))
+            events.append((cur_ms + 4.0, kc, 0))
+            cur_ms += 6.0
+        elif t_mode == "fixed":
+            wait = fixed_ms / speed
+            hold = max(8.0, fixed_ms / speed)
+            cur_ms += wait
+            events.append((cur_ms, kc, 1))
+            events.append((cur_ms + hold, kc, 0))
+        else:
+            wait = max(0.0, float(st.get("delay_ms", 0))) / speed
+            hold = max(10.0, float(st.get("hold_ms", 50))) / speed
+            cur_ms += wait
+            events.append((cur_ms, kc, 1))
+            events.append((cur_ms + hold, kc, 0))
+    events.sort(key=lambda e: (e[0], 0 if e[2] == 1 else 1))
+    return events
+
+
+def _open_evdev_readers() -> list[int]:
+    fds = []
+    for path in sorted(glob.glob("/dev/input/event*")):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            fds.append(fd)
+        except OSError:
+            continue
+    return fds
+
+
+def _poll_panic(fds: list[int], panic_code: int) -> bool:
+    global _RUNNING
+    for fd in fds:
+        try:
+            data = os.read(fd, _EV_STRUCT.size * 16)
+        except BlockingIOError:
+            continue
+        except OSError:
+            continue
+        off = 0
+        while off + _EV_STRUCT.size <= len(data):
+            _s, _us, ev_t, code, val = _EV_STRUCT.unpack_from(data, off)
+            off += _EV_STRUCT.size
+            if ev_t == EV_KEY and code == panic_code and val == 1:
+                _RUNNING = False
+                return True
+    return False
+
+
+def _sleep_guard(sec: float, ev_fds: list[int], panic_code: int) -> bool:
+    deadline = time.monotonic() + max(0.0, sec)
+    while _RUNNING:
+        if _poll_panic(ev_fds, panic_code):
+            return False
+        rem = deadline - time.monotonic()
+        if rem <= 0:
+            return True
+        time.sleep(min(0.05, rem))
+    return False
+
+
+def _play_uinput(macro: dict, pid_file: str) -> int:
+    events = _compile_timeline(macro)
+    if not events:
+        cmd = str(macro.get("cmd", "") or "").strip()
+        if cmd:
+            subprocess.Popen(["bash", "-c", cmd], start_new_session=True)
+        return 0
+
+    try:
+        fd = os.open(UINPUT_PATH, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as e:
+        sys.stderr.write(f"Cannot open {UINPUT_PATH}: {e}\n")
+        return 1
+
+    ev_fds = _open_evdev_readers()
+    panic_code = _PANIC_KEYCODES.get(str(macro.get("panic_key") or "F12"), 88)
+    countdown_s = max(0, min(15, int(macro.get("countdown_s", 0) or 0)))
+    pressed = set()
+    try:
+        for pf_path in (pid_file, ACTIVE_PID_FILE):
+            with open(pf_path, "w", encoding="utf-8") as pf:
+                pf.write(str(os.getpid()))
+
+        if countdown_s > 0 and not _sleep_guard(float(countdown_s), ev_fds, panic_code):
+            return 0
+
+        fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+        used_codes = sorted({kc for _, kc, _ in events})
+        for kc in used_codes:
+            fcntl.ioctl(fd, UI_SET_KEYBIT, kc)
+        setup = struct.pack("@HHHH80sI", BUS_VIRTUAL, 0x4E43, 0x4D41, 1, b"nc-ui-macro-kbd", 0)
+        fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+        fcntl.ioctl(fd, UI_DEV_CREATE)
+        time.sleep(0.08)  # Allow Wayland/libinput to register virtual device
+
+        rep_mode = str(macro.get("repeat_mode", "once"))
+        reps = 1 if rep_mode == "once" else (max(1, int(macro.get("repeat_count", 1) or 1)) if rep_mode == "count" else 10**9)
+
+        i = 0
+        while _RUNNING and i < reps:
+            i += 1
+            start_t = time.monotonic()
+            for t_ms, kc, val in events:
+                if not _RUNNING or _poll_panic(ev_fds, panic_code):
+                    break
+                target_t = start_t + (t_ms / 1000.0)
+                rem = target_t - time.monotonic()
+                if rem > 0 and not _sleep_guard(rem, ev_fds, panic_code):
+                    break
+                if not _RUNNING:
+                    break
+                _send_key(fd, kc, val)
+                if val:
+                    pressed.add(kc)
+                else:
+                    pressed.discard(kc)
+            if _RUNNING and i < reps:
+                _sleep_guard(0.02, ev_fds, panic_code)
+    finally:
+        for kc in list(pressed):
+            try:
+                _send_key(fd, kc, 0)
+            except Exception:
+                pass
+        try:
+            fcntl.ioctl(fd, UI_DEV_DESTROY)
+        except Exception:
+            pass
+        os.close(fd)
+        for efd in ev_fds:
+            try:
+                os.close(efd)
+            except OSError:
+                pass
+        for pf_path in (pid_file, ACTIVE_PID_FILE):
+            try:
+                if os.path.exists(pf_path):
+                    os.unlink(pf_path)
+            except Exception:
+                pass
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write("Usage: nc-macro-play <macro_id_or_index>\n")
+        return 2
+    target = sys.argv[1].strip()
+    macro = _load_macro(target)
+    if not macro:
+        sys.stderr.write(f"Macro not found: {target}\n")
+        return 1
+
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(macro.get("_resolved_id", target)))
+    pid_file = f"/tmp/nc_macro_play_{safe_id}.pid"
+
+    if str(macro.get("repeat_mode", "once")) == "toggle_loop" and os.path.exists(pid_file):
+        try:
+            old_pid = int(open(pid_file, "r").read().strip())
+            os.kill(old_pid, signal.SIGTERM)
+            try:
+                os.unlink(pid_file)
+            except Exception:
+                pass
+            return 0
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGTERM, _stop_handler)
+    signal.signal(signal.SIGINT, _stop_handler)
+    return _play_uinput(macro, pid_file)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

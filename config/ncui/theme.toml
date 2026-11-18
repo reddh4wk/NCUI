@@ -2,21 +2,25 @@
 font_family = "Courier"
 font_size = 11
 font_weight = "bold"
+cursor_theme = "cyberpunk_2077_cursors_by_elfantasmaponi_df1c3mr"
+cursor_size = 16
+cursor_archive = "cyberpunk_2077_cursors_by_elfantasmaponi_df1c3mr.zip"
 
 [geometry]
 compact_cols = 44
 expanded_cols = 96
-panel_padding = 10
-card_spacing = 6
-screen_margin = 12
 sidebar_nav_cols = 24
-popup_gap_top = 4
+popup_gap_top = 8
 popup_max_height = 900
 window_border_width = 1
 window_border_radius = 16
+panel_padding = 10
+card_spacing = 6
+screen_margin = 8
+default_key_width = 20
+row_gap = 2
 
 [ascii]
-# Stili disponibili: "rounded" (╭─╮), "sharp" (┌─┐), "heavy" (┏━┓), "double" (╔═╗)
 box_style = "rounded"
 title_brackets = ["[ ", " ]"]
 button_brackets = ["[", "]"]
@@ -24,71 +28,82 @@ slider_brackets = ["[", "]"]
 slider_fill = "#"
 slider_empty = "-"
 sparkline_chars = "▁▂▃▄▅▆▇█"
+pill_dots = ["●", "○"]
+tab_caps = ["▏", "▕"]
+collapsible_icons = ["▼", "▶"]
+table_rule = "─"
+kv_separator = ":"
+search_prefix = " >"
+search_brackets = ["▏", "▕"]
+search_cursor = "│"
 
 [colors]
-window_bg = "rgba(13, 13, 15, 0.90)"
-window_border = "rgba(255, 255, 255, 0.12)"
-background = "#09090b"
-
-# 1. Tono Grafite — INERZIA (frame, grid, none)
-structure = "#43495c"
-structure_bg = "#1a1c23"
-inactive = "#5f657b"
-
-# 2. Tono Ardesia — METADATO (keys, headers, split)
-schema = "#8c9bba"
-
-# 3. Tono Bianco — DATO (focus, values, titles)
+surface_bg = "#080a0f"
+window_opacity = 0.80
+box_opacity = 0.40
+waybar_sync_opacity = true
+waybar_sync_color = true
+window_bg = "rgba(8, 10, 15, 0.80)"
+window_border = "#3e465c"
+background = "#06080c"
+structure = "#3e465c"
+structure_bg = "#141824"
+inactive = "#596278"
+schema = "#8b9bb8"
 focus = "#ffffff"
-focus_val = "#e2eafc"
-
-# 4. Tono Ciano — UI (tabs, selection, user-input)
-intent = "#00f0ff"#89dceb"#00f0ff"#ff2a9d"#00f0ff"#ffeb19"#00f0ff"#00ff73"#00f0ff"
-intent_soft = "#4db8c4"
-intent_bg = "#002a3a"
-
-# 5. Tono Verde — HW/OS (up, active, done)
-vitality = "#00ff73"
-vitality_soft = "#4fac73"
-vitality_bg = "#002813"
-
-# 6. Tono Giallo — MUTAZIONE (dirty, failover, warn)
-attention = "#ffeb19"
-attention_soft = "#c7b848"
-attention_bg = "#332d00"
-
-# 7a. Tono Fucsia — INTERRUZIONE (stop, kill, down)
+focus_val = "#dce6f7"
+intent = "#00f0ff"
+intent_soft = "#3ec8d6"
+intent_bg = "#002b36"
+vitality = "#00f57a"
+vitality_soft = "#3ebd7c"
+vitality_bg = "#002915"
+attention = "#ffe619"
+attention_soft = "#c7b438"
+attention_bg = "#332b00"
 interrupt = "#ff2a9d"
-interrupt_rest = "#bd5b86"
-interrupt_bg = "#3a091d"
-
-# 7b. Tono Rosso — GUASTO (timeout, err, crit)
-fault = "#ff213f"
-fault_soft = "#c94f5f"
-fault_bg = "#36050b"
-
-# Mapping globale legacy / core
+interrupt_rest = "#c45b8c"
+interrupt_bg = "#36081e"
+fault = "#ff2442"
+fault_soft = "#c9495b"
+fault_bg = "#38060e"
+wb_bg = "#080a0f"
+wb_pill_bg = "#141824"
+wb_fg = "#dce6f7"
+wb_accent = "#00f0ff"
+wb_active = "#00f57a"
+wb_warn = "#ffe619"
+wb_crit = "#ff2442"
 primary = "#ffffff"
-secondary = "#8c9bba"
-muted = "#5f657b"
-accent = "#00f0ff"#89dceb"#00f0ff"#ff2a9d"#00f0ff"#ffeb19"#00f0ff"#00ff73"#00f0ff"
+secondary = "#8b9bb8"
+muted = "#596278"
+accent = "#00f0ff"
 info = "#00f0ff"
-
-# Stati semantici cornici nc-boxes (Grafite a riposo, Bianco su Hover/Header)
-box_inactive = "#43495c"
-box_elected = "#43495c"
+box_inactive = "#3e465c"
+box_elected = "#3e465c"
 box_highlight = "#ffffff"
 box_selected = "#ffffff"
-
-# Stile Command Line / Prompt / Password Bar
-input_bg = "#0c0c0e"
+input_bg = "#0b0e15"
 input_fg = "#ffffff"
-input_placeholder = "#5f657b"
-input_border = "#43495c"
+input_placeholder = "#596278"
+input_border = "#3e465c"
 input_border_focus = "#00f0ff"
 
 [colors.thresholds]
-normal = "#00ff73"
-warning = "#ffeb19"
+normal = "#00f57a"
+warning = "#ffe619"
 alert = "#ff2a9d"
-critical = "#ff213f"
+critical = "#ff2442"
+
+[ascii.chars]
+tl = "╭"
+tr = "╮"
+bl = "╰"
+br = "╯"
+h = "─"
+v = "│"
+ml = "├"
+mr = "┤"
+mt = "┬"
+mb = "┴"
+mc = "┼"

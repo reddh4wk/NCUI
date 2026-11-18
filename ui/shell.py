@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import re
 import sys
 import time
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -17,13 +19,47 @@ try:
 except ValueError:
     HAS_LAYER_SHELL = False
 
-from core.config import CONFIG, THEME, get_waybar_look, get_effective_window_bg
+from core.config import (
+    CONFIG,
+    THEME,
+    get_box_opacity,
+    get_surface_bg_rgb,
+    get_waybar_look,
+    get_effective_window_bg,
+    get_layout_margins,
+    sync_waybar_outer_margin,
+    _parse_rgba_components,
+)
+from core.completion import search_control_center
 from core.i18n import t
 from core import probe, log
+from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import PALETTE, Box, Divider, sync_boxes_width
-from ui.widgets import AsciiCard, CustomWidgetCard, NcPromptBar
-from panels.base import load_panel, CONTROL_CENTER_SECTIONS
+from ui.kit import (
+    PALETTE,
+    ActionBtn,
+    Box,
+    Divider,
+    InspectorCell,
+    Txt,
+    cancel_inline_entry,
+    commit_active_inline_entry,
+    get_active_inline_entry,
+    get_active_inline_uri,
+    get_inline_candidate_index,
+    get_inline_entry_buffer,
+    get_scroll_zone_action,
+    get_semantic_palette,
+    handle_inline_entry_key_press,
+    set_inline_candidates,
+    start_inline_input,
+    step_inline_completion,
+    sync_boxes_width,
+    sync_inline_from_gtk_entry,
+)
+from ui.widgets import AsciiCard, CustomWidgetCard, NcPromptBar, allow_step_input, pointer_moved_recently, clear_pointer_move_flag
+from panels.base import load_panel
+from panels.control_center import CONTROL_CENTER_SECTIONS
 
 PILL_CACHE_FILE = "/tmp/nc_waybar_pills.json"
 LEAVE_STAMP_FILE = "/tmp/nc_ui_last_leave.json"
@@ -41,13 +77,15 @@ DEFAULT_PANEL_TO_WB_MODULE = {
     "notifications": "custom/notifications",
     "session": "custom/session",
     "power": "custom/power",
+    "printers": "custom/printers",
     "ups": "custom/ups",
+    "kb_layout": "custom/kb_layout",
     "storage": "custom/storage",
 }
 
 _LINK_TAG_RE = re.compile(r"</?a\b[^>]*>", re.IGNORECASE)
 _AGENT_CMD_RE = re.compile(r"nc-bar-agent\s+([a-zA-Z0-9_-]+)")
-_CTL_CMD_RE = re.compile(r"nc-ctl\s+(?:popup|settings|action)\s+([a-zA-Z0-9_-]+)")
+_CTL_CMD_RE = re.compile(r"nc-ctl\s+(?:popup|action)\s+([a-zA-Z0-9_-]+)")
 
 SIDEBAR_ICON_COLS = 8
 
@@ -55,9 +93,11 @@ SIDEBAR_ICON_COLS = 8
 class ShellWindow(Gtk.Window):
     def __init__(self, panel_id: str, mode: str = "popup", anchor_x: int = None):
         self.mode = mode
-        self.panel_id = str(panel_id or ("system" if mode == "settings" else "network")).strip()
-        super().__init__(title=f"NC-UI: {self.panel_id}")
+        self.panel_id = str(panel_id or ("" if mode == "settings" else "network")).strip()
+        super().__init__(title=f"NC-UI: {self.panel_id or 'settings'}")
         self.panel = load_panel(self.panel_id, shell=self, mode=self.mode)
+        if self.mode == "settings" and not self.panel_id:
+            self.panel_id = "settings"
 
         self._refresh_source_id = None
         self._hovered_card_idx = None
@@ -71,12 +111,30 @@ class ShellWindow(Gtk.Window):
         self._stable_cols_val = 0
         self._css_provider = None
         self._nav_cell_height_px = 48.0
+        self._last_nav_height_px = -1
+        self._last_nav_state = None
+        self._ink_insets = None
+        self.header_listbox = None
+        self.right_vbox = None
+        self.root_overlay = None
+        self.cc_search_holder = None
+        self.cc_search_listbox = None
+        self._inline_entry = None
+        self._suppress_inline_sync = False
         self.click_x = anchor_x if (anchor_x is not None and anchor_x > 0) else -1
 
         # Stato del motore di navigazione da tastiera 2D
         self._focus_targets = []
         self._focused_target_idx = -1
         self._focused_uri_memory = None
+        self._last_render_sig = None
+        self._nav_sized = False
+        self._last_win_size = None
+        self._last_sw_size = None
+
+        if self.mode == "settings" and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            _, _init_outer_mar = get_layout_margins()
+            sync_waybar_outer_margin(_init_outer_mar, reload_bar=True)
 
         self.wb_look = get_waybar_look()
         self.geom = THEME["geometry"]
@@ -109,6 +167,7 @@ class ShellWindow(Gtk.Window):
             | Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.BUTTON_RELEASE_MASK
             | Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.KEY_RELEASE_MASK
             | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.SMOOTH_SCROLL_MASK
         )
@@ -116,38 +175,147 @@ class ShellWindow(Gtk.Window):
         self.connect("motion-notify-event", self._on_window_motion)
         self.connect("leave-notify-event", self._on_leave)
         self.connect("key-press-event", self._on_key_press)
+        self.connect("key-release-event", self._on_key_release)
+        self.connect("scroll-event", self._on_scrolled_window_scroll)
         self.connect("realize", self._on_realize)
         self.connect("size-allocate", self._on_size_allocate)
 
         self.refresh_view()
+        if self.mode == "settings":
+            if "NC_TEST_GLOBAL_SEARCH" in os.environ:
+                self.open_cc_global_search(os.environ.get("NC_TEST_GLOBAL_SEARCH", ""))
+            elif STATE.get("control_center", "open_global_search", False):
+                STATE.set("control_center", "open_global_search", False)
+                GLib.idle_add(self.open_cc_global_search)
         self._setup_timer()
 
+    def _get_box_ink_insets(self) -> tuple[int, int, int, int]:
+        if self._ink_insets is not None:
+            return self._ink_insets
+        try:
+            import cairo as _cairo
+            from gi.repository import PangoCairo as _PC
+            c = Canvas(total_cols=36)
+            hdr_sample = Box("TITLE", icon="\uf53f", actions=[ActionBtn("\uf002", "x")], highlighted=True)
+            hdr_sample.add_row(" ")
+            pango_only = _LINK_TAG_RE.sub("", Canvas.sanitize_markup(hdr_sample.render(c)))
+            surf_w = max(64, int(round(c.total_px)) + 8)
+            surf_h = max(48, int(c.char_h * 5))
+            surf = _cairo.ImageSurface(_cairo.FORMAT_ARGB32, surf_w, surf_h)
+            cr = _cairo.Context(surf)
+            lay = _PC.create_layout(cr)
+            lay.set_font_description(c.layout.get_font_description())
+            lay.set_markup(f"<span font_features='liga=0, clig=0, dlig=0, hlig=0'>{pango_only}</span>" if pango_only else "", -1)
+            _PC.show_layout(cr, lay)
+            box_w, box_h = lay.get_pixel_size()
+            st = surf.get_stride()
+            buf = surf.get_data()
+
+            def _lum(px: int, py: int) -> int:
+                i = py * st + px * 4
+                return max(buf[i], buf[i + 1], buf[i + 2])
+
+            mid_y = max(1, min(box_h - 2, box_h // 2))
+            mid_x = max(1, min(box_w - 2, int(round(box_w * 0.72))))
+            xs = [px for px in range(min(box_w, surf_w)) if _lum(px, mid_y) > 100]
+            top_ys = [py for py in range(min(box_h // 2, surf_h)) if _lum(mid_x, py) > 100]
+            bot_ys = [py for py in range(max(0, box_h - int(c.char_h) - 2), min(box_h, surf_h)) if _lum(mid_x, py) > 100]
+
+            s_left = xs[0] if xs else 4
+            s_right = (box_w - 1 - xs[-1]) if xs else 4
+            s_top_hdr = top_ys[0] if top_ys else 9
+            s_bot = (box_h - 1 - bot_ys[-1]) if bot_ys else 9
+            self._ink_insets = (s_left, s_right, s_top_hdr, s_bot)
+        except Exception:
+            self._ink_insets = (4, 4, 9, 9)
+        return self._ink_insets
+
+    def _get_inner_box_margins(self) -> tuple[int, int, int, int, int]:
+        inner_pad, _ = get_layout_margins()
+        bw = int(self.geom.get("window_border_width", 1))
+        s_left, s_right, s_top_hdr, s_bot = self._get_box_ink_insets()
+        m_left = max(bw, bw + inner_pad - s_left)
+        m_right = max(bw, bw + inner_pad - s_right)
+        m_top = max(bw, bw + inner_pad - s_top_hdr)
+        m_bot = max(bw, bw + inner_pad - s_bot)
+        hbox_gap = max(0, inner_pad - s_right - s_left)
+        return m_left, m_right, m_top, m_bot, hbox_gap
+
+    def _all_card_widgets(self) -> list:
+        cards = []
+        if self.mode == "settings" and self.header_listbox is not None:
+            cards.extend(self.header_listbox.get_children())
+        cards.extend(self.listbox.get_children())
+        return cards
+
     def _get_cc_target_width_px(self) -> int:
-        return int(CONFIG.get("control_center", {}).get("width_px", 960))
+        m_left, m_right, _m_top, _m_bot, hbox_gap = self._get_inner_box_margins()
+        nav_w_px = int(round(self.nav_canvas.total_px))
+        if hasattr(self, "content_canvas"):
+            right_w_px = int(round(self.content_canvas.total_px))
+        else:
+            right_w_px = int(round(self._compute_cc_content_cols() * self.nav_canvas.char_w))
+        return m_left + nav_w_px + hbox_gap + right_w_px + m_right
 
     def _compute_cc_content_cols(self) -> int:
-        target_w = self._get_cc_target_width_px()
-        pad = int(self.geom.get("panel_padding", 10))
-        avail_px = max(320.0, float(target_w - (pad * 2) - 8) - self.nav_canvas.total_px)
+        cfg_w = int(CONFIG.get("control_center", {}).get("width_px", 960))
+        m_left, m_right, _m_top, _m_bot, hbox_gap = self._get_inner_box_margins()
+        nav_w_px = int(round(self.nav_canvas.total_px))
+        avail_px = max(320.0, float(cfg_w - m_left - m_right - hbox_gap - nav_w_px))
         return max(44, int(avail_px // self.nav_canvas.char_w))
 
     def _get_cc_target_height_px(self) -> int:
         _mon, _mon_w, mon_h = self._resolve_target_monitor()
-        wb_top = int(self.wb_look.get("top", 34))
-        gap_top = int(self.geom.get("popup_gap_top", 4))
-        scr_margin = int(self.geom.get("screen_margin", 12))
-        return max(540, mon_h - wb_top - gap_top - scr_margin)
+        if os.environ.get("NC_UI_OFFSCREEN") == "1" and mon_h < 1200:
+            mon_h = 1440
+        _, outer_mar = get_layout_margins()
+        wb_top = int(self.wb_look.get("top", 30 + outer_mar))
+        return max(540, mon_h - wb_top - outer_mar - outer_mar)
 
-    def _measure_nav_markup_size_px(self, markup_str: str) -> tuple[int, int]:
-        s = Canvas.sanitize_markup(markup_str)
+    def _measure_cc_box_px(self, item) -> int:
+        bm = item.box_model if hasattr(item, "box_model") else item
+        if not isinstance(bm, (Box, Divider)):
+            return 0
+        c = self.content_canvas
+        rendered = bm.render(c, forced_cols=c.total_cols)
+        s = c.sanitize_markup(rendered)
         pango_only = _LINK_TAG_RE.sub("", s)
-        self.nav_canvas.layout.set_width(-1)
+        c.layout.set_width(-1)
         try:
-            self.nav_canvas.layout.set_markup(pango_only, -1)
-            w_px, h_px = self.nav_canvas.layout.get_pixel_size()
-            return int(w_px), int(h_px)
+            c.layout.set_markup(f"<span font_features='liga=0, clig=0, dlig=0, hlig=0'>{pango_only}</span>", -1)
+            h_px = int(c.layout.get_pixel_size()[1])
+            if h_px > 0:
+                return h_px
         except Exception:
-            return int(self.nav_canvas.total_px), int(len(markup_str.splitlines()) * self.nav_canvas.char_h)
+            pass
+        std_row_h = getattr(c, "_std_row_h_px", 0)
+        if std_row_h <= 0:
+            sample_r = c.row(" ")
+            std_row_h = max(12, int(round(c.measure_line_height(sample_r) / Pango.SCALE)))
+            c._std_row_h_px = std_row_h
+        base_h = int(c.base_row_h_px)
+        return sum(std_row_h if "\u200b" in ln else base_h for ln in rendered.splitlines())
+
+    def get_cc_avail_body_height_px(self, extra_top_cards: list = None) -> int:
+        _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+        avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot)
+        c = self.content_canvas
+        std_row_h = getattr(c, "_std_row_h_px", 0)
+        if std_row_h <= 0:
+            sample_r = c.row(" ")
+            std_row_h = max(12, int(round(c.measure_line_height(sample_r) / Pango.SCALE)))
+            c._std_row_h_px = std_row_h
+        base_h = int(c.base_row_h_px)
+        spacing = int(self.geom.get("card_spacing", 4))
+        hdr_h = (2 * base_h) + (3 * std_row_h)
+        if self.header_listbox is not None and self.header_listbox.get_children():
+            hdr_ch = self.header_listbox.get_children()[0]
+            if getattr(hdr_ch, "_last_markup", ""):
+                hdr_h = sum(std_row_h if "\u200b" in ln else base_h for ln in hdr_ch._last_markup.splitlines())
+        used_h = hdr_h + spacing
+        for ec in (extra_top_cards or ()):
+            used_h += self._measure_cc_box_px(ec) + spacing
+        return max(240, avail_list_h - used_h)
 
     def bump_leave_guard(self, duration_sec: float = 0.45) -> None:
         self._ignore_leave_until = max(self._ignore_leave_until, time.monotonic() + duration_sec)
@@ -176,7 +344,7 @@ class ShellWindow(Gtk.Window):
         return False
 
     def is_pointer_busy(self) -> bool:
-        for c in self.listbox.get_children():
+        for c in self._all_card_widgets():
             if isinstance(c, AsciiCard) and getattr(c, "_button_down", False):
                 return True
         return False
@@ -216,7 +384,7 @@ class ShellWindow(Gtk.Window):
         s = Canvas.sanitize_markup(markup_str)
         pango_only = _LINK_TAG_RE.sub("", s)
         try:
-            self._wb_pango_layout.set_markup(pango_only, -1)
+            self._wb_pango_layout.set_markup(f"<span font_features='liga=0, clig=0, dlig=0, hlig=0'>{pango_only}</span>" if pango_only else "", -1)
             return self._wb_pango_layout.get_size()[0] / Pango.SCALE
         except Exception:
             self._wb_pango_layout.set_attributes(None)
@@ -238,6 +406,7 @@ class ShellWindow(Gtk.Window):
             "model": None,
             "ws_count": 3,
             "win_title": "",
+            "_left_loaded": False,
         }
         if probe.has_bin("niri"):
             ok, out = probe.run_cmd(["niri", "msg", "-j", "focused-output"], timeout=0.4)
@@ -249,28 +418,35 @@ class ShellWindow(Gtk.Window):
                     ctx["model"] = data.get("model")
                 except Exception:
                     pass
-            ok_w, out_w = probe.run_cmd(["niri", "msg", "-j", "workspaces"], timeout=0.4)
-            if ok_w and out_w:
-                try:
-                    ws_list = json.loads(out_w)
-                    if isinstance(ws_list, list):
-                        if ctx["output_name"]:
-                            cnt = sum(1 for w in ws_list if w.get("output") == ctx["output_name"])
-                        else:
-                            cnt = len(ws_list)
-                        if cnt > 0:
-                            ctx["ws_count"] = cnt
-                except Exception:
-                    pass
-            ok_fw, out_fw = probe.run_cmd(["niri", "msg", "-j", "focused-window"], timeout=0.4)
-            if ok_fw and out_fw:
-                try:
-                    fw = json.loads(out_fw)
-                    if isinstance(fw, dict) and fw.get("title"):
-                        ctx["win_title"] = str(fw.get("title", ""))
-                except Exception:
-                    pass
         self._niri_geom_cache = ctx
+        return ctx
+
+    def _ensure_niri_left_metrics(self) -> dict:
+        ctx = self._query_niri_context()
+        if ctx.get("_left_loaded") or not probe.has_bin("niri"):
+            return ctx
+        ctx["_left_loaded"] = True
+        ok_w, out_w = probe.run_cmd(["niri", "msg", "-j", "workspaces"], timeout=0.4)
+        if ok_w and out_w:
+            try:
+                ws_list = json.loads(out_w)
+                if isinstance(ws_list, list):
+                    if ctx["output_name"]:
+                        cnt = sum(1 for w in ws_list if w.get("output") == ctx["output_name"])
+                    else:
+                        cnt = len(ws_list)
+                    if cnt > 0:
+                        ctx["ws_count"] = cnt
+            except Exception:
+                pass
+        ok_fw, out_fw = probe.run_cmd(["niri", "msg", "-j", "focused-window"], timeout=0.4)
+        if ok_fw and out_fw:
+            try:
+                fw = json.loads(out_fw)
+                if isinstance(fw, dict) and fw.get("title"):
+                    ctx["win_title"] = str(fw.get("title", ""))
+            except Exception:
+                pass
         return ctx
 
     def _resolve_target_monitor(self) -> tuple:
@@ -395,7 +571,7 @@ class ShellWindow(Gtk.Window):
                             if m_ctl:
                                 detected_pid = m_ctl.group(1).strip()
                                 break
-                            if "nc-ctl settings" in cmd_str and not detected_pid:
+                            if "nc-ctl settings" in cmd_str and not detected_pid and mod_name == "custom/settings":
                                 detected_pid = "settings"
 
                         if detected_pid:
@@ -436,7 +612,7 @@ class ShellWindow(Gtk.Window):
             return
         cur_idx = 0
         for idx, (pid, pmode) in enumerate(ordered):
-            if pid == self.panel_id and pmode == self.mode:
+            if (pmode == "settings" and self.mode == "settings") or (pid == self.panel_id and pmode == self.mode):
                 cur_idx = idx
                 break
         next_pid, next_mode = ordered[(cur_idx + delta) % len(ordered)]
@@ -447,7 +623,7 @@ class ShellWindow(Gtk.Window):
             return
         nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
         if next_mode == "settings":
-            probe.spawn_bg([sys.executable, nc_ctl_bin, "settings", "system"])
+            probe.spawn_bg([sys.executable, nc_ctl_bin, "settings"])
         else:
             probe.spawn_bg([sys.executable, nc_ctl_bin, "popup", next_pid])
         Gtk.main_quit()
@@ -494,11 +670,11 @@ class ShellWindow(Gtk.Window):
                 pass
 
         if mod_name == "niri/workspaces":
-            ws_cnt = max(1, int(self._query_niri_context().get("ws_count", 3)))
+            ws_cnt = max(1, int(self._ensure_niri_left_metrics().get("ws_count", 3)))
             return float(ws_cnt * 38 + 20)
 
         if mod_name == "niri/window":
-            title = self._query_niri_context().get("win_title", "")
+            title = self._ensure_niri_left_metrics().get("win_title", "")
             if not title:
                 return 0.0
             max_len = int(mod_cfg.get("max-length", 60))
@@ -518,8 +694,9 @@ class ShellWindow(Gtk.Window):
         if target_mon is not None:
             GtkLayerShell.set_monitor(self, target_mon)
 
-        gap_top = int(self.geom.get("popup_gap_top", 4))
-        scr_margin = int(self.geom.get("screen_margin", 12))
+        _, outer_mar = get_layout_margins()
+        gap_top = outer_mar if self.mode == "settings" else int(self.geom.get("popup_gap_top", outer_mar))
+        scr_margin = outer_mar
 
         if self.mode == "settings":
             side = str(CONFIG.get("control_center", {}).get("side", "right")).strip().lower()
@@ -553,7 +730,7 @@ class ShellWindow(Gtk.Window):
             GtkLayerShell.set_monitor(self, target_mon)
 
         win_w = actual_win_w if (actual_win_w and actual_win_w > 40) else self._total_window_px()
-        edge_margin = int(self.geom.get("screen_margin", 12))
+        _, edge_margin = get_layout_margins()
         max_margin = max(edge_margin, mon_w - win_w - edge_margin)
 
         if self.click_x > 0:
@@ -634,13 +811,30 @@ class ShellWindow(Gtk.Window):
             self._last_allocated_w = allocation.width
             self._apply_dynamic_anchor(actual_win_w=allocation.width)
 
+    def set_key_capture_grab(self, active: bool) -> None:
+        if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            mode = GtkLayerShell.KeyboardMode.EXCLUSIVE if active else GtkLayerShell.KeyboardMode.ON_DEMAND
+            GtkLayerShell.set_keyboard_mode(self, mode)
+
     def _apply_css(self) -> None:
+        self.geom = THEME["geometry"]
+        self.colors = THEME["colors"]
+        self.typo = THEME["typography"]
+        p = get_semantic_palette()
+        if hasattr(self, "content_canvas") and self.content_canvas is not None:
+            self.content_canvas.sync_theme()
+        if hasattr(self, "nav_canvas") and self.nav_canvas is not None:
+            self.nav_canvas.sync_theme()
+
         bg = get_effective_window_bg(self.wb_look.get("bg"))
         rad = self.wb_look["rad"] if self.wb_look["rad"] is not None else self.geom["window_border_radius"]
         bw = self.geom["window_border_width"]
         bc = self.colors["window_border"]
-        c_pri = self.colors["primary"]
-        c_acc = self.colors["accent"]
+        c_pri = p["focus"]
+        c_acc = p["intent"]
+        ar, ag, ab, _ = _parse_rgba_components(c_acc)
+        map_bg = f"rgba({ar}, {ag}, {ab}, 0.14)"
+        map_bg_hov = f"rgba({ar}, {ag}, {ab}, 0.28)"
 
         css = f"""
         window {{
@@ -648,6 +842,7 @@ class ShellWindow(Gtk.Window):
             font-family: '{self.typo["font_family"]}', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', 'Symbols Nerd Font', monospace;
             font-size: {self.typo["font_size"]}pt;
             font-weight: {self.typo["font_weight"]};
+            font-feature-settings: "liga=0, clig=0, dlig=0, hlig=0";
         }}
         #main-container {{
             background-color: {bg};
@@ -655,15 +850,15 @@ class ShellWindow(Gtk.Window):
             border: {bw}px solid {bc};
         }}
         #niri-map-out {{
-            background: rgba(166, 227, 161, 0.15);
-            background-color: rgba(166, 227, 161, 0.15);
+            background: {map_bg};
+            background-color: {map_bg};
             border: 2px solid {c_acc};
             border-radius: 8px;
             color: {c_pri};
         }}
         #niri-map-out:hover {{
-            background: rgba(166, 227, 161, 0.30);
-            background-color: rgba(166, 227, 161, 0.30);
+            background: {map_bg_hov};
+            background-color: {map_bg_hov};
         }}
         #niri-map-out label {{
             color: {c_pri};
@@ -683,9 +878,9 @@ class ShellWindow(Gtk.Window):
         link {{ color: inherit; text-decoration: none; }}
         link:hover {{ color: {c_acc}; text-shadow: 0 0 4px {c_acc}; }}
         a {{ text-decoration: none; }}
-        scrollbar {{ min-width: 0px; min-height: 0px; }}
-        scrollbar slider {{ background-color: rgba(255, 255, 255, 0.2); border-radius: 4px; min-width: 4px; }}
-        scrollbar slider:hover {{ background-color: {c_acc}; }}
+        scrollbar, scrollbar contents, scrollbar trough {{ min-width: 4px; min-height: 0px; margin: 0px; padding: 0px; border: none; }}
+        scrollbar slider, scrollbar.overlay-indicator slider, scrollbar.overlay-indicator.hovering slider, scrollbar.overlay-indicator.dragging slider {{ background-color: rgba(255, 255, 255, 0.2); border-radius: 4px; min-width: 4px; min-height: 24px; margin: 0px; padding: 0px; border: none; }}
+        scrollbar slider:hover, scrollbar slider:active {{ background-color: {c_acc}; }}
         """
         if self._css_provider is None:
             self._css_provider = Gtk.CssProvider()
@@ -707,20 +902,46 @@ class ShellWindow(Gtk.Window):
             | Gdk.EventMask.POINTER_MOTION_MASK
             | Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.SCROLL_MASK
+            | Gdk.EventMask.SMOOTH_SCROLL_MASK
         )
         self.main_box.connect("enter-notify-event", self._on_window_enter)
         self.main_box.connect("motion-notify-event", self._on_window_motion)
+        self.main_box.connect("scroll-event", self._on_scrolled_window_scroll)
         self.add(self.main_box)
 
-        pad = int(self.geom.get("panel_padding", 10))
+        if self.mode == "settings":
+            m_left, m_right, m_top, m_bot, hbox_gap = self._get_inner_box_margins()
+        else:
+            pad = int(self.geom.get("panel_padding", 10))
+            m_left = m_right = m_top = m_bot = pad
+            hbox_gap = 8
         outer_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        outer_vbox.set_margin_top(pad)
-        outer_vbox.set_margin_bottom(pad)
-        outer_vbox.set_margin_start(pad)
-        outer_vbox.set_margin_end(pad)
-        self.main_box.add(outer_vbox)
+        outer_vbox.set_margin_top(m_top)
+        outer_vbox.set_margin_bottom(m_bot)
+        outer_vbox.set_margin_start(m_left)
+        outer_vbox.set_margin_end(m_right)
+        self.outer_vbox = outer_vbox
 
-        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.root_overlay = Gtk.Overlay()
+        self.root_overlay.add(outer_vbox)
+        self.main_box.add(self.root_overlay)
+
+        self._inline_entry = Gtk.Entry()
+        self._inline_entry.set_opacity(0.0)
+        self._inline_entry.set_size_request(1, 1)
+        self._inline_entry.set_can_focus(False)
+        self._inline_entry.set_halign(Gtk.Align.START)
+        self._inline_entry.set_valign(Gtk.Align.START)
+        self._inline_entry.connect("changed", self._on_inline_entry_changed)
+        self._inline_entry.connect("notify::cursor-position", self._on_inline_cursor_notify)
+        self._inline_entry.connect("activate", self._on_inline_entry_activate)
+        self._inline_entry.connect("key-press-event", self._on_inline_entry_key_press)
+        self.root_overlay.add_overlay(self._inline_entry)
+        self.root_overlay.set_overlay_pass_through(self._inline_entry, True)
+
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=hbox_gap)
+        self.main_hbox = hbox
         outer_vbox.pack_start(hbox, True, True, 0)
 
         if self.mode == "settings":
@@ -730,6 +951,7 @@ class ShellWindow(Gtk.Window):
             self.nav_scrolled.set_propagate_natural_width(True)
             self.nav_scrolled.set_propagate_natural_height(False)
             self.nav_scrolled.set_can_focus(False)
+            self.nav_scrolled.connect("scroll-event", self._on_scrolled_window_scroll)
 
             self.nav_listbox = Gtk.ListBox()
             self.nav_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -752,37 +974,168 @@ class ShellWindow(Gtk.Window):
         self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
         self.listbox.set_can_focus(False)
         self.scrolled_window.add(self.listbox)
-        hbox.pack_start(self.scrolled_window, True, True, 0)
 
         self.prompt_bar = NcPromptBar(
             self.content_canvas,
             self._on_prompt_submit,
             self.hide_prompt,
             on_visibility_change=self._on_prompt_visibility_change,
+            on_change=self._on_prompt_change,
         )
         self.prompt_bar.set_no_show_all(True)
         self.prompt_bar.hide()
-        outer_vbox.pack_start(self.prompt_bar, False, False, 0)
+
+        if self.mode == "settings":
+            self.right_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            self.header_listbox = Gtk.ListBox()
+            self.header_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.header_listbox.set_can_focus(False)
+            self.right_vbox.pack_start(self.header_listbox, False, False, 0)
+            self.right_vbox.pack_start(self.scrolled_window, True, True, 0)
+            self.right_vbox.pack_start(self.prompt_bar, False, False, 0)
+            hbox.pack_start(self.right_vbox, True, True, 0)
+
+            self.cc_search_listbox = Gtk.ListBox()
+            self.cc_search_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.cc_search_listbox.set_can_focus(False)
+            self.cc_search_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            self.cc_search_holder.set_halign(Gtk.Align.END)
+            self.cc_search_holder.set_valign(Gtk.Align.START)
+            self.cc_search_holder.pack_start(self.cc_search_listbox, False, False, 0)
+            self.cc_search_holder.set_no_show_all(True)
+            self.cc_search_holder.hide()
+            self.root_overlay.add_overlay(self.cc_search_holder)
+        else:
+            hbox.pack_start(self.scrolled_window, True, True, 0)
+            outer_vbox.pack_start(self.prompt_bar, False, False, 0)
 
         if self.mode == "settings":
             self.set_size_request(self._get_cc_target_width_px(), self._get_cc_target_height_px())
         else:
             self.set_size_request(self._total_window_px(), -1)
 
-    def _on_scrolled_window_scroll(self, _widget, event) -> bool:
-        self._mouse_inside = True
-        self._cancel_leave_close()
-        hover_cards = [
+    def apply_layout_margins(self) -> None:
+        self._ink_insets = None
+        if self.mode == "settings":
+            m_left, m_right, m_top, m_bot, hbox_gap = self._get_inner_box_margins()
+            if getattr(self, "outer_vbox", None) is not None:
+                self.outer_vbox.set_margin_top(m_top)
+                self.outer_vbox.set_margin_bottom(m_bot)
+                self.outer_vbox.set_margin_start(m_left)
+                self.outer_vbox.set_margin_end(m_right)
+            if getattr(self, "main_hbox", None) is not None:
+                self.main_hbox.set_spacing(hbox_gap)
+            self.wb_look = get_waybar_look()
+            if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
+                _, outer_mar = get_layout_margins()
+                side = str(CONFIG.get("control_center", {}).get("side", "right")).strip().lower()
+                is_left = (side == "left")
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, outer_mar)
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, outer_mar)
+                GtkLayerShell.set_margin(
+                    self,
+                    GtkLayerShell.Edge.LEFT if is_left else GtkLayerShell.Edge.RIGHT,
+                    outer_mar,
+                )
+            cc_cols = self._compute_cc_content_cols()
+            self.content_canvas.set_cols(cc_cols)
+            self._last_nav_height_px = -1
+            self._last_nav_state = None
+            self._nav_sized = False
+            self._last_win_size = None
+            self._last_sw_size = None
+        self._adjust_scroll_height()
+
+    def _check_step_rate_limit(self, continuous: bool = False) -> bool:
+        return allow_step_input(continuous=continuous)
+
+    def _resolve_hovered_focus_target(self) -> tuple[int, dict | None]:
+        if not self._focus_targets:
+            self._rebuild_focus_targets()
+        for idx, t in enumerate(self._focus_targets):
+            card = t["card"]
+            if card.is_hovered and card._hovered_anchor_idx == t["anchor_idx"]:
+                return idx, t
+        return -1, None
+
+    def _on_card_anchor_hover(self, card: AsciiCard, anchor_idx: int | None, from_motion: bool) -> None:
+        if not from_motion or not pointer_moved_recently():
+            return
+        if 0 <= self._focused_target_idx < len(self._focus_targets):
+            cur = self._focus_targets[self._focused_target_idx]
+            if cur["card"] is not card or cur["anchor_idx"] != anchor_idx:
+                self._focused_target_idx = -1
+                self._focused_uri_memory = None
+                for ch in self._all_card_widgets():
+                    if isinstance(ch, AsciiCard):
+                        ch.set_focused_anchor(None)
+
+    def _dispatch_slider_step(self, target: dict, direction: str, continuous: bool = False, scroll_card=None) -> bool:
+        step_uri = target.get("inc_uri") if direction == "up" else target.get("dec_uri")
+        if not step_uri:
+            return False
+        if self._check_step_rate_limit(continuous=continuous):
+            if continuous and scroll_card is not None:
+                scroll_card._scroll_accum = 0.0
+            self.dispatch_uri(step_uri)
+        return True
+
+    def _dispatch_hover_scroll_target(self, target: dict | None, card: AsciiCard, event) -> bool | None:
+        if target is None:
+            return None
+        if target.get("is_slider"):
+            direction = card._resolve_scroll_direction(event)
+            if direction == "":
+                return True
+            if direction in ("up", "down"):
+                is_smooth = (event.direction == Gdk.ScrollDirection.SMOOTH)
+                return self._dispatch_slider_step(target, direction, continuous=is_smooth, scroll_card=card)
+            return False
+        sz_prefix = get_scroll_zone_action(target.get("uri", ""))
+        if sz_prefix and card.on_link:
+            direction = card._resolve_scroll_direction(event)
+            if direction == "":
+                return True
+            if direction in ("up", "down"):
+                is_smooth = (event.direction == Gdk.ScrollDirection.SMOOTH)
+                if self._check_step_rate_limit(continuous=is_smooth):
+                    if is_smooth:
+                        card._scroll_accum = 0.0
+                    card.on_link(f"{sz_prefix}:{direction}")
+                return True
+        return None
+
+    def _intercept_card_scroll(self, card: AsciiCard, event) -> bool:
+        h_idx = card._hovered_anchor_idx
+        if h_idx is None:
+            return False
+        if not self._focus_targets:
+            self._rebuild_focus_targets()
+        h_target = next(
+            (t for t in self._focus_targets if t["card"] is card and t["anchor_idx"] == h_idx),
+            None,
+        )
+        res = self._dispatch_hover_scroll_target(h_target, card, event)
+        return bool(res) if res is not None else False
+
+    def _resolve_active_scroll_card(self) -> AsciiCard | None:
+        cards = [
             c for c in self.listbox.get_children()
             if isinstance(c, AsciiCard) and not getattr(c.box_model, "is_divider", False)
         ]
-        target = next((c for c in hover_cards if c.is_hovered and getattr(c.box_model, "scroll_action", None)), None)
-        if target is None and self._hovered_card_idx is not None and 0 <= self._hovered_card_idx < len(hover_cards):
-            cand = hover_cards[self._hovered_card_idx]
-            if getattr(cand.box_model, "scroll_action", None):
-                target = cand
+        return next((c for c in cards if c.is_hovered and getattr(c.box_model, "scroll_action", None)), None)
+
+    def _on_scrolled_window_scroll(self, sw_widget, event) -> bool:
+        self._mouse_inside = True
+        self._cancel_leave_close()
+        _hov_i, hov_target = self._resolve_hovered_focus_target()
+        if hov_target is not None:
+            res = self._dispatch_hover_scroll_target(hov_target, hov_target["card"], event)
+            if res is not None:
+                return res
+        target = self._resolve_active_scroll_card()
         if target is not None:
-            return target._on_scroll(target, event)
+            return target._on_scroll(sw_widget, event)
         return False
 
     def _setup_timer(self) -> None:
@@ -796,7 +1149,12 @@ class ShellWindow(Gtk.Window):
             self._refresh_source_id = GLib.timeout_add(interval, self._on_timer_tick)
 
     def _on_timer_tick(self) -> bool:
-        if not self.panel.is_busy() and not self.prompt_bar.get_visible() and not self.is_pointer_busy():
+        if (
+            not self.panel.is_busy()
+            and not self.prompt_bar.get_visible()
+            and not get_active_inline_entry()
+            and not self.is_pointer_busy()
+        ):
             self.refresh_view()
         return True
 
@@ -812,42 +1170,64 @@ class ShellWindow(Gtk.Window):
     def _adjust_scroll_height(self) -> bool:
         if os.environ.get("NC_UI_OFFSCREEN") == "1":
             return False
-        for child in self.listbox.get_children():
+        for child in self._all_card_widgets():
             if isinstance(child, AsciiCard):
                 child.lbl.queue_resize()
+        if self.header_listbox is not None:
+            self.header_listbox.queue_resize()
         self.listbox.queue_resize()
         _min_h, nat_h = self.listbox.get_preferred_height()
-        pad = int(self.geom.get("panel_padding", 10)) * 2
         prompt_h = 0
         if self.prompt_bar.get_visible():
             _pm, p_nat = self.prompt_bar.get_preferred_height()
             prompt_h = max(p_nat, int(self.content_canvas.char_h * 3 + 12)) + 6
 
         if self.mode == "settings":
+            _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
             tot_w = self._get_cc_target_width_px()
             tot_h = self._get_cc_target_height_px()
-            avail_list_h = max(120, tot_h - prompt_h - pad)
+            avail_list_h = max(120, tot_h - m_top - m_bot)
 
-            for nav_ch in self.nav_listbox.get_children():
-                nav_ch.queue_resize()
-            self.nav_listbox.queue_resize()
-            _nmin, nav_nat_h = self.nav_listbox.get_preferred_height()
-            if nav_nat_h > avail_list_h + 2:
-                self.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            else:
-                self.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-            self.nav_scrolled.set_size_request(int(self.nav_canvas.total_px) + 4, avail_list_h)
+            if avail_list_h != self._last_nav_height_px or not getattr(self, "_nav_sized", False):
+                if avail_list_h != self._last_nav_height_px:
+                    self._populate_settings_nav(target_h_px=avail_list_h)
+                for nav_ch in self.nav_listbox.get_children():
+                    nav_ch.queue_resize()
+                self.nav_listbox.queue_resize()
+                _nmin, nav_nat_h = self.nav_listbox.get_preferred_height()
+                if nav_nat_h > avail_list_h + 2:
+                    self.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+                else:
+                    self.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+                nav_w_px = int(round(self.nav_canvas.total_px))
+                self.nav_scrolled.set_size_request(nav_w_px, avail_list_h)
+                self._nav_sized = True
 
-            if nat_h > avail_list_h:
+            hdr_nat_h = 0
+            if self.header_listbox is not None:
+                _hmin, hdr_nat_h = self.header_listbox.get_preferred_height()
+            avail_body_h = max(80, avail_list_h - hdr_nat_h - prompt_h)
+
+            if nat_h > avail_body_h:
                 self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             else:
                 self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
             right_w_px = int(round(self.content_canvas.total_px))
-            self.scrolled_window.set_size_request(right_w_px, avail_list_h)
-            self.set_size_request(tot_w, tot_h)
-            self.resize(tot_w, tot_h)
+            if self.header_listbox is not None:
+                self.header_listbox.set_size_request(right_w_px, -1)
+            sw_sz = (right_w_px, avail_body_h)
+            if getattr(self, "_last_sw_size", None) != sw_sz:
+                self._last_sw_size = sw_sz
+                self.scrolled_window.set_size_request(right_w_px, avail_body_h)
+            win_sz = (tot_w, tot_h)
+            if getattr(self, "_last_win_size", None) != win_sz:
+                self._last_win_size = win_sz
+                self.set_size_request(tot_w, tot_h)
+                self.resize(tot_w, tot_h)
             return False
 
+        pad = int(self.geom.get("panel_padding", 10)) * 2
+        bw = int(self.geom.get("window_border_width", 1))
         max_h = int(self.geom["popup_max_height"])
         avail_list_h = max(60, max_h - prompt_h)
         if nat_h > avail_list_h:
@@ -857,11 +1237,17 @@ class ShellWindow(Gtk.Window):
             self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
             list_h = max(nat_h, 24)
 
-        self.scrolled_window.set_size_request(-1, list_h)
+        sw_sz = (-1, list_h)
+        if getattr(self, "_last_sw_size", None) != sw_sz:
+            self._last_sw_size = sw_sz
+            self.scrolled_window.set_size_request(-1, list_h)
         tot_w = self._total_window_px()
-        tot_h = max(24, list_h + prompt_h + pad)
-        self.set_size_request(tot_w, tot_h)
-        self.resize(tot_w, tot_h)
+        tot_h = max(24, list_h + prompt_h + pad + (2 * bw))
+        win_sz = (tot_w, tot_h)
+        if getattr(self, "_last_win_size", None) != win_sz:
+            self._last_win_size = win_sz
+            self.set_size_request(tot_w, tot_h)
+            self.resize(tot_w, tot_h)
         return False
 
     def _on_card_hover_change(self, card: AsciiCard, is_entering: bool) -> None:
@@ -869,6 +1255,17 @@ class ShellWindow(Gtk.Window):
         self._cancel_leave_close()
         children = [c for c in self.listbox.get_children() if isinstance(c, AsciiCard) and c.hover_enable]
         if is_entering:
+            if self._focused_target_idx >= 0:
+                cur_t = self._focus_targets[self._focused_target_idx] if self._focused_target_idx < len(self._focus_targets) else {}
+                card_has_slider = bool(getattr(card.box_model, "scroll_action", None)) or any(
+                    t["card"] is card and t.get("is_slider") for t in self._focus_targets
+                )
+                if pointer_moved_recently() and (not cur_t.get("is_slider") or card_has_slider):
+                    self._focused_target_idx = -1
+                    self._focused_uri_memory = None
+                    for ch in self._all_card_widgets():
+                        if isinstance(ch, AsciiCard):
+                            ch.set_focused_anchor(None)
             try:
                 self._hovered_card_idx = children.index(card)
             except ValueError:
@@ -882,6 +1279,177 @@ class ShellWindow(Gtk.Window):
             for c in children:
                 c.set_hovered_visual(False)
 
+    def sync_inline_gtk_entry(self, text: str, cursor_pos: int = -1, grab_focus: bool = True) -> None:
+        if self._inline_entry is None:
+            return
+        self.bump_leave_guard(0.50)
+        if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+        self._inline_entry.set_can_focus(True)
+        self._suppress_inline_sync = True
+        try:
+            self._inline_entry.set_text(str(text or ""))
+            self._inline_entry.set_position(int(cursor_pos))
+        finally:
+            self._suppress_inline_sync = False
+        if grab_focus:
+            self._inline_entry.grab_focus()
+            self._inline_entry.set_position(int(cursor_pos))
+            GLib.idle_add(self._focus_inline_entry_idle)
+
+    def _focus_inline_entry_idle(self) -> bool:
+        if get_active_inline_entry() and self._inline_entry is not None and self._inline_entry.get_can_focus():
+            if not self._inline_entry.has_focus():
+                self._inline_entry.grab_focus()
+                self._inline_entry.set_position(len(self._inline_entry.get_text()))
+        return False
+
+    def release_inline_gtk_entry(self) -> None:
+        if self._inline_entry is not None:
+            self._suppress_inline_sync = True
+            try:
+                self._inline_entry.set_text("")
+            finally:
+                self._suppress_inline_sync = False
+            self._inline_entry.set_can_focus(False)
+        if (
+            HAS_LAYER_SHELL
+            and os.environ.get("NC_UI_OFFSCREEN") != "1"
+            and not self.prompt_bar.get_visible()
+            and not STATE.get("keyboard", "capture_mode", "")
+        ):
+            GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+
+    def _on_inline_entry_changed(self, entry) -> None:
+        if self._suppress_inline_sync or not get_active_inline_entry():
+            return
+        sync_inline_from_gtk_entry(entry.get_text(), entry.get_position(), shell=self)
+
+    def _on_inline_cursor_notify(self, entry, _pspec) -> None:
+        if self._suppress_inline_sync or not get_active_inline_entry():
+            return
+        sync_inline_from_gtk_entry(entry.get_text(), entry.get_position(), shell=self)
+
+    def _on_inline_entry_activate(self, _entry) -> None:
+        if get_active_inline_entry():
+            commit_active_inline_entry(shell=self)
+
+    def _on_inline_entry_key_press(self, _widget, event) -> bool:
+        if not get_active_inline_entry():
+            return False
+        is_ctrl = bool(event.state & Gdk.ModifierType.CONTROL_MASK)
+        is_shift = bool(event.state & Gdk.ModifierType.SHIFT_MASK)
+        kv = event.keyval
+        if is_ctrl and kv in (Gdk.KEY_f, Gdk.KEY_F):
+            if self.mode == "settings":
+                self.open_cc_global_search()
+                return True
+        if kv == Gdk.KEY_Escape:
+            cancel_inline_entry(refresh=True)
+            return True
+        if kv in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            return commit_active_inline_entry(shell=self)
+        if kv in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab, Gdk.KEY_ISO_Left_Tab):
+            rev = is_shift or (kv == Gdk.KEY_ISO_Left_Tab)
+            return step_inline_completion(reverse=rev, shell=self)
+        if kv in (Gdk.KEY_Up, Gdk.KEY_KP_Up, Gdk.KEY_Down, Gdk.KEY_KP_Down):
+            step_inline_completion(delta_arrow=(-1 if kv in (Gdk.KEY_Up, Gdk.KEY_KP_Up) else 1), shell=self)
+            return True
+        return False
+
+    def is_cc_search_open(self) -> bool:
+        return self.mode == "settings" and get_active_inline_entry() == "__cc_global_search__"
+
+    def open_cc_global_search(self, initial_query: str = "") -> None:
+        if self.mode != "settings":
+            return
+        start_inline_input(
+            "__cc_global_search__",
+            shell=self,
+            trigger_uri="cc:global_search_open",
+            initial_text=initial_query,
+            max_len=48,
+            is_picker=True,
+            on_cancel=self._hide_cc_search_overlay_only,
+        )
+
+    def _hide_cc_search_overlay_only(self) -> None:
+        if self.cc_search_holder is not None:
+            self.cc_search_holder.hide()
+
+    def close_cc_global_search(self) -> None:
+        if self.is_cc_search_open():
+            cancel_inline_entry(refresh=True)
+        else:
+            self._hide_cc_search_overlay_only()
+
+    def _render_cc_global_search_overlay(self) -> None:
+        if self.mode != "settings" or self.cc_search_holder is None or self.cc_search_listbox is None:
+            return
+        if not self.is_cc_search_open():
+            for ch in self.cc_search_listbox.get_children():
+                self.cc_search_listbox.remove(ch)
+            self.cc_search_holder.hide()
+            return
+
+        query = get_inline_entry_buffer()
+        results = search_control_center(query, limit=10)
+        set_inline_candidates(
+            "__cc_global_search__",
+            [(r["label"], f"cc:search_jump:{r['section']}:{r['subtab']}") for r in results],
+        )
+
+        popup_cols = min(74, max(54, self.content_canvas.total_cols - 6))
+        popup_canvas = Canvas(total_cols=popup_cols)
+        ov_box = Box(
+            t("control_center.global_search_results", p0=len(results)),
+            icon="\uf002",
+            actions=[
+                ActionBtn("\uf00d", "cc:global_search_close", tone="danger_soft"),
+            ],
+            highlighted=True,
+            fixed_width=True,
+            min_cols=popup_cols,
+            max_cols=popup_cols,
+        )
+        ov_box.is_overlay = True
+        ov_box.add_row(" ")
+        if not results:
+            ov_box.add_row(f"  {Txt(t('ui.search_no_results'), role='inactive')}")
+        else:
+            cand_idx = get_inline_candidate_index("__cc_global_search__")
+            eff_idx = cand_idx if (0 <= cand_idx < len(results)) else 0
+            rows = []
+            for idx, r in enumerate(results):
+                is_sel = (idx == eff_idx)
+                jump_uri = f"cc:search_jump:{r['section']}:{r['subtab']}"
+                loc_txt = popup_canvas.truncate_plain(f"{r['sec_title']} \u203a {r['sub_title']}", 35)
+                lbl_txt = popup_canvas.truncate_plain(r["label"], 30)
+                rows.append([
+                    InspectorCell(loc_txt, jump_uri, selected=is_sel, icon=r["icon"]),
+                    ActionBtn(lbl_txt, jump_uri, tone="focus" if is_sel else "neutral", brackets=False),
+                ])
+            ov_box.add_table(
+                headers=[t("control_center.search_col_location"), t("control_center.search_col_setting")],
+                widths=[38, "flex"],
+                rows=rows,
+                aligns=["left", "left"],
+            )
+        ov_box.add_section()
+        ov_box.add_row(f"  {Txt(t('ui.global_search_keys_hint'), role='inactive')}")
+
+        for ch in self.cc_search_listbox.get_children():
+            self.cc_search_listbox.remove(ch)
+        ov_card = AsciiCard(ov_box, popup_canvas, on_link=self.dispatch_uri, hover_enable=False)
+        self.cc_search_listbox.add(ov_card)
+
+        _ml, m_right, m_top, _mb, _gap = self._get_inner_box_margins()
+        self.cc_search_holder.set_margin_end(m_right)
+        self.cc_search_holder.set_margin_top(m_top + int(round(self.content_canvas.char_h * 1.15)))
+        self.cc_search_holder.set_no_show_all(False)
+        self.cc_search_holder.show_all()
+        self.cc_search_holder.set_no_show_all(True)
+
     def activate_prompt(
         self,
         action_id: str,
@@ -890,8 +1458,10 @@ class ShellWindow(Gtk.Window):
         secret: bool = None,
         title: str = None,
         required: bool = False,
+        completion=None,
     ) -> None:
         self.bump_leave_guard(0.50)
+        cancel_inline_entry(refresh=False)
         if secret is None:
             secret = ("pass" in action_id.lower() or "secret" in action_id.lower())
         if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
@@ -903,6 +1473,7 @@ class ShellWindow(Gtk.Window):
             secret=secret,
             title=title,
             required=required,
+            completion=completion,
         )
 
     def hide_prompt(self) -> None:
@@ -910,6 +1481,13 @@ class ShellWindow(Gtk.Window):
         if HAS_LAYER_SHELL and self.mode != "settings" and os.environ.get("NC_UI_OFFSCREEN") != "1":
             GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
         self.prompt_bar.deactivate()
+
+    def _on_prompt_change(self, act_id: str, text: str) -> None:
+        if act_id and hasattr(self.panel, "on_prompt_change") and self.panel.on_prompt_change(act_id, text):
+            self.refresh_view()
+            if self.prompt_bar.get_visible() and not self.prompt_bar.entry.has_focus():
+                self.prompt_bar.entry.grab_focus()
+                self.prompt_bar.entry.set_position(-1)
 
     def _on_prompt_submit(self, act_id: str, text: str) -> None:
         if not act_id:
@@ -929,19 +1507,58 @@ class ShellWindow(Gtk.Window):
     def dispatch_uri(self, uri: str) -> None:
         log.debug(f"dispatch_uri: {uri}")
         self.bump_leave_guard(0.50)
-        if uri.startswith(("http://", "https://")):
-            probe.spawn_bg(["xdg-open", uri])
+        if get_active_inline_entry() and uri == get_active_inline_uri():
+            if self._inline_entry is not None and self._inline_entry.get_can_focus():
+                self._inline_entry.grab_focus()
+                self._inline_entry.set_position(len(self._inline_entry.get_text()))
             return
-        if uri.startswith("ui:open_settings:"):
-            sec_id = uri.split(":", 2)[2]
-            if self.mode == "settings" and hasattr(self.panel, "set_section"):
+        if uri == "cc:global_search_open":
+            self.open_cc_global_search()
+            return
+        if uri == "cc:global_search_close":
+            self.close_cc_global_search()
+            return
+        cancel_inline_entry(refresh=False)
+        if uri.startswith("cc:search_jump:"):
+            parts = uri.split(":", 3)
+            sec_id = parts[2] if len(parts) > 2 else ""
+            sub_id = parts[3] if len(parts) > 3 else ""
+            if self.mode == "settings" and hasattr(self.panel, "set_section") and sec_id:
                 self._focused_target_idx = -1
                 self._focused_uri_memory = None
                 self.panel.set_section(sec_id)
+                if sub_id and hasattr(self.panel, "set_subtab"):
+                    self.panel.set_subtab(sub_id)
                 self.refresh_view()
+            return
+        if uri.startswith(("http://", "https://")):
+            probe.spawn_bg(["xdg-open", uri])
+            return
+        if uri.startswith("ui:open_settings"):
+            rest = uri.split(":", 2)[2].strip() if ":" in uri[len("ui:open_settings"):] else ""
+            if ":" in rest:
+                sec_id, sub_id = [p.strip() for p in rest.split(":", 1)]
+            else:
+                sec_id, sub_id = rest, ""
+            if sec_id and sub_id:
+                from core.state import STATE
+                STATE.set("control_center", f"subtab_{sec_id}", sub_id)
+            if self.mode == "settings" and hasattr(self.panel, "set_section"):
+                if sec_id:
+                    self._focused_target_idx = -1
+                    self._focused_uri_memory = None
+                    self.panel.set_section(sec_id)
+                    if sub_id and hasattr(self.panel, "set_subtab"):
+                        self.panel.set_subtab(sub_id)
+                    self.refresh_view()
             else:
                 nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
-                probe.spawn_bg([sys.executable, nc_ctl_bin, "settings", sec_id])
+                cmd_args = [sys.executable, nc_ctl_bin, "settings"]
+                if sec_id:
+                    cmd_args.append(sec_id)
+                    if sub_id:
+                        cmd_args.append(sub_id)
+                probe.spawn_bg(cmd_args)
                 Gtk.main_quit()
             return
         if uri == "ui:toggle_expand":
@@ -1017,6 +1634,9 @@ class ShellWindow(Gtk.Window):
         self._focused_uri_memory = None
         self._stable_cols_key = None
         self._stable_cols_val = 0
+        if self.header_listbox is not None:
+            for child in self.header_listbox.get_children():
+                self.header_listbox.remove(child)
         for child in self.listbox.get_children():
             self.listbox.remove(child)
         self.panel_id = str(new_panel_id or "network").strip()
@@ -1040,7 +1660,7 @@ class ShellWindow(Gtk.Window):
                 tabs = cc_mod.SECTION_TABS.get(sec, [])
             if len(tabs) <= 1:
                 return False
-            valid_ids = [tid for tid, _ in tabs]
+            valid_ids = [item[0] if isinstance(item, tuple) else item for item in tabs]
             cur = self.panel.get_subtab()
             idx = valid_ids.index(cur) if cur in valid_ids else 0
             self.panel.set_subtab(valid_ids[(idx + delta) % len(valid_ids)])
@@ -1077,87 +1697,98 @@ class ShellWindow(Gtk.Window):
             vadj.set_value(min(upper - page, item_bot - page + 8.0))
         return False
 
-    def _build_pure_ascii_nav_grid(self, n_items: int, inner_rows_per_item: list[int]) -> str:
-        c_brd = PALETTE["structure"]
+    def _populate_settings_nav(self, target_h_px: int = None) -> None:
+        p = get_semantic_palette()
+        c_sec = p["schema"]
+        c_acc = p["intent"]
+        c_brd = p["structure"]
+
         self.nav_canvas.set_cols(SIDEBAR_ICON_COLS)
-        empty_inner = " " * self.nav_canvas.inner_cols
+        nav_w_px = int(round(self.nav_canvas.total_px))
+        s_left, s_right, _s_top, _s_bot = self._get_box_ink_insets()
 
-        lines = [self.nav_canvas.top("", c_box=c_brd)]
-        for idx in range(n_items):
-            if idx > 0:
-                lines.append(self.nav_canvas.mid("", c_box=c_brd))
-            for _ in range(inner_rows_per_item[idx]):
-                lines.append(self.nav_canvas.row(empty_inner, c_box=c_brd))
-        lines.append(self.nav_canvas.bot(c_box=c_brd))
-        return "\n".join(lines)
+        if target_h_px is not None:
+            avail_h_px = max(240, int(target_h_px))
+        else:
+            _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+            prompt_h = 0
+            if hasattr(self, "prompt_bar") and self.prompt_bar.get_visible():
+                _pm, p_nat = self.prompt_bar.get_preferred_height()
+                prompt_h = max(p_nat, int(self.content_canvas.char_h * 3 + 12)) + 6
+            avail_h_px = max(360, self._get_cc_target_height_px() - m_top - m_bot - prompt_h)
 
-    def _populate_settings_nav(self) -> None:
+        active_sec = getattr(self.panel, "section", self.panel_id)
+        is_rounded = (THEME.get("ascii", {}).get("box_style", "rounded") in ("rounded", "dashed"))
+        nav_state = (active_sec, avail_h_px, c_acc, c_brd, c_sec, is_rounded, round(get_box_opacity(), 3), get_surface_bg_rgb())
+        if getattr(self, "_last_nav_state", None) == nav_state and self.nav_listbox.get_children():
+            self._last_nav_height_px = avail_h_px
+            return
+        self._last_nav_state = nav_state
+
         for child in self.nav_listbox.get_children():
             self.nav_listbox.remove(child)
 
-        c_sec = PALETTE["schema"]
-        c_acc = PALETTE["intent"]
-
-        self.nav_canvas.set_cols(SIDEBAR_ICON_COLS)
-        pad = int(self.geom.get("panel_padding", 10)) * 2
-        prompt_h = 0
-        if hasattr(self, "prompt_bar") and self.prompt_bar.get_visible():
-            _pm, p_nat = self.prompt_bar.get_preferred_height()
-            prompt_h = max(p_nat, int(self.content_canvas.char_h * 3 + 12)) + 6
-        avail_h_px = max(360, self._get_cc_target_height_px() - pad - prompt_h)
-
-        # Solo le sezioni reali del Control Center (rimosso il riquadro 'x' finale)
+        self._last_nav_height_px = avail_h_px
         nav_items = list(CONTROL_CENTER_SECTIONS)
         n_items = len(nav_items)
-        active_sec = getattr(self.panel, "section", self.panel_id)
 
-        # Minimo 2 righe interne ASCII per cella (cella quadrata con bordi │ continui a 11pt)
-        inner_rows = [2] * n_items
-        grid_markup = self._build_pure_ascii_nav_grid(n_items, inner_rows)
-        grid_w_px, grid_h_px = self._measure_nav_markup_size_px(grid_markup)
-
-        # Se lo schermo è più alto, distribuisce righe interne extra in modo identico su tutte le celle
-        total_lines = 1 + sum(r + 1 for r in inner_rows)
-        line_px = max(14.0, float(grid_h_px) / float(max(1, total_lines)))
-        if grid_h_px < avail_h_px:
-            extra_per_item = int((avail_h_px - grid_h_px) // (line_px * n_items))
-            while extra_per_item > 0:
-                cand_rows = [2 + extra_per_item] * n_items
-                cand_markup = self._build_pure_ascii_nav_grid(n_items, cand_rows)
-                cand_w, cand_h = self._measure_nav_markup_size_px(cand_markup)
-                if cand_h <= avail_h_px:
-                    inner_rows = cand_rows
-                    grid_markup = cand_markup
-                    grid_w_px, grid_h_px = cand_w, cand_h
-                    total_lines = 1 + sum(r + 1 for r in inner_rows)
-                    line_px = float(grid_h_px) / float(max(1, total_lines))
-                    break
-                extra_per_item -= 1
-
+        grid_h_px = max(avail_h_px, n_items * 38)
         self._nav_cell_height_px = float(grid_h_px) / float(max(1, n_items))
 
-        # 1. Background: Griglia ASCII pura a 11pt (contorno │ continuo, zero deformazioni di baseline)
-        bg_lbl = Gtk.Label()
-        bg_lbl.set_xalign(0.0)
-        bg_lbl.set_yalign(0.0)
-        bg_lbl.set_line_wrap(False)
-        bg_lbl.set_can_focus(False)
-        bg_lbl.set_markup(grid_markup)
+        _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+        inner_pad, _ = get_layout_margins()
+        bw = int(self.geom.get("window_border_width", 1))
+        x0 = float(s_left) + 0.5
+        x1 = float(nav_w_px - 1 - s_right) + 0.5
+        y0 = float(max(0, bw + inner_pad - m_top)) + 0.5
+        y1 = float(grid_h_px - 1 - max(0, bw + inner_pad - m_bot)) + 0.5
+        br_r, br_g, br_b, _ = _parse_rgba_components(c_brd)
+
+        bg_da = Gtk.DrawingArea()
+        bg_da.set_size_request(nav_w_px, grid_h_px)
+        bg_da.set_can_focus(False)
+
+        def _on_draw_nav(_da, cr):
+            box_op = get_box_opacity()
+            sr, sg, sb = get_surface_bg_rgb()
+            cr.set_line_width(1.0)
+            rad = min(4.5, (x1 - x0) / 4.0, (y1 - y0) / 4.0) if is_rounded else 0.0
+            if rad > 0.5:
+                cr.new_sub_path()
+                cr.arc(x1 - rad, y0 + rad, rad, -math.pi / 2.0, 0.0)
+                cr.arc(x1 - rad, y1 - rad, rad, 0.0, math.pi / 2.0)
+                cr.arc(x0 + rad, y1 - rad, rad, math.pi / 2.0, math.pi)
+                cr.arc(x0 + rad, y0 + rad, rad, math.pi, 3.0 * math.pi / 2.0)
+                cr.close_path()
+            else:
+                cr.rectangle(x0, y0, x1 - x0, y1 - y0)
+            if box_op > 0.001:
+                cr.set_source_rgba(sr / 255.0, sg / 255.0, sb / 255.0, box_op)
+                cr.fill_preserve()
+            cr.set_source_rgba(br_r / 255.0, br_g / 255.0, br_b / 255.0, 1.0)
+            cr.stroke()
+
+            for div_i in range(1, n_items):
+                y_div = math.floor(y0 + div_i * (y1 - y0) / float(n_items)) + 0.5
+                cr.move_to(x0, y_div)
+                cr.line_to(x1, y_div)
+                cr.stroke()
+            return False
+
+        bg_da.connect("draw", _on_draw_nav)
 
         overlay = Gtk.Overlay()
-        overlay.add(bg_lbl)
+        overlay.add(bg_da)
 
-        # 2. Foreground: Icone grandi (size='18500') centrate al pixel in ogni cella tramite Gtk.Fixed
         fixed = Gtk.Fixed()
-        fixed.set_size_request(grid_w_px, grid_h_px)
+        fixed.set_size_request(nav_w_px, grid_h_px)
 
         active_idx = 0
-        cur_line_offset = 1  # salta la riga superiore ╭──────╮
-
+        span_h = y1 - y0
         for idx, (sec_id, ic) in enumerate(nav_items):
-            n_in = inner_rows[idx]
-            y_top_px = int(round(cur_line_offset * line_px))
-            cell_h_px = int(round(n_in * line_px))
+            cell_top = y0 + idx * span_h / float(n_items)
+            cell_bot = y0 + (idx + 1) * span_h / float(n_items)
+            cell_h_px = max(16, int(round(cell_bot - cell_top)))
 
             is_cur = (sec_id == active_sec)
             if is_cur:
@@ -1166,11 +1797,12 @@ class ShellWindow(Gtk.Window):
 
             eb = Gtk.EventBox()
             eb.set_visible_window(False)
-            eb.set_size_request(grid_w_px, cell_h_px)
+            eb.set_size_request(nav_w_px, cell_h_px)
             eb.add_events(
                 Gdk.EventMask.BUTTON_PRESS_MASK
                 | Gdk.EventMask.BUTTON_RELEASE_MASK
                 | Gdk.EventMask.ENTER_NOTIFY_MASK
+                | Gdk.EventMask.LEAVE_NOTIFY_MASK
             )
 
             ic_lbl = Gtk.Label()
@@ -1188,11 +1820,20 @@ class ShellWindow(Gtk.Window):
                     return True
                 return False
 
-            eb.connect("button-press-event", _on_cell_press)
-            eb.connect("enter-notify-event", lambda *_: self._on_card_pointer_activity("enter") or False)
-            fixed.put(eb, 0, y_top_px)
+            def _on_cell_enter(_w, _ev, lbl=ic_lbl, glyph=ic, active=is_cur):
+                self._on_card_pointer_activity("enter")
+                if not active:
+                    lbl.set_markup(f"<span color='{p['focus']}' size='18500'>{glyph}</span>")
+                return False
 
-            cur_line_offset += n_in + 1  # avanza oltre le righe interne + la riga ├──────┤
+            def _on_cell_leave(_w, _ev, lbl=ic_lbl, glyph=ic, base_col=col):
+                lbl.set_markup(f"<span color='{base_col}' size='18500'>{glyph}</span>")
+                return False
+
+            eb.connect("button-press-event", _on_cell_press)
+            eb.connect("enter-notify-event", _on_cell_enter)
+            eb.connect("leave-notify-event", _on_cell_leave)
+            fixed.put(eb, 0, int(round(cell_top)))
 
         overlay.add_overlay(fixed)
 
@@ -1212,7 +1853,7 @@ class ShellWindow(Gtk.Window):
     def _rebuild_focus_targets(self) -> None:
         targets = []
         v_line_offset = 0
-        for c_idx, child in enumerate(self.listbox.get_children()):
+        for c_idx, child in enumerate(self._all_card_widgets()):
             if not isinstance(child, AsciiCard):
                 continue
             links = child.get_focusable_links()
@@ -1224,6 +1865,9 @@ class ShellWindow(Gtk.Window):
                     "uri": lk["uri"],
                     "v_line": v_line_offset + lk["line"],
                     "col": lk["col"],
+                    "is_slider": lk.get("is_slider", False),
+                    "dec_uri": lk.get("dec_uri", ""),
+                    "inc_uri": lk.get("inc_uri", ""),
                 })
             n_card_lines = max(1, len((child._last_markup or "").splitlines()))
             v_line_offset += n_card_lines + 1
@@ -1239,6 +1883,12 @@ class ShellWindow(Gtk.Window):
                 if match_i >= 0:
                     self._apply_focus_target(match_i, scroll=False)
                     return
+                if 0 <= self._focused_target_idx < len(targets):
+                    mem_prefix = self._focused_uri_memory.rsplit(":", 1)[0]
+                    cur_prefix = targets[self._focused_target_idx]["uri"].rsplit(":", 1)[0]
+                    if mem_prefix == cur_prefix:
+                        self._apply_focus_target(self._focused_target_idx, scroll=False)
+                        return
             if 0 <= self._focused_target_idx < len(targets):
                 self._apply_focus_target(self._focused_target_idx, scroll=False)
             else:
@@ -1260,7 +1910,7 @@ class ShellWindow(Gtk.Window):
         target = self._focus_targets[clamped]
         self._focused_uri_memory = target["uri"]
 
-        for child in self.listbox.get_children():
+        for child in self._all_card_widgets():
             if isinstance(child, AsciiCard):
                 if child is target["card"]:
                     child.set_focused_anchor(target["anchor_idx"])
@@ -1271,6 +1921,8 @@ class ShellWindow(Gtk.Window):
             self._scroll_card_into_view(target["card"])
 
     def _scroll_card_into_view(self, card_widget: Gtk.Widget) -> None:
+        if card_widget.get_parent() is not self.listbox:
+            return
         vadj = self.scrolled_window.get_vadjustment()
         if not vadj:
             return
@@ -1333,11 +1985,106 @@ class ShellWindow(Gtk.Window):
     def _activate_focused_target(self) -> bool:
         if not self._focus_targets or not (0 <= self._focused_target_idx < len(self._focus_targets)):
             return False
-        uri = self._focus_targets[self._focused_target_idx]["uri"]
+        target = self._focus_targets[self._focused_target_idx]
+        if target.get("is_slider"):
+            return True
+        uri = target["uri"]
         if uri:
             self.dispatch_uri(uri)
             return True
         return False
+
+    def _sync_listbox_specs(
+        self,
+        target_lb: Gtk.ListBox,
+        target_specs: list,
+        can_select_boxes: bool,
+        spacing: int,
+        trailing_spacing: int = 0,
+    ) -> tuple[list, bool]:
+        existing_rows = target_lb.get_children()
+        can_reuse = (
+            len(existing_rows) == len(target_specs)
+            and all(
+                sp[0] == "ascii"
+                and isinstance(w, AsciiCard)
+                and getattr(w.box_model, "is_divider", False) == sp[3]
+                and getattr(w, "pixbuf", None) is None
+                and (sp[2] is None or getattr(sp[2], "pixbuf", None) is None)
+                and getattr(w, "embedded_widget", None) is None
+                and (sp[2] is None or getattr(sp[2], "embedded_widget", None) is None)
+                for w, sp in zip(existing_rows, target_specs)
+            )
+        )
+
+        if can_reuse:
+            ascii_cards = []
+            for idx, (card_w, (_kind, bm, card_obj, is_div)) in enumerate(zip(existing_rows, target_specs)):
+                card_w.set_margin_bottom(spacing if idx < len(target_specs) - 1 else trailing_spacing)
+                card_w.canvas = self.content_canvas
+                has_card_action = bool((card_obj is not None and card_obj.on_row_click) or getattr(bm, "scroll_action", None))
+                card_w.hover_enable = bool(can_select_boxes and not is_div and has_card_action)
+                card_w.on_hover_change = self._on_card_hover_change
+                card_w.on_anchor_hover_change = self._on_card_anchor_hover
+                card_w.on_pointer_activity = self._on_card_pointer_activity
+                card_w.on_scroll_intercept = self._intercept_card_scroll
+                if card_obj is not None:
+                    card_w.on_row_click = card_obj.on_row_click
+                    card_w.on_link = card_obj.on_link or self.dispatch_uri
+                else:
+                    card_w.on_row_click = None
+                    card_w.on_link = self.dispatch_uri
+                bm.selected = bool(card_w.is_hovered and card_w.hover_enable)
+                card_w.box_model = bm
+                card_w.refresh_markup()
+                if card_w.hover_enable:
+                    ascii_cards.append(card_w)
+            return ascii_cards, True
+
+        for child in existing_rows:
+            target_lb.remove(child)
+
+        ascii_cards = []
+        row_widgets = []
+        for _kind, bm, card_obj, is_div in target_specs:
+            if _kind == "ascii":
+                has_card_action = bool((card_obj is not None and card_obj.on_row_click) or getattr(bm, "scroll_action", None))
+                c_hover = bool(can_select_boxes and not is_div and has_card_action)
+                if card_obj is not None:
+                    c = card_obj
+                    c.canvas = self.content_canvas
+                    c.on_link = c.on_link or self.dispatch_uri
+                    c.hover_enable = c_hover
+                    c.on_hover_change = self._on_card_hover_change
+                    c.on_anchor_hover_change = self._on_card_anchor_hover
+                    c.on_pointer_activity = self._on_card_pointer_activity
+                    c.on_scroll_intercept = self._intercept_card_scroll
+                    c.box_model.selected = False
+                    c.refresh_markup()
+                else:
+                    bm.selected = False
+                    c = AsciiCard(
+                        bm,
+                        self.content_canvas,
+                        on_link=self.dispatch_uri,
+                        hover_enable=c_hover,
+                        on_hover_change=self._on_card_hover_change,
+                        on_pointer_activity=self._on_card_pointer_activity,
+                    )
+                    c.on_anchor_hover_change = self._on_card_anchor_hover
+                    c.on_scroll_intercept = self._intercept_card_scroll
+                row_widgets.append(c)
+                if c.hover_enable:
+                    ascii_cards.append(c)
+            else:
+                row_widgets.append(card_obj)
+
+        for idx, rw in enumerate(row_widgets):
+            rw.set_margin_bottom(spacing if idx < len(row_widgets) - 1 else trailing_spacing)
+            target_lb.add(rw)
+
+        target_lb.show_all()
+        return ascii_cards, False
 
     def refresh_view(self) -> bool:
         nav_vadj = self.nav_scrolled.get_vadjustment() if self.mode == "settings" and hasattr(self, "nav_scrolled") else None
@@ -1364,6 +2111,24 @@ class ShellWindow(Gtk.Window):
                     c_item.box_model.max_cols = cc_cols
                     if isinstance(c_item.box_model, Box):
                         c_item.box_model.width_mode = "fixed"
+            fill_items = [
+                (c_item.box_model if hasattr(c_item, "box_model") else c_item)
+                for c_item in raw_cards[1:]
+                if getattr((c_item.box_model if hasattr(c_item, "box_model") else c_item), "fill_window", False)
+            ]
+            if fill_items and raw_cards:
+                _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+                avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot)
+                spacing = int(self.geom.get("card_spacing", 4))
+                used_px = self._measure_cc_box_px(raw_cards[0]) + (spacing if len(raw_cards) > 1 else 0)
+                for idx_b, b_item in enumerate(raw_cards[1:]):
+                    bm_b = b_item.box_model if hasattr(b_item, "box_model") else b_item
+                    if getattr(bm_b, "fill_window", False):
+                        continue
+                    used_px += self._measure_cc_box_px(bm_b) + (spacing if idx_b < len(raw_cards[1:]) - 1 else 0)
+                target_fill_px = max(240, avail_list_h - used_px)
+                for bm_f in fill_items:
+                    bm_f.min_height_px = target_fill_px
         else:
             is_exp = self.panel.is_expanded
             base_cols = self.panel.get_cols()
@@ -1399,80 +2164,68 @@ class ShellWindow(Gtk.Window):
         can_select_boxes = panel_hover and (selectable_count > 1)
         spacing = int(self.geom.get("card_spacing", 4))
 
-        existing_rows = self.listbox.get_children()
-        can_reuse = (
-            len(existing_rows) == len(specs)
-            and all(
-                sp[0] == "ascii"
-                and isinstance(w, AsciiCard)
-                and getattr(w.box_model, "is_divider", False) == sp[3]
-                and getattr(w, "pixbuf", None) is None
-                and (sp[2] is None or getattr(sp[2], "pixbuf", None) is None)
-                for w, sp in zip(existing_rows, specs)
+        if self.mode == "settings" and self.header_listbox is not None and specs:
+            hdr_specs = specs[:1]
+            body_specs = specs[1:]
+            _, hdr_reused = self._sync_listbox_specs(
+                self.header_listbox,
+                hdr_specs,
+                can_select_boxes=False,
+                spacing=spacing,
+                trailing_spacing=(spacing if body_specs else 0),
             )
-        )
-
-        if can_reuse:
-            for idx, (card_w, (_kind, bm, card_obj, is_div)) in enumerate(zip(existing_rows, specs)):
-                card_w.set_margin_bottom(spacing if idx < len(specs) - 1 else 0)
-                card_w.canvas = self.content_canvas
-                card_w.hover_enable = can_select_boxes and not is_div
-                card_w.on_hover_change = self._on_card_hover_change
-                card_w.on_pointer_activity = self._on_card_pointer_activity
-                if card_obj is not None:
-                    card_w.on_row_click = card_obj.on_row_click
-                    card_w.on_link = card_obj.on_link or self.dispatch_uri
-                else:
-                    card_w.on_row_click = None
-                    card_w.on_link = self.dispatch_uri
-                bm.selected = bool(card_w.is_hovered and card_w.hover_enable)
-                card_w.box_model = bm
-                card_w.refresh_markup()
+            ascii_cards, body_reused = self._sync_listbox_specs(
+                self.listbox,
+                body_specs,
+                can_select_boxes=can_select_boxes,
+                spacing=spacing,
+                trailing_spacing=0,
+            )
         else:
-            for child in existing_rows:
-                self.listbox.remove(child)
+            hdr_reused = True
+            if self.header_listbox is not None:
+                hdr_children = self.header_listbox.get_children()
+                if hdr_children:
+                    hdr_reused = False
+                    for ch in hdr_children:
+                        self.header_listbox.remove(ch)
+            ascii_cards, body_reused = self._sync_listbox_specs(
+                self.listbox,
+                specs,
+                can_select_boxes=can_select_boxes,
+                spacing=spacing,
+                trailing_spacing=0,
+            )
 
-            ascii_cards = []
-            row_widgets = []
-            for _kind, bm, card_obj, is_div in specs:
-                if _kind == "ascii":
-                    if card_obj is not None:
-                        c = card_obj
-                        c.canvas = self.content_canvas
-                        c.on_link = c.on_link or self.dispatch_uri
-                        c.hover_enable = can_select_boxes and not is_div
-                        c.on_hover_change = self._on_card_hover_change
-                        c.on_pointer_activity = self._on_card_pointer_activity
-                        c.box_model.selected = False
-                        c.refresh_markup()
-                    else:
-                        bm.selected = False
-                        c = AsciiCard(
-                            bm,
-                            self.content_canvas,
-                            on_link=self.dispatch_uri,
-                            hover_enable=(can_select_boxes and not is_div),
-                            on_hover_change=self._on_card_hover_change,
-                            on_pointer_activity=self._on_card_pointer_activity,
-                        )
-                    row_widgets.append(c)
-                    if c.hover_enable:
-                        ascii_cards.append(c)
-                else:
-                    row_widgets.append(card_obj)
+        def _lb_line_sig(lb) -> tuple:
+            return tuple(
+                (
+                    len((w._last_markup or "").splitlines()),
+                    len((w.footer_lbl.get_text() or "").splitlines()) if getattr(w, "footer_lbl", None) is not None else 0,
+                )
+                if isinstance(w, AsciiCard) else (-1, id(w))
+                for w in lb.get_children()
+            )
 
-            for idx, rw in enumerate(row_widgets):
-                rw.set_margin_bottom(spacing if idx < len(row_widgets) - 1 else 0)
-                self.listbox.add(rw)
+        render_sig = (
+            self.mode,
+            int(self.content_canvas.total_cols),
+            bool(self.prompt_bar.get_visible()),
+            _lb_line_sig(self.header_listbox) if self.header_listbox is not None else (),
+            _lb_line_sig(self.listbox),
+        )
+        same_layout = bool(hdr_reused and body_reused and self._last_render_sig == render_sig)
+        self._last_render_sig = render_sig
 
-            if can_select_boxes and self._hovered_card_idx is not None and 0 <= self._hovered_card_idx < len(ascii_cards):
-                for idx, c in enumerate(ascii_cards):
-                    c.set_hovered_visual(idx == self._hovered_card_idx)
-
-            self.listbox.show_all()
+        if can_select_boxes and self._hovered_card_idx is not None and 0 <= self._hovered_card_idx < len(ascii_cards):
+            for idx, c in enumerate(ascii_cards):
+                c.set_hovered_visual(idx == self._hovered_card_idx)
 
         self._rebuild_focus_targets()
         self._apply_dynamic_anchor()
+        self._render_cc_global_search_overlay()
+        if same_layout:
+            return True
         self._adjust_scroll_height()
 
         def _restore():
@@ -1490,7 +2243,7 @@ class ShellWindow(Gtk.Window):
 
     def _confirm_leave_close(self) -> bool:
         self._leave_close_source_id = None
-        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible():
+        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
             return False
         if time.monotonic() < self._ignore_leave_until or self.is_pointer_busy():
             return False
@@ -1515,30 +2268,62 @@ class ShellWindow(Gtk.Window):
             return False
 
         self._hovered_card_idx = None
-        for child in self.listbox.get_children():
-            if isinstance(child, AsciiCard) and child.hover_enable:
+        for child in self._all_card_widgets():
+            if isinstance(child, AsciiCard):
                 child.set_hovered_visual(False)
 
-        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible():
+        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
             return False
 
         self._cancel_leave_close()
         self._leave_close_source_id = GLib.timeout_add(80, self._confirm_leave_close)
         return False
 
+    def _on_key_release(self, _widget, event) -> bool:
+        if not self.prompt_bar.get_visible() and hasattr(self.panel, "on_key_release"):
+            return bool(self.panel.on_key_release(event))
+        return False
+
     def _on_key_press(self, _widget, event) -> bool:
-        if event.keyval == Gdk.KEY_Escape:
-            if self.prompt_bar.get_visible():
-                self.hide_prompt()
+        state = event.state
+        is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        if is_ctrl and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            if self.mode == "settings":
+                self.open_cc_global_search()
                 return True
+            STATE.set("control_center", "open_global_search", True)
+            nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
+            probe.spawn_bg([sys.executable, nc_ctl_bin, "settings"])
             Gtk.main_quit()
             return True
 
         if self.prompt_bar.get_visible():
+            if event.keyval == Gdk.KEY_Escape:
+                self.hide_prompt()
+                return True
+            if event.keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab, Gdk.KEY_ISO_Left_Tab):
+                rev = bool(event.state & Gdk.ModifierType.SHIFT_MASK) or (event.keyval == Gdk.KEY_ISO_Left_Tab)
+                if self.prompt_bar.handle_tab_complete(reverse=rev):
+                    return True
             if not self.prompt_bar.entry.has_focus():
                 self.prompt_bar.entry.grab_focus()
                 self.prompt_bar.entry.set_position(-1)
             return False
+
+        if get_active_inline_entry():
+            if handle_inline_entry_key_press(event, shell=self):
+                return True
+            if self._inline_entry is not None and self._inline_entry.get_can_focus() and not self._inline_entry.has_focus():
+                self._inline_entry.grab_focus()
+                self._inline_entry.set_position(len(self._inline_entry.get_text()))
+            return False
+
+        if hasattr(self.panel, "on_key_press") and self.panel.on_key_press(event):
+            return True
+
+        if event.keyval == Gdk.KEY_Escape:
+            Gtk.main_quit()
+            return True
 
         state = event.state
         is_shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
@@ -1596,58 +2381,86 @@ class ShellWindow(Gtk.Window):
 
         # ── 2. NAVIGAZIONE PULSANTI 1D / 2D (Tab / Frecce) ──
         if event.keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab) and not is_shift:
+            clear_pointer_move_flag()
+            if self._focused_target_idx < 0:
+                hov_i, _ = self._resolve_hovered_focus_target()
+                if hov_i >= 0:
+                    self._focused_target_idx = hov_i
             return self._move_focus_1d(1)
 
         if event.keyval == Gdk.KEY_ISO_Left_Tab or (event.keyval in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab) and is_shift):
+            clear_pointer_move_flag()
+            if self._focused_target_idx < 0:
+                hov_i, _ = self._resolve_hovered_focus_target()
+                if hov_i >= 0:
+                    self._focused_target_idx = hov_i
             return self._move_focus_1d(-1)
 
         if event.keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right, Gdk.KEY_Left, Gdk.KEY_KP_Left):
             is_right = event.keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right)
-            # Se una card con scroll_action è esplicitamente sotto il puntatore mouse e non stiamo usando il focus tastiera
-            if self._focused_target_idx < 0:
-                hover_cards = [
-                    c for c in self.listbox.get_children()
-                    if isinstance(c, AsciiCard) and not getattr(c.box_model, "is_divider", False)
-                ]
-                target_card = next((c for c in hover_cards if c.is_hovered and getattr(c.box_model, "scroll_action", None)), None)
-                if target_card is not None and target_card.on_link:
-                    target_card.on_link(f"{target_card.box_model.scroll_action}:{'up' if is_right else 'down'}")
-                    return True
+            direction = "up" if is_right else "down"
+            if 0 <= self._focused_target_idx < len(self._focus_targets):
+                f_target = self._focus_targets[self._focused_target_idx]
+                if f_target.get("is_slider"):
+                    if self._dispatch_slider_step(f_target, direction):
+                        return True
+            else:
+                hov_i, hov_target = self._resolve_hovered_focus_target()
+                if hov_target is not None:
+                    if hov_target.get("is_slider"):
+                        self._apply_focus_target(hov_i, scroll=False)
+                        if self._dispatch_slider_step(hov_target, direction):
+                            return True
+                    self._focused_target_idx = hov_i
             if self._move_focus_1d(1 if is_right else -1):
+                clear_pointer_move_flag()
                 return True
 
         if event.keyval in (Gdk.KEY_Down, Gdk.KEY_KP_Down):
+            if self._focused_target_idx < 0:
+                hov_i, _ = self._resolve_hovered_focus_target()
+                if hov_i >= 0:
+                    self._focused_target_idx = hov_i
             if self._move_focus_2d_vertical(1):
+                clear_pointer_move_flag()
                 return True
 
         if event.keyval in (Gdk.KEY_Up, Gdk.KEY_KP_Up):
+            if self._focused_target_idx < 0:
+                hov_i, _ = self._resolve_hovered_focus_target()
+                if hov_i >= 0:
+                    self._focused_target_idx = hov_i
             if self._move_focus_2d_vertical(-1):
+                clear_pointer_move_flag()
                 return True
 
         # ── 3. ATTIVAZIONE PULSANTE A FUOCO (Invio / Spazio) ──
         if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space):
+            if self._focused_target_idx < 0:
+                hov_i, _ = self._resolve_hovered_focus_target()
+                if hov_i >= 0:
+                    self._apply_focus_target(hov_i, scroll=False)
             if self._activate_focused_target():
                 return True
 
-        # ── 4. REGOLAZIONE RAPIDA CARD CON SCROLL_ACTION (+ / -) ──
+        # ── 4. REGOLAZIONE RAPIDA SLIDER / VIEWPORT CON SCROLL_ACTION (+ / -) ──
         if event.keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add, Gdk.KEY_minus, Gdk.KEY_KP_Subtract):
             direction = "up" if event.keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add) else "down"
             if 0 <= self._focused_target_idx < len(self._focus_targets):
-                f_card = self._focus_targets[self._focused_target_idx]["card"]
-                scr_act = getattr(f_card.box_model, "scroll_action", None)
-                if scr_act:
-                    self.dispatch_uri(f"{scr_act}:{direction}")
-                    return True
-            hover_cards = [
-                c for c in self.listbox.get_children()
-                if isinstance(c, AsciiCard) and not getattr(c.box_model, "is_divider", False)
-            ]
-            target_card = next(
-                (c for c in hover_cards if (c.is_hovered or getattr(c.box_model, "elected", False)) and getattr(c.box_model, "scroll_action", None)),
-                None,
-            )
+                f_target = self._focus_targets[self._focused_target_idx]
+                if f_target.get("is_slider"):
+                    if self._dispatch_slider_step(f_target, direction):
+                        return True
+            else:
+                hov_i, hov_target = self._resolve_hovered_focus_target()
+                if hov_target is not None and hov_target.get("is_slider"):
+                    self._apply_focus_target(hov_i, scroll=False)
+                    if self._dispatch_slider_step(hov_target, direction):
+                        return True
+            target_card = self._resolve_active_scroll_card()
             if target_card is not None and target_card.on_link:
-                target_card.on_link(f"{target_card.box_model.scroll_action}:{direction}")
+                if self._check_step_rate_limit():
+                    target_card.on_link(f"{target_card.box_model.scroll_action}:{direction}")
                 return True
 
         return self.panel.on_key_press(event)

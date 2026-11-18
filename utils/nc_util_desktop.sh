@@ -6,7 +6,7 @@
 #   1. Bootstrap, Drop Privilegi & Auto-discovery Socket (Wayland / Niri)
 #   2. Palette Cyberpunk Pastello & Gestione Stato / Processi per Monitor
 #   3. Controllo Hardware Display Niri (Risoluzione, Refresh Rate, Max Mode, Scale)
-#   4. Motori Grafici Background (awww Immagine/Unicolor/Random, Slideshow, CMatrix JP)
+#   4. Motori Grafici Background (awww Immagine/Unicolor/Random, Slideshow, NCMatrix JP)
 #   5. Motore TUI Reattivo Real-Time (SIGWINCH, Redraw Zero-Flicker, Tab Completion)
 #   6. Parser Unificato CLI & Helper
 # ==============================================================================
@@ -307,14 +307,19 @@ validate_transition() {
     esac
 }
 
-validate_cmatrix_color() {
-    local col="${1,,}"
+validate_ncmatrix_color() {
+    local raw="${1}"
+    local col="${raw,,}"
+    if [[ "${col}" =~ ^#?[0-9a-f]{6}$ ]]; then
+        echo "#${col#\#}"
+        return 0
+    fi
     case "${col}" in
-        green|cyan|blue|red|magenta|yellow|white|black)
+        green|cyan|blue|red|magenta|yellow|white|black|rainbow)
             echo "${col}"
             ;;
         *)
-            msg_err "Colore '${1}' non valido (green, cyan, blue, red, magenta, yellow, white)."
+            msg_err "Colore '${1}' non valido (green, cyan, yellow, white, rainbow, #RRGGBB)."
             return 1
             ;;
     esac
@@ -420,17 +425,91 @@ kill_pidfile() {
             sleep 0.04
             ((wait_ticks--))
         done
-        kill -0 "${pid}" 2>/dev/null && kill -KILL "${pid}" 2>/dev/null || true
+        if kill -0 "${pid}" 2>/dev/null; then
+            pkill -KILL -P "${pid}" 2>/dev/null || true
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
     fi
     rm -f "${pidfile}"
 }
 
+collect_output_daemon_pids() {
+    local out="${1}"
+    local -A seen=()
+    local pf pid
+    for pf in \
+        "${PID_DIR}/slideshow_${out}.pid" \
+        "${PID_DIR}/ncmatrix_${out}.pid" \
+        "${PID_DIR}/cmatrix_${out}.pid" \
+        "${PID_DIR}/video_${out}.pid" \
+        "${PID_DIR}/solid_${out}.pid"; do
+        if [[ -f "${pf}" ]]; then
+            pid="$(cat "${pf}" 2>/dev/null || true)"
+            if [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+                seen["${pid}"]=1
+            fi
+        fi
+    done
+
+    local pat
+    for pat in \
+        "^([^ ]*/)?ncmatrix .*--output[= ]${out}( |\$)" \
+        "^([^ ]*/)?swaybg .*-o[= ]${out}( |\$)" \
+        "^([^ ]*/)?(python[^ ]* |env python[^ ]* )?([^ ]*/)?nc-video-wallpaper.*--output[= ]${out}( |\$)" \
+        "^([^ ]*/)?ffplay .*-window_title nc-vidwp-audio-${out}( |\$)" \
+        "^([^ ]*/)?pacat .*nc-vidwp-audio-${out}( |\$)" \
+        "^([^ ]*/)?mpvpaper .*( |^)${out}( |\$)"; do
+        while IFS= read -r pid; do
+            [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] && seen["${pid}"]=1
+        done < <(pgrep -f "${pat}" 2>/dev/null || true)
+    done
+
+    for pid in "${!seen[@]}"; do
+        printf "%s\n" "${pid}"
+    done
+}
+
+kill_collected_pids() {
+    local exclude_pid="${1:-0}"
+    shift || true
+    local pids=("$@")
+    (( ${#pids[@]} == 0 )) && return 0
+
+    local p alive=()
+    for p in "${pids[@]}"; do
+        [[ -z "${p}" || "${p}" == "${exclude_pid}" || "${p}" == "$$" ]] && continue
+        if kill -0 "${p}" 2>/dev/null; then
+            pkill -TERM -P "${p}" 2>/dev/null || true
+            kill -TERM "${p}" 2>/dev/null || true
+            alive+=("${p}")
+        fi
+    done
+
+    (( ${#alive[@]} == 0 )) && return 0
+    sleep 0.15
+    for p in "${alive[@]}"; do
+        if kill -0 "${p}" 2>/dev/null; then
+            pkill -KILL -P "${p}" 2>/dev/null || true
+            kill -KILL "${p}" 2>/dev/null || true
+        fi
+    done
+}
+
 cleanup_output_daemons() {
     local out="${1}"
-    kill_pidfile "${PID_DIR}/slideshow_${out}.pid"
-    kill_pidfile "${PID_DIR}/cmatrix_${out}.pid"
-    rm -f "${PID_DIR}/pause_${out}.flag"
-    pkill -f "kitty.*--output-name=${out}.*nc-cmatrix-${out}" 2>/dev/null || true
+    local exclude_pid="${2:-0}"
+    local old_pids=()
+    mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
+    rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock"
+    rm -f \
+        "${PID_DIR}/slideshow_${out}.pid" \
+        "${PID_DIR}/ncmatrix_${out}.pid" \
+        "${PID_DIR}/cmatrix_${out}.pid" \
+        "${PID_DIR}/video_${out}.pid" \
+        "${PID_DIR}/solid_${out}.pid"
+    if (( ${#old_pids[@]} > 0 )); then
+        kill_collected_pids "${exclude_pid}" "${old_pids[@]}"
+    fi
 }
 
 save_output_state() {
@@ -465,7 +544,7 @@ save_output_state() {
 }
 
 # ==============================================================================
-# 4. MOTORI GRAFICI: IMMAGINI, UNICOLOR, RANDOM, SLIDESHOW, CMATRIX (ASCII/JP)
+# 4. MOTORI GRAFICI: IMMAGINI, UNICOLOR, RANDOM, SLIDESHOW, NCMATRIX (ASCII/JP)
 # ==============================================================================
 apply_single_image() {
     local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5:-18181a}"
@@ -506,9 +585,18 @@ apply_single_image() {
 cmd_set_image() {
     local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5}"
     ensure_awww_daemon || return 1
-    cleanup_output_daemons "${out}"
+    local old_pids=()
+    mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
     apply_single_image "${out}" "${img}" "${fit}" "${trans}" "${bgcolor}" || return 1
     save_output_state "${out}" "image" "${img}" "${fit}" "${trans}" "" "" "" "${bgcolor}" "" "false"
+    if (( ${#old_pids[@]} > 0 )); then
+        sleep 0.25
+        rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock" \
+            "${PID_DIR}/slideshow_${out}.pid" "${PID_DIR}/ncmatrix_${out}.pid" \
+            "${PID_DIR}/cmatrix_${out}.pid" "${PID_DIR}/video_${out}.pid" \
+            "${PID_DIR}/solid_${out}.pid"
+        kill_collected_pids 0 "${old_pids[@]}"
+    fi
     msg_ok "Schermo ${out}: applicata '$(basename "${img}")' [fit: ${fit}, trans: ${trans}]"
 }
 
@@ -517,21 +605,42 @@ cmd_set_solid() {
     local hex
     hex="$(resolve_solid_color "${color_spec}")" || return 1
 
-    local clean_spec="${color_spec#\#}"
-    local state_label="#${hex}"
-    local display_label="#${hex}"
-    if [[ ! "${clean_spec,,}" =~ ^(0x)?([0-9a-f]{3}|[0-9a-f]{6})$ ]]; then
-        state_label="${color_spec,,} (#${hex})"
-        display_label="${color_spec,,} (#${hex})"
+    local upper_hex="#${hex^^}"
+    local display_label="${upper_hex}"
+    local old_pids=()
+    mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
+
+    if command -v swaybg >/dev/null 2>&1; then
+        nohup swaybg -o "${out}" -c "${upper_hex}" -m solid_color >/dev/null 2>&1 &
+        local new_pid=$!
+        disown "${new_pid}" 2>/dev/null || true
+        sleep 0.30
+        if ! kill -0 "${new_pid}" 2>/dev/null; then
+            msg_err "Schermo ${out}: swaybg terminato inaspettatamente."
+            return 1
+        fi
+        printf "%s\n" "${new_pid}" > "${PID_DIR}/solid_${out}.pid"
+        rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock" \
+            "${PID_DIR}/slideshow_${out}.pid" "${PID_DIR}/ncmatrix_${out}.pid" \
+            "${PID_DIR}/cmatrix_${out}.pid" "${PID_DIR}/video_${out}.pid"
+        kill_collected_pids "${new_pid}" "${old_pids[@]}"
+    else
+        ensure_awww_daemon || return 1
+        if ! awww clear --outputs "${out}" "${hex}" >/dev/null 2>&1; then
+            msg_err "Schermo ${out}: impossibile applicare il colore uniforme ${display_label}."
+            return 1
+        fi
+        if (( ${#old_pids[@]} > 0 )); then
+            sleep 0.25
+            rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock" \
+                "${PID_DIR}/slideshow_${out}.pid" "${PID_DIR}/ncmatrix_${out}.pid" \
+                "${PID_DIR}/cmatrix_${out}.pid" "${PID_DIR}/video_${out}.pid" \
+                "${PID_DIR}/solid_${out}.pid"
+            kill_collected_pids 0 "${old_pids[@]}"
+        fi
     fi
 
-    ensure_awww_daemon || return 1
-    cleanup_output_daemons "${out}"
-    if ! awww clear --outputs "${out}" "${hex}" >/dev/null 2>&1; then
-        msg_err "Schermo ${out}: impossibile applicare il colore uniforme ${display_label}."
-        return 1
-    fi
-    save_output_state "${out}" "solid" "${state_label}" "" "" "" "" "" "${hex}" "" "false"
+    save_output_state "${out}" "solid" "${upper_hex}" "" "" "" "" "" "${hex}" "" "false"
     msg_ok "Schermo ${out}: applicato sfondo uniforme ${display_label}"
 }
 
@@ -660,7 +769,8 @@ cmd_set_slideshow() {
     fi
 
     ensure_awww_daemon || return 1
-    cleanup_output_daemons "${out}"
+    local old_pids=()
+    mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
     save_output_state "${out}" "slideshow" "${dir}" "${fit}" "${trans}" "${interval_raw}" "" "" "${bgcolor}" "${shuffle}" "false"
 
     nohup "$0" --internal-worker "${out}" "${dir}" "${fit}" "${trans}" "${interval_sec}" "${bgcolor}" "${shuffle}" \
@@ -668,175 +778,82 @@ cmd_set_slideshow() {
     local worker_pid=$!
     disown "${worker_pid}" 2>/dev/null || true
     printf "%s\n" "${worker_pid}" > "${PID_DIR}/slideshow_${out}.pid"
+    if (( ${#old_pids[@]} > 0 )); then
+        sleep 0.30
+        rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock" \
+            "${PID_DIR}/ncmatrix_${out}.pid" "${PID_DIR}/cmatrix_${out}.pid" \
+            "${PID_DIR}/video_${out}.pid" "${PID_DIR}/solid_${out}.pid"
+        kill_collected_pids "${worker_pid}" "${old_pids[@]}"
+    fi
 
     msg_ok "Schermo ${out}: slideshow avviata da '$(basename "${dir}")' (${count} img, ogni ${interval_raw})"
 }
 
-run_jp_matrix_engine() {
-    local color="${1:-green}"
-    local speed="${2:-4}"
-    exec python3 - "${color}" "${speed}" << 'PYMAT'
-import curses, random, time, sys, locale
+cmd_set_ncmatrix() {
+    local out="${1}" color="${2}" speed="${3}" japanese="${4:-false}" font_size="${5:-9}"
+    local charset="ascii"
+    [[ "${japanese}" == "true" ]] && charset="katakana"
 
-locale.setlocale(locale.LC_ALL, '')
-color_name = sys.argv[1].lower() if len(sys.argv) > 1 else "green"
-try:
-    speed_lvl = int(sys.argv[2]) if len(sys.argv) > 2 else 4
-except ValueError:
-    speed_lvl = 4
-
-KATAKANA = [chr(c) for c in range(0xFF66, 0xFF9E)]
-ASCII_GLYPHS = list("0123456789Z:・.\"=*+-<>¦|_")
-CHARSET = KATAKANA * 3 + ASCII_GLYPHS
-
-COLOR_MAP = {
-    "green":   curses.COLOR_GREEN,
-    "cyan":    curses.COLOR_CYAN,
-    "blue":    curses.COLOR_BLUE,
-    "red":     curses.COLOR_RED,
-    "magenta": curses.COLOR_MAGENTA,
-    "yellow":  curses.COLOR_YELLOW,
-    "white":   curses.COLOR_WHITE,
-    "black":   curses.COLOR_BLACK,
-}
-
-def main(stdscr):
-    curses.curs_set(0)
-    stdscr.nodelay(True)
-    stdscr.timeout(0)
-    curses.start_color()
-    curses.use_default_colors()
-
-    fg = COLOR_MAP.get(color_name, curses.COLOR_GREEN)
-    curses.init_pair(1, curses.COLOR_WHITE, -1)
-    curses.init_pair(2, fg, -1)
-    curses.init_pair(3, fg, -1)
-
-    delay = 0.015 + (max(0, min(9, speed_lvl)) * 0.012)
-    rows, cols = stdscr.getmaxyx()
-
-    def init_columns(r, c):
-        state = []
-        for _ in range(max(1, c - 1)):
-            state.append({
-                "y": random.randint(-r, 0),
-                "len": random.randint(max(4, r // 5), max(8, r - 2)),
-                "spd": random.choice([1, 1, 1, 2]),
-                "tick": 0,
-                "chars": [random.choice(CHARSET) for _ in range(r + 2)]
-            })
-        return state
-
-    streams = init_columns(rows, cols)
-
-    while True:
-        nr, nc = stdscr.getmaxyx()
-        if nr != rows or nc != cols:
-            rows, cols = nr, nc
-            stdscr.clear()
-            streams = init_columns(rows, cols)
-
-        for x, st in enumerate(streams):
-            st["tick"] += 1
-            if st["tick"] < st["spd"]:
-                continue
-            st["tick"] = 0
-
-            head_y = st["y"]
-            tail_y = head_y - st["len"]
-
-            if rows > 0:
-                st["chars"][random.randint(0, rows - 1)] = random.choice(CHARSET)
-
-            if 0 <= head_y < rows:
-                ch = random.choice(CHARSET)
-                st["chars"][head_y] = ch
-                try:
-                    stdscr.addstr(head_y, x, ch, curses.color_pair(1) | curses.A_BOLD)
-                except curses.error:
-                    pass
-
-            body_y = head_y - 1
-            if 0 <= body_y < rows:
-                try:
-                    stdscr.addstr(body_y, x, st["chars"][body_y], curses.color_pair(2) | curses.A_BOLD)
-                except curses.error:
-                    pass
-
-            dim_y = head_y - max(2, st["len"] // 2)
-            if 0 <= dim_y < rows:
-                try:
-                    stdscr.addstr(dim_y, x, st["chars"][dim_y], curses.color_pair(3) | curses.A_DIM)
-                except curses.error:
-                    pass
-
-            if 0 <= tail_y < rows:
-                try:
-                    stdscr.addstr(tail_y, x, " ")
-                except curses.error:
-                    pass
-
-            st["y"] += 1
-            if tail_y >= rows:
-                st["y"] = random.randint(-rows // 2, -1)
-                st["len"] = random.randint(max(4, rows // 5), max(8, rows - 2))
-                st["spd"] = random.choice([1, 1, 1, 2])
-
-        stdscr.refresh()
-        try:
-            if stdscr.getch() in (ord('q'), ord('Q'), 27):
-                break
-        except Exception:
-            pass
-        time.sleep(delay)
-
-try:
-    curses.wrapper(main)
-except KeyboardInterrupt:
-    pass
-PYMAT
-}
-
-cmd_set_cmatrix() {
-    local out="${1}" color="${2}" speed="${3}" japanese="${4:-false}"
-    if ! command -v kitty >/dev/null 2>&1; then
-        msg_err "'kitty' (necessario per il layer wlr-layer-shell) non è installato."
-        return 1
-    fi
-    if [[ "${japanese}" != "true" ]] && ! command -v cmatrix >/dev/null 2>&1; then
-        msg_err "'cmatrix' non è installato. Installalo con: sudo pacman -S cmatrix"
+    local ncmatrix_bin script_dir
+    script_dir="$(dirname "$(readlink -f "$0")")"
+    ncmatrix_bin="${script_dir}/../bin/ncmatrix"
+    if [[ ! -x "${ncmatrix_bin}" ]]; then
+        msg_err "'${ncmatrix_bin}' non trovato o non eseguibile (esegui: make -C utils/ncmatrix)."
         return 1
     fi
 
-    cleanup_output_daemons "${out}"
-    save_output_state "${out}" "cmatrix" "cmatrix" "" "" "" "${color}" "${speed}" "" "" "${japanese}"
+    cat > "/tmp/ncmatrix_${out}.conf" <<EOF
+charset=${charset}
+color=${color}
+speed=${speed}
+font_size=${font_size}
+bold=2
+async=1
+fade=1
+EOF
 
-    local matrix_cmd=()
-    if [[ "${japanese}" == "true" ]]; then
-        matrix_cmd=("$0" "--internal-jp-matrix" "${color}" "${speed}")
+    local pidfile="${PID_DIR}/ncmatrix_${out}.pid"
+    local running_pid=""
+    if [[ -f "${pidfile}" ]]; then
+        local cand
+        cand="$(cat "${pidfile}" 2>/dev/null || true)"
+        if [[ -n "${cand}" && "${cand}" =~ ^[0-9]+$ ]] && kill -0 "${cand}" 2>/dev/null; then
+            if tr '\0' ' ' < "/proc/${cand}/cmdline" 2>/dev/null | grep -q "ncmatrix"; then
+                running_pid="${cand}"
+            fi
+        fi
+    fi
+
+    if [[ -n "${running_pid}" ]]; then
+        save_output_state "${out}" "ncmatrix" "ncmatrix" "" "" "" "${color}" "${speed}" "" "" "${japanese}"
+        kill -USR1 "${running_pid}" 2>/dev/null || true
     else
-        matrix_cmd=("cmatrix" "-b" "-s" "-u" "${speed}" "-C" "${color}")
+        local old_pids=()
+        mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
+        rm -f "/tmp/nc_mpvpaper_${out}.sock"
+        save_output_state "${out}" "ncmatrix" "ncmatrix" "" "" "" "${color}" "${speed}" "" "" "${japanese}"
+        nohup "${ncmatrix_bin}" \
+            --wallpaper \
+            --output "${out}" \
+            --charset "${charset}" \
+            --color "${color}" \
+            --speed "${speed}" \
+            --font-size "${font_size}" \
+            --pid-file "${pidfile}" \
+            --ipc-socket "/tmp/nc_mpvpaper_${out}.sock" \
+            -a -b \
+            >> "${LOG_DIR}/ncmatrix_${out}.log" 2>&1 &
+        local new_pid=$!
+        disown "${new_pid}" 2>/dev/null || true
+        if (( ${#old_pids[@]} > 0 )); then
+            sleep 0.35
+            kill_collected_pids "${new_pid}" "${old_pids[@]}"
+        fi
     fi
-
-    nohup kitty +kitten panel \
-        --edge=background \
-        --output-name="${out}" \
-        --focus-policy=not-allowed \
-        --instance-group="nc-cmatrix-${out}" \
-        -o background_opacity=1.0 \
-        -o background=#0a0a0c \
-        -o font_size=11.0 \
-        -o cursor_trail=0 \
-        -o confirm_os_window_close=0 \
-        "${matrix_cmd[@]}" \
-        >> "${LOG_DIR}/cmatrix_${out}.log" 2>&1 &
-    local cm_pid=$!
-    disown "${cm_pid}" 2>/dev/null || true
-    printf "%s\n" "${cm_pid}" > "${PID_DIR}/cmatrix_${out}.pid"
 
     local jp_label=""
     [[ "${japanese}" == "true" ]] && jp_label=" [Katakana JP]"
-    msg_ok "Schermo ${out}: cmatrix${jp_label} attivato [colore: ${color}, speed: ${speed}]"
+    msg_ok "Schermo ${out}: ncmatrix${jp_label} attivato [colore: ${color}, speed: ${speed}, ${font_size}pt]"
 }
 
 cmd_control_slideshow() {
@@ -879,7 +896,7 @@ cmd_control_slideshow() {
                 ;;
             stop)
                 cleanup_output_daemons "${out}"
-                msg_ok "Schermo ${out}: processi background (slideshow/cmatrix) terminati."
+                msg_ok "Schermo ${out}: processi background (slideshow/ncmatrix) terminati."
                 ;;
         esac
     done <<< "${outs}"
@@ -912,7 +929,7 @@ restore_state_from_dir() {
             image)     [[ -f "${target}" ]] && cmd_set_image "${out}" "${target}" "${fit}" "${trans}" "${bgcolor}" ;;
             solid)     cmd_set_solid "${out}" "${bgcolor}" ;;
             slideshow) [[ -d "${target}" ]] && cmd_set_slideshow "${out}" "${target}" "${fit}" "${trans}" "${interval}" "${bgcolor}" "${shuffle}" ;;
-            cmatrix)   cmd_set_cmatrix "${out}" "${color}" "${speed}" "${japanese}" ;;
+            ncmatrix|cmatrix) cmd_set_ncmatrix "${out}" "${color}" "${speed}" "${japanese}" ;;
         esac
     done
     shopt -u nullglob
@@ -1080,7 +1097,7 @@ def extract_res_info(o):
 
 def get_screen_status(name, awww_map):
     state_file = os.path.join(STATE_DIR, f"{name}.json")
-    cm_alive = pid_alive(os.path.join(PID_DIR, f"cmatrix_{name}.pid"))
+    cm_alive = pid_alive(os.path.join(PID_DIR, f"ncmatrix_{name}.pid")) or pid_alive(os.path.join(PID_DIR, f"cmatrix_{name}.pid"))
     ss_alive = pid_alive(os.path.join(PID_DIR, f"slideshow_{name}.pid"))
     paused   = os.path.isfile(os.path.join(PID_DIR, f"pause_{name}.flag"))
 
@@ -1089,11 +1106,11 @@ def get_screen_status(name, awww_map):
             with open(state_file, "r") as f:
                 st = json.load(f)
             mode = st.get("mode", "")
-            if mode == "cmatrix" and cm_alive:
+            if mode in ("ncmatrix", "cmatrix") and cm_alive:
                 jp = " JP" if st.get("japanese") == "true" else ""
                 col = st.get("color", "green")
                 spd = st.get("speed", "4")
-                return f"Matrix{jp} ({col})", f"CMatrix{jp} [{col}, v:{spd}]"
+                return f"NCMatrix{jp} ({col})", f"NCMatrix{jp} [{col}, v:{spd}]"
             elif mode == "slideshow" and ss_alive:
                 folder = os.path.basename(st.get("target", "").rstrip("/"))
                 cur = st.get("current_image", "")
@@ -1493,7 +1510,7 @@ def translate_box_command(line):
         ft = args[4] if len(args) > 4 else "fill"
         tr = args[5] if len(args) > 5 else "random"
         return ["-o", sc, "-d", dr, "-n", iv, "-f", ft, "-t", tr], None
-    elif c_low in ("matrix", "cmatrix"):
+    elif c_low in ("matrix", "ncmatrix", "cmatrix"):
         if len(args) < 2:
             return None, "Sintassi: matrix <id|all> [colore] [velocità 0-9] [jp]"
         sc = args[1]
@@ -1816,18 +1833,18 @@ ${C_BOLD}${C_MAUVE}╰───────────────────�
   ${C_BOLD}${C_SKY}MODALITÀ SFONDO:${C_RESET}
     ${C_GREEN}-i, --image${C_RESET} ${C_PEACH}<file>${C_RESET}          Imposta un'immagine statica
     ${C_GREEN}-d, --dir${C_RESET} ${C_PEACH}<cartella>${C_RESET}        Avvia una slideshow indipendente dalla cartella indicata
-    ${C_GREEN}-c, --cmatrix${C_RESET}              Imposta ${C_TEAL}cmatrix${C_RESET} in background nativo Wayland sullo schermo
+    ${C_GREEN}-c, --ncmatrix${C_RESET}             Imposta ${C_TEAL}ncmatrix${C_RESET} in background nativo Wayland sullo schermo
     ${C_GREEN}    --random${C_RESET} ${C_PEACH}[cartella]${C_RESET}     Applica subito uno sfondo casuale
     ${C_GREEN}    --unicolor${C_RESET} ${C_PEACH}<col|hex>${C_RESET}    Applica un colore uniforme (es. ${C_PEACH}white${C_RESET}, ${C_PEACH}black${C_RESET}, ${C_PEACH}#18181a${C_RESET}, ${C_PEACH}cyber${C_RESET})
     ${C_GREEN}    --solid${C_RESET} ${C_PEACH}<col|hex>${C_RESET}       Alias di ${C_GREEN}--unicolor${C_RESET}
     ${C_GREEN}    --swap${C_RESET} ${C_PEACH}<id1> <id2>${C_RESET}      Scambia istantaneamente gli sfondi tra due monitor
     ${C_GREEN}    --fav${C_RESET}                  Salva lo sfondo corrente dello schermo nella cartella ${C_PEACH}favorites/${C_RESET}
 
-  ${C_BOLD}${C_SKY}OPZIONI IMMAGINE, SLIDESHOW E CMATRIX:${C_RESET}
+  ${C_BOLD}${C_SKY}OPZIONI IMMAGINE, SLIDESHOW E NCMATRIX:${C_RESET}
     ${C_GREEN}-f, --fit${C_RESET} ${C_PEACH}<modo>${C_RESET}            Riempimento: ${C_PEACH}fill${C_RESET} (crop), ${C_PEACH}fit${C_RESET}, ${C_PEACH}stretch${C_RESET}, ${C_PEACH}center${C_RESET} ${C_MUTED}[Default: fill]${C_RESET}
     ${C_GREEN}-t, --transition${C_RESET} ${C_PEACH}<tipo>${C_RESET}     Transizione: ${C_PEACH}wipe${C_RESET}, ${C_PEACH}wave${C_RESET}, ${C_PEACH}grow${C_RESET}, ${C_PEACH}outer${C_RESET}, ${C_PEACH}fade${C_RESET}, ${C_PEACH}simple${C_RESET}, ${C_PEACH}random${C_RESET}, ${C_PEACH}none${C_RESET}
     ${C_GREEN}-n, --interval${C_RESET} ${C_PEACH}<tempo>${C_RESET}      Intervallo slideshow (${C_PEACH}30s${C_RESET}, ${C_PEACH}5m${C_RESET}, ${C_PEACH}1h${C_RESET}) ${C_MUTED}[Default: 5m]${C_RESET}
-    ${C_GREEN}-j, --japanese${C_RESET}             Usa caratteri giapponesi (Katakana + glifi Matrix) in CMatrix
+    ${C_GREEN}-j, --japanese${C_RESET}             Usa caratteri giapponesi (Katakana + glifi Matrix) in NCMatrix
     ${C_GREEN}-C, --color${C_RESET} ${C_PEACH}<colore>${C_RESET}        Colore Matrix: ${C_PEACH}green${C_RESET}, ${C_PEACH}cyan${C_RESET}, ${C_PEACH}blue${C_RESET}, ${C_PEACH}red${C_RESET}, ${C_PEACH}magenta${C_RESET}, ${C_PEACH}yellow${C_RESET}, ${C_PEACH}white${C_RESET}
     ${C_GREEN}-u, --speed${C_RESET} ${C_PEACH}<0-9>${C_RESET}           Velocità caduta codice Matrix (0=max, 9=lento) ${C_MUTED}[Default: 4]${C_RESET}
 
@@ -1903,11 +1920,11 @@ execute_cli_args() {
                 action="swap"; swap_a="${2}"; swap_b="${3}"; shift 3 ;;
             --fav|--favorite)
                 action="fav"; shift ;;
-            -c|--cmatrix)
-                action="cmatrix"; shift ;;
+            -c|--ncmatrix|--cmatrix)
+                action="ncmatrix"; shift ;;
             -j|--japanese|--jp)
                 cm_japanese="true"
-                [[ -z "${action}" ]] && action="cmatrix"
+                [[ -z "${action}" ]] && action="ncmatrix"
                 shift ;;
             -f|--fit)
                 [[ -z "${2:-}" ]] && { msg_err "L'opzione '${1}' richiede una modalità (fill, fit, stretch, center)."; return 1; }
@@ -1925,7 +1942,7 @@ execute_cli_args() {
                 shuffle="false"; shift ;;
             -C|--color)
                 [[ -z "${2:-}" ]] && { msg_err "L'opzione '${1}' richiede un colore."; return 1; }
-                cm_color="$(validate_cmatrix_color "${2}")" || return 1; shift 2 ;;
+                cm_color="$(validate_ncmatrix_color "${2}")" || return 1; shift 2 ;;
             -u|--speed)
                 [[ -z "${2:-}" || ! "${2}" =~ ^[0-9]$ ]] && { msg_err "La velocità (-u/--speed) deve essere tra 0 e 9."; return 1; }
                 cm_speed="${2}"; shift 2 ;;
@@ -2008,12 +2025,12 @@ execute_cli_args() {
             while IFS= read -r out; do
                 [[ -n "${out}" ]] && { cmd_set_slideshow "${out}" "${resolved_dir}" "${fit_mode}" "${transition}" "${interval}" "${bg_color}" "${shuffle}" || return 1; }
             done <<< "${outs}" ;;
-        "cmatrix")
+        "ncmatrix"|"cmatrix")
             local outs out
-            cm_color="$(validate_cmatrix_color "${cm_color}")" || return 1
+            cm_color="$(validate_ncmatrix_color "${cm_color}")" || return 1
             outs="$(resolve_outputs "${target_output}")" || return 1
             while IFS= read -r out; do
-                [[ -n "${out}" ]] && { cmd_set_cmatrix "${out}" "${cm_color}" "${cm_speed}" "${cm_japanese}" || return 1; }
+                [[ -n "${out}" ]] && { cmd_set_ncmatrix "${out}" "${cm_color}" "${cm_speed}" "${cm_japanese}" || return 1; }
             done <<< "${outs}" ;;
         "next"|"pause"|"resume"|"stop")
             cmd_control_slideshow "${action}" "${target_output}" || return 1 ;;
@@ -2030,9 +2047,6 @@ execute_cli_args() {
 main() {
     if [[ "${1:-}" == "--internal-worker" ]]; then
         shift; run_slideshow_worker "$@"; exit 0
-    fi
-    if [[ "${1:-}" == "--internal-jp-matrix" ]]; then
-        shift; run_jp_matrix_engine "$@"; exit 0
     fi
 
     ensure_wayland_env

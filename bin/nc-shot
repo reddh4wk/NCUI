@@ -6,7 +6,7 @@ import sys
 import tempfile
 import traceback
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -39,8 +39,8 @@ def _msg_err(text: str) -> None:
 def _build_arg_parser() -> argparse.ArgumentParser:
     helper_epilog = f"""{C_LAVENDER}Esempi d'uso:{C_RESET}
   {C_GREEN}# Genera la vista offscreen:{C_RESET}
-  nc-shot keyboard shortcuts -o /tmp/k_std.png
-  nc-shot network wired
+  nc-shot input shortcuts -o /tmp/k_std.png
+  nc-shot network interfaces
 """
     parser = argparse.ArgumentParser(
         prog="nc-shot",
@@ -50,8 +50,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         add_help=False,
     )
     parser.add_argument("-h", "--help", action="store_true", help="Mostra questo messaggio di aiuto ed esce.")
-    parser.add_argument("-s", "--section", type=str, default="", help="ID sezione Control Center o pannello popup (es. keyboard, network).")
-    parser.add_argument("-t", "--subtab", type=str, default="", help="ID della subtab interna (es. shortcuts, wired).")
+    parser.add_argument("-s", "--section", type=str, default="", help="ID sezione Control Center o pannello popup (es. input, network).")
+    parser.add_argument("-t", "--subtab", type=str, default="", help="ID della subtab interna (es. shortcuts, interfaces).")
     parser.add_argument("-m", "--mode", choices=["settings", "popup"], default="settings", help="Modalità finestra: 'settings' o 'popup'.")
     parser.add_argument("-o", "--output", type=str, default="", help="Percorso del file PNG di output.")
     parser.add_argument("-e", "--expanded", action="store_true", help="Forza vista espansa (popup).")
@@ -106,17 +106,15 @@ def main() -> int:
         return 0
 
     pos = list(args.pos_args or [])
-    section = args.section or (pos[0] if len(pos) >= 1 else "system")
-    subtab = args.subtab or (pos[1] if len(pos) >= 2 and not pos[1].endswith(".png") else "")
-    output_path = args.output
+    png_pos = [p for p in pos if p.endswith(".png")]
+    non_png_pos = [p for p in pos if not p.endswith(".png")]
+    section = args.section or (non_png_pos[0] if len(non_png_pos) >= 1 else ("" if args.mode == "settings" else "network"))
+    subtab = args.subtab or (non_png_pos[1] if len(non_png_pos) >= 2 else "")
+    output_path = args.output or (png_pos[-1] if png_pos else "")
     if not output_path:
-        if len(pos) >= 3:
-            output_path = pos[2]
-        elif len(pos) == 2 and pos[1].endswith(".png"):
-            output_path = pos[1]
-        else:
-            sub_slug = f"_{subtab}" if subtab else ""
-            output_path = f"/tmp/nc_review_{section}{sub_slug}.png"
+        sec_slug = section or "last"
+        sub_slug = f"_{subtab}" if subtab else ""
+        output_path = f"/tmp/nc_review_{sec_slug}{sub_slug}.png"
 
     output_path = os.path.abspath(os.path.expanduser(output_path))
     out_dir = os.path.dirname(output_path)
@@ -171,16 +169,16 @@ def main() -> int:
         reload_locale(args.lang)
 
     if subtab:
-        if args.mode == "settings":
+        if args.mode == "settings" and section:
             STATE.set("control_center", f"subtab_{section}", subtab)
-        else:
+        elif args.mode != "settings":
             STATE.set(section, "active_tab", subtab)
 
     if args.mode == "popup" and args.expanded:
         STATE.set(section, "expanded", True)
 
     _msg_info(
-        f"Rendering {C_BOLD}{args.mode}:{section}{('/' + subtab) if subtab else ''}{C_RESET} -> {output_path}",
+        f"Rendering {C_BOLD}{args.mode}:{section or '<last>'}{('/' + subtab) if subtab else ''}{C_RESET} -> {output_path}",
         quiet=args.quiet,
     )
 
@@ -222,22 +220,36 @@ def main() -> int:
             win.focus_link_by_index(args.focus)
 
         _unlock_natural_scroll_geometry()
+        hdr_nat_h = 0
+        if args.mode == "settings" and getattr(win, "header_listbox", None) is not None:
+            for child in win.header_listbox.get_children():
+                child.queue_resize()
+            win.header_listbox.queue_resize()
+            _h_min, hdr_nat_h = win.header_listbox.get_preferred_height()
+
         for child in win.listbox.get_children():
             child.queue_resize()
         win.listbox.queue_resize()
 
         _l_min, list_nat_h = win.listbox.get_preferred_height()
-        pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
         right_w_px = int(round(win.content_canvas.total_px))
+        bw = int(THEME["geometry"].get("window_border_width", 1))
 
         final_w = target_w
-        final_h = max(list_nat_h + pad + 16, 240)
         if args.mode == "settings":
-            final_h = max(final_h, win._get_cc_target_height_px())
-
-        win.scrolled_window.set_size_request(right_w_px, max(200, final_h - pad))
-        if hasattr(win, "nav_scrolled"):
-            win.nav_scrolled.set_size_request(int(win.nav_canvas.total_px) + 4, max(200, final_h - pad))
+            _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
+            v_chrome = m_top + m_bot
+            content_h = max(hdr_nat_h + list_nat_h, win._get_cc_target_height_px() - v_chrome, 240)
+            final_h = content_h + v_chrome
+            win._populate_settings_nav(target_h_px=content_h)
+            if getattr(win, "header_listbox", None) is not None:
+                win.header_listbox.set_size_request(right_w_px, -1)
+            win.scrolled_window.set_size_request(right_w_px, max(120, content_h - hdr_nat_h))
+            win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
+        else:
+            pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
+            final_h = max(list_nat_h + pad + (2 * bw), 240)
+            win.scrolled_window.set_size_request(right_w_px, max(200, final_h - pad - (2 * bw)))
         root_widget.set_size_request(final_w, final_h)
         off.set_size_request(final_w, final_h)
         off.resize(final_w, final_h)

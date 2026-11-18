@@ -325,17 +325,20 @@ if [[ ! -s "$TMP_IMG" ]]; then
     exit 1
 fi
 
-# Copia sincrona negli appunti Wayland
-if ! wl-copy < "$TMP_IMG"; then
-    nc_log_warn "Failed to copy screenshot to clipboard"
-    print_msg "$C_PEACH" "AVVISO" "Copia negli appunti non riuscita."
-fi
-
 if [[ "$EDIT_MODE" -eq 1 ]]; then
+    # Copia sincrona negli appunti Wayland
+    if ! wl-copy --type image/png < "$TMP_IMG"; then
+        nc_log_warn "Failed to copy screenshot to clipboard"
+        print_msg "$C_PEACH" "AVVISO" "Copia negli appunti non riuscita."
+    fi
     nc_log_debug "Opening satty for annotation -> $OUT_FILE" 5
-    satty --filename "$TMP_IMG" --output-filename "$OUT_FILE"
+    satty --filename "$TMP_IMG" --output-filename "$OUT_FILE" --copy-command "wl-copy --type image/png"
 else
     cp "$TMP_IMG" "$OUT_FILE"
+    if ! wl-copy --type image/png < "$OUT_FILE"; then
+        nc_log_warn "Failed to copy screenshot to clipboard"
+        print_msg "$C_PEACH" "AVVISO" "Copia negli appunti non riuscita."
+    fi
     print_msg "$C_MINT" "OK" "Salvato in $OUT_FILE e copiato negli appunti."
     notify_user "Screenshot Salvato" "$(basename "$OUT_FILE")"
 fi

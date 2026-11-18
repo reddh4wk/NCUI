@@ -1,17 +1,20 @@
 [general]
-language = "it"# "en", "it", o qualsiasi file <lang>.toml in locales/ o ~/.config/nc-ui/locales/
+language = "en"# "en", "it", o qualsiasi file <lang>.toml in locales/ o ~/.config/nc-ui/locales/
 log_file = "/tmp/nc-ui.log"
 log_level = 3
 enable_hover_tooltips = false
 terminal = "ghostty"# "auto" cerca ghostty, kitty, foot, alacritty
+pkg_manager = "paru" # "auto", "paru", "yay", "pacman", "apt", "dnf", "zypper"
 
 [control_center]
 panel_style = "standard"
 width_px = 960
 side = "right" # "left" oppure "right"
+inner_padding = 10
+outer_margin = 8
 
 [capture]
-action = "clipboard" # "clipboard" | "satty" | "save" | "clipboard_satty"
+action = "clipboard_satty" # "clipboard" | "satty" | "save" | "clipboard_satty"
 
 [panels.refresh_ms]
 calendar      = 0
@@ -73,6 +76,6 @@ enabled = true
 host = "10.10.0.20"
 ssh_user = "damiano"
 
-[waybar_widgets]
-media_width_pct = 65
-window_width_pct = 35
+[waybar_plugins]
+media_width_pct = 60
+window_width_pct = 40

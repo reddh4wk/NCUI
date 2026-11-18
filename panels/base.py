@@ -20,14 +20,31 @@ class BasePanel:
     def __init__(self, shell=None):
         self.shell = shell
         self._last_forced_refresh_ts = 0.0
+        self._pending_refresh_id = None
 
     def request_throttled_refresh(self) -> None:
-        now = time.time()
-        if now - self._last_forced_refresh_ts >= 0.1:
+        now = time.monotonic()
+        if now - self._last_forced_refresh_ts >= 0.025:
             self._last_forced_refresh_ts = now
+            if self._pending_refresh_id is not None:
+                from gi.repository import GLib
+                GLib.source_remove(self._pending_refresh_id)
+                self._pending_refresh_id = None
             if self.shell:
                 self.shell.refresh_view()
                 self.shell._setup_timer()
+        elif self.shell and self._pending_refresh_id is None:
+            from gi.repository import GLib
+
+            def _flush():
+                self._pending_refresh_id = None
+                self._last_forced_refresh_ts = time.monotonic()
+                if self.shell:
+                    self.shell.refresh_view()
+                    self.shell._setup_timer()
+                return False
+
+            self._pending_refresh_id = GLib.timeout_add(25, _flush)
 
     # --- Helpers Stato Persistente ---
     def get_state(self, key: str, default=None):
@@ -76,6 +93,7 @@ class BasePanel:
         secret: bool = None,
         title: str = None,
         required: bool = False,
+        completion=None,
     ) -> None:
         if self.shell:
             self.shell.activate_prompt(
@@ -85,6 +103,7 @@ class BasePanel:
                 secret=secret,
                 title=title,
                 required=required,
+                completion=completion,
             )
 
     # --- Hooks da sovrascrivere nei Pannelli ---
@@ -97,7 +116,13 @@ class BasePanel:
     def on_prompt_submit(self, action_id: str, text: str) -> None:
         pass
 
+    def on_prompt_change(self, action_id: str, text: str) -> bool:
+        return False
+
     def on_key_press(self, event) -> bool:
+        return False
+
+    def on_key_release(self, event) -> bool:
         return False
 
     # --- Waybar Integration ---
@@ -108,35 +133,14 @@ class BasePanel:
         pass
 
 
-CONTROL_CENTER_SECTIONS = [
-    ("accounts",        "\uf007"),
-    ("display",         "\uf108"),
-    ("waybar",          "\uf0db"),
-    ("auth",            "\uf577"),
-    ("apps",            "\uf1b2"),
-    ("personalization", "\uf53f"),
-    ("network",         "\uf6ff"),
-    ("notifications",   "\uf0f3"),
-    ("bluetooth",       "\uf294"),
-    ("sound",           "\uf028"),
-    ("power",           "\uf0e7"),
-    ("mouse",           "\uf8cc"),
-    ("datetime",        "\uf017"),
-    ("calendar",        "\uf073"),
-    ("updates",         "\uf0aa"),
-    ("keyboard",        "\uf11c"),
-    ("system",          "\uf129"),
-    ("settings",        "\uf013"),
-]
-
-
 def load_panel(panel_id: str, shell=None, mode: str = "popup") -> BasePanel:
-    pid = str(panel_id or "network").strip()
     if mode == "settings":
-        from panels.control_center import ControlCenterPanel
-        return ControlCenterPanel(initial_section=pid, shell=shell)
+        from panels.control_center import create_panel
+        return create_panel(panel_id, shell=shell)
+    pid = str(panel_id or "network").strip()
 
-    base_mod_name = "system" if pid in ("cpu", "ram") else pid
+    raw_name = pid[3:] if pid.startswith(("wp_", "ww_")) else pid
+    base_mod_name = "wp_system" if raw_name in ("cpu", "ram", "system") else f"wp_{raw_name}"
 
     user_plugin = os.path.join(CONFIG_DIR, "plugins", f"{base_mod_name}.py")
     sys_plugin = os.path.join(os.path.dirname(__file__), f"{base_mod_name}.py")

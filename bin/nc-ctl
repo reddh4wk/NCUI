@@ -5,11 +5,12 @@ import signal
 import sys
 import time
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from core.config import CONFIG
+from core import log
 from panels.base import load_panel
 
 ACTIVE_POPUP_FILE = "/tmp/nc_ui_active_popup.json"
@@ -86,17 +87,14 @@ def _detach_from_waybar() -> None:
         pass
     try:
         devnull_fd = os.open(os.devnull, os.O_RDWR)
-        log_path = CONFIG.get("general", {}).get("log_file", "/tmp/nc-ui.log")
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         os.dup2(devnull_fd, 0)
         os.dup2(devnull_fd, 1)
-        os.dup2(log_fd, 2)
+        os.dup2(devnull_fd, 2)
         if devnull_fd > 2:
             os.close(devnull_fd)
-        if log_fd > 2:
-            os.close(log_fd)
     except Exception:
         pass
+    log.install_stderr_logger()
 
 
 def main():
@@ -106,31 +104,58 @@ def main():
         sys.exit(0)
 
     cmd = args[0]
-    target = args[1].strip() if len(sys.argv) > 2 else "network"
+    pos_args = []
+    i = 1
+    anchor_x = None
+    while i < len(args):
+        if args[i] == "--x" and i + 1 < len(args):
+            try:
+                anchor_x = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+            continue
+        if not args[i].startswith("-"):
+            pos_args.append(args[i].strip())
+        i += 1
 
     if cmd == "action":
+        target = pos_args[0] if pos_args else "network"
         if target == "capture":
             active_info = _read_json(ACTIVE_POPUP_FILE)
             old_pid = int(active_info.get("pid", 0))
-            if old_pid and _is_pid_alive(old_pid):
+            if (
+                old_pid
+                and active_info.get("panel_id") == "capture"
+                and active_info.get("mode") == "popup"
+                and _is_pid_alive(old_pid)
+            ):
                 _kill_pid(old_pid)
                 _remove_file(ACTIVE_POPUP_FILE)
-        act = args[2] if len(args) > 2 else ""
-        extra = args[3:] if len(args) > 3 else []
+        act = pos_args[1] if len(pos_args) > 1 else ""
+        extra = pos_args[2:] if len(pos_args) > 2 else []
         panel = load_panel(target)
         panel.on_bar_action(act, extra)
         sys.exit(0)
 
-    mode = "settings" if cmd == "settings" else "popup"
+    subtab = ""
+    if cmd == "settings":
+        mode = "settings"
+        target = pos_args[0] if pos_args else ""
+        subtab = pos_args[1] if len(pos_args) > 1 else ""
+    elif cmd == "popup" and pos_args and pos_args[0] == "settings":
+        mode = "settings"
+        target = pos_args[1] if len(pos_args) > 1 else ""
+        subtab = pos_args[2] if len(pos_args) > 2 else ""
+    else:
+        mode = "popup"
+        target = pos_args[0] if pos_args else "network"
 
-    anchor_x = None
-    if "--x" in args:
-        idx = args.index("--x")
-        if idx + 1 < len(args):
-            try:
-                anchor_x = int(args[idx + 1])
-            except ValueError:
-                pass
+    if mode == "settings" and target and ":" in target:
+        target, subtab = [p.strip() for p in target.split(":", 1)]
+    if mode == "settings" and target and subtab:
+        from core.state import STATE
+        STATE.set("control_center", f"subtab_{target}", subtab)
 
     active_info = _read_json(ACTIVE_POPUP_FILE)
     old_pid = int(active_info.get("pid", 0))
@@ -140,7 +165,7 @@ def main():
     if old_pid and _is_pid_alive(old_pid):
         _kill_pid(old_pid)
         _remove_file(ACTIVE_POPUP_FILE)
-        if old_panel == target and old_mode == mode:
+        if (mode == "settings" and old_mode == "settings" and not target) or (old_panel == target and old_mode == mode):
             sys.exit(0)
     else:
         leave_info = _read_json(LEAVE_STAMP_FILE)
@@ -192,6 +217,7 @@ def main():
     _unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, _cleanup_and_quit)
 
     try:
+        log.info(f"nc-ctl {mode} {target or '<last>'} started (pid={os.getpid()})")
         win = ShellWindow(panel_id=target, mode=mode, anchor_x=anchor_x)
         win_ref["win"] = win
         win.connect("destroy", lambda *_: _cleanup_and_quit())

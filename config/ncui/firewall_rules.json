@@ -1,0 +1,122 @@
+{
+  "lan_net": "10.10.0.0/24",
+  "policies": {
+    "input": "drop",
+    "forward": "drop",
+    "output": "accept"
+  },
+  "rules": [
+    {
+      "id": "core_lo",
+      "chain": "input",
+      "proto": "any",
+      "src": "",
+      "dst": "",
+      "dport": "",
+      "iface": "lo",
+      "ct": "",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "Allow loopback",
+      "enabled": true
+    },
+    {
+      "id": "core_inv",
+      "chain": "input",
+      "proto": "any",
+      "src": "",
+      "dst": "",
+      "dport": "",
+      "iface": "",
+      "ct": "invalid",
+      "limit": "",
+      "verdict": "drop",
+      "comment": "Drop invalid packets",
+      "enabled": true
+    },
+    {
+      "id": "core_est",
+      "chain": "input",
+      "proto": "any",
+      "src": "",
+      "dst": "",
+      "dport": "",
+      "iface": "",
+      "ct": "established,related",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "Allow tracked connections",
+      "enabled": true
+    },
+    {
+      "id": "core_icmp",
+      "chain": "input",
+      "proto": "icmp",
+      "src": "",
+      "dst": "",
+      "dport": "",
+      "iface": "",
+      "ct": "",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "Allow IPv4/IPv6 ICMP",
+      "enabled": true
+    },
+    {
+      "id": "svc_ssh_lan",
+      "chain": "input",
+      "proto": "tcp",
+      "src": "$LAN_NETWORK",
+      "dst": "",
+      "dport": "22",
+      "iface": "",
+      "ct": "new",
+      "limit": "3/minute",
+      "verdict": "accept",
+      "comment": "SSH LAN rate limit",
+      "enabled": false
+    },
+    {
+      "id": "svc_web",
+      "chain": "input",
+      "proto": "tcp",
+      "src": "",
+      "dst": "",
+      "dport": "80,443",
+      "iface": "",
+      "ct": "",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "HTTP/HTTPS web ports",
+      "enabled": false
+    },
+    {
+      "id": "svc_sync_tcp",
+      "chain": "input",
+      "proto": "tcp",
+      "src": "",
+      "dst": "",
+      "dport": "22000",
+      "iface": "",
+      "ct": "",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "Syncthing sync TCP",
+      "enabled": false
+    },
+    {
+      "id": "svc_sync_udp",
+      "chain": "input",
+      "proto": "udp",
+      "src": "",
+      "dst": "",
+      "dport": "22000,21027",
+      "iface": "",
+      "ct": "",
+      "limit": "",
+      "verdict": "accept",
+      "comment": "Syncthing QUIC/Discovery",
+      "enabled": false
+    }
+  ]
+}

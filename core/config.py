@@ -10,11 +10,15 @@ try:
 except ImportError:
     tomllib = None
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 CONFIG_DIR = os.path.expanduser("~/.config/nc-ui")
 THEME_PATH = os.path.join(CONFIG_DIR, "theme.toml")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.toml")
 
+# MEMENTO ARCHITETTURALE (Golden Standard §5.1 / §5.2):
+# Sono ammessi SOLO stili di cornice a cella singola con metriche verticali continue.
+# Stili a mezzo-blocco ("block" ▛▀▜) o puntinati sugli angoli ("dotted") sono vietati
+# perché spezzano le protrusioni Cairo sul titolo e l'allineamento dei montanti verticali.
 BOX_STYLES = {
     "rounded": {
         "tl": "\u256d", "tr": "\u256e", "bl": "\u2570", "br": "\u256f",
@@ -36,86 +40,142 @@ BOX_STYLES = {
         "h": "\u2550", "v": "\u2551", "ml": "\u2560", "mr": "\u2563",
         "mt": "\u2566", "mb": "\u2569", "mc": "\u256c",
     },
+    "dashed": {
+        "tl": "\u256d", "tr": "\u256e", "bl": "\u2570", "br": "\u256f",
+        "h": "\u2504", "v": "\u2506", "ml": "\u251c", "mr": "\u2524",
+        "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
+    },
+    "ascii": {
+        "tl": "+", "tr": "+", "bl": "+", "br": "+",
+        "h": "-", "v": "|", "ml": "+", "mr": "+",
+        "mt": "+", "mb": "+", "mc": "+",
+    },
 }
 
+# MEMENTO MORFOLOGICO (Golden Standard §2 — Canale 1):
+# Whitelist tassative per impedire che modifiche manuali a theme.toml o preset futuri
+# introducano collisioni semantiche tra delimitatori (es. "(btn)" vs conteggi "(N)",
+# "▸/·" su SelectPill vs InspectorCell, "-/+" su sezioni vs steppers Slider, "│" su KV vs bordi).
+VALID_TITLE_BRACKETS = (("[ ", " ]"), (":: ", " ::"), ("\u2039 ", " \u203a"), ("\u00ab ", " \u00bb"))
+VALID_SLIDER_BRACKETS = (("[", "]"), ("\u2590", "\u258c"))
+VALID_SLIDER_GLYPHS = (("#", "-"), ("\u2588", "\u2591"), ("\u2501", "\u2500"), ("=", "\u00b7"))
+VALID_PILL_DOTS = (("\u25cf", "\u25cb"), ("\u25c6", "\u25c7"), ("\u25a0", "\u25a1"))
+VALID_TAB_CAPS = (("\u258f", "\u2595"), ("\u2590", "\u258c"), ("\u2039", "\u203a"))
+VALID_COLLAPSIBLE_ICONS = (("\u25bc", "\u25b6"), ("\uf078", "\uf054"), ("\u229f", "\u229e"))
+VALID_TABLE_RULES = ("\u2500", "\u2501", "\u2550", "\u2504")
+VALID_KV_SEPARATORS = (":", "\u203a", "\u2237")
+
+# =====================================================================
+# TEMA CAPOSTIPITE: NIGHTCITY (Il Gioiello / Riferimento Canonico NC-UI)
+# =====================================================================
 DEFAULT_THEME = {
-    "typography": {"font_family": "Courier", "font_size": 11, "font_weight": "bold"},
+    "typography": {
+        "font_family": "Courier",
+        "font_size": 11,
+        "font_weight": "bold",
+        "cursor_theme": "Adwaita",
+        "cursor_size": 24,
+        "cursor_archive": "",
+    },
     "geometry": {
         "compact_cols": 44,
         "expanded_cols": 96,
         "sidebar_nav_cols": 24,
-        "popup_gap_top": 4,
+        "popup_gap_top": 8,
         "popup_max_height": 900,
         "window_border_width": 1,
         "window_border_radius": 16,
         "panel_padding": 10,
         "card_spacing": 6,
-        "screen_margin": 12,
+        "screen_margin": 8,
+        "default_key_width": 20,
+        "row_gap": 2,
     },
     "ascii": {
         "box_style": "rounded",
         "title_brackets": ["[ ", " ]"],
+        # INVARIANTE ASSOLUTO (§2.1): i controlli cliccabili discreti usano SEMPRE '[' e ']'.
         "button_brackets": ["[", "]"],
         "slider_brackets": ["[", "]"],
         "slider_fill": "#",
         "slider_empty": "-",
         "sparkline_chars": "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588",
+        "pill_dots": ["\u25cf", "\u25cb"],
+        "tab_caps": ["\u258f", "\u2595"],
+        "collapsible_icons": ["\u25bc", "\u25b6"],
+        "table_rule": "\u2500",
+        "kv_separator": ":",
+        "search_prefix": "\uf002 >",
+        "search_brackets": ["\u258f", "\u2595"],
+        "search_cursor": "\u2502",
     },
     "colors": {
-        "window_bg": "rgba(13, 13, 15, 0.88)",
-        "window_border": "rgba(255, 255, 255, 0.12)",
-        "background": "#09090b",
-        # 1. Tono Grafite — INERZIA (frame, grid, none)
-        "structure": "#43495c",
-        "structure_bg": "#1a1c23",
-        "inactive": "#5f657b",
-        # 2. Tono Ardesia — METADATO (keys, headers, split)
-        "schema": "#8c9bba",
-        # 3. Tono Bianco — DATO (focus, values, titles)
+        "surface_bg": "#080a0f",
+        "window_opacity": 0.86,
+        "box_opacity": 0.72,
+        "waybar_sync_opacity": True,
+        "waybar_sync_color": True,
+        "window_bg": "rgba(8, 10, 15, 0.86)",
+        "window_border": "rgba(255, 255, 255, 0.14)",
+        "background": "#06080c",
+        # Asse 1 — Structure (Grafite Titanio: cornici, griglie, parentesi a riposo)
+        "structure": "#3e465c",
+        "structure_bg": "#141824",
+        # Asse 3 — Inactive (Grafite Spento: opzioni non scelte, standby, hint)
+        "inactive": "#596278",
+        # Asse 2 — Schema (Grigio Ardesia Acciaio: chiavi KV, header tabelle, azioni neutre)
+        "schema": "#8b9bb8",
+        # Asse 4 — Focus & Readout (Bianco Puro titoli / Bianco Ghiaccio valori di lettura)
         "focus": "#ffffff",
-        "focus_val": "#e2eafc",
-        # 4. Tono Ciano — UI (tabs, selection, user-input)
+        "focus_val": "#dce6f7",
+        # Asse 5 — Intent (Ciano Laser Nightcity: ESCLUSIVO per selezione/navigazione/focus)
         "intent": "#00f0ff",
-        "intent_soft": "#4db8c4",
-        "intent_bg": "#002a3a",
-        # 5. Tono Verde — HW/OS (up, active, done)
-        "vitality": "#00ff73",
-        "vitality_soft": "#4fac73",
-        "vitality_bg": "#002813",
-        # 6. Tono Giallo — MUTAZIONE (dirty, failover, warn)
-        "attention": "#ffeb19",
-        "attention_soft": "#c7b848",
-        "attention_bg": "#332d00",
-        # 7a. Tono Fucsia — INTERRUZIONE (stop, kill, down)
+        "intent_soft": "#3ec8d6",
+        "intent_bg": "#002b36",
+        # Asse 6 — Vitality (Smeraldo Bio-Monitor: salute attiva OS e comandi costruttivi)
+        "vitality": "#00f57a",
+        "vitality_soft": "#3ebd7c",
+        "vitality_bg": "#002915",
+        # Asse 7a — Attention (Giallo Cyber: modifiche staged/dirty, warning, cautela/reset)
+        "attention": "#ffe619",
+        "attention_soft": "#c7b438",
+        "attention_bg": "#332b00",
+        # Asse 7b — Interrupt (Rosa-Magenta Cyberpunk: stop, disabilita, rimuovi, [x])
         "interrupt": "#ff2a9d",
-        "interrupt_rest": "#bd5b86",
-        "interrupt_bg": "#3a091d",
-        # 7b. Tono Rosso — GUASTO (timeout, err, crit)
-        "fault": "#ff213f",
-        "fault_soft": "#c94f5f",
-        "fault_bg": "#36050b",
-        # Mapping globale legacy / core
+        "interrupt_rest": "#c45b8c",
+        "interrupt_bg": "#36081e",
+        # Asse 7c — Fault (Cremisi Arasaka: errore critico, offline, timeout, DROP)
+        "fault": "#ff2442",
+        "fault_soft": "#c9495b",
+        "fault_bg": "#38060e",
+        # Waybar Color Palette (sincronizzata su style.css)
+        "wb_bg": "#080a0f",
+        "wb_pill_bg": "#141824",
+        "wb_fg": "#dce6f7",
+        "wb_accent": "#00f0ff",
+        "wb_active": "#00f57a",
+        "wb_warn": "#ffe619",
+        "wb_crit": "#ff2442",
+        # Alias legacy sincronizzati automaticamente da sanitize_theme_dict()
         "primary": "#ffffff",
-        "secondary": "#8c9bba",
-        "muted": "#5f657b",
+        "secondary": "#8b9bb8",
+        "muted": "#596278",
         "accent": "#00f0ff",
         "info": "#00f0ff",
-        # Stati semantici cornici nc-boxes (Grafite a riposo, Bianco su Hover/Header)
-        "box_inactive": "#43495c",
-        "box_elected": "#43495c",
+        "box_inactive": "#3e465c",
+        "box_elected": "#3e465c",
         "box_highlight": "#ffffff",
         "box_selected": "#ffffff",
-        # Stile Command Line / Prompt / Password Bar
-        "input_bg": "#0c0c0e",
+        "input_bg": "#0b0e15",
         "input_fg": "#ffffff",
-        "input_placeholder": "#5f657b",
-        "input_border": "#43495c",
+        "input_placeholder": "#596278",
+        "input_border": "#3e465c",
         "input_border_focus": "#00f0ff",
         "thresholds": {
-            "normal": "#00ff73",
-            "warning": "#ffeb19",
+            "normal": "#00f57a",
+            "warning": "#ffe619",
             "alert": "#ff2a9d",
-            "critical": "#ff213f",
+            "critical": "#ff2442",
         },
     },
 }
@@ -127,17 +187,20 @@ DEFAULT_CONFIG = {
         "log_level": 3,
         "enable_hover_tooltips": False,
         "terminal": "auto",
+        "pkg_manager": "auto",
     },
     "control_center": {
         "width_px": 960,
         "side": "right",
         "panel_style": "standard",
         "hide_unavailable_settings": False,
+        "inner_padding": 10,
+        "outer_margin": 8,
     },
     "capture": {
         "action": "clipboard_satty",
     },
-    "waybar_widgets": {
+    "waybar_plugins": {
         "window_width_pct": 45,
         "media_width_pct": 35,
         "lock_cmd": "",
@@ -146,8 +209,8 @@ DEFAULT_CONFIG = {
         "refresh_ms": {
             "calendar":      0,
             "notifications": 0,
-            "ram":           2000,
-            "cpu":           2000,
+            "ram":           1000,
+            "cpu":           1000,
             "network":       1500,
             "audio":         0,
             "capture":       0,
@@ -155,6 +218,7 @@ DEFAULT_CONFIG = {
             "clipboard":     0,
             "power":         3000,
             "ups":           3000,
+            "kb_layout":     2000,
             "storage":       5000,
             "session":       0,
         }
@@ -211,19 +275,191 @@ def _load_toml(path: str) -> dict:
         return {}
 
 
+def _norm_hex_color(val, default: str = "#080a0f") -> str:
+    s = str(val or "").strip()
+    if re.match(r"^#[0-9a-fA-F]{6}$", s):
+        return s.lower()
+    return default
+
+
+def _blend_hex(fg_hex: str, bg_hex: str, fg_weight: float) -> str:
+    """Miscela linearmente `fg_hex` e `bg_hex` in RGB per derivare capsule `*_bg` e toni `*_soft` coerenti."""
+    fg = _norm_hex_color(fg_hex, "#ffffff")
+    bg = _norm_hex_color(bg_hex, "#080a0f")
+    w = max(0.0, min(1.0, float(fg_weight)))
+    r = int(round(int(fg[1:3], 16) * w + int(bg[1:3], 16) * (1.0 - w)))
+    g = int(round(int(fg[3:5], 16) * w + int(bg[3:5], 16) * (1.0 - w)))
+    b = int(round(int(fg[5:7], 16) * w + int(bg[5:7], 16) * (1.0 - w)))
+    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
+
+
+def derive_axis_companions(axis_key: str, hex_val: str, surface_hex: str = "#080a0f") -> dict[str, str]:
+    """
+    MEMENTO CROMATICO (Golden Standard §4.1):
+    Quando un utente personalizza il colore primario di un singolo asse semantico, i relativi
+    sotto-toni (`*_bg`, `*_soft`, `interrupt_rest`, `focus_val`, `structure_bg`) DEVONO essere
+    ricalcolati armonicamente rispetto a `surface_hex`, evitando che rimangano orfani su vecchie tinte.
+    """
+    hx = _norm_hex_color(hex_val, DEFAULT_THEME["colors"].get(axis_key, "#ffffff"))
+    surf = _norm_hex_color(surface_hex, "#080a0f")
+    out: dict[str, str] = {axis_key: hx}
+    if axis_key == "structure":
+        out["structure_bg"] = _blend_hex(hx, surf, 0.24)
+    elif axis_key == "focus":
+        out["focus_val"] = _blend_hex(hx, "#9cb4dc", 0.78)
+    elif axis_key == "intent":
+        out["intent_soft"] = _blend_hex(hx, "#60708a", 0.68)
+        out["intent_bg"] = _blend_hex(hx, surf, 0.17)
+    elif axis_key == "vitality":
+        out["vitality_soft"] = _blend_hex(hx, "#507060", 0.68)
+        out["vitality_bg"] = _blend_hex(hx, surf, 0.16)
+    elif axis_key == "attention":
+        out["attention_soft"] = _blend_hex(hx, "#605c40", 0.72)
+        out["attention_bg"] = _blend_hex(hx, surf, 0.17)
+    elif axis_key == "interrupt":
+        out["interrupt_rest"] = _blend_hex(hx, "#685870", 0.66)
+        out["interrupt_bg"] = _blend_hex(hx, surf, 0.18)
+    elif axis_key == "fault":
+        out["fault_soft"] = _blend_hex(hx, "#684850", 0.70)
+        out["fault_bg"] = _blend_hex(hx, surf, 0.19)
+    return out
+
+
+def sanitize_theme_dict(theme_dict: dict) -> dict:
+    """
+    MEMENTO DI GUARDIA (Golden Standard §2, §4, §5):
+    Sanitizza in-place qualsiasi dizionario tema (caricato da disco, importato da `.toml` esterno
+    o applicato da preset), bloccando qualsiasi tentativo di:
+      1. sostituire `button_brackets = ["[", "]"]` con `(...)`, `<...>`, `{...}` o stringhe vuote;
+      2. usare glifi ambigui/collidenti su `pill_dots`, `slider_fill`, `tab_caps`, `collapsible_icons`, `kv_separator`;
+      3. usare `box_style` fuori metrica o lasciare disallineati `thresholds` e alias colore legacy.
+    """
+    asc = theme_dict.setdefault("ascii", {})
+    st_name = str(asc.get("box_style", "rounded") or "rounded").strip().lower()
+    if st_name not in BOX_STYLES:
+        st_name = "rounded"
+    asc["box_style"] = st_name
+    asc["chars"] = dict(BOX_STYLES[st_name])
+
+    # Invariante morfologico assoluto: tutti i controlli cliccabili discreti usano '[' e ']'
+    asc["button_brackets"] = ["[", "]"]
+    asc["search_brackets"] = ["\u258f", "\u2595"]
+
+    def _norm_pair(raw, valid_pairs: tuple, default_pair: tuple[str, str]) -> list[str]:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            cand = (str(raw[0] or ""), str(raw[1] or ""))
+            if cand in valid_pairs:
+                return [cand[0], cand[1]]
+        return [default_pair[0], default_pair[1]]
+
+    asc["title_brackets"] = _norm_pair(asc.get("title_brackets"), VALID_TITLE_BRACKETS, ("[ ", " ]"))
+    asc["slider_brackets"] = _norm_pair(asc.get("slider_brackets"), VALID_SLIDER_BRACKETS, ("[", "]"))
+    asc["pill_dots"] = _norm_pair(asc.get("pill_dots"), VALID_PILL_DOTS, ("\u25cf", "\u25cb"))
+    asc["tab_caps"] = _norm_pair(asc.get("tab_caps"), VALID_TAB_CAPS, ("\u258f", "\u2595"))
+    asc["collapsible_icons"] = _norm_pair(asc.get("collapsible_icons"), VALID_COLLAPSIBLE_ICONS, ("\u25bc", "\u25b6"))
+
+    sl_pair = (str(asc.get("slider_fill") or "#")[:1], str(asc.get("slider_empty") or "-")[:1])
+    if sl_pair not in VALID_SLIDER_GLYPHS:
+        sl_pair = ("#", "-")
+    asc["slider_fill"], asc["slider_empty"] = sl_pair[0], sl_pair[1]
+
+    tr = str(asc.get("table_rule") or "\u2500")[:1]
+    asc["table_rule"] = tr if tr in VALID_TABLE_RULES else "\u2500"
+
+    kvs = str(asc.get("kv_separator") or ":")[:2].strip()
+    asc["kv_separator"] = kvs if kvs in VALID_KV_SEPARATORS else ":"
+
+    sp_chars = str(asc.get("sparkline_chars") or "")
+    if len(sp_chars) < 2:
+        asc["sparkline_chars"] = DEFAULT_THEME["ascii"]["sparkline_chars"]
+
+    scur = str(asc.get("search_cursor") or "\u2502")[:1]
+    if scur in ("\u2588", "|"):
+        scur = "\u2502"
+    asc["search_cursor"] = scur if scur in ("\u2502", "_") else "\u2502"
+    spref = str(asc.get("search_prefix") or "\uf002 >").strip()
+    asc["search_prefix"] = spref if spref in ("\uf002 >", "/ >", "\u203a", "? >") else "\uf002 >"
+
+    colors = theme_dict.setdefault("colors", {})
+    def_c = DEFAULT_THEME["colors"]
+    surf_hex = _norm_hex_color(colors.get("surface_bg"), def_c["surface_bg"])
+    colors["surface_bg"] = surf_hex
+    try:
+        win_op = max(0.05, min(1.0, float(colors.get("window_opacity", def_c["window_opacity"]))))
+    except Exception:
+        win_op = def_c["window_opacity"]
+    colors["window_opacity"] = win_op
+    try:
+        box_op = max(0.0, min(1.0, float(colors.get("box_opacity", def_c["box_opacity"]))))
+    except Exception:
+        box_op = def_c["box_opacity"]
+    colors["box_opacity"] = box_op
+    colors["waybar_sync_opacity"] = bool(colors.get("waybar_sync_opacity", True))
+    colors["waybar_sync_color"] = bool(colors.get("waybar_sync_color", True))
+
+    for ck in (
+        "structure", "structure_bg", "inactive", "schema", "focus", "focus_val",
+        "intent", "intent_soft", "intent_bg", "vitality", "vitality_soft", "vitality_bg",
+        "attention", "attention_soft", "attention_bg", "interrupt", "interrupt_rest", "interrupt_bg",
+        "fault", "fault_soft", "fault_bg",
+    ):
+        colors[ck] = _norm_hex_color(colors.get(ck), def_c[ck])
+
+    wb_fallbacks = {
+        "wb_bg": surf_hex,
+        "wb_pill_bg": colors["structure_bg"],
+        "wb_fg": colors["focus_val"],
+        "wb_accent": colors["intent"],
+        "wb_active": colors["vitality"],
+        "wb_warn": colors["attention"],
+        "wb_crit": colors["fault"],
+    }
+    for wk, wdef in wb_fallbacks.items():
+        colors[wk] = _norm_hex_color(colors.get(wk), wdef)
+
+    r, g, b = int(surf_hex[1:3], 16), int(surf_hex[3:5], 16), int(surf_hex[5:7], 16)
+    colors["window_bg"] = f"rgba({r}, {g}, {b}, {win_op:.2f})"
+    colors["primary"] = colors["focus"]
+    colors["secondary"] = colors["schema"]
+    colors["muted"] = colors["inactive"]
+    colors["accent"] = colors["intent"]
+    colors["info"] = colors["intent"]
+    colors["window_border"] = colors["structure"]
+    colors["box_inactive"] = colors["structure"]
+    colors["box_elected"] = colors["structure"]
+    colors["box_highlight"] = colors["focus"]
+    colors["box_selected"] = colors["focus"]
+    colors["input_border"] = colors["structure"]
+    colors["input_border_focus"] = colors["intent"]
+
+    th = colors.setdefault("thresholds", {})
+    th["normal"] = colors["vitality"]
+    th["warning"] = colors["attention"]
+    th["alert"] = colors["interrupt"]
+    th["critical"] = colors["fault"]
+
+    geom = theme_dict.setdefault("geometry", {})
+    try:
+        geom["row_gap"] = max(0, min(6, int(geom.get("row_gap", 2))))
+    except Exception:
+        geom["row_gap"] = 2
+    return theme_dict
+
+
 def load_theme() -> dict:
     repo_theme = os.path.join(ROOT_DIR, "config", "ncui", "theme.toml")
     merged = _deep_merge(DEFAULT_THEME, _load_toml(repo_theme))
     merged = _deep_merge(merged, _load_toml(THEME_PATH))
-    style_name = merged["ascii"].get("box_style", "rounded")
-    merged["ascii"]["chars"] = BOX_STYLES.get(style_name, BOX_STYLES["rounded"])
-    return merged
+    return sanitize_theme_dict(merged)
 
 
 def load_config() -> dict:
     repo_cfg = os.path.join(ROOT_DIR, "config", "ncui", "config.toml")
     merged = _deep_merge(DEFAULT_CONFIG, _load_toml(repo_cfg))
-    return _deep_merge(merged, _load_toml(CONFIG_PATH))
+    merged = _deep_merge(merged, _load_toml(CONFIG_PATH))
+    if isinstance(merged.get("waybar_widgets"), dict):
+        merged["waybar_plugins"] = _deep_merge(merged.get("waybar_plugins", {}), merged.pop("waybar_widgets"))
+    return merged
 
 
 def get_waybar_look() -> dict:
@@ -262,8 +498,108 @@ def get_waybar_look() -> dict:
     return res
 
 
+def get_layout_margins() -> tuple[int, int]:
+    ctrl = CONFIG.get("control_center", {})
+    geom = THEME.get("geometry", {})
+    inner_raw = ctrl.get("inner_padding", geom.get("panel_padding", 10))
+    outer_raw = ctrl.get("outer_margin", geom.get("screen_margin", 8))
+    try:
+        inner_i = max(2, min(64, int(inner_raw)))
+    except Exception:
+        inner_i = 10
+    try:
+        outer_i = max(0, min(64, int(outer_raw)))
+    except Exception:
+        outer_i = 8
+    return inner_i, outer_i
+
+
+def sync_waybar_outer_margin(outer_margin: int, reload_bar: bool = False) -> None:
+    val = max(0, min(64, int(outer_margin)))
+    wb_paths = (
+        os.path.expanduser("~/.config/waybar/config.jsonc"),
+        os.path.join(ROOT_DIR, "config", "waybar", "config.jsonc"),
+        os.path.expanduser("~/Projects/ncui/config/waybar/config.jsonc"),
+    )
+    changed = False
+    for rp in _unique_existing_paths(*wb_paths):
+        try:
+            with open(rp, "r", encoding="utf-8") as f:
+                content = f.read()
+            new_c = re.sub(
+                r'("margin-(?:top|left|right)"\s*:\s*)\d+',
+                lambda m: f"{m.group(1)}{val}",
+                content,
+            )
+            if new_c != content:
+                with open(rp, "w", encoding="utf-8") as f:
+                    f.write(new_c)
+                changed = True
+        except Exception:
+            pass
+    if reload_bar and changed:
+        try:
+            subprocess.Popen(
+                ["pkill", "-SIGUSR2", "waybar"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+
+
+def set_layout_margins(
+    inner_padding: int = None,
+    outer_margin: int = None,
+    sync_bar: bool = True,
+    reload_bar: bool = False,
+) -> tuple[int, int]:
+    cur_inner, cur_outer = get_layout_margins()
+    new_inner = max(2, min(64, int(inner_padding))) if inner_padding is not None else cur_inner
+    new_outer = max(0, min(64, int(outer_margin))) if outer_margin is not None else cur_outer
+
+    theme_targets = (
+        THEME_PATH,
+        os.path.join(ROOT_DIR, "config", "ncui", "theme.toml"),
+        os.path.expanduser("~/Projects/ncui/config/ncui/theme.toml"),
+    )
+
+    if inner_padding is not None:
+        CONFIG.setdefault("control_center", {})["inner_padding"] = new_inner
+        THEME.setdefault("geometry", {})["panel_padding"] = new_inner
+        _update_toml_key_in_section("control_center", "inner_padding", str(new_inner))
+        _update_toml_key_in_section(
+            "geometry", "panel_padding", str(new_inner),
+            target_files=theme_targets, create_fallback=False,
+        )
+
+    if outer_margin is not None:
+        CONFIG.setdefault("control_center", {})["outer_margin"] = new_outer
+        THEME.setdefault("geometry", {})["screen_margin"] = new_outer
+        THEME.setdefault("geometry", {})["popup_gap_top"] = new_outer
+        _update_toml_key_in_section("control_center", "outer_margin", str(new_outer))
+        _update_toml_key_in_section(
+            "geometry", "screen_margin", str(new_outer),
+            target_files=theme_targets, create_fallback=False,
+        )
+        _update_toml_key_in_section(
+            "geometry", "popup_gap_top", str(new_outer),
+            target_files=theme_targets, create_fallback=False,
+        )
+        if sync_bar:
+            sync_waybar_outer_margin(new_outer, reload_bar=reload_bar)
+
+    return new_inner, new_outer
+
+
 THEME = load_theme()
 CONFIG = load_config()
+_init_in_pad, _init_out_mar = get_layout_margins()
+THEME.setdefault("geometry", {})["panel_padding"] = _init_in_pad
+THEME["geometry"]["screen_margin"] = _init_out_mar
+THEME["geometry"]["popup_gap_top"] = _init_out_mar
 
 VALID_CAPTURE_ACTIONS = ("clipboard", "satty", "save", "clipboard_satty")
 
@@ -279,8 +615,8 @@ def _update_toml_key_in_section(
         )
     sec_hdr_re = re.compile(rf"^\[{re.escape(section)}\]\s*$", flags=re.MULTILINE)
     key_in_sec_re = re.compile(
-        rf"(^\[{re.escape(section)}\][^\[]*?^\s*{re.escape(key)}\s*=\s*)[^\n#]+",
-        flags=re.MULTILINE | re.DOTALL,
+        rf"(^\[{re.escape(section)}\]\s*\n(?:(?!^\[)[^\n]*\n)*?^\s*{re.escape(key)}\s*=\s*)(?:\"[^\n\"]*\"|\[[^\n\]]*\]|[^\n#]+)",
+        flags=re.MULTILINE,
     )
     updated_any = False
 
@@ -290,7 +626,7 @@ def _update_toml_key_in_section(
                 content = f.read()
             if sec_hdr_re.search(content):
                 if key_in_sec_re.search(content):
-                    new_c = key_in_sec_re.sub(f"\\g<1>{raw_toml_val}", content, count=1)
+                    new_c = key_in_sec_re.sub(lambda m: m.group(1) + raw_toml_val, content, count=1)
                 else:
                     new_c = sec_hdr_re.sub(f"[{section}]\n{key} = {raw_toml_val}", content, count=1)
             else:
@@ -359,9 +695,9 @@ def set_network_show_bar_speed(enabled: bool) -> bool:
 
 def get_waybar_width_pcts() -> tuple[int, int]:
     from core.state import STATE
-    w_cfg = CONFIG.get("waybar_widgets", {})
-    win_pct = STATE.get("waybar_widgets", "window_width_pct", w_cfg.get("window_width_pct", 45))
-    med_pct = STATE.get("waybar_widgets", "media_width_pct", w_cfg.get("media_width_pct", 35))
+    w_cfg = CONFIG.get("waybar_plugins", {})
+    win_pct = STATE.get("waybar_plugins", "window_width_pct", STATE.get("waybar_widgets", "window_width_pct", w_cfg.get("window_width_pct", 45)))
+    med_pct = STATE.get("waybar_plugins", "media_width_pct", STATE.get("waybar_widgets", "media_width_pct", w_cfg.get("media_width_pct", 35)))
     try:
         win_i = max(5, min(100, int(win_pct)))
     except Exception:
@@ -386,30 +722,32 @@ def set_waybar_width_pct(target: str, pct: int, both_active_on_bar: bool = True)
         if both_active_on_bar and (win_i + med_i > 100):
             win_i = max(5, 100 - med_i)
 
-    STATE.set("waybar_widgets", "window_width_pct", win_i)
-    STATE.set("waybar_widgets", "media_width_pct", med_i)
-    CONFIG.setdefault("waybar_widgets", {})["window_width_pct"] = win_i
-    CONFIG.setdefault("waybar_widgets", {})["media_width_pct"] = med_i
-    _update_toml_key_in_section("waybar_widgets", "window_width_pct", str(win_i))
-    _update_toml_key_in_section("waybar_widgets", "media_width_pct", str(med_i))
+    STATE.set("waybar_plugins", "window_width_pct", win_i)
+    STATE.set("waybar_plugins", "media_width_pct", med_i)
+    CONFIG.setdefault("waybar_plugins", {})["window_width_pct"] = win_i
+    CONFIG.setdefault("waybar_plugins", {})["media_width_pct"] = med_i
+    _update_toml_key_in_section("waybar_plugins", "window_width_pct", str(win_i))
+    _update_toml_key_in_section("waybar_plugins", "media_width_pct", str(med_i))
     return win_i, med_i
 
 
 def get_screen_lock_cmd() -> str:
     from core.state import STATE
-    st_val = STATE.get("waybar_widgets", "lock_cmd", None)
+    st_val = STATE.get("waybar_plugins", "lock_cmd", None)
+    if st_val is None:
+        st_val = STATE.get("waybar_widgets", "lock_cmd", None)
     if st_val is not None:
         return str(st_val).strip()
-    return str(CONFIG.get("waybar_widgets", {}).get("lock_cmd", "")).strip()
+    return str(CONFIG.get("waybar_plugins", {}).get("lock_cmd", "")).strip()
 
 
 def set_screen_lock_cmd(cmd_str: str) -> str:
     from core.state import STATE
     clean = str(cmd_str or "").strip()
-    STATE.set("waybar_widgets", "lock_cmd", clean)
-    CONFIG.setdefault("waybar_widgets", {})["lock_cmd"] = clean
+    STATE.set("waybar_plugins", "lock_cmd", clean)
+    CONFIG.setdefault("waybar_plugins", {})["lock_cmd"] = clean
     escaped = clean.replace("\\", "\\\\").replace('"', '\\"')
-    _update_toml_key_in_section("waybar_widgets", "lock_cmd", f'"{escaped}"')
+    _update_toml_key_in_section("waybar_plugins", "lock_cmd", f'"{escaped}"')
     return clean
 
 
@@ -456,6 +794,7 @@ def estimate_waybar_free_chars_budget() -> dict:
             "custom/netcycle", "custom/cpu", "custom/ram", "custom/notifications",
         ]
 
+    from core.state import STATE
     fixed_px = 40
     show_spd = get_network_show_bar_speed()
     mod_px_estimates = {
@@ -470,7 +809,9 @@ def estimate_waybar_free_chars_budget() -> dict:
         "custom/cpu": 88,
         "custom/ram": 88,
         "custom/notifications": 54,
+        "custom/printers": 76 if STATE.get("waybar", "printers_bar_mode", "auto") == "always" else 0,
         "custom/ups": 115,
+        "custom/kb_layout": 68,
         "custom/telegram": 52,
         "custom/session": 52,
         "tray": 0,
@@ -533,49 +874,231 @@ def _parse_rgba_components(color_str: str) -> tuple[int, int, int, float]:
     return 13, 13, 15, 0.88
 
 
-def get_ui_transparency_pct() -> int:
-    from core.state import STATE
-    saved = STATE.get("appearance", "transparency_pct", None)
-    if saved is not None:
-        try:
-            return max(0, min(95, int(saved)))
-        except Exception:
-            pass
-    _, _, _, alpha = _parse_rgba_components(THEME["colors"].get("window_bg", "rgba(13, 13, 15, 0.88)"))
-    return max(0, min(95, int(round((1.0 - alpha) * 100.0))))
-
-
-def apply_waybar_transparency() -> bool:
-    trans_pct = get_ui_transparency_pct()
-    alpha = max(0.05, min(1.0, (100 - trans_pct) / 100.0))
-    r, g, b, _ = _parse_rgba_components(THEME["colors"].get("window_bg", "rgba(13, 13, 15, 0.88)"))
-    new_rgba = f"rgba({r}, {g}, {b}, {alpha:.2f})"
-
-    css_paths = (
-        os.path.expanduser("~/.config/waybar/style.css"),
-        os.path.join(ROOT_DIR, "config", "waybar", "style.css"),
-        os.path.expanduser("~/Projects/ncui/config/waybar/style.css"),
+def _theme_toml_targets() -> tuple[str, ...]:
+    return (
+        THEME_PATH,
+        os.path.join(ROOT_DIR, "config", "ncui", "theme.toml"),
+        os.path.expanduser("~/Projects/ncui/config/ncui/theme.toml"),
     )
-    for rp in _unique_existing_paths(*css_paths):
+
+
+def get_surface_bg_hex() -> str:
+    return _norm_hex_color(THEME.get("colors", {}).get("surface_bg"), "#080a0f")
+
+
+def get_surface_bg_rgb() -> tuple[int, int, int]:
+    hx = get_surface_bg_hex()
+    return int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16)
+
+
+def get_window_opacity() -> float:
+    try:
+        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("window_opacity", 0.86))))
+    except Exception:
+        return 0.86
+
+
+def get_ui_transparency_pct() -> int:
+    return max(5, min(100, int(round(get_window_opacity() * 100.0))))
+
+
+def get_box_opacity() -> float:
+    try:
+        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("box_opacity", 0.72))))
+    except Exception:
+        return 0.72
+
+
+def get_box_opacity_pct() -> int:
+    return max(0, min(100, int(round(get_box_opacity() * 100.0))))
+
+
+def get_waybar_sync_opacity() -> bool:
+    return bool(THEME.get("colors", {}).get("waybar_sync_opacity", True))
+
+
+def get_waybar_sync_color() -> bool:
+    return bool(THEME.get("colors", {}).get("waybar_sync_color", True))
+
+
+def sync_waybar_colors_from_theme(colors_dict: dict = None) -> dict:
+    """Deriva i 7 canali cromatici Waybar dalla palette corrente del tema NC-UI."""
+    c = colors_dict if isinstance(colors_dict, dict) else THEME.setdefault("colors", {})
+    c["wb_bg"] = _norm_hex_color(c.get("surface_bg"), "#080a0f")
+    c["wb_pill_bg"] = _norm_hex_color(c.get("structure_bg"), "#141824")
+    c["wb_fg"] = _norm_hex_color(c.get("focus_val"), "#dce6f7")
+    c["wb_accent"] = _norm_hex_color(c.get("intent"), "#00f0ff")
+    c["wb_active"] = _norm_hex_color(c.get("vitality"), "#00f57a")
+    c["wb_warn"] = _norm_hex_color(c.get("attention"), "#ffe619")
+    c["wb_crit"] = _norm_hex_color(c.get("fault"), "#ff2442")
+    return c
+
+
+def _hex_to_rgb(hx: str) -> tuple[int, int, int]:
+    clean = _norm_hex_color(hx, "#080a0f")
+    return int(clean[1:3], 16), int(clean[3:5], 16), int(clean[5:7], 16)
+
+
+def apply_waybar_palette(
+    sync_opacity: bool = None,
+    sync_color: bool = None,
+    force_palette: bool = False,
+    css_targets: tuple = None,
+) -> bool:
+    if sync_opacity is None:
+        sync_opacity = get_waybar_sync_opacity()
+    if sync_color is None:
+        sync_color = get_waybar_sync_color()
+    if not force_palette and not sync_opacity and not sync_color:
+        return False
+
+    c = THEME.get("colors", {})
+    surf_hex = get_surface_bg_hex()
+    wb_bg = _norm_hex_color(c.get("wb_bg"), surf_hex) if force_palette else surf_hex
+    wb_pill = _norm_hex_color(c.get("wb_pill_bg"), c.get("structure_bg", "#141824"))
+    wb_fg = _norm_hex_color(c.get("wb_fg"), c.get("focus_val", "#dce6f7"))
+    wb_acc = _norm_hex_color(c.get("wb_accent"), c.get("intent", "#00f0ff"))
+    wb_act = _norm_hex_color(c.get("wb_active"), c.get("vitality", "#00f57a"))
+    wb_warn = _norm_hex_color(c.get("wb_warn"), c.get("attention", "#ffe619"))
+    wb_crit = _norm_hex_color(c.get("wb_crit"), c.get("fault", "#ff2442"))
+    focus_hex = _norm_hex_color(c.get("focus"), "#ffffff")
+    schema_hex = _norm_hex_color(c.get("schema"), "#8b9bb8")
+
+    bg_r, bg_g, bg_b = _hex_to_rgb(wb_bg)
+    pr, pg, pb = _hex_to_rgb(wb_pill)
+    ar, ag, ab = _hex_to_rgb(wb_acc)
+    vr, vg, vb = _hex_to_rgb(wb_act)
+    wr, wg, wb_c = _hex_to_rgb(wb_warn)
+    cr, cg, cb = _hex_to_rgb(wb_crit)
+    win_alpha = max(0.05, min(1.0, get_window_opacity()))
+
+    def _set_css_prop(block: str, prop: str, val: str) -> str:
+        return re.sub(rf"((?<![\w-]){prop}\s*:\s*)[^;]+(;)", lambda m: m.group(1) + val + m.group(2), block, count=1)
+
+    def _sub_block(src: str, header_pat: str, updates: dict[str, str]) -> str:
+        pat = rf"(^{header_pat}\s*\{{)([^}}]*)(\}})"
+
+        def _repl(m):
+            body = m.group(2)
+            for k, v in updates.items():
+                body = _set_css_prop(body, k, v)
+            return m.group(1) + body + m.group(3)
+
+        return re.sub(pat, _repl, src, count=1, flags=re.MULTILINE)
+
+    def _sub_keyframes(src: str, kf_name: str, transform) -> str:
+        pat = rf"(@keyframes\s+{re.escape(kf_name)}\s*\{{)([\s\S]*?)(\n\}})"
+        return re.sub(pat, lambda m: m.group(1) + transform(m.group(2)) + m.group(3), src, count=1)
+
+    if css_targets is not None:
+        paths = _unique_existing_paths(*css_targets)
+    else:
+        paths = _unique_existing_paths(
+            os.path.expanduser("~/.config/waybar/style.css"),
+            os.path.join(ROOT_DIR, "config", "waybar", "style.css"),
+            os.path.expanduser("~/Projects/ncui/config/waybar/style.css"),
+        )
+
+    for rp in paths:
         try:
             with open(rp, "r", encoding="utf-8") as f:
                 css_content = f.read()
 
             def _repl_wb(m):
                 block = m.group(0)
-                return re.sub(
-                    r"(background-color\s*:\s*)[^;]+(;)",
-                    f"\\1{new_rgba}\\2",
-                    block,
-                    count=1,
-                )
+                m_bg = re.search(r"background-color\s*:\s*([^;]+);", block)
+                cur_r, cur_g, cur_b, cur_a = _parse_rgba_components(m_bg.group(1)) if m_bg else (11, 11, 14, 0.88)
+                r = bg_r if (force_palette or sync_color) else cur_r
+                g = bg_g if (force_palette or sync_color) else cur_g
+                b = bg_b if (force_palette or sync_color) else cur_b
+                a = win_alpha if (force_palette or sync_opacity) else cur_a
+                out = _set_css_prop(block, "background-color", f"rgba({r}, {g}, {b}, {a:.2f})")
+                if force_palette:
+                    out = _set_css_prop(out, "color", wb_fg)
+                return out
 
             new_css = re.sub(r"window#waybar\s*\{[^}]+\}", _repl_wb, css_content, count=1)
-            with open(rp, "w", encoding="utf-8") as f:
-                f.write(new_css)
+            if force_palette:
+                new_css = _sub_keyframes(
+                    new_css,
+                    "nc-glow-pulse",
+                    lambda body: re.sub(
+                        r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?:0\.08|0\.62)\)",
+                        f"rgba({pr}, {pg}, {pb}, 0.62)",
+                        re.sub(
+                            r"rgba\(\s*0\s*,\s*255\s*,\s*(?:115|102)\s*,|rgba\(\s*166\s*,\s*227\s*,\s*161\s*,|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?=(?:0\.0|0\.16|0\.22|0\.44|0\.45|0\.90)\))",
+                            f"rgba({vr}, {vg}, {vb}, ",
+                            body,
+                        ),
+                    ),
+                )
+                new_css = _sub_keyframes(
+                    new_css,
+                    "nc-glow-pulse-telegram",
+                    lambda body: re.sub(
+                        r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?:0\.08|0\.62)\)",
+                        f"rgba({pr}, {pg}, {pb}, 0.62)",
+                        re.sub(
+                            r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?!(?:0\.08|0\.62)\))",
+                            f"rgba({ar}, {ag}, {ab}, ",
+                            body,
+                        ),
+                    ),
+                )
+                new_css = _sub_keyframes(
+                    new_css,
+                    "nc-glow-crit",
+                    lambda body: re.sub(r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*", f"rgba({cr}, {cg}, {cb}, ", body),
+                )
+                block_rules = [
+                    (r"#workspaces", {"background-color": f"rgba({pr}, {pg}, {pb}, 0.85)"}),
+                    (r"#workspaces\s+button", {"color": schema_hex}),
+                    (r"#workspaces\s+button:hover", {
+                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.22)",
+                        "color": focus_hex,
+                        "box-shadow": f"0 0 2.5px 0 rgba({ar}, {ag}, {ab}, 0.30), inset 0 0 5px rgba({ar}, {ag}, {ab}, 0.20)",
+                    }),
+                    (r"#clock,[\s\S]*?\.module-nc", {"color": wb_fg, "background-color": f"rgba({pr}, {pg}, {pb}, 0.62)"}),
+                    (r"#clock:hover,[\s\S]*?eventbox:hover\s*>\s*\.module-nc", {
+                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.22)",
+                        "color": focus_hex,
+                        "box-shadow": f"0 0 2.5px 0 rgba({ar}, {ag}, {ab}, 0.30), inset 0 0 6px rgba({ar}, {ag}, {ab}, 0.20)",
+                    }),
+                    (r"#window", {"color": wb_fg}),
+                    (r"#custom-media", {"color": wb_fg}),
+                    (r"#wireplumber\.muted", {"color": wb_crit, "background-color": f"rgba({cr}, {cg}, {cb}, 0.15)"}),
+                    (r"#workspaces\s+button\.active[\s\S]*?#custom-notifications\.module-nc-alert", {"color": focus_hex}),
+                    (r"#custom-telegram\.unread", {"color": wb_acc}),
+                    (r"#custom-ups\.online", {"color": wb_act}),
+                    (r"#custom-ups\.on-battery", {
+                        "color": wb_warn,
+                        "background-color": f"rgba({wr}, {wg}, {wb_c}, 0.18)",
+                        "box-shadow": f"inset 0 0 4px rgba({wr}, {wg}, {wb_c}, 0.45)",
+                    }),
+                    (r"#custom-ups\.low-battery", {"color": focus_hex}),
+                    (r"#custom-ups\.offline", {"color": wb_crit, "background-color": f"rgba({cr}, {cg}, {cb}, 0.14)"}),
+                    (r"#custom-printers\.printing", {"color": wb_acc}),
+                    (r"#custom-printers\.warn", {
+                        "color": wb_warn,
+                        "background-color": f"rgba({wr}, {wg}, {wb_c}, 0.18)",
+                        "box-shadow": f"inset 0 0 4px rgba({wr}, {wg}, {wb_c}, 0.45)",
+                    }),
+                    (r"#custom-printers\.crit,\s*#custom-printers\.offline", {
+                        "color": wb_crit,
+                        "background-color": f"rgba({cr}, {cg}, {cb}, 0.14)",
+                    }),
+                ]
+                for hdr_pat, upd in block_rules:
+                    new_css = _sub_block(new_css, hdr_pat, upd)
+
+            if new_css != css_content:
+                with open(rp, "w", encoding="utf-8") as f:
+                    f.write(new_css)
         except Exception:
             pass
 
+    if css_targets is not None or os.environ.get("NC_UI_OFFSCREEN") == "1":
+        return True
     try:
         subprocess.Popen(
             ["pkill", "-SIGUSR2", "waybar"],
@@ -589,46 +1112,106 @@ def apply_waybar_transparency() -> bool:
         return False
 
 
-def set_ui_transparency_pct(transparency_pct: int, sync_waybar: bool = False) -> int:
+def apply_waybar_transparency(sync_opacity: bool = None, sync_color: bool = None) -> bool:
+    return apply_waybar_palette(sync_opacity=sync_opacity, sync_color=sync_color, force_palette=False)
+
+
+def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
     from core.state import STATE
-    clamped = max(0, min(95, int(transparency_pct)))
+    clamped = max(5, min(100, int(opacity_pct)))
     STATE.set("appearance", "transparency_pct", clamped)
-    alpha = max(0.05, min(1.0, (100 - clamped) / 100.0))
-    r, g, b, _ = _parse_rgba_components(THEME["colors"].get("window_bg", "rgba(13, 13, 15, 0.88)"))
+    alpha = round(max(0.05, min(1.0, clamped / 100.0)), 2)
+    r, g, b = get_surface_bg_rgb()
     new_rgba = f"rgba({r}, {g}, {b}, {alpha:.2f})"
-    THEME["colors"]["window_bg"] = new_rgba
+    colors = THEME.setdefault("colors", {})
+    colors["window_opacity"] = alpha
+    colors["window_bg"] = new_rgba
 
-    _update_toml_key_in_section(
-        "colors",
-        "window_bg",
-        f'"{new_rgba}"',
-        target_files=(
-            THEME_PATH,
-            os.path.join(ROOT_DIR, "config", "ncui", "theme.toml"),
-            os.path.expanduser("~/Projects/ncui/config/ncui/theme.toml"),
-        ),
-        create_fallback=False,
-    )
+    targets = _theme_toml_targets()
+    _update_toml_key_in_section("colors", "window_opacity", f"{alpha:.2f}", target_files=targets, create_fallback=False)
+    _update_toml_key_in_section("colors", "window_bg", f'"{new_rgba}"', target_files=targets, create_fallback=False)
 
-    if sync_waybar:
-        apply_waybar_transparency()
+    if sync_waybar is True:
+        apply_waybar_transparency(sync_opacity=True, sync_color=get_waybar_sync_color())
+    return clamped
+
+
+def set_box_opacity_pct(opacity_pct: int) -> int:
+    clamped = max(0, min(100, int(opacity_pct)))
+    box_op = round(clamped / 100.0, 2)
+    THEME.setdefault("colors", {})["box_opacity"] = box_op
+    _update_toml_key_in_section("colors", "box_opacity", f"{box_op:.2f}", target_files=_theme_toml_targets(), create_fallback=False)
+    return clamped
+
+
+def set_surface_bg(hex_color: str, sync_waybar: bool = False) -> str:
+    norm_hex = _norm_hex_color(hex_color, get_surface_bg_hex())
+    r, g, b = int(norm_hex[1:3], 16), int(norm_hex[3:5], 16), int(norm_hex[5:7], 16)
+    alpha = get_window_opacity()
+    new_rgba = f"rgba({r}, {g}, {b}, {alpha:.2f})"
+    colors = THEME.setdefault("colors", {})
+    colors["surface_bg"] = norm_hex
+    colors["window_bg"] = new_rgba
+
+    targets = _theme_toml_targets()
+    _update_toml_key_in_section("colors", "surface_bg", f'"{norm_hex}"', target_files=targets, create_fallback=False)
+    _update_toml_key_in_section("colors", "window_bg", f'"{new_rgba}"', target_files=targets, create_fallback=False)
+
+    if sync_waybar is True:
+        apply_waybar_transparency(sync_opacity=get_waybar_sync_opacity(), sync_color=True)
+    return norm_hex
+
+
+def set_waybar_sync_opacity(enabled: bool, sync_waybar: bool = False) -> bool:
+    val = bool(enabled)
+    THEME.setdefault("colors", {})["waybar_sync_opacity"] = val
+    _update_toml_key_in_section("colors", "waybar_sync_opacity", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=False)
+    if val and sync_waybar is True:
+        apply_waybar_transparency(sync_opacity=True, sync_color=get_waybar_sync_color())
+    return val
+
+
+def set_waybar_sync_color(enabled: bool, sync_waybar: bool = False) -> bool:
+    val = bool(enabled)
+    THEME.setdefault("colors", {})["waybar_sync_color"] = val
+    _update_toml_key_in_section("colors", "waybar_sync_color", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=False)
+    if val and sync_waybar is True:
+        apply_waybar_transparency(sync_opacity=get_waybar_sync_opacity(), sync_color=True)
+    return val
+
+
+def get_row_gap() -> int:
+    try:
+        return max(0, min(6, int(THEME.get("geometry", {}).get("row_gap", 2))))
+    except Exception:
+        return 2
+
+
+def set_row_gap(val: int) -> int:
+    clamped = max(0, min(6, int(val)))
+    THEME.setdefault("geometry", {})["row_gap"] = clamped
+    _update_toml_key_in_section("geometry", "row_gap", str(clamped), target_files=_theme_toml_targets(), create_fallback=False)
     return clamped
 
 
 def get_effective_window_bg(wb_look_bg: str = None) -> str:
-    base_str = wb_look_bg or THEME["colors"].get("window_bg", "rgba(13, 13, 15, 0.88)")
-    r, g, b, _ = _parse_rgba_components(base_str)
-    trans_pct = get_ui_transparency_pct()
-    alpha = max(0.05, min(1.0, (100 - trans_pct) / 100.0))
+    r, g, b = get_surface_bg_rgb()
+    alpha = max(0.05, min(1.0, get_window_opacity()))
     return f"rgba({r}, {g}, {b}, {alpha:.2f})"
 
 
 def color_for_pct(pct: float) -> str:
-    t = THEME["colors"]["thresholds"]
-    if pct < 55.0:
-        return t["normal"]
-    if pct < 80.0:
-        return t["warning"]
-    if pct < 92.0:
-        return t["alert"]
-    return t["critical"]
+    """
+    MEMENTO SOGLIE TELEMETRICHE (Golden Standard §4.1 / §4.3):
+    Soglie unificate in tutto il sistema: <50% vitality, <75% attention, <90% interrupt, >=90% fault.
+    """
+    c = THEME.get("colors", {})
+    th = c.get("thresholds", {})
+    p = float(pct)
+    if p < 50.0:
+        return _norm_hex_color(c.get("vitality", th.get("normal")), "#00f57a")
+    if p < 75.0:
+        return _norm_hex_color(c.get("attention", th.get("warning")), "#ffe619")
+    if p < 90.0:
+        return _norm_hex_color(c.get("interrupt", th.get("alert")), "#ff2a9d")
+    return _norm_hex_color(c.get("fault", th.get("critical")), "#ff2442")

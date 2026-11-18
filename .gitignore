@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 *.old
 .DS_Store
+bin/ncmatrix
+.gnome-panels/
+*.zip
+cyberdeck

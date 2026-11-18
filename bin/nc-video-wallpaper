@@ -1,0 +1,860 @@
+#!/usr/bin/env python3
+import argparse
+import array
+import ctypes
+import glob
+import json
+import os
+import random
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gtk, Gdk, GLib, GtkLayerShell
+
+_VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")
+_PID_DIR = os.path.expanduser("~/.local/nc-desktop/pids")
+
+
+def _ensure_wayland_env() -> None:
+    uid = os.getuid()
+    rt = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{uid}"
+    os.environ["XDG_RUNTIME_DIR"] = rt
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        socks = sorted(s for s in glob.glob(os.path.join(rt, "wayland-*")) if not s.endswith(".lock"))
+        if socks:
+            os.environ["WAYLAND_DISPLAY"] = os.path.basename(socks[0])
+    if not os.environ.get("NIRI_SOCKET"):
+        nsocks = sorted(glob.glob(os.path.join(rt, "niri*.sock")))
+        if nsocks:
+            os.environ["NIRI_SOCKET"] = nsocks[0]
+
+
+def _query_niri_output(out_name: str) -> dict:
+    try:
+        raw = subprocess.check_output(["niri", "msg", "-j", "outputs"], stderr=subprocess.DEVNULL, timeout=2.0)
+        data = json.loads(raw.decode("utf-8", "replace"))
+        if isinstance(data, dict) and out_name in data:
+            return data[out_name] or {}
+    except Exception:
+        pass
+    cfg_p = os.path.expanduser("~/.config/niri/config.kdl")
+    if os.path.isfile(cfg_p):
+        try:
+            txt = open(cfg_p, "r", encoding="utf-8").read()
+            m = re.search(rf'output\s+"{re.escape(out_name)}"\s*\{{([^}}]*)\}}', txt, re.DOTALL)
+            if m:
+                blk = m.group(1)
+                mm = re.search(r'mode\s+"(\d+)x(\d+)', blk)
+                mp = re.search(r"position\s+x=(-?\d+)\s+y=(-?\d+)", blk)
+                ms = re.search(r"scale\s+([0-9.]+)", blk)
+                w, h = (int(mm.group(1)), int(mm.group(2))) if mm else (1920, 1080)
+                return {
+                    "modes": [{"width": w, "height": h}],
+                    "current_mode": 0,
+                    "logical": {
+                        "width": w,
+                        "height": h,
+                        "x": int(mp.group(1)) if mp else 0,
+                        "y": int(mp.group(2)) if mp else 0,
+                        "scale": float(ms.group(1)) if ms else 1.0,
+                    },
+                }
+        except Exception:
+            pass
+    return {}
+
+
+def _target_yt_height(mon_w: int, mon_h: int) -> int:
+    short_side = min(max(320, int(mon_w or 1920)), max(240, int(mon_h or 1080)))
+    for tier in (720, 1080, 1440, 2160):
+        if short_side <= tier + 120:
+            return tier
+    return 2160
+
+
+def _compute_dec_size(mon_w: int, mon_h: int) -> tuple[int, int]:
+    mw, mh = max(320, int(mon_w or 1920)), max(240, int(mon_h or 1080))
+    scale = min(1.0, 5120.0 / float(mw), 2160.0 / float(mh))
+    return max(320, (int(round(mw * scale)) // 2) * 2), max(240, (int(round(mh * scale)) // 2) * 2)
+
+
+def _extract_niri_res(niri_out: dict) -> tuple[int, int]:
+    if isinstance(niri_out, dict):
+        modes = niri_out.get("modes") or []
+        cur_idx = niri_out.get("current_mode")
+        if isinstance(cur_idx, int) and 0 <= cur_idx < len(modes):
+            m = modes[cur_idx] or {}
+            mw, mh = int(m.get("width") or 0), int(m.get("height") or 0)
+            if mw >= 320 and mh >= 240:
+                return mw, mh
+        logical = niri_out.get("logical") or {}
+        lw, lh = int(logical.get("width") or 0), int(logical.get("height") or 0)
+        if lw >= 320 and lh >= 240:
+            sc = float(logical.get("scale") or 1.0)
+            return int(round(lw * sc)), int(round(lh * sc))
+    return 0, 0
+
+
+def _find_gdk_monitor(out_name: str, niri_out: dict):
+    display = Gdk.Display.get_default()
+    if not display:
+        return None
+    n_mons = display.get_n_monitors()
+    logical = niri_out.get("logical") or {}
+    nx, ny = logical.get("x"), logical.get("y")
+    nw, nh = logical.get("width"), logical.get("height")
+    nmodel = niri_out.get("model")
+
+    if nx is not None and ny is not None:
+        for i in range(n_mons):
+            m = display.get_monitor(i)
+            if not m:
+                continue
+            g = m.get_geometry()
+            if g.x == int(nx) and g.y == int(ny):
+                return m
+    if nw and nh:
+        for i in range(n_mons):
+            m = display.get_monitor(i)
+            if not m:
+                continue
+            g = m.get_geometry()
+            if g.width == int(nw) and g.height == int(nh):
+                return m
+    if nmodel:
+        for i in range(n_mons):
+            m = display.get_monitor(i)
+            if m and m.get_model() == nmodel:
+                return m
+    return display.get_monitor(0) if n_mons > 0 else None
+
+
+def _build_vf(fit: str, w: int, h: int) -> str:
+    if fit == "fit":
+        return f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"
+    if fit == "stretch":
+        return f"scale={w}:{h}:flags=bicubic"
+    if fit == "center":
+        return f"scale=min(iw\\,{w}):min(ih\\,{h}):force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"
+    return f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h}"
+
+
+def _resolve_playlist(target: str, order: str) -> list[str]:
+    t = str(target or "").strip()
+    if not t:
+        return []
+    if t.startswith(("http://", "https://")):
+        is_pl = ("list=" in t and "/playlist" in t) or ("list=" in t and "watch?" not in t) or "list=" in t
+        if is_pl:
+            try:
+                out = subprocess.check_output(
+                    ["yt-dlp", "--flat-playlist", "--no-warnings", "--print", "url", t],
+                    stderr=subprocess.DEVNULL,
+                    timeout=18.0,
+                ).decode("utf-8", "replace")
+                items = [ln.strip() for ln in out.splitlines() if ln.strip()]
+                if items:
+                    if order == "shuffle":
+                        random.shuffle(items)
+                    return items
+            except Exception:
+                pass
+        return [t]
+    p = os.path.expanduser(t)
+    if os.path.isdir(p):
+        items = sorted(
+            os.path.join(p, fn)
+            for fn in os.listdir(p)
+            if fn.lower().endswith(_VIDEO_EXTS)
+        )
+        if order == "shuffle":
+            random.shuffle(items)
+        return items
+    if os.path.isfile(p):
+        return [p]
+    return []
+
+
+def _child_preexec() -> None:
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        libc.prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG = 1
+    except Exception:
+        pass
+
+
+def _term_proc(proc) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGCONT)
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=0.35)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _resolve_audio_url(item: str) -> str:
+    if not item.startswith(("http://", "https://")):
+        return item
+    try:
+        out = subprocess.check_output(
+            ["yt-dlp", "--no-playlist", "--no-warnings", "-f", "ba/b", "-g", item],
+            stderr=subprocess.DEVNULL,
+            timeout=12.0,
+        ).decode("utf-8", "replace")
+        urls = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("http")]
+        if urls:
+            return urls[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _has_audio_stream(src: str) -> bool:
+    if not src:
+        return False
+    if src.startswith(("http://", "https://")):
+        return True
+    if not shutil.which("ffprobe"):
+        return True
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", src],
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+        ).decode("utf-8", "replace")
+        return bool(out.strip())
+    except Exception:
+        return False
+
+
+def _scale_pcm_s16le(chunk: bytes, vol_pct: int) -> bytes:
+    if vol_pct <= 0:
+        return b"\x00" * len(chunk)
+    if vol_pct >= 100 or not chunk:
+        return chunk
+    scale = float(vol_pct) / 100.0
+    arr = array.array("h")
+    arr.frombytes(chunk)
+    for i in range(len(arr)):
+        arr[i] = int(arr[i] * scale)
+    return arr.tobytes()
+
+
+def _resolve_stream_urls(item: str, target_h: int = 1080) -> tuple[str, str]:
+    """Return (video_src, audio_src) for local file or direct YouTube stream URL."""
+    if not item.startswith(("http://", "https://")):
+        return item, item
+    fmts = (
+        f"bv*[height<={target_h}][protocol^=http][protocol!*=m3u8]+ba[protocol^=http]/bv*[height<={target_h}]+ba/b[height<={target_h}]/b",
+        f"bv*[height<={target_h}]/b[height<={target_h}]/b",
+    )
+    for fmt in fmts:
+        try:
+            out = subprocess.check_output(
+                ["yt-dlp", "--no-playlist", "--no-warnings", "-S", f"res:{target_h},fps", "-f", fmt, "-g", item],
+                stderr=subprocess.DEVNULL,
+                timeout=15.0,
+            ).decode("utf-8", "replace")
+            urls = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("http")]
+            if len(urls) >= 2:
+                return urls[0], urls[1]
+            if len(urls) == 1:
+                return urls[0], (_resolve_audio_url(item) or urls[0])
+        except Exception:
+            continue
+    return "", ""
+
+
+class VideoWallpaperWindow(Gtk.Window):
+    def __init__(self, args):
+        super().__init__(title=f"nc-video-wallpaper-{args.output}")
+        self.args = args
+        self.running = True
+        self.paused = False
+        self.playlist: list[str] = []
+        self.track_idx = 0
+        self._track_delta = 0
+        self._proc_lock = threading.Lock()
+        self._ff_proc = None
+        self._yt_proc = None
+        self._au_proc = None
+        self._cur_item = ""
+        self._cur_aud_src = ""
+        self._cur_single_loop = False
+        self._v_frames = 0
+        self._a_bytes = 0
+        self._sock_ino = None
+        self._frame_lock = threading.Lock()
+        self._latest_buf = None
+
+        niri_out = _query_niri_output(args.output)
+        mon_w, mon_h = (int(args.width), int(args.height)) if (args.width > 0 and args.height > 0) else _extract_niri_res(niri_out)
+        gdk_mon = _find_gdk_monitor(args.output, niri_out)
+        if mon_w <= 0 or mon_h <= 0:
+            if gdk_mon:
+                g = gdk_mon.get_geometry()
+                mon_w, mon_h = max(320, g.width), max(240, g.height)
+            else:
+                mon_w, mon_h = 1920, 1080
+
+        self.target_h = int(args.max_height) if args.max_height > 0 else _target_yt_height(mon_w, mon_h)
+        self.dec_w, self.dec_h = _compute_dec_size(mon_w, mon_h)
+        self.frame_bytes = self.dec_w * self.dec_h * 4
+
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.BACKGROUND)
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        GtkLayerShell.set_namespace(self, f"nc-video-{args.output}")
+        for edge in (
+            GtkLayerShell.Edge.TOP,
+            GtkLayerShell.Edge.BOTTOM,
+            GtkLayerShell.Edge.LEFT,
+            GtkLayerShell.Edge.RIGHT,
+        ):
+            GtkLayerShell.set_anchor(self, edge, True)
+        if gdk_mon is not None:
+            GtkLayerShell.set_monitor(self, gdk_mon)
+
+        self.da = Gtk.DrawingArea()
+        self.da.connect("draw", self._on_draw)
+        self.add(self.da)
+
+        self._write_pidfile()
+        self._start_ipc_server()
+        threading.Thread(target=self._player_loop, daemon=True).start()
+
+    def _pid_file(self) -> str:
+        return os.path.join(_PID_DIR, f"video_{self.args.output}.pid")
+
+    def _write_pidfile(self) -> None:
+        try:
+            os.makedirs(_PID_DIR, exist_ok=True)
+            with open(self._pid_file(), "w", encoding="utf-8") as f:
+                f.write(f"{os.getpid()}\n")
+        except OSError:
+            pass
+
+    def _cleanup_files(self) -> None:
+        pf = self._pid_file()
+        try:
+            if pf and os.path.isfile(pf) and open(pf, "r", encoding="utf-8").read().strip() == str(os.getpid()):
+                os.remove(pf)
+        except OSError:
+            pass
+        sp = self.args.ipc_socket
+        try:
+            if sp and os.path.exists(sp) and self._sock_ino is not None and os.stat(sp).st_ino == self._sock_ino:
+                os.remove(sp)
+        except OSError:
+            pass
+
+    def _pkill_audio(self) -> None:
+        for pat in (
+            f"^([^ ]*/)?ffplay .*-window_title nc-vidwp-audio-{self.args.output}( |$)",
+            f"^([^ ]*/)?pacat .*nc-vidwp-audio-{self.args.output}( |$)",
+        ):
+            try:
+                subprocess.run(["pkill", "-9", "-f", pat], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    def _stop_audio_proc(self) -> None:
+        with self._proc_lock:
+            au = self._au_proc
+            self._au_proc = None
+        if au is not None and au.stdin is not None:
+            try:
+                au.stdin.close()
+            except OSError:
+                pass
+        _term_proc(au)
+        self._pkill_audio()
+
+    def _sig_media(self, sig: int) -> None:
+        with self._proc_lock:
+            procs = (self._ff_proc, self._au_proc)
+        for proc in procs:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.send_signal(sig)
+                except Exception:
+                    pass
+
+    def _kill_media_procs(self) -> None:
+        self.paused = False
+        with self._proc_lock:
+            ff, yt, au = self._ff_proc, self._yt_proc, self._au_proc
+            self._ff_proc = self._yt_proc = self._au_proc = None
+        if au is not None and au.stdin is not None:
+            try:
+                au.stdin.close()
+            except OSError:
+                pass
+        for proc in (ff, yt, au):
+            _term_proc(proc)
+        self._pkill_audio()
+
+    def stop(self) -> None:
+        self.running = False
+        self._kill_media_procs()
+        self._cleanup_files()
+
+    def _set_paused(self, val: bool) -> None:
+        new_p = bool(val)
+        if new_p == self.paused:
+            return
+        self.paused = new_p
+        self._sig_media(signal.SIGSTOP if new_p else signal.SIGCONT)
+
+    def _start_ipc_server(self) -> None:
+        sock_path = self.args.ipc_socket
+        if not sock_path:
+            return
+        try:
+            if os.path.exists(sock_path):
+                os.remove(sock_path)
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(sock_path)
+            srv.listen(4)
+            srv.settimeout(0.8)
+            self._sock_ino = os.stat(sock_path).st_ino
+        except Exception:
+            return
+
+        def _serve():
+            try:
+                while self.running:
+                    try:
+                        conn, _ = srv.accept()
+                    except socket.timeout:
+                        continue
+                    except Exception:
+                        break
+                    with conn:
+                        data = conn.recv(4096).decode("utf-8", "replace")
+                        for ln in data.splitlines():
+                            try:
+                                msg = json.loads(ln)
+                                cmd = msg.get("command") or []
+                            except Exception:
+                                cmd = ln.strip().split()
+                            if not cmd:
+                                continue
+                            op = str(cmd[0])
+                            if op == "playlist-next":
+                                self._track_delta = 1
+                                self._kill_media_procs()
+                            elif op == "playlist-prev":
+                                self._track_delta = -1
+                                self._kill_media_procs()
+                            elif op == "cycle" and len(cmd) > 1 and cmd[1] == "pause":
+                                self._set_paused(not self.paused)
+                            elif op == "pause":
+                                self._set_paused(True)
+                            elif op == "resume":
+                                self._set_paused(False)
+                            elif op == "set_mute":
+                                raw_m = cmd[1] if len(cmd) > 1 else True
+                                new_m = raw_m if isinstance(raw_m, bool) else str(raw_m).strip().lower() not in ("0", "false", "no", "off")
+                                self.args.mute = 1 if new_m else 0
+                            elif op == "set_volume" and len(cmd) > 1:
+                                try:
+                                    self.args.volume = max(0, min(100, int(cmd[1])))
+                                except Exception:
+                                    pass
+                            elif op == "quit":
+                                self.running = False
+                                self._kill_media_procs()
+                                GLib.idle_add(self._quit_app)
+            finally:
+                try:
+                    srv.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_serve, daemon=True).start()
+
+    def _quit_app(self) -> bool:
+        self.stop()
+        if Gtk.main_level() > 0:
+            Gtk.main_quit()
+        return False
+
+    def _spawn_pcm_sink(self):
+        with self._proc_lock:
+            cur = self._au_proc
+            if cur is not None and cur.poll() is None:
+                return cur
+            self._au_proc = None
+        if shutil.which("pacat"):
+            cmd = [
+                "pacat",
+                "--playback",
+                "--raw",
+                "--format=s16le",
+                "--rate=44100",
+                "--channels=2",
+                "--latency-msec=40",
+                "--process-time-msec=20",
+                f"--client-name=nc-vidwp-audio-{self.args.output}",
+            ]
+        elif shutil.which("ffplay"):
+            cmd = [
+                "ffplay",
+                "-nodisp",
+                "-vn",
+                "-loglevel",
+                "quiet",
+                "-window_title",
+                f"nc-vidwp-audio-{self.args.output}",
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-f",
+                "s16le",
+                "-ar",
+                "44100",
+                "-ch_layout",
+                "stereo",
+                "-i",
+                "pipe:0",
+            ]
+        else:
+            return None
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=_child_preexec,
+            )
+            with self._proc_lock:
+                if self.running:
+                    self._au_proc = proc
+                    return proc
+            _term_proc(proc)
+        except Exception:
+            pass
+        return None
+
+    def _audio_pump_loop(self, aud_r_fd: int, fps: int) -> None:
+        rem_buf = b""
+        sink_failed = False
+        try:
+            while self.running and self._track_delta == 0:
+                try:
+                    data = os.read(aud_r_fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                rem_buf += data
+                usable = (len(rem_buf) // 4) * 4
+                if usable <= 0:
+                    continue
+                chunk = rem_buf[:usable]
+                rem_buf = rem_buf[usable:]
+
+                self._a_bytes += usable
+                a_pts = self._a_bytes / 176400.0
+                while self.running and self._track_delta == 0:
+                    if self.paused:
+                        time.sleep(0.04)
+                        continue
+                    v_n = self._v_frames
+                    if v_n == 0 and a_pts > 0.08:
+                        time.sleep(0.015)
+                        continue
+                    if v_n > 0 and (a_pts - (v_n / float(fps))) > 0.06:
+                        time.sleep(0.015)
+                        continue
+                    break
+                if not self.running or self._track_delta != 0:
+                    break
+
+                v_n = self._v_frames
+                if v_n > 0 and ((v_n / float(fps)) - a_pts) > 0.10:
+                    continue
+
+                is_silent = bool(self.args.mute or self.paused or int(self.args.volume) <= 0)
+                with self._proc_lock:
+                    au = self._au_proc
+                if is_silent:
+                    if au is not None and au.poll() is None and au.stdin is not None:
+                        try:
+                            au.stdin.write(b"\x00" * len(chunk))
+                            au.stdin.flush()
+                        except OSError:
+                            with self._proc_lock:
+                                if self._au_proc is au:
+                                    self._au_proc = None
+                    continue
+
+                if sink_failed:
+                    continue
+                if au is None or au.poll() is not None:
+                    au = self._spawn_pcm_sink()
+                    if au is None:
+                        sink_failed = True
+                        continue
+                scaled = _scale_pcm_s16le(chunk, int(self.args.volume))
+                if au.stdin is not None:
+                    try:
+                        au.stdin.write(scaled)
+                        au.stdin.flush()
+                    except OSError:
+                        with self._proc_lock:
+                            if self._au_proc is au:
+                                self._au_proc = None
+        finally:
+            try:
+                os.close(aud_r_fd)
+            except OSError:
+                pass
+
+    def _run_ffmpeg_av(self, cmd_prefix: list, vid_src: str, aud_src: str, vf: str, fps: int, single_loop: bool, stdin_fd=None) -> tuple[bool, bool]:
+        """Run a single ffmpeg process with video on stdout and optional s16le audio pipe. Returns (got_frames, spawned)."""
+        self._v_frames = 0
+        self._a_bytes = 0
+        has_aud = bool(aud_src) and _has_audio_stream(aud_src)
+        cmd = list(cmd_prefix)
+        aud_map = "0:a:0?"
+        if has_aud and aud_src != vid_src:
+            cmd.append("-re")
+            if single_loop:
+                cmd.extend(["-stream_loop", "-1"])
+            if aud_src.startswith("http"):
+                cmd.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
+            cmd.extend(["-i", aud_src])
+            aud_map = "1:a:0?"
+        cmd.extend(["-map", "0:v:0", "-vf", f"{vf},fps={fps}", "-pix_fmt", "bgr0", "-f", "rawvideo", "pipe:1"])
+
+        aud_r_fd = aud_w_fd = -1
+        pass_fds = ()
+        if has_aud:
+            aud_r_fd, aud_w_fd = os.pipe()
+            cmd.extend(["-map", aud_map, "-vn", "-ac", "2", "-ar", "44100", "-f", "s16le", f"pipe:{aud_w_fd}"])
+            pass_fds = (aud_w_fd,)
+
+        try:
+            ff_proc = subprocess.Popen(
+                cmd,
+                stdin=stdin_fd if stdin_fd is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                pass_fds=pass_fds,
+                preexec_fn=_child_preexec,
+            )
+        except Exception:
+            for fd in (aud_r_fd, aud_w_fd):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            return False, False
+
+        if aud_w_fd >= 0:
+            try:
+                os.close(aud_w_fd)
+            except OSError:
+                pass
+
+        with self._proc_lock:
+            self._ff_proc = ff_proc
+        au_thread = None
+        if aud_r_fd >= 0:
+            au_thread = threading.Thread(target=self._audio_pump_loop, args=(aud_r_fd, fps), daemon=True)
+            au_thread.start()
+
+        got_any = self._read_frame_loop(ff_proc)
+        self._kill_media_procs()
+        if au_thread is not None:
+            au_thread.join(timeout=0.5)
+        return got_any, True
+
+    def _stream_frames(self, item: str, single_loop: bool) -> bool:
+        self._cur_item = item
+        vid_src, aud_src = _resolve_stream_urls(item, target_h=self.target_h)
+        vf = _build_vf(self.args.fit, self.dec_w, self.dec_h)
+        fps = max(1, min(60, int(self.args.fps)))
+        got_any_frame = False
+
+        if vid_src:
+            in_prefix = ["ffmpeg", "-nostdin", "-v", "error", "-re"]
+            if single_loop:
+                in_prefix.extend(["-stream_loop", "-1"])
+            if vid_src.startswith("http"):
+                in_prefix.extend(["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"])
+            in_prefix.extend(["-i", vid_src])
+            got_any_frame, _ = self._run_ffmpeg_av(in_prefix, vid_src, aud_src, vf, fps, single_loop)
+            if got_any_frame or not self.running or self._track_delta != 0:
+                return got_any_frame
+
+        if item.startswith(("http://", "https://")) and self.running and self._track_delta == 0:
+            yt_cmd = [
+                "yt-dlp", "--no-playlist", "--no-warnings",
+                "-S", f"res:{self.target_h},fps",
+                "-f", f"bv*[height<={self.target_h}]/b[height<={self.target_h}]/b",
+                "-o", "-", item,
+            ]
+            yt_proc = subprocess.Popen(
+                yt_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=_child_preexec,
+            )
+            with self._proc_lock:
+                self._yt_proc = yt_proc
+            aud_fallback = aud_src or _resolve_audio_url(item)
+            in_prefix = ["ffmpeg", "-nostdin", "-v", "error", "-re", "-i", "pipe:0"]
+            got_any_frame, _ = self._run_ffmpeg_av(in_prefix, "pipe:0", aud_fallback, vf, fps, single_loop, stdin_fd=yt_proc.stdout)
+            if yt_proc.stdout:
+                try:
+                    yt_proc.stdout.close()
+                except OSError:
+                    pass
+            self._kill_media_procs()
+        return got_any_frame
+
+    def _read_frame_loop(self, ff_proc) -> bool:
+        got_any = False
+        stdout = ff_proc.stdout
+        if stdout is None:
+            return False
+        need = self.frame_bytes
+        while self.running and self._track_delta == 0:
+            if self.paused:
+                time.sleep(0.08)
+                continue
+            chunks = []
+            rem = need
+            while rem > 0 and self.running:
+                chunk = stdout.read(rem)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                rem -= len(chunk)
+            if rem != 0:
+                break
+            got_any = True
+            self._v_frames += 1
+            buf = bytearray().join(chunks) if len(chunks) > 1 else bytearray(chunks[0])
+            with self._frame_lock:
+                self._latest_buf = buf
+            GLib.idle_add(self.da.queue_draw)
+        return got_any
+
+    def _player_loop(self) -> None:
+        self.playlist = _resolve_playlist(self.args.target, self.args.order)
+        if not self.playlist:
+            return
+        while self.running:
+            if self._track_delta != 0:
+                self.track_idx = (self.track_idx + self._track_delta) % len(self.playlist)
+                self._track_delta = 0
+            item = self.playlist[self.track_idx]
+            single_loop = (self.args.loop == "loop" and len(self.playlist) == 1)
+            ok = self._stream_frames(item, single_loop)
+            if not self.running:
+                break
+            if self._track_delta != 0:
+                continue
+            if self.args.loop == "once":
+                if self.track_idx + 1 < len(self.playlist):
+                    self.track_idx += 1
+                    continue
+                while self.running and self._track_delta == 0:
+                    time.sleep(0.25)
+                continue
+            if not ok:
+                time.sleep(1.5)
+            self.track_idx = (self.track_idx + 1) % len(self.playlist)
+
+    def _on_draw(self, da, cr) -> bool:
+        with self._frame_lock:
+            buf = self._latest_buf
+        if not buf or len(buf) != self.frame_bytes:
+            cr.set_source_rgb(0.03, 0.03, 0.05)
+            cr.paint()
+            return False
+        alloc = da.get_allocation()
+        aw = max(1, alloc.width)
+        ah = max(1, alloc.height)
+        surf = cairo.ImageSurface.create_for_data(buf, cairo.FORMAT_RGB24, self.dec_w, self.dec_h, self.dec_w * 4)
+        cr.save()
+        cr.scale(aw / float(self.dec_w), ah / float(self.dec_h))
+        cr.set_source_surface(surf, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_BILINEAR)
+        cr.paint()
+        cr.restore()
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Native Wayland GtkLayerShell Video & YouTube Wallpaper Engine")
+    parser.add_argument("--output", required=True, help="Niri output port (e.g. DP-1, DP-3)")
+    parser.add_argument("--target", required=True, help="Local video path, folder, or YouTube video/playlist URL")
+    parser.add_argument("--fit", default="fill", choices=["fill", "fit", "center", "stretch"])
+    parser.add_argument("--loop", default="loop", choices=["loop", "once"])
+    parser.add_argument("--order", default="sequential", choices=["sequential", "shuffle"])
+    parser.add_argument("--mute", type=int, default=1)
+    parser.add_argument("--volume", type=int, default=60)
+    parser.add_argument("--fps", type=int, default=24)
+    parser.add_argument("--width", type=int, default=0)
+    parser.add_argument("--height", type=int, default=0)
+    parser.add_argument("--max-height", type=int, default=0)
+    parser.add_argument("--ipc-socket", default="")
+    args = parser.parse_args()
+
+    _ensure_wayland_env()
+    if not Gtk.init_check()[0]:
+        sys.stderr.write("nc-video-wallpaper: failed to initialize GTK3 Wayland\n")
+        return 1
+
+    win = VideoWallpaperWindow(args)
+
+    def _on_sig(*_a):
+        GLib.idle_add(win._quit_app)
+        return False
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _on_sig)
+        if hasattr(GLib, "unix_signal_add"):
+            try:
+                GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, _on_sig)
+            except Exception:
+                pass
+    win.connect("destroy", lambda *_: win.stop())
+    win.show_all()
+    Gtk.main()
+    win.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

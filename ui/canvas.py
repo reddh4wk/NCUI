@@ -9,28 +9,45 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gdk, Pango, PangoCairo
-from core.config import THEME
+from core.config import BOX_STYLES, THEME, get_row_gap
 
 _TAG_OR_TOKEN_RE = re.compile(r"(<[^>]+>|&[a-zA-Z0-9#]+;|.)")
 _LINK_TAG_RE = re.compile(r"</?a\b[^>]*>", re.IGNORECASE)
 _BARE_AMP_RE = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)")
 _ATOMIC_WIDGET_RE = re.compile(r"(<a\b[^>]*>.*?</a>|<span\b[^>]*background=[^>]*>.*?</span>)", re.IGNORECASE | re.DOTALL)
+_FALLBACK_GLYPH_RE = re.compile(r"([\u21bb\u2300-\u23ff\u2580-\u259f\u25b0-\u25ff\u2600-\u27bf\ue000-\uf8ff\U0001f000-\U0001ffff\U000f0000-\U000ffffd])")
+_ALLOWED_TAG_RE = re.compile(r"^</?\s*(span|a|b|i|u|s|small|big|sub|sup)\b", re.IGNORECASE)
+_ANY_ANGLE_TAG_RE = re.compile(r"<[^>]*>")
+_ANY_TAG_RE = re.compile(r"<[^>]+>")
+_SPLIT_TAG_RE = re.compile(r"(<[^>]+>)")
+_SPAN_SIZE_RE = re.compile(r"<span\b[^>]*\bsize=", re.IGNORECASE)
+_FAST_MONO_PLAIN_RE = re.compile(r"^[\x20-\u024f\u2026\u2500-\u257f\u25cf\u25cb]*$")
+_CTRL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# MEMENTO TIPOGRAFICO (Golden Standard §5.1):
+# 1) Le ligature OpenType DEVONO restare disattivate (liga=0, clig=0, dlig=0, hlig=0) per non alterare le colonne.
+# 2) I glifi Nerd Font / PUA in _FALLBACK_GLYPH_RE vengono scalati al 62% per preservare l'altezza riga costante.
+_NO_LIGA_FEATURES = "liga=0, clig=0, dlig=0, hlig=0"
+_NO_LIGA_SPAN_OPEN = "<span font_features='liga=0, clig=0, dlig=0, hlig=0'>"
+_SANITIZE_CACHE: dict[tuple[float, str], str] = {}
+
+
+def _safe_box_chars(raw_chars: dict) -> dict:
+    fb = BOX_STYLES["rounded"]
+    src = raw_chars if isinstance(raw_chars, dict) else {}
+    return {k: (str(src.get(k) or "") or v)[0] for k, v in fb.items()}
+
+
+def _safe_pair(seq, d_l: str, d_r: str) -> tuple[str, str]:
+    if isinstance(seq, (list, tuple)) and len(seq) >= 2:
+        return (str(seq[0]) if seq[0] is not None else d_l, str(seq[1]) if seq[1] is not None else d_r)
+    return d_l, d_r
 
 
 class Canvas:
     def __init__(self, total_cols: int = None):
-        typo = THEME["typography"]
         geom = THEME["geometry"]
-        self.font_family = typo["font_family"]
-        self.font_weight = typo["font_weight"]
-        self.font_size = float(typo["font_size"])
-        self.chars = THEME["ascii"]["chars"]
-        self.title_brackets = THEME["ascii"]["title_brackets"]
         cols = total_cols if total_cols is not None else geom["compact_cols"]
 
-        desc = Pango.FontDescription.from_string(
-            f"{self.font_family}, Font Awesome 6 Free, Font Awesome 6 Brands, Symbols Nerd Font, monospace {self.font_weight} {self.font_size}"
-        )
         screen = Gdk.Screen.get_default()
         if screen is not None:
             pctx = Gdk.pango_context_get_for_screen(screen)
@@ -39,20 +56,74 @@ class Canvas:
             self.surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1)
             self.layout = PangoCairo.create_layout(cairo.Context(self.surf))
 
-        self.layout.set_font_description(desc)
-        h_char = self.chars.get("h", "\u2500")
-        self.char_w = max(1.0, self.measure_text(h_char * 20) / 20.0)
-        self.space_w = max(1.0, self.measure_text(" " * 20) / 20.0)
-        self.char_h = self.layout.get_pixel_size()[1] or 16
-        self.base_pango_size = self.font_size * Pango.SCALE
-        self._anchor_v = self.chars.get("v", "\u2502")
-        self._anchor_px = self.measure_text(self._anchor_v * 2)
+        self._no_liga_attrs = Pango.AttrList()
+        self._no_liga_attrs.insert(Pango.AttrFontFeatures.new(_NO_LIGA_FEATURES))
+        self._mt_cache: dict[str, float] = {}
+        self._mm_cache: dict[str, float] = {}
+        self._lh_cache: dict[str, int] = {}
+        self._metrics_sig = None
+        self.total_cols = max(6, int(cols))
+        self.inner_cols = max(1, self.total_cols - 4)
+        self.sync_theme()
         self.set_cols(cols)
 
+    def sync_theme(self) -> bool:
+        """
+        Ricalcola istantaneamente le metriche Pango del Canvas se font, dimensione, peso
+        o carattere orizzontale della cornice (`h`) sono cambiati a caldo in `THEME`.
+        """
+        typo = THEME["typography"]
+        chars = _safe_box_chars(THEME["ascii"].get("chars", {}))
+        ff = str(typo.get("font_family", "Courier") or "Courier")
+        fw = str(typo.get("font_weight", "bold") or "bold")
+        fs = float(typo.get("font_size", 11))
+        h_char = chars.get("h", "\u2500")
+        sig = (ff, fw, fs, h_char)
+
+        self.chars = chars
+        self.title_brackets = _safe_pair(THEME["ascii"].get("title_brackets"), "[ ", " ]")
+        if self._metrics_sig == sig:
+            return False
+
+        self._metrics_sig = sig
+        self.font_family = ff
+        self.font_weight = fw
+        self.font_size = fs
+        desc = Pango.FontDescription.from_string(
+            f"{self.font_family}, Font Awesome 6 Free, Font Awesome 6 Brands, Symbols Nerd Font, monospace {self.font_weight} {self.font_size}"
+        )
+        self.layout.set_font_description(desc)
+        self._mt_cache.clear()
+        self._mm_cache.clear()
+        self._lh_cache.clear()
+        self._std_row_h_px = 0
+        self._h_bar_rel_baseline = None
+
+        self.char_w = max(1.0, self.measure_text(h_char * 20) / 20.0)
+        self.space_w = max(1.0, self.measure_text(" " * 20) / 20.0)
+        self.layout.set_attributes(self._no_liga_attrs)
+        self.layout.set_text("[A0]", -1)
+        ink_r, log_r = self.layout.get_pixel_extents()
+        base_px = self.layout.get_baseline() / Pango.SCALE
+        self.base_row_h_px = max(12, int(log_r.height))
+        self.char_h = self.base_row_h_px
+        self.cap_mid_from_baseline = (ink_r.y + ink_r.height * 0.5) - base_px
+        self.cap_ink_h = float(max(8, ink_r.height))
+        self.base_pango_size = self.font_size * Pango.SCALE
+        self.fallback_glyph_pt = int(round(self.base_pango_size * 0.62))
+        self._is_mono = abs(self.char_w - self.space_w) < 0.01
+        return True
+
     def set_cols(self, total_cols: int) -> None:
+        self.sync_theme()
         self.total_cols = max(6, int(total_cols))
         self.inner_cols = max(1, self.total_cols - 4)
         ch = self.chars
+        new_anchor_v = ch.get("v", "\u2502")
+        if getattr(self, "_anchor_v", None) != new_anchor_v:
+            self._mm_cache.clear()
+        self._anchor_v = new_anchor_v
+        self._anchor_px = self.measure_text(self._anchor_v * 2)
         n_dashes = max(1, self.total_cols - 2)
         self.total_px = self.measure_text(f"{ch['bl']}{ch['h'] * n_dashes}{ch['br']}")
         borders_px = self.measure_text(f"{ch['v']}  {ch['v']}")
@@ -62,7 +133,7 @@ class Canvas:
     def escape(text) -> str:
         if text is None:
             return ""
-        s = str(text)
+        s = _CTRL_XML_RE.sub("", str(text))
         if "<" not in s and ">" not in s:
             return s.replace("&", "&amp;")
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -71,57 +142,121 @@ class Canvas:
     def sanitize_markup(markup_str: str) -> str:
         if not markup_str:
             return ""
-        s = str(markup_str)
+        s = _CTRL_XML_RE.sub("", str(markup_str))
+        font_sz = float(THEME.get("typography", {}).get("font_size", 11))
+        cache_key = (font_sz, s)
+        cached = _SANITIZE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
         def _repl(m):
             tag = m.group(0)
-            if re.match(r"^</?\s*(span|a|b|i|u|s|small|big|sub|sup)\b", tag, re.IGNORECASE):
+            if _ALLOWED_TAG_RE.match(tag):
                 return tag
             return tag.replace("<", "&lt;").replace(">", "&gt;")
 
-        s_safe = re.sub(r"<[^>]*>", _repl, s)
-        return _BARE_AMP_RE.sub("&amp;", s_safe)
+        s_safe = _ANY_ANGLE_TAG_RE.sub(_repl, s) if "<" in s else s
+        if "&" in s_safe:
+            s_safe = _BARE_AMP_RE.sub("&amp;", s_safe)
+        if _FALLBACK_GLYPH_RE.search(s_safe):
+            pt = int(round(font_sz * Pango.SCALE * 0.62))
+            parts = _SPLIT_TAG_RE.split(s_safe)
+            for idx in range(0, len(parts), 2):
+                if parts[idx] and _FALLBACK_GLYPH_RE.search(parts[idx]):
+                    if idx > 0 and _SPAN_SIZE_RE.search(parts[idx - 1]):
+                        continue
+                    parts[idx] = _FALLBACK_GLYPH_RE.sub(f"<span size='{pt}'>\\1</span>", parts[idx])
+            s_safe = "".join(parts)
+
+        if len(_SANITIZE_CACHE) > 8192:
+            _SANITIZE_CACHE.clear()
+        _SANITIZE_CACHE[cache_key] = s_safe
+        return s_safe
 
     @staticmethod
     def strip_tags(markup_str: str) -> str:
         if not markup_str:
             return ""
-        return html.unescape(re.sub(r"<[^>]+>", "", str(markup_str)))
+        s = str(markup_str)
+        if "<" not in s and "&" not in s:
+            return s
+        return html.unescape(_ANY_TAG_RE.sub("", s))
 
     def measure_text(self, text_str: str) -> float:
+        s = str(text_str or "")
+        if not s:
+            return 0.0
+        cached = self._mt_cache.get(s)
+        if cached is not None:
+            return cached
         self.layout.set_width(-1)
-        self.layout.set_attributes(None)
-        self.layout.set_text(str(text_str or ""), -1)
-        return self.layout.get_size()[0] / Pango.SCALE
+        self.layout.set_attributes(self._no_liga_attrs)
+        self.layout.set_text(s, -1)
+        res = self.layout.get_size()[0] / Pango.SCALE
+        if len(self._mt_cache) > 4096:
+            self._mt_cache.clear()
+        self._mt_cache[s] = res
+        return res
 
     def measure_markup(self, markup_str: str) -> float:
         if not markup_str:
             return 0.0
+        cached = self._mm_cache.get(markup_str)
+        if cached is not None:
+            return cached
         s = self.sanitize_markup(markup_str)
+        if self._is_mono and "size=" not in s and "\n" not in s and not _FALLBACK_GLYPH_RE.search(s):
+            plain = self.strip_tags(s)
+            if _FAST_MONO_PLAIN_RE.match(plain):
+                res = len(plain) * self.char_w
+                if len(self._mm_cache) > 8192:
+                    self._mm_cache.clear()
+                self._mm_cache[markup_str] = res
+                return res
         pango_only = _LINK_TAG_RE.sub("", s)
         v = getattr(self, "_anchor_v", "\u2502")
         anc = getattr(self, "_anchor_px", 0.0)
         self.layout.set_width(-1)
         try:
-            self.layout.set_markup(f"{v}{pango_only}{v}", -1)
-            return max(0.0, (self.layout.get_size()[0] / Pango.SCALE) - anc)
+            self.layout.set_markup(f"{_NO_LIGA_SPAN_OPEN}{v}{pango_only}{v}</span>", -1)
+            res = max(0.0, (self.layout.get_size()[0] / Pango.SCALE) - anc)
         except Exception:
-            return self.measure_text(self.strip_tags(s))
+            res = self.measure_text(self.strip_tags(s))
+        if len(self._mm_cache) > 8192:
+            self._mm_cache.clear()
+        self._mm_cache[markup_str] = res
+        return res
 
     def measure_line_height(self, markup_str: str) -> int:
+        if not markup_str or "size=" not in markup_str:
+            cached_plain = self._lh_cache.get("__plain__")
+            if cached_plain is not None:
+                return cached_plain
+        else:
+            cached = self._lh_cache.get(markup_str)
+            if cached is not None:
+                return cached
         s = self.sanitize_markup(markup_str or " ")
         pango_only = _LINK_TAG_RE.sub("", s)
         self.layout.set_width(-1)
         try:
-            self.layout.set_markup(pango_only, -1)
+            self.layout.set_markup(f"{_NO_LIGA_SPAN_OPEN}{pango_only}</span>", -1)
         except Exception:
-            self.layout.set_attributes(None)
+            self.layout.set_attributes(self._no_liga_attrs)
             self.layout.set_text(self.strip_tags(s) or " ", -1)
         line = self.layout.get_line(0)
         if line is not None:
             _, logical_rect = line.get_extents()
-            return int(logical_rect.height)
-        return int(self.layout.get_size()[1])
+            res = int(logical_rect.height)
+        else:
+            res = int(self.layout.get_size()[1])
+        if len(self._lh_cache) > 4096:
+            self._lh_cache.clear()
+        if not markup_str or "size=" not in markup_str:
+            self._lh_cache["__plain__"] = res
+        else:
+            self._lh_cache[markup_str] = res
+        return res
 
     def measure_cols(self, markup_str: str) -> int:
         px = self.measure_markup(markup_str)
@@ -162,9 +297,9 @@ class Canvas:
         return self._micro_space(rem_px) + (fill_char * n_chars)
 
     def _fit_line(self, left_markup: str, right_markup: str, fill_char: str = " ", c_fill: str = None, min_chars: int = 0) -> str:
-        base_px = self.measure_markup(left_markup + right_markup)
+        base_px = self.measure_markup(left_markup) + self.measure_markup(right_markup)
         gap_px = max(0.0, self.total_px - base_px)
-        unit_w = self.space_w if fill_char == " " else self.char_w
+        unit_w = self.space_w if fill_char == " " else self.measure_text(fill_char)
         n_chars = max(min_chars, int(gap_px // unit_w))
 
         def _wrap_fill(body: str) -> str:
@@ -172,19 +307,12 @@ class Canvas:
                 return ""
             return f"<span color='{c_fill}'>{body}</span>" if c_fill else body
 
-        while n_chars > min_chars:
-            cand = left_markup + _wrap_fill(fill_char * n_chars) + right_markup
-            if self.measure_markup(cand) <= self.total_px + 0.15:
-                break
+        while n_chars > min_chars and (base_px + n_chars * unit_w) > self.total_px + 0.15:
             n_chars -= 1
-        while True:
-            cand_next = left_markup + _wrap_fill(fill_char * (n_chars + 1)) + right_markup
-            if self.measure_markup(cand_next) <= self.total_px + 0.10:
-                n_chars += 1
-            else:
-                break
+        while (base_px + (n_chars + 1) * unit_w) <= self.total_px + 0.10:
+            n_chars += 1
         cur_line = left_markup + _wrap_fill(fill_char * n_chars) + right_markup
-        rem_px = max(0.0, self.total_px - self.measure_markup(cur_line))
+        rem_px = max(0.0, self.total_px - (base_px + n_chars * unit_w))
         sub = self._micro_space(rem_px)
         if sub:
             test_with_sub = left_markup + _wrap_fill((sub + (fill_char * n_chars)) if fill_char != " " else ((fill_char * n_chars) + sub)) + right_markup
@@ -321,6 +449,8 @@ class Canvas:
 
         out_str = left_margin
         base_x_px = self.measure_markup(left_margin)
+        cur_px = base_x_px
+        has_non_margin = bool(left_margin.strip())
         col_starts, col_ends = [], []
         cum = 0
         for idx in range(n_cols):
@@ -350,7 +480,6 @@ class Canvas:
                 raw_cell = self.truncate_markup(raw_cell, col_budget_px)
                 cell_px = self.measure_markup(raw_cell)
 
-            cur_px = self.measure_markup(out_str)
             if idx > 0 or cur_px < col_start_px - 0.1:
                 if align == "right":
                     target_start_px = max(col_start_px, eff_end_px - cell_px)
@@ -358,23 +487,31 @@ class Canvas:
                     target_start_px = max(col_start_px, col_start_px + max(0.0, (eff_end_px - col_start_px - cell_px) / 2.0))
                 else:
                     target_start_px = col_start_px
-                min_sp = 1 if idx > 0 and self.strip_tags(out_str).strip() else 0
+                min_sp = 1 if idx > 0 and has_non_margin else 0
                 needed_px = max(self.space_w * min_sp, target_start_px - cur_px)
                 n_sp = max(min_sp, int((needed_px + 0.1) // self.space_w))
                 limit_px = eff_end_px if align != "left" else col_start_px
-                while n_sp > min_sp and self.measure_markup(out_str + (" " * n_sp) + (raw_cell if align != "left" else "")) > limit_px + 0.15:
+                extra_px = cell_px if align != "left" else 0.0
+                while n_sp > min_sp and (cur_px + n_sp * self.space_w + extra_px) > limit_px + 0.15:
                     n_sp -= 1
                 out_str += " " * n_sp
+                cur_px += n_sp * self.space_w
             else:
                 avail_in_col = max(0.0, eff_end_px - cur_px)
                 if align == "right":
-                    out_str += self._int_spaces_for_px(max(0.0, avail_in_col - cell_px))
+                    sp = self._int_spaces_for_px(max(0.0, avail_in_col - cell_px))
+                    out_str += sp
+                    cur_px += len(sp) * self.space_w
                 elif align == "center":
-                    out_str += self._int_spaces_for_px(max(0.0, (avail_in_col - cell_px) / 2.0))
+                    sp = self._int_spaces_for_px(max(0.0, (avail_in_col - cell_px) / 2.0))
+                    out_str += sp
+                    cur_px += len(sp) * self.space_w
 
             out_str += raw_cell
+            cur_px += cell_px
+            has_non_margin = True
 
-        if self.measure_markup(out_str) > self.inner_px + 0.3 and not _ATOMIC_WIDGET_RE.search(out_str):
+        if cur_px > self.inner_px + 0.3 and not _ATOMIC_WIDGET_RE.search(out_str):
             out_str = self.truncate_markup(out_str, self.inner_px)
         return out_str
 
@@ -495,15 +632,20 @@ class Canvas:
                 content_markup = self.truncate_markup(content_markup, max_content_px)
             line_out = self._fit_line(f"{left_border}<span color='{c_txt}'>{content_markup}</span>", right_border, fill_char=" ", min_chars=0)
 
-        if min_height_pango > 0:
+        target_h_pango = max(min_height_pango, int(round((self.base_row_h_px + get_row_gap()) * Pango.SCALE)))
+        if target_h_pango > 0:
             cur_h = self.measure_line_height(line_out)
-            if cur_h < min_height_pango:
-                base_h = max(1, self.measure_line_height(" "))
-                target_pt = int(round(self.base_pango_size * (min_height_pango / float(base_h))))
+            if cur_h < target_h_pango:
+                base_h = max(1, int(round(self.base_row_h_px * Pango.SCALE)))
+                target_pt = int(round(self.base_pango_size * (target_h_pango / float(base_h))))
                 line_out += f"<span size='{target_pt}'>\u200b</span>"
         return line_out
 
-    def bot(self, c_box: str = None) -> str:
+    def bot(self, label_markup: str = "", right_markup: str = "", c_box: str = None) -> str:
         c_box = c_box or THEME["colors"]["box_inactive"]
         ch = self.chars
-        return f"<span color='{c_box}'>{ch['bl']}{ch['h'] * max(1, self.total_cols - 2)}{ch['br']}</span>"
+        if not label_markup and not right_markup:
+            return f"<span color='{c_box}'>{ch['bl']}{ch['h'] * max(1, self.total_cols - 2)}{ch['br']}</span>"
+        left_part = f"<span color='{c_box}'>{ch['bl']}{ch['h']} </span>{self.sanitize_markup(label_markup)}<span color='{c_box}'> </span>" if label_markup else f"<span color='{c_box}'>{ch['bl']}</span>"
+        right_part = f"<span color='{c_box}'> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'> {ch['h']}{ch['br']}</span>" if right_markup else f"<span color='{c_box}'>{ch['br']}</span>"
+        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1)
