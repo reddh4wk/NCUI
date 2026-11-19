@@ -6,7 +6,7 @@ from core.i18n import t
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, ProgressBar, StateBadge, Txt
 from panels.base import BasePanel
-from panels.cc_engine_power import _collect_ups_data
+from panels.cc_engine_power import _collect_ups_data, invalidate_ups_cache
 
 
 def _battery_glyph(charge: int | None) -> str:
@@ -22,7 +22,7 @@ class Panel(BasePanel):
     refresh_ms = 3000
 
     def __init__(self, shell=None):
-        self.title = t("ups.title")
+        self.title = t("ups.title") if shell is not None else self.id
         super().__init__(shell)
 
     def get_cols(self, force_expanded: bool = False) -> int:
@@ -59,12 +59,14 @@ class Panel(BasePanel):
         target_cols = 46
         canvas.set_cols(target_cols)
 
-        u = _collect_ups_data()
+        u = _collect_ups_data(async_refresh=True, cc_panel=self)
         flds = u["popup_fields"]
 
         tone_map = {"online": "ok", "on-battery": "warn", "low-battery": "crit", "offline": "crit"}
         if not u["enabled"]:
             st_badge = StateBadge(False, "", t("ups.disabled"))
+        elif u.get("polling"):
+            st_badge = Badge(t("cc_power.polling").upper(), style="warn")
         elif u["css_state"] == "online":
             st_badge = StateBadge(True, u["status_text"].upper(), on_tone="ok")
         else:
@@ -83,14 +85,15 @@ class Panel(BasePanel):
             min_cols=target_cols,
             max_cols=target_cols,
         )
-        box.add_row(" ")
 
         if not u["enabled"]:
             box.add_row(f"  {Txt(t('ups.disabled_hint'), role='inactive')}")
+        elif u.get("polling"):
+            box.add_row(f"  {Txt(t('cc_power.polling'), role='inactive')}")
         elif not u["reachable"]:
             box.add_row(f"  {Txt(t('ups.unreachable_hint'), role='attention')}")
             if u["target"]:
-                box.add_kv(t("ups.target"), Txt(u["target"], role="schema"))
+                box.add_kv(t("ups.target"), Txt(u["target"], role="val"))
         else:
             rows_added = 0
             if flds.get("status"):
@@ -137,15 +140,15 @@ class Panel(BasePanel):
                     rows_added += 1
 
             if flds.get("model") and u["model"]:
-                box.add_kv(t("ups.model"), Txt(canvas.truncate_plain(u["model"], 24), role="schema"))
+                box.add_kv(t("ups.model"), Txt(canvas.truncate_plain(u["model"], 24), role="val"))
                 rows_added += 1
 
             if flds.get("mfr") and u["mfr"]:
-                box.add_kv(t("ups.mfr"), Txt(canvas.truncate_plain(u["mfr"], 24), role="schema"))
+                box.add_kv(t("ups.mfr"), Txt(canvas.truncate_plain(u["mfr"], 24), role="val"))
                 rows_added += 1
 
             if flds.get("serial") and u["serial"]:
-                box.add_kv(t("ups.serial"), Txt(canvas.truncate_plain(u["serial"], 24), role="schema"))
+                box.add_kv(t("ups.serial"), Txt(canvas.truncate_plain(u["serial"], 24), role="val"))
                 rows_added += 1
 
             if flds.get("temp") and u["temp"]:
@@ -153,14 +156,14 @@ class Panel(BasePanel):
                 rows_added += 1
 
             if rows_added == 0:
-                box.add_row(f"  {Txt(t("ups.no_popup_fields_enabled_in_setting"), role='inactive')}")
+                box.add_row(f"  {Txt(t('ups.no_popup_fields_enabled_in_setting'), role='inactive')}")
 
         box.add_row(" ")
         open_cc_btn = ActionBtn(f"\uf013 {t('ups.open_cc')}", "ui:open_settings:power:ups", tone="neutral")
         box.add_row(f"  {open_cc_btn}")
-        box.add_row(" ")
         return [box]
 
     def on_link(self, uri: str) -> None:
         if uri == "ups:refresh":
+            invalidate_ups_cache()
             self.request_throttled_refresh()

@@ -162,6 +162,26 @@ PRIVILEGED_ACTIONS: dict[str, PrivilegedAction] = {
             ["/usr/bin/gpasswd", "-a", _current_user(), "sys"],
             extra_cmds=[["/usr/bin/gpasswd", "-a", _current_user(), "lp"]],
         ),
+        PrivilegedAction(
+            "power_cpu_tune",
+            [
+                "/usr/bin/cpupower frequency-set -g performance",
+                "/usr/bin/cpupower frequency-set -g schedutil",
+                "/usr/bin/cpupower frequency-set -g powersave",
+                "/usr/bin/cpupower frequency-set -g ondemand",
+                "/usr/bin/cpupower frequency-set -g conservative",
+                "/usr/bin/tee /sys/devices/system/cpu/cpufreq/boost",
+            ],
+            ["/usr/bin/cpupower", "frequency-set", "-g", "schedutil"],
+        ),
+        PrivilegedAction(
+            "power_logind",
+            [
+                "/usr/bin/mkdir -p /etc/systemd/logind.conf.d",
+                "/usr/bin/tee /etc/systemd/logind.conf.d/ncui.conf",
+            ],
+            ["/usr/bin/mkdir", "-p", "/etc/systemd/logind.conf.d"],
+        ),
     )
 }
 

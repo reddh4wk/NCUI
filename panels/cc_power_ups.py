@@ -1,31 +1,20 @@
 #!/usr/bin/env python3
-import json
-import os
-import re
-import time
-from core import probe
-from core.config import (
-    CONFIG,
-    ROOT_DIR,
-    _unique_existing_paths,
-    _update_toml_key_in_section,
-    get_screen_lock_cmd,
-)
 from core.i18n import t
-from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Box
 from panels.cc_engine_power import (
+    _append_ups_status_section,
+    _build_ups_connection_rows,
+    _build_ups_electrical_box,
+    _build_ups_waybar_box,
     _collect_ups_data,
     _feedback_cards,
     _ups_status_badge,
-    _build_ups_connection_rows,
-    _append_ups_adaptive_sections,
 )
 
 
 def _build_ups_standard(cc_panel, canvas: Canvas) -> list:
-    u = _collect_ups_data()
+    u = _collect_ups_data(async_refresh=True, cc_panel=cc_panel)
     cards = _feedback_cards()
 
     conn_box = Box(
@@ -34,17 +23,19 @@ def _build_ups_standard(cc_panel, canvas: Canvas) -> list:
         actions=[_ups_status_badge(u), ActionBtn(t("cc_power.refresh"), "cc_pwr:refresh", tone="neutral")],
         highlighted=False,
     )
-    conn_box.add_row(" ")
     _build_ups_connection_rows(conn_box, u)
-    conn_box.add_row(" ")
     cards.append(conn_box)
 
     tele_title = t("cc_power.ups_tele_target", target=u["target"]) if u["target"] else t("cc_power.ups_tele")
     tele_box = Box(tele_title, icon="\uf240", highlighted=False)
-    tele_box.add_row(" ")
-    _append_ups_adaptive_sections(tele_box, cc_panel, u)
-    tele_box.add_row(" ")
+    _append_ups_status_section(tele_box, cc_panel, u)
     cards.append(tele_box)
+
+    elec_box = _build_ups_electrical_box(u)
+    if elec_box:
+        cards.append(elec_box)
+
+    cards.append(_build_ups_waybar_box(cc_panel, u))
     return cards
 
 
