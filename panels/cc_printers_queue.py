@@ -91,7 +91,6 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
         actions=hdr_acts,
         highlighted=False,
     )
-    q_box.add_row(" ")
 
     mode_pills = (
         f"{SelectPill(t('cc_printers.q_active'), 'cc_prn:q_mode:not-completed', selected=(q_mode == 'not-completed'))} "
@@ -142,18 +141,24 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
                 st_m = Txt(t("cc_printers.pending_lbl"), role="val")
 
             if q_mode == "not-completed":
+                prio_val = int(j.get("priority", 50))
+                top_btn = ActionBtn(
+                    t("cc_printers.top_btn"),
+                    f"cc_prn:job_prio:{jid}:95",
+                    tone="neutral" if prio_val < 95 else "muted",
+                )
                 h_btn = (
                     ActionBtn(t("cc_printers.release_btn"), f"cc_prn:job_hold:{jid}:0", tone="apply", min_chars=hold_w)
                     if j["state"] == "held"
                     else ActionBtn(t("cc_printers.hold_btn"), f"cc_prn:job_hold:{jid}:1", tone="warn", min_chars=hold_w)
                 )
-                acts_cell = f"{h_btn} {ActionBtn(t('common.cancel'), f'cc_prn:job_cancel:{jid}', tone='danger_soft')}"
+                acts_cell = f"{top_btn} {h_btn} {ActionBtn(t('common.cancel'), f'cc_prn:job_cancel:{jid}', tone='danger_soft')}"
             else:
                 acts_cell = ActionBtn(t("cc_printers.reprint_btn"), f"cc_prn:job_reprint:{jid}", tone="neutral")
 
             rows.append([
                 InspectorCell(f"#{j['num']}", f"cc_prn:select_job:{jid}", selected=is_sel),
-                Txt(canvas.truncate_plain(j["title"], 26), role="focus_val"),
+                Txt(canvas.truncate_plain(j["title"], 26), role="focus"),
                 Txt(canvas.truncate_plain(j["printer"], 17), role="schema"),
                 Txt(format_bytes_short(j["size"]), role="val"),
                 st_m,
@@ -169,30 +174,35 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
                 t("cc_printers.col_state"),
                 t("cc_printers.col_actions"),
             ],
-            widths=[8, "flex", 18, 7, 12, 21],
+            widths=[8, "flex", 17, 7, 12, 27],
             rows=rows,
             aligns=["left", "left", "left", "right", "left", "right"],
         )
 
-    q_box.add_row(" ")
     cards.append(q_box)
 
     sel_job = next((j for j in jobs if j["id"] == sel_job_id), None)
     if sel_job:
         jid = sel_job["id"]
         is_active_job = (q_mode == "not-completed")
-        jb_acts = (
-            [ActionBtn(t("common.cancel"), f"cc_prn:job_cancel:{jid}", tone="danger_soft")]
-            if is_active_job
-            else [ActionBtn(t("cc_printers.reprint_btn"), f"cc_prn:job_reprint:{jid}", tone="apply")]
+        auth_needed = is_active_job and (
+            "auth-info-required" in sel_job["reasons"].lower()
+            or "authentication" in sel_job["reasons"].lower()
         )
+        jb_acts = []
+        if auth_needed:
+            jb_acts.append(ActionBtn(t("cc_printers.auth_job_btn"), f"cc_prn:job_auth:{jid}", tone="apply"))
+        if is_active_job:
+            jb_acts.append(ActionBtn(t("common.cancel"), f"cc_prn:job_cancel:{jid}", tone="danger_soft"))
+        else:
+            jb_acts.append(ActionBtn(t("cc_printers.reprint_btn"), f"cc_prn:job_reprint:{jid}", tone="apply"))
+
         jb_box = Box(
             t("cc_printers.job_inspector_title", p0=jid),
             icon="\uf15c",
             actions=jb_acts,
             highlighted=False,
         )
-        jb_box.add_row(" ")
         jb_box.add_kv(t("cc_printers.kv_job_document"), Txt(canvas.truncate_plain(sel_job["title"], 64), role="val"))
 
         meta_parts = [
@@ -206,7 +216,8 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
         jb_box.add_kv(t("cc_printers.kv_job_meta"), "  ·  ".join(meta_parts))
 
         if sel_job["reasons"]:
-            jb_box.add_kv(t("cc_printers.kv_ipp_reasons"), Txt(sel_job["reasons"], role="attention"))
+            auth_b = ActionBtn(t("cc_printers.auth_job_btn"), f"cc_prn:job_auth:{jid}", tone="apply") if auth_needed else ""
+            jb_box.add_kv(t("cc_printers.kv_ipp_reasons"), Txt(sel_job["reasons"], role="attention"), right_markup=auth_b)
 
         if is_active_job:
             cur_pb = _prio_bucket(int(sel_job.get("priority", 50)))
@@ -229,7 +240,6 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
                 )
                 jb_box.add_kv(t("cc_printers.kv_move_printer"), mv_btns)
 
-        jb_box.add_row(" ")
         cards.append(jb_box)
 
     return cards

@@ -2,6 +2,8 @@
 """NC-UI Control Center — Printers & Preferences (`panels/cc_printers_devices.py`)."""
 
 import os
+from urllib.parse import urlparse
+
 from core.i18n import t
 from core.privileges import build_privilege_modal_card
 from ui.canvas import Canvas
@@ -9,6 +11,7 @@ from ui.kit import (
     ActionBtn,
     Badge,
     Box,
+    CyclePill,
     InlineField,
     InlineFilter,
     InspectorCell,
@@ -50,14 +53,16 @@ def _editable_kv_row(
     trigger_uri: str,
     current_val: str,
     placeholder: str,
+    extra_right: str = "",
 ) -> None:
     if get_active_inline_entry() == entry_id:
         fld = InlineField(entry_id, trigger_uri, value=current_val, placeholder=placeholder, width=40)
-        bx.add_kv(key_label, fld)
+        bx.add_kv(key_label, fld, right_markup=extra_right)
     else:
-        val_m = Txt(canvas.truncate_plain(current_val, 52), role="val") if current_val else Txt(t("common.unset"), role="inactive")
+        val_m = Txt(canvas.truncate_plain(current_val, 44 if extra_right else 52), role="val") if current_val else Txt(t("common.unset"), role="inactive")
         edit_b = ActionBtn(t("cc_printers.edit_dots_btn"), trigger_uri, tone="neutral")
-        bx.add_kv(key_label, val_m, right_markup=edit_b)
+        r_m = f"{edit_b} {extra_right}".strip() if extra_right else edit_b
+        bx.add_kv(key_label, val_m, right_markup=r_m)
 
 
 def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
@@ -70,13 +75,25 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
 
     snap = get_printers_snapshot()
     printers = snap["printers"]
+    dev_filter = str(cc_panel.get_state("prn_dev_filter", "") or "")
+    df_low = dev_filter.strip().lower()
+    filtered_printers = [
+        p for p in printers
+        if not df_low
+        or df_low in p["name"].lower()
+        or df_low in p["uri"].lower()
+        or df_low in p["proto"].lower()
+        or df_low in p["description"].lower()
+        or df_low in p["location"].lower()
+        or df_low in p["make_model"].lower()
+    ]
     sel_name = str(cc_panel.get_state("prn_selected", "") or "")
-    valid_names = [p["name"] for p in printers]
+    valid_names = [p["name"] for p in (filtered_printers or printers)]
     if sel_name not in valid_names:
         sel_name = snap["default"] if snap["default"] in valid_names else (valid_names[0] if valid_names else "")
 
     list_box = Box(
-        t("cc_printers.installed_printers_n", p0=len(printers)),
+        t("cc_printers.installed_printers_n", p0=len(filtered_printers)),
         icon="\uf02f",
         actions=[
             ActionBtn(t("cc_printers.add_printer_btn"), "cc_prn:goto_subtab:discovery", tone="apply"),
@@ -84,14 +101,27 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         ],
         highlighted=False,
     )
-    list_box.add_row(" ")
+    if len(printers) > 3 or dev_filter:
+        list_box.add_kv(
+            t("cc_printers.kv_filter_printers"),
+            InlineFilter(
+                "prn_dev_filter_in",
+                dev_filter,
+                t("cc_printers.ph_filter_printers"),
+                "cc_prn:dev_filter_open",
+                clear_uri="cc_prn:dev_filter_clear",
+                width=34,
+            ),
+        )
     if not printers:
         list_box.add_row(f"  {Txt(t('cc_printers.no_printers_hint'), role='inactive')}")
+    elif not filtered_printers:
+        list_box.add_row(f"  {Txt(t('cc_printers.no_printers_match'), role='inactive')}")
     else:
         toggle_w = max(len(t("cc_printers.pause")), len(t("cc_printers.resume")))
         def_w = len(t("cc_printers.set_default"))
         rows = []
-        for p in printers:
+        for p in filtered_printers:
             pname = p["name"]
             is_sel = (pname == sel_name)
             if not p["enabled"]:
@@ -135,7 +165,6 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
             rows=rows,
             aligns=["left", "left", "right", "left", "right"],
         )
-    list_box.add_row(" ")
     cards.append(list_box)
 
     sel = next((p for p in printers if p["name"] == sel_name), None)
@@ -164,71 +193,34 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         actions=insp_acts,
         highlighted=False,
     )
-    insp.add_row(" ")
 
-    drv_str = sel["make_model"] or t("cc_printers.driverless_ipp")
-    if sel["classes"]:
-        drv_str = f"{drv_str}  ·  {t('cc_printers.pool_lbl')}: {', '.join(sel['classes'])}"
-    drv_acts = (
-        f"{ActionBtn(t('cc_printers.change_drv_btn'), f'cc_prn:toggle_drv_edit:{pname}', tone='neutral')} "
-        f"{ActionBtn(t('cc_printers.clone_btn'), f'cc_prn:clone_prompt:{pname}', tone='neutral')}"
+    _editable_kv_row(
+        insp,
+        canvas,
+        t("cc_printers.kv_prn_name"),
+        f"prn_edit_name_{pname}",
+        f"cc_prn:rename_prn:{pname}",
+        pname,
+        t("cc_printers.ph_queue_name"),
+        extra_right=ActionBtn(t("cc_printers.clone_btn"), f"cc_prn:clone_prompt:{pname}", tone="neutral"),
     )
-    insp.add_kv(
-        t("cc_printers.kv_driver_model"),
-        Txt(canvas.truncate_plain(drv_str, 40), role="val"),
-        right_markup=drv_acts,
-    )
-
-    de = get_drv_edit_state()
-    if de["printer"] == pname:
-        drv_modes = [
-            ("everywhere", t("cc_printers.drv_everywhere")),
-            ("db", t("cc_printers.drv_database")),
-            ("raw", t("cc_printers.drv_raw")),
-            ("ppd", t("cc_printers.drv_custom_ppd")),
-        ]
-        m_pills = " ".join(
-            SelectPill(lbl, f"cc_prn:drv_edit_mode:{mid}", selected=(de["mode"] == mid))
-            for mid, lbl in drv_modes
-        )
-        insp.add_kv(t("cc_printers.kv_driver_mode"), m_pills)
-        if de["mode"] == "db":
-            flt = InlineFilter(
-                "prn_drv_edit_in",
-                de["query"],
-                t("cc_printers.ph_search_drv"),
-                "cc_prn:drv_edit_search",
-                clear_uri="cc_prn:drv_edit_clear",
-                width=32,
-            )
-            insp.add_kv(t("cc_printers.kv_search_drv"), flt)
-            for drv_id, lbl in search_cups_drivers(de["query"], limit=4):
-                insp.add_kv(
-                    "",
-                    SelectPill(canvas.truncate_plain(lbl, 56), f"cc_prn:drv_edit_pick:{drv_id}", selected=(de["drv_id"] == drv_id)),
-                )
-        elif de["mode"] == "ppd":
-            ppd_b = ActionBtn(t("cc_printers.browse_ppd_btn"), "cc_prn:drv_edit_ppd", tone="neutral")
-            if de["ppd_path"]:
-                v_ok, _ = validate_ppd_file(de["ppd_path"])
-                st_b = StateBadge(True, t("cc_printers.ppd_valid_badge")) if v_ok else Badge(t("cc_printers.ppd_invalid_badge"), style="crit")
-                insp.add_kv(t("cc_printers.kv_ppd_file"), f"{Txt(os.path.basename(de['ppd_path']), role='val')}  {st_b}", right_markup=ppd_b)
-            else:
-                insp.add_kv(t("cc_printers.kv_ppd_file"), Txt(t("common.unset"), role="inactive"), right_markup=ppd_b)
-        apply_drv_btns = (
-            f"{ActionBtn(t('cc_printers.apply_drv_btn'), f'cc_prn:drv_edit_apply:{pname}', tone='apply')} "
-            f"{ActionBtn(t('common.cancel'), f'cc_prn:toggle_drv_edit:{pname}', tone='neutral')}"
-        )
-        insp.add_kv("", apply_drv_btns)
 
     is_net = sel["proto"] in ("IPP", "IPPS", "TCP:9100", "RAW:9100", "LPD", "SMB", "MDNS")
-    uri_btns = [ActionBtn(t("cc_printers.edit_uri_btn"), f"cc_prn:edit_uri_prompt:{pname}", tone="neutral")]
+    net_host = (urlparse(sel["uri"]).hostname or "") if (is_net and "://" in sel["uri"]) else ""
+    uri_extra = []
     if is_net and sel["uri"]:
-        uri_btns.append(ActionBtn(t("cc_printers.probe_port_btn"), f"cc_prn:probe_uri:{sel['uri']}", tone="neutral"))
-    insp.add_kv(
+        uri_extra.append(ActionBtn(t("cc_printers.probe_port_btn"), f"cc_prn:probe_uri:{sel['uri']}", tone="neutral"))
+    if net_host:
+        uri_extra.append(ActionBtn(t("cc_printers.open_addr_btn"), f"cc_prn:open_addr:{pname}", tone="neutral"))
+    _editable_kv_row(
+        insp,
+        canvas,
         t("cc_printers.kv_device_uri"),
-        Txt(canvas.truncate_plain(sel["uri"] or t("common.unset"), 46), role="val" if sel["uri"] else "inactive"),
-        right_markup=" ".join(uri_btns),
+        f"prn_edit_uri_{pname}",
+        f"cc_prn:edit_uri:{pname}",
+        sel["uri"],
+        "ipp://10.10.0.45:631/ipp/print",
+        extra_right=" ".join(uri_extra),
     )
 
     _editable_kv_row(
@@ -254,16 +246,68 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         f"{SelectPill(t('cc_printers.accepting_on'), f'cc_prn:accept_prn:{pname}:1', selected=sel['accepting'])} "
         f"{SelectPill(t('cc_printers.accepting_off'), f'cc_prn:accept_prn:{pname}:0', selected=not sel['accepting'])}"
     )
-    insp.add_kv(t("cc_printers.kv_accepting"), acc_pills)
-
     shr_pills = (
         f"{SelectPill(t('cc_printers.shared_on'), f'cc_prn:share_prn:{pname}:1', selected=sel['shared'])} "
         f"{SelectPill(t('cc_printers.shared_off'), f'cc_prn:share_prn:{pname}:0', selected=not sel['shared'])}"
     )
-    insp.add_kv(t("cc_printers.kv_lan_sharing"), shr_pills)
+    insp.add_kv(t("cc_printers.kv_queue_sharing"), f"{acc_pills}  {shr_pills}")
 
     if sel["alerts"]:
-        insp.add_kv(t("cc_printers.kv_alerts"), Txt(sel["alerts"], role="attention"))
+        rec_b = ActionBtn(t("cc_printers.restart_prn_btn"), f"cc_prn:restart_prn:{pname}", tone="apply")
+        insp.add_kv(t("cc_printers.kv_alerts"), Txt(sel["alerts"], role="attention"), right_markup=rec_b)
+
+    # --- Collapsible 0: Driver / PPD Configuration ---
+    drv_str = sel["make_model"] or t("cc_printers.driverless_ipp")
+    if sel["classes"]:
+        drv_str = f"{drv_str}  ·  {t('cc_printers.pool_lbl')}: {', '.join(sel['classes'])}"
+
+    def _build_driver_switch(bx: Box) -> None:
+        de_raw = get_drv_edit_state()
+        de = de_raw if de_raw["printer"] == pname else {"printer": pname, "mode": "everywhere", "drv_id": "everywhere", "query": "", "ppd_path": ""}
+        bx.add_kv(t("cc_printers.kv_driver_model"), Txt(canvas.truncate_plain(drv_str, 54), role="val"))
+        drv_modes = [
+            ("everywhere", t("cc_printers.drv_everywhere")),
+            ("db", t("cc_printers.drv_database")),
+            ("raw", t("cc_printers.drv_raw")),
+            ("ppd", t("cc_printers.drv_custom_ppd")),
+        ]
+        m_pills = " ".join(
+            SelectPill(lbl, f"cc_prn:drv_edit_mode:{mid}", selected=(de["mode"] == mid))
+            for mid, lbl in drv_modes
+        )
+        bx.add_kv(t("cc_printers.kv_driver_mode"), m_pills)
+        if de["mode"] == "db":
+            flt = InlineFilter(
+                "prn_drv_edit_in",
+                de["query"],
+                t("cc_printers.ph_search_drv"),
+                "cc_prn:drv_edit_search",
+                clear_uri="cc_prn:drv_edit_clear",
+                width=32,
+            )
+            bx.add_kv(t("cc_printers.kv_search_drv"), flt)
+            for drv_id, lbl in search_cups_drivers(de["query"], limit=4):
+                bx.add_kv(
+                    "",
+                    SelectPill(canvas.truncate_plain(lbl, 56), f"cc_prn:drv_edit_pick:{drv_id}", selected=(de["drv_id"] == drv_id)),
+                )
+        elif de["mode"] == "ppd":
+            ppd_b = ActionBtn(t("cc_printers.browse_ppd_btn"), "cc_prn:drv_edit_ppd", tone="neutral")
+            if de["ppd_path"]:
+                v_ok, _ = validate_ppd_file(de["ppd_path"])
+                st_b = StateBadge(True, t("cc_printers.ppd_valid_badge")) if v_ok else Badge(t("cc_printers.ppd_invalid_badge"), style="crit")
+                bx.add_kv(t("cc_printers.kv_ppd_file"), f"{Txt(os.path.basename(de['ppd_path']), role='val')}  {st_b}", right_markup=ppd_b)
+            else:
+                bx.add_kv(t("cc_printers.kv_ppd_file"), Txt(t("common.unset"), role="inactive"), right_markup=ppd_b)
+        bx.add_kv("", ActionBtn(t("cc_printers.apply_drv_btn"), f"cc_prn:drv_edit_apply:{pname}", tone="apply"))
+
+    insp.add_collapsible(
+        cc_panel,
+        "prn_sec_driver",
+        t("cc_printers.sec_driver_switch"),
+        _build_driver_switch,
+        summary=canvas.truncate_plain(drv_str, 64),
+    )
 
     # --- Collapsible 1: Printing Preferences & Media Defaults ---
     ppd = opts["ppd"]
@@ -373,9 +417,31 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         rst_b = ActionBtn(t("cc_printers.reset_user_opts_btn"), f"cc_prn:reset_user_opts:{pname}", tone="warn")
         bx.add_kv(t("cc_printers.opt_banner"), ban_p, right_markup=rst_b)
 
-        for ext in opts["extra"]:
-            ch = [(c, humanize_ppd_choice(ext["key"], c)) for c in ext["choices"][:6]]
-            bx.add_kv(canvas.truncate_plain(ext["label"], 20), _pill_row(pname, ext["key"], ext["current"], ch))
+        extra_opts = opts["extra"]
+        extra_groups = opts.get("extra_groups", [])
+        if extra_opts:
+            bx.add_section(t("cc_printers.sec_ppd_extra_opts"))
+            cur_grp = str(cc_panel.get_state("prn_ppd_group", "") or "")
+            valid_gids = [g[0] for g in extra_groups]
+            if cur_grp not in valid_gids and valid_gids:
+                cur_grp = valid_gids[0]
+            if len(extra_groups) > 1:
+                grp_pills = " ".join(
+                    SelectPill(canvas.truncate_plain(glbl, 18), f"cc_prn:ppd_grp:{gid}", selected=(gid == cur_grp))
+                    for gid, glbl in extra_groups
+                )
+                bx.add_kv("", grp_pills)
+            shown_extras = [e for e in extra_opts if not cur_grp or e.get("group") == cur_grp]
+            for ext in shown_extras:
+                if len(ext["choices"]) <= 6:
+                    ch = [(c, humanize_ppd_choice(ext["key"], c)) for c in ext["choices"]]
+                    bx.add_kv(canvas.truncate_plain(ext["label"], 20), _pill_row(pname, ext["key"], ext["current"], ch))
+                else:
+                    cur_lbl = humanize_ppd_choice(ext["key"], ext["current"])
+                    bx.add_kv(
+                        canvas.truncate_plain(ext["label"], 20),
+                        CyclePill(canvas.truncate_plain(cur_lbl, 28), f"cc_prn:cycle_opt:{pname}:{ext['key']}", active=True),
+                    )
 
     insp.add_collapsible(
         cc_panel,
@@ -515,10 +581,10 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         "prn_sec_supplies",
         t("cc_printers.sec_supplies_maint"),
         _build_supplies,
+        requires=["ipptool"],
         summary=sup_summary,
     )
 
-    insp.add_row(" ")
     cards.append(insp)
     return cards
 

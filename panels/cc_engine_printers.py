@@ -19,7 +19,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from core import probe
+from core import log, probe
 from core.completion import rank_candidates
 from core.i18n import t
 from core.privileges import execute_privileged, get_privileged_action, request_privilege_modal
@@ -45,8 +45,15 @@ _INSTALL_RUNNING = ""
 _PRINTABLE_EXTS = (".pdf", ".ps", ".eps", ".txt", ".png", ".jpg", ".jpeg", ".svg")
 _PPD_EXTS = (".ppd", ".ppd.gz")
 _QUEUE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_OPT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_PKG_NAME_RE = re.compile(r"^[a-z0-9@._+-]{1,128}$")
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}-\d{1,12}$")
 _PAGE_RANGE_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
-_IPP_JOBS_TEST_PATH = "/tmp/.ncui_ipp_jobs.test"
+_IPP_JOBS_TEST_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache"),
+    "nc-ui",
+    "ncui_ipp_jobs.test",
+)
 
 _IPP_JOBS_TEST_SPEC = """{
     NAME "NC-UI Get Jobs"
@@ -137,6 +144,10 @@ def invalidate_printers_cache(keep_drivers: bool = True) -> None:
     _LPOPT_META_CACHE.clear()
     if drv is not None:
         _CACHE["drivers_list"] = drv
+    try:
+        os.remove("/tmp/nc_printers_bar_cache.json")
+    except OSError:
+        pass
 
 
 def _set_fb(ok: bool, msg: str) -> None:
@@ -273,7 +284,6 @@ def build_offline_spooler_card(daemon: dict) -> Box:
         ],
         highlighted=False,
     )
-    sp_box.add_row(" ")
     sp_box.add_kv(
         t("cc_printers.cups_package"),
         StateBadge(daemon["cups_installed"], t("cc_printers.installed"), t("cc_printers.missing_bin")),
@@ -287,7 +297,6 @@ def build_offline_spooler_card(daemon: dict) -> Box:
         StateBadge(daemon["avahi_active"], t("common.active"), t("cc_printers.stopped")),
     )
     sp_box.add_row(f"  {Txt(t('cc_printers.spooler_offline_hint'), role='attention')}")
-    sp_box.add_row(" ")
     return sp_box
 
 
@@ -377,10 +386,16 @@ def humanize_ppd_choice(opt_key: str, raw_val: str) -> str:
 
 
 def _ensure_ipp_jobs_test_file() -> str:
+    if os.path.islink(_IPP_JOBS_TEST_PATH):
+        return ""
     if not os.path.isfile(_IPP_JOBS_TEST_PATH):
         try:
-            with open(_IPP_JOBS_TEST_PATH, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(_IPP_JOBS_TEST_PATH), mode=0o700, exist_ok=True)
+            fd = os.open(_IPP_JOBS_TEST_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(_IPP_JOBS_TEST_SPEC)
+        except FileExistsError:
+            pass
         except OSError:
             return ""
     return _IPP_JOBS_TEST_PATH
@@ -674,17 +689,45 @@ def get_printer_classes() -> list[dict]:
     return list(get_printers_snapshot()["classes"])
 
 
+_PRINTERS_BAR_CACHE = "/tmp/nc_printers_bar_cache.json"
+
+
 def get_printers_bar_summary(include_jobs: bool = False) -> dict:
     """Riepilogo rapido per l'indicatore Waybar a comparsa automatica `custom/printers`."""
     bar_mode = str(STATE.get("waybar", "printers_bar_mode", "auto") or "auto").lower()
     if bar_mode not in ("auto", "always"):
         bar_mode = "auto"
 
-    daemon = get_cups_daemon_state()
+    sock_exists = os.path.exists("/run/cups/cups.sock")
+    if not include_jobs and os.path.exists(_PRINTERS_BAR_CACHE):
+        try:
+            with open(_PRINTERS_BAR_CACHE, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if (
+                isinstance(cached, dict)
+                and (time.time() - float(cached.get("ts", 0.0))) < 4.0
+                and cached.get("mode") == bar_mode
+                and cached.get("sock_exists") == sock_exists
+                and "summary" in cached
+            ):
+                return cached["summary"]
+        except Exception:
+            pass
+
+    if not include_jobs:
+        if not sock_exists:
+            scheduler_up = False
+        else:
+            sched_ok, sched_out, _ = _run_c(["lpstat", "-r"], timeout=0.6) if probe.has_bin("lpstat") else (False, "", "")
+            scheduler_up = bool(sched_ok and "is running" in sched_out.lower())
+        daemon = {"scheduler_up": scheduler_up}
+    else:
+        daemon = get_cups_daemon_state()
+
     empty_snap = {"default": "", "printers": [], "classes": [], "has_pdf_queue": False}
     if not daemon["scheduler_up"]:
         is_vis = (bar_mode == "always")
-        return {
+        res = {
             "visible": is_vis,
             "mode": bar_mode,
             "css": "offline" if is_vis else "module-nc-empty",
@@ -696,6 +739,13 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
             "held_count": 0,
             "total_jobs": 0,
         }
+        if not include_jobs:
+            try:
+                with open(_PRINTERS_BAR_CACHE, "w", encoding="utf-8") as f:
+                    json.dump({"ts": time.time(), "mode": bar_mode, "sock_exists": sock_exists, "summary": res}, f)
+            except OSError:
+                pass
+        return res
 
     snap = get_printers_snapshot()
     printers = snap["printers"]
@@ -725,7 +775,7 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
     else:
         css, count_txt, is_vis = "module-nc-empty", "", False
 
-    return {
+    res = {
         "visible": is_vis,
         "mode": bar_mode,
         "css": css,
@@ -737,11 +787,51 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
         "held_count": held_count,
         "total_jobs": total_jobs,
     }
+    if not include_jobs:
+        try:
+            with open(_PRINTERS_BAR_CACHE, "w", encoding="utf-8") as f:
+                json.dump({"ts": time.time(), "mode": bar_mode, "sock_exists": sock_exists, "summary": res}, f)
+        except OSError:
+            pass
+    return res
+
+
+def _parse_ppd_option_groups(printer_name: str) -> dict[str, tuple[str, str]]:
+    ppd_file = f"/etc/cups/ppd/{printer_name}.ppd"
+    groups: dict[str, tuple[str, str]] = {}
+    if not os.path.isfile(ppd_file):
+        return groups
+    cur_gid = "General"
+    cur_glbl = t("cc_printers.ppd_grp_general")
+    try:
+        with open(ppd_file, "r", encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                s = ln.strip()
+                if s.startswith("*OpenGroup:"):
+                    spec = s.split(":", 1)[1].strip()
+                    if "/" in spec:
+                        gid, glbl = spec.split("/", 1)
+                        cur_gid = re.sub(r"[^A-Za-z0-9_-]+", "_", gid.strip()) or "General"
+                        cur_glbl = glbl.strip() or cur_gid
+                    else:
+                        cur_gid = re.sub(r"[^A-Za-z0-9_-]+", "_", spec) or "General"
+                        cur_glbl = spec or cur_gid
+                elif s.startswith("*CloseGroup"):
+                    cur_gid = "General"
+                    cur_glbl = t("cc_printers.ppd_grp_general")
+                elif s.startswith("*OpenUI *"):
+                    head = s[len("*OpenUI *") :].split(":", 1)[0]
+                    opt_k = head.split("/", 1)[0].strip()
+                    if opt_k:
+                        groups[opt_k] = (cur_gid, cur_glbl)
+    except OSError:
+        pass
+    return groups
 
 
 def get_printer_options(printer_name: str) -> dict:
     if not printer_name or not get_cups_daemon_state()["scheduler_up"]:
-        return {"ppd": {}, "job": {}, "extra": []}
+        return {"ppd": {}, "job": {}, "extra": [], "extra_groups": []}
 
     def _load() -> dict:
         ppd_opts: dict[str, dict] = {}
@@ -787,8 +877,23 @@ def get_printer_options(printer_name: str) -> dict:
                     job_opts[k] = v.split(",", 1)[0] if k == "job-sheets" else v
 
         known_keys = {"PageSize", "Duplex", "ColorModel", "cupsPrintQuality", "Resolution", "InputSlot", "MediaType"}
-        extra = [v for k, v in ppd_opts.items() if k not in known_keys and 2 <= len(v["choices"]) <= 8][:8]
-        return {"ppd": ppd_opts, "job": job_opts, "extra": extra}
+        grp_map = _parse_ppd_option_groups(printer_name)
+        def_grp = ("General", t("cc_printers.ppd_grp_general"))
+        extra: list[dict] = []
+        extra_groups: list[tuple[str, str]] = []
+        seen_grps: set[str] = set()
+        for k, v in ppd_opts.items():
+            if k in known_keys or not v["choices"]:
+                continue
+            gid, glbl = grp_map.get(k, def_grp)
+            item = dict(v)
+            item["group"] = gid
+            item["group_label"] = glbl
+            extra.append(item)
+            if gid not in seen_grps:
+                seen_grps.add(gid)
+                extra_groups.append((gid, glbl))
+        return {"ppd": ppd_opts, "job": job_opts, "extra": extra, "extra_groups": extra_groups}
 
     return _cached(f"opts:{printer_name}", 2.5, _load)
 
@@ -2178,12 +2283,62 @@ def _exec_admin(cc_panel, cmd: list[str], ok_msg: str, try_direct: bool = True, 
             cc_panel.shell.refresh_view()
         return
 
-    _PENDING_SUDO["cmd"] = list(cmd)
+    _PENDING_SUDO.clear()
+    _PENDING_SUDO["cmds"] = [list(cmd)]
     _PENDING_SUDO["ok_msg"] = ok_msg
     _PENDING_SUDO["after_fn"] = after_fn
     cc_panel.request_prompt(
         "cc_prn_sudo",
         t("cc_printers.prompt_sudo_pwd", p0=" ".join(cmd[:3])),
+        "",
+        secret=True,
+        title=t("cc_printers.prompt_sudo_title"),
+        required=True,
+    )
+
+
+def _exec_admin_batch(cc_panel, cmds: list[list[str]], ok_msg: str, try_direct: bool = True, after_fn=None) -> None:
+    if not cmds:
+        return
+    if len(cmds) == 1:
+        _exec_admin(cc_panel, cmds[0], ok_msg, try_direct=try_direct, after_fn=after_fn)
+        return
+
+    remaining = [list(c) for c in cmds]
+    while remaining:
+        cmd = remaining[0]
+        if try_direct:
+            ok, out, err = _run_c(cmd, timeout=5.0)
+            if ok:
+                remaining.pop(0)
+                continue
+            if not _needs_elevation(err, out):
+                _set_fb(False, (err or out or t("cc_printers.err_cmd_failed"))[:110])
+                if cc_panel and cc_panel.shell:
+                    cc_panel.shell.refresh_view()
+                return
+        ok_s, out_s, err_s = _run_c(["sudo", "-n"] + list(cmd), timeout=5.0)
+        if ok_s:
+            remaining.pop(0)
+            continue
+        break
+
+    if not remaining:
+        invalidate_printers_cache()
+        if callable(after_fn):
+            after_fn()
+        _set_fb(True, ok_msg)
+        if cc_panel and cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return
+
+    _PENDING_SUDO.clear()
+    _PENDING_SUDO["cmds"] = remaining
+    _PENDING_SUDO["ok_msg"] = ok_msg
+    _PENDING_SUDO["after_fn"] = after_fn
+    cc_panel.request_prompt(
+        "cc_prn_sudo",
+        t("cc_printers.prompt_sudo_pwd", p0=" ".join(remaining[0][:3])),
         "",
         secret=True,
         title=t("cc_printers.prompt_sudo_title"),
@@ -2624,6 +2779,27 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
             shell.refresh_view()
         return True
 
+    if act == "dev_filter_open":
+        cur_q = str(cc_panel.get_state("prn_dev_filter", "") or "")
+        start_inline_input(
+            "prn_dev_filter_in",
+            shell=shell,
+            trigger_uri=uri,
+            initial_text=cur_q,
+            max_len=40,
+            strip_leading_hash=False,
+            uppercase=False,
+            on_change=lambda v: cc_panel.set_state("prn_dev_filter", v),
+            on_commit=lambda v: cc_panel.set_state("prn_dev_filter", v),
+        )
+        return True
+
+    if act == "dev_filter_clear":
+        cc_panel.set_state("prn_dev_filter", "")
+        if shell:
+            shell.refresh_view()
+        return True
+
     if act == "select_job" and tail:
         cc_panel.set_state("prn_selected_job", tail)
         if shell:
@@ -2720,6 +2896,127 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
         _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-x", tail], t("cc_printers.fb_prn_deleted", p0=tail))
         return True
 
+    if act == "restart_prn" and tail and _QUEUE_NAME_RE.match(tail):
+        _exec_admin_batch(
+            cc_panel,
+            [["/usr/bin/cupsenable", tail], ["/usr/bin/cupsaccept", tail]],
+            t("cc_printers.fb_prn_restarted", p0=tail),
+        )
+        return True
+
+    if act == "open_addr" and tail:
+        snap = get_printers_snapshot()
+        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
+        u = str(prn["uri"] if prn else "").strip()
+        parsed = urlparse(u) if "://" in u else None
+        host = (parsed.hostname or "").strip() if parsed else ""
+        if not host:
+            _set_fb(False, t("cc_printers.err_no_prn_addr"))
+        else:
+            scheme = "https" if (parsed and parsed.scheme in ("ipps", "https")) else "http"
+            web_url = f"{scheme}://{host}"
+            probe.spawn_bg(["xdg-open", web_url])
+            _set_fb(True, t("cc_printers.fb_opened_prn_web", p0=web_url))
+        if shell:
+            shell.refresh_view()
+        return True
+
+    if act == "edit_uri" and tail and _QUEUE_NAME_RE.match(tail):
+        snap = get_printers_snapshot()
+        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
+        cur_u = prn["uri"] if prn else "ipp://"
+
+        def _commit_uri(v: str, p_name=tail):
+            nv = v.strip()
+            _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-p", p_name, "-E", "-v", nv], t("cc_printers.fb_uri_updated", p0=p_name))
+
+        start_inline_input(
+            f"prn_edit_uri_{tail}",
+            shell=shell,
+            trigger_uri=uri,
+            initial_text=cur_u,
+            max_len=128,
+            strip_leading_hash=False,
+            uppercase=False,
+            validator=lambda v: (("://" in v.strip() and len(v.strip()) >= 6), t("cc_printers.err_bad_uri")),
+            on_commit=_commit_uri,
+        )
+        return True
+
+    if act == "rename_prn" and tail and _QUEUE_NAME_RE.match(tail):
+        snap = get_printers_snapshot()
+        existing = {p["name"] for p in snap["printers"]}
+
+        def _val_rename(v: str, old_name=tail, names=existing):
+            nv = v.strip()
+            if not _QUEUE_NAME_RE.match(nv):
+                return (False, t("cc_printers.err_bad_queue_name"))
+            if nv != old_name and nv in names:
+                return (False, t("cc_printers.err_queue_exists", p0=nv))
+            return (True, "")
+
+        def _commit_rename(v: str, old_name=tail):
+            new_name = v.strip()
+            if not new_name or new_name == old_name:
+                return
+            cur_snap = get_printers_snapshot()
+            src = next((p for p in cur_snap["printers"] if p["name"] == old_name), None)
+            if not src or not src["uri"]:
+                _set_fb(False, t("cc_printers.err_cmd_failed"))
+                if shell:
+                    shell.refresh_view()
+                return
+            src_ppd = f"/etc/cups/ppd/{old_name}.ppd"
+            drv_args = ["-P", src_ppd] if os.path.isfile(src_ppd) else (["-m", "raw"] if src["proto"] == "LOCAL" else ["-m", "everywhere"])
+            add_cmd = ["/usr/bin/lpadmin", "-p", new_name, "-E", "-v", src["uri"]] + drv_args
+            if src["description"]:
+                add_cmd += ["-D", src["description"]]
+            if src["location"]:
+                add_cmd += ["-L", src["location"]]
+            add_cmd += [
+                "-o",
+                f"printer-is-shared={'true' if src['shared'] else 'false'}",
+                "-o",
+                f"printer-error-policy={src['error_policy'] or 'retry-job'}",
+            ]
+            cmds = [add_cmd]
+            if src["accepting"]:
+                cmds.append(["/usr/bin/cupsaccept", new_name])
+            else:
+                cmds.append(["/usr/bin/cupsreject", new_name])
+            if not src["enabled"]:
+                cmds.append(["/usr/bin/cupsdisable", new_name])
+            if get_print_jobs("not-completed", printer=old_name):
+                cmds.append(["/usr/bin/lpmove", old_name, new_name])
+            if src["is_default"]:
+                cmds.append(["/usr/bin/lpadmin", "-d", new_name])
+            cmds.append(["/usr/bin/lpadmin", "-x", old_name])
+
+            def _after_rename():
+                if src["is_default"]:
+                    _run_c(["lpoptions", "-d", new_name], timeout=1.5)
+                cc_panel.set_state("prn_selected", new_name)
+
+            _exec_admin_batch(
+                cc_panel,
+                cmds,
+                t("cc_printers.fb_prn_renamed", p0=old_name, p1=new_name),
+                after_fn=_after_rename,
+            )
+
+        start_inline_input(
+            f"prn_edit_name_{tail}",
+            shell=shell,
+            trigger_uri=uri,
+            initial_text=tail,
+            max_len=64,
+            strip_leading_hash=False,
+            uppercase=False,
+            validator=_val_rename,
+            on_commit=_commit_rename,
+        )
+        return True
+
     if act == "edit_uri_prompt" and tail:
         snap = get_printers_snapshot()
         prn = next((p for p in snap["printers"] if p["name"] == tail), None)
@@ -2756,7 +3053,10 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
         return True
 
     if act == "drv_edit_mode" and arg1 in ("everywhere", "db", "raw", "ppd"):
+        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
         kw = {"mode": arg1}
+        if sel_p:
+            kw["printer"] = sel_p
         if arg1 == "everywhere":
             kw["drv_id"] = "everywhere"
         elif arg1 == "raw":
@@ -2770,6 +3070,9 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
 
     if act == "drv_edit_search":
         de = get_drv_edit_state()
+        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
+        if sel_p and not de["printer"]:
+            update_drv_edit_state(printer=sel_p)
         start_inline_input(
             "prn_drv_edit_in",
             shell=shell,
@@ -2790,13 +3093,20 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
         return True
 
     if act == "drv_edit_pick" and tail:
-        update_drv_edit_state(mode="db", drv_id=tail)
+        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
+        kw = {"mode": "db", "drv_id": tail}
+        if sel_p:
+            kw["printer"] = sel_p
+        update_drv_edit_state(**kw)
         if shell:
             shell.refresh_view()
         return True
 
     if act == "drv_edit_ppd":
         de = get_drv_edit_state()
+        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
+        if sel_p and not de["printer"]:
+            update_drv_edit_state(printer=sel_p)
         cc_panel.request_prompt(
             "cc_prn_edit_ppd",
             t("cc_printers.prompt_ppd_path"),
@@ -2966,8 +3276,46 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
         return True
 
     # --- Printing Preferences & PPD / IPP System + User Sync ---
+    if act == "ppd_grp" and tail:
+        cc_panel.set_state("prn_ppd_group", tail)
+        if shell:
+            shell.refresh_view()
+        return True
+
+    if act == "cycle_opt" and arg1 and arg2:
+        opt_k = arg2.strip()
+        if not _QUEUE_NAME_RE.match(arg1) or not _OPT_TOKEN_RE.match(opt_k):
+            _set_fb(False, t("cc_printers.err_cmd_failed"))
+            if shell:
+                shell.refresh_view()
+            return True
+        opts = get_printer_options(arg1)
+        meta = opts["ppd"].get(opt_k)
+        if not meta or not meta.get("choices"):
+            return True
+        ch_list = meta["choices"]
+        cur = meta.get("current", ch_list[0])
+        nxt = ch_list[(ch_list.index(cur) + 1) % len(ch_list)] if cur in ch_list else ch_list[0]
+        if not _OPT_TOKEN_RE.match(nxt):
+            _set_fb(False, t("cc_printers.err_cmd_failed"))
+            if shell:
+                shell.refresh_view()
+            return True
+        _run_c(["lpoptions", "-p", arg1, "-o", f"{opt_k}={nxt}"], timeout=1.5)
+        _exec_admin(
+            cc_panel,
+            ["/usr/bin/lpadmin", "-p", arg1, "-o", f"{opt_k}-default={nxt}"],
+            t("cc_printers.fb_opt_saved", p0=opt_k, p1=humanize_ppd_choice(opt_k, nxt)),
+        )
+        return True
+
     if act == "set_opt" and arg1 and "=" in arg2:
         opt_k, opt_v = arg2.split("=", 1)
+        if not _QUEUE_NAME_RE.match(arg1) or not _OPT_TOKEN_RE.match(opt_k) or not _OPT_TOKEN_RE.match(opt_v):
+            _set_fb(False, t("cc_printers.err_cmd_failed"))
+            if shell:
+                shell.refresh_view()
+            return True
         _run_c(["lpoptions", "-p", arg1, "-o", f"{opt_k}={opt_v}"], timeout=1.5)
         if opt_k in _LPADMIN_DEFAULT_KEYS or not opt_k.startswith("job-"):
             _exec_admin(
@@ -3047,6 +3395,30 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
 
     if act == "job_move" and arg1 and arg2:
         _exec_admin(cc_panel, ["/usr/bin/lpmove", arg1, arg2], t("cc_printers.fb_job_moved", p0=arg1, p1=arg2))
+        return True
+
+    if act == "job_auth" and tail and _JOB_ID_RE.match(tail):
+        cc_panel.request_prompt(
+            f"cc_prn_job_auth_user|{tail}",
+            t("cc_printers.prompt_job_auth_user", p0=tail),
+            _current_user(),
+            secret=False,
+            title=t("cc_printers.prompt_job_auth_user_title", p0=tail),
+            required=True,
+        )
+        return True
+
+    if act == "smb_auth_prompt":
+        d = get_add_draft()
+        host_hint = d["host"] or (urlparse(d["uri"]).hostname or "") if "://" in d["uri"] else d["host"]
+        cc_panel.request_prompt(
+            f"cc_prn_smb_user|{host_hint or 'SMB'}",
+            t("cc_printers.prompt_smb_user", p0=host_hint or "SMB"),
+            _current_user(),
+            secret=False,
+            title=t("cc_printers.prompt_smb_user_title"),
+            required=True,
+        )
         return True
 
     if act == "purge_queue":
@@ -3369,6 +3741,17 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
 
     if act in ("install_drv_pkg", "install_drv_pkg_force") and tail:
         pkg = tail.strip()
+        cached_pkgs = {
+            c.get("pkg")
+            for _ts, pkg_list in _AUTO_DRV_PKG_CACHE.values()
+            for c in (pkg_list or ())
+            if isinstance(c, dict) and c.get("pkg")
+        }
+        if not _PKG_NAME_RE.match(pkg) or pkg not in cached_pkgs:
+            _set_fb(False, t("cc_printers.err_invalid_pkg", p0=pkg))
+            if shell:
+                shell.refresh_view()
+            return True
         if act == "install_drv_pkg":
             auto_items = get_auto_found_drivers(cc_panel, get_add_draft()).get("items", ())
             matched_it = next((c for c in auto_items if c.get("pkg") == pkg), None)
@@ -3489,29 +3872,121 @@ def handle_cc_printers_prompt(cc_panel, action_id: str, text: str) -> bool:
     shell = getattr(cc_panel, "shell", None)
 
     if action_id == "cc_prn_sudo":
-        cmd = _PENDING_SUDO.get("cmd")
+        cmds = _PENDING_SUDO.get("cmds") or ([_PENDING_SUDO["cmd"]] if _PENDING_SUDO.get("cmd") else [])
         ok_msg = str(_PENDING_SUDO.get("ok_msg", t("common.ok")))
         after_fn = _PENDING_SUDO.get("after_fn")
         _PENDING_SUDO.clear()
-        if not cmd or not val:
+        if not cmds or not val:
             return True
-        try:
-            res = subprocess.run(
-                ["sudo", "-k", "-S", "-p", ""] + list(cmd),
-                input=f"{val}\n",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=12.0,
-            )
-            ok = res.returncode == 0
-            out = (res.stdout or "").strip()
-        except Exception as e:
-            ok, out = False, str(e)
+        ok = True
+        out = ""
+        for cmd in cmds:
+            try:
+                res = subprocess.run(
+                    ["sudo", "-k", "-S", "-p", ""] + list(cmd),
+                    input=f"{val}\n",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=12.0,
+                )
+                ok = res.returncode == 0
+                out = (res.stdout or "").strip()
+            except Exception as e:
+                ok, out = False, str(e)
+            if not ok:
+                break
         invalidate_printers_cache()
         if ok and callable(after_fn):
             after_fn()
         _set_fb(ok, ok_msg if ok else (out or t("cc_printers.err_cmd_failed"))[:110])
+        if shell:
+            shell.refresh_view()
+        return True
+
+    if action_id.startswith("cc_prn_job_auth_user|"):
+        jid = action_id.split("|", 1)[1]
+        if not _JOB_ID_RE.match(jid) or not val:
+            return True
+        cc_panel.request_prompt(
+            f"cc_prn_job_auth_pass|{jid}|{val}",
+            t("cc_printers.prompt_job_auth_pass", p0=val, p1=jid),
+            "",
+            secret=True,
+            title=t("cc_printers.prompt_job_auth_pass_title", p0=jid),
+            required=True,
+        )
+        return True
+
+    if action_id.startswith("cc_prn_job_auth_pass|"):
+        parts = action_id.split("|", 2)
+        if len(parts) != 3 or not val:
+            return True
+        jid, auth_user = parts[1], parts[2]
+        if not _JOB_ID_RE.match(jid):
+            return True
+        _exec_admin(
+            cc_panel,
+            ["/usr/bin/lp", "-i", jid, "-H", "resume", "-o", f"auth-info={auth_user},{val}"],
+            t("cc_printers.fb_job_authenticated", p0=jid),
+        )
+        return True
+
+    if action_id.startswith("cc_prn_smb_user|"):
+        host_hint = action_id.split("|", 1)[1]
+        if not val:
+            return True
+        cc_panel.request_prompt(
+            f"cc_prn_smb_pass|{host_hint}|{val}",
+            t("cc_printers.prompt_smb_pass", p0=val, p1=host_hint),
+            "",
+            secret=True,
+            title=t("cc_printers.prompt_smb_pass_title"),
+            required=True,
+        )
+        return True
+
+    if action_id.startswith("cc_prn_smb_pass|"):
+        parts = action_id.split("|", 2)
+        if len(parts) != 3 or not val:
+            return True
+        host_hint, smb_user = parts[1], parts[2]
+        d = get_add_draft()
+        if host_hint and host_hint != "SMB" and probe.has_bin("smbclient"):
+            auth_fd, auth_path = tempfile.mkstemp(prefix="ncui_smb_", dir=os.path.dirname(_IPP_JOBS_TEST_PATH) if os.path.isdir(os.path.dirname(_IPP_JOBS_TEST_PATH)) else None)
+            shares: list[str] = []
+            try:
+                os.fchmod(auth_fd, 0o600)
+                with os.fdopen(auth_fd, "w", encoding="utf-8") as af:
+                    if "\\" in smb_user:
+                        dom, usr = smb_user.split("\\", 1)
+                        af.write(f"username={usr}\npassword={val}\ndomain={dom}\n")
+                    else:
+                        af.write(f"username={smb_user}\npassword={val}\n")
+                ok_l, out_l, err_l = _run_c(["smbclient", "-L", host_hint, "-A", auth_path, "-g"], timeout=3.5)
+                if ok_l and out_l:
+                    for ln in out_l.splitlines():
+                        cols = ln.split("|")
+                        if len(cols) >= 2 and cols[0].strip().lower() == "printer":
+                            shares.append(cols[1].strip())
+            finally:
+                try:
+                    os.unlink(auth_path)
+                except OSError:
+                    pass
+            if shares:
+                first_u = f"smb://{smb_user}:{val}@{host_hint}/{shares[0]}"
+                update_add_draft(proto="smb", host=host_hint, uri=first_u, name=_sanitized_queue_name(shares[0], f"SMB_{host_hint}"))
+                _set_fb(True, t("cc_printers.fb_smb_shares_found", p0=host_hint, p1=len(shares)))
+                if shell:
+                    shell.refresh_view()
+                return True
+        if d["uri"].startswith("smb://"):
+            raw_rest = d["uri"][len("smb://") :].split("@", 1)[-1]
+            update_add_draft(uri=f"smb://{smb_user}:{val}@{raw_rest}")
+        else:
+            update_add_draft(proto="smb", uri=f"smb://{smb_user}:{val}@{host_hint}/Printer")
+        _set_fb(True, t("cc_printers.fb_smb_auth_saved", p0=host_hint))
         if shell:
             shell.refresh_view()
         return True

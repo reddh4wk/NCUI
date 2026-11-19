@@ -21,7 +21,6 @@ from ui.kit import (
     StateBadge,
     Txt,
     get_active_inline_entry,
-    get_semantic_palette,
     register_scroll_zone,
 )
 from panels.cc_engine_printers import (
@@ -85,36 +84,11 @@ def _find_installed_printer(printers: list[dict], uri: str, ip: str = "") -> dic
     return None
 
 
-def _wizard_inner_width(bx: Box, canvas: Canvas) -> int:
-    kv_keys = [op[1] for op in bx._ops if op[0] == "kv" and op[1]] + [
-        t("cc_printers.kv_auto_found"),
-        t("cc_printers.kv_install_flags"),
-    ]
-    eff_kw = max([20] + [len(k) + 1 for k in kv_keys])
-    return max(52, canvas.inner_cols - (2 + eff_kw + 1))
+def _cmp_arrow(is_up: bool) -> str:
+    return Txt("\u21e1", role="vitality") if is_up else Txt("\u21e3", role="attention")
 
 
-def _glyph_1col(canvas: Canvas, glyph_markup: str) -> str:
-    rem = max(0.0, canvas.char_w - canvas.measure_markup(glyph_markup))
-    return glyph_markup + canvas._micro_space(rem)
-
-
-def _cmp_arrow(canvas: Canvas, is_up: bool) -> str:
-    p = get_semantic_palette()
-    pt = int(round(canvas.base_pango_size * 0.80))
-    ch = "\u21e1" if is_up else "\u21e3"
-    col = p["vitality"] if is_up else p["attention"]
-    return _glyph_1col(canvas, f"<span color='{col}' size='{pt}'>{ch}</span>")
-
-
-def _build_auto_found_box_markup(bx: Box, cc_panel, canvas: Canvas, d: dict, auto_info: dict) -> str:
-    p = get_semantic_palette()
-    ch = canvas.chars
-    INNER_W = _wizard_inner_width(bx, canvas)
-    main_col_w = max(30, INNER_W - 21)
-    pill_max_chars = max(25, main_col_w - 5)
-    pkg_max_chars = max(29, main_col_w - 1)
-
+def _render_auto_found_table(bx: Box, canvas: Canvas, d: dict, auto_info: dict, nav_acts: list[str]) -> None:
     win_rows = auto_info["window"]
     win_size = auto_info["win_size"]
     total = auto_info["total"]
@@ -130,73 +104,48 @@ def _build_auto_found_box_markup(bx: Box, cc_panel, canvas: Canvas, d: dict, aut
     else:
         hdr_txt = t("cc_printers.auto_box_hdr_empty", p0=pm)
 
-    hdr_plain = f" {canvas.truncate_plain(hdr_txt, INNER_W - 8)} "
-    rem_h = max(2, INNER_W - 2 - len(hdr_plain))
-    l_h = 2
-    r_h = rem_h - l_h
-    top_line = (
-        f"<span color='{p['structure']}'>{ch['tl']}{ch['h'] * l_h}</span>"
-        f"<span color='{p['schema']}'>{Canvas.escape(hdr_plain)}</span>"
-        f"<span color='{p['structure']}'>{ch['h'] * r_h}{ch['tr']}</span>"
-    )
-    bot_line = f"<span color='{p['structure']}'>{ch['bl']}{ch['h'] * (INNER_W - 2)}{ch['br']}</span>"
+    bx.add_section(hdr_txt, actions=nav_acts)
+    if not win_rows:
+        msg_k = "cc_printers.auto_box_searching" if auto_info["searching"] else "cc_printers.auto_box_no_filter_match"
+        bx.add_row(f"  {Txt(t(msg_k, p0=pm), role='attention' if auto_info['searching'] else 'inactive')}")
+        return
 
-    max_off = max(0, total - win_size)
-    thumb_row = int(round((off / float(max(1, max_off))) * (win_size - 1))) if total > win_size else -1
-
-    left_rail = f"<span color='{p['structure']}'>{ch['v']}</span>"
-    target_px = INNER_W * canvas.char_w
-
-    def _fit_inner_box_row(left_m: str, right_m: str) -> str:
-        used_px = canvas.measure_markup(left_m) + canvas.measure_markup(right_m)
-        gap_px = max(canvas.space_w, target_px - used_px)
-        sp = canvas._int_spaces_for_px(gap_px)
-        rem_px = max(0.0, gap_px - canvas.measure_text(sp))
-        return left_m + sp + canvas._micro_space(rem_px) + right_m
-
-    lines: list[str] = [top_line]
-    for slot_i in range(win_size):
-        sb_ch = Txt(ch["v"], role="intent") if slot_i == thumb_row else f"<span color='{p['structure']}'>{ch['v']}</span>"
-        if slot_i < len(win_rows):
-            it = win_rows[slot_i]
-            rel_cell = _glyph_1col(canvas, RelevanceGlyph(int(it["score"]), show_pct=False))
-            cmp_arrow = _cmp_arrow(canvas, bool(it.get("better_than_local", True)))
-            if it["kind"] == "cups":
-                item_uri = f"cc_prn:pick_drv:{it['id']}"
-                register_scroll_zone(item_uri, scroll_act)
-                is_sel = (d["drv_id"] == it["id"]) or (d["drv_mode"] == "ppd" and it["id"] == f"ppd:{d['ppd_path']}")
-                main_cell = SelectPill(canvas.truncate_plain(str(it["label"]), pill_max_chars), item_uri, selected=is_sel)
-                right_cell = Txt(canvas.truncate_plain(str(it.get("tag", "CUPS")), 12), role="vitality" if it.get("tag") == "AUTO" else "schema")
-            elif it["installed"]:
-                item_uri = f"cc_prn:pick_pkg_drv:{it['pkg']}"
-                register_scroll_zone(item_uri, scroll_act)
-                pill_lbl = canvas.truncate_plain(f"{it['label']} ({it['repo']})", pill_max_chars)
-                main_cell = SelectPill(pill_lbl, item_uri, selected=False)
-                right_cell = StateBadge(True, t("cc_printers.pkg_installed_tag"))
-            else:
-                pk = it["pkg"]
-                item_uri = f"cc_prn:install_drv_pkg:{pk}"
-                register_scroll_zone(item_uri, scroll_act)
-                clean_lbl = Canvas.escape(canvas.truncate_plain(f"{it['label']} ({it['repo']})", pkg_max_chars))
-                main_cell = f"<a href='{Canvas.escape(item_uri)}'><span color='{p['focus_val']}' underline='none'>{clean_lbl}</span></a>"
-                right_cell = ActionBtn(t("cc_printers.install_pkg_btn"), item_uri, active=False, tone="apply")
-            left_m = canvas.format_table_row(
-                [left_rail, rel_cell, main_cell],
-                col_widths=[1, 1, main_col_w],
-                aligns=["left", "left", "left"],
-                left_margin="",
-                sep_cols=1,
-            )
-            row_line = _fit_inner_box_row(left_m, f"{cmp_arrow} {right_cell} {sb_ch}")
-        elif slot_i == 0:
-            msg_k = "cc_printers.auto_box_searching" if auto_info["searching"] else "cc_printers.auto_box_no_filter_match"
-            msg_cell = Txt(canvas.truncate_plain(t(msg_k, p0=pm), INNER_W - 6), role="attention" if auto_info["searching"] else "inactive")
-            row_line = _fit_inner_box_row(f"{left_rail} {msg_cell}", sb_ch)
+    t_rows = []
+    for it in win_rows:
+        rel_cell = RelevanceGlyph(int(it["score"]), show_pct=True)
+        cmp_cell = _cmp_arrow(bool(it.get("better_than_local", True)))
+        if it["kind"] == "cups":
+            item_uri = f"cc_prn:pick_drv:{it['id']}"
+            register_scroll_zone(item_uri, scroll_act)
+            is_sel = (d["drv_id"] == it["id"]) or (d["drv_mode"] == "ppd" and it["id"] == f"ppd:{d['ppd_path']}")
+            main_cell = SelectPill(canvas.truncate_plain(str(it["label"]), 36), item_uri, selected=is_sel)
+            tag_role = "vitality" if it.get("tag") == "AUTO" else "schema"
+            act_cell = Txt(canvas.truncate_plain(str(it.get("tag", "CUPS")), 10), role=tag_role)
+        elif it["installed"]:
+            item_uri = f"cc_prn:pick_pkg_drv:{it['pkg']}"
+            register_scroll_zone(item_uri, scroll_act)
+            main_cell = SelectPill(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), item_uri, selected=False)
+            act_cell = StateBadge(True, t("cc_printers.pkg_installed_tag"))
         else:
-            row_line = _fit_inner_box_row(left_rail, sb_ch)
-        lines.append(row_line)
-    lines.append(bot_line)
-    return "\n".join(lines)
+            pk = it["pkg"]
+            item_uri = f"cc_prn:install_drv_pkg:{pk}"
+            register_scroll_zone(item_uri, scroll_act)
+            main_cell = Txt(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), role="focus")
+            act_cell = ActionBtn(t("cc_printers.install_pkg_btn"), item_uri, tone="apply")
+
+        t_rows.append([rel_cell, main_cell, cmp_cell, act_cell])
+
+    bx.add_table(
+        headers=[
+            t("cc_printers.col_match"),
+            t("cc_printers.col_driver_pkg"),
+            t("cc_printers.col_delta"),
+            t("cc_printers.col_actions"),
+        ],
+        widths=[8, "flex", 8, 14],
+        rows=t_rows,
+        aligns=["left", "left", "center", "right"],
+    )
 
 
 def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: dict) -> None:
@@ -216,7 +165,7 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
         auto_info = get_auto_found_drivers(cc_panel, d, smart)
         loc_drv = auto_info["local_driver"]
         loading_b = Badge(t("cc_printers.loading_drivers_badge"), style="warn") if is_drivers_loading() else ""
-        loc_dot = _glyph_1col(canvas, RelevanceGlyph(int(loc_drv["score"]), show_pct=False))
+        loc_dot = RelevanceGlyph(int(loc_drv["score"]), show_pct=False)
         loc_val = f"{loc_dot} {Txt(canvas.truncate_plain(loc_drv['label'], 54), role='val')}"
         bx.add_kv(t("cc_printers.kv_local_drv"), loc_val, right_markup=loading_b)
 
@@ -240,7 +189,8 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
             clear_uri="cc_prn:drv_search_clear",
             width=34,
         )
-        rescan_b = ActionBtn(f"\u21bb {auto_info['pkg_mgr']}", "cc_prn:drv_pkg_rescan", active=False, tone="neutral")
+        rescan_b = ActionBtn(f"\u21bb {auto_info['pkg_mgr']}", "cc_prn:drv_pkg_rescan", tone="neutral")
+        nav_acts: list[str] = []
         if has_auto_box:
             off = auto_info["offset"]
             win_size = auto_info["win_size"]
@@ -250,16 +200,13 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
             dn_uri = f"{scroll_act}:down"
             register_scroll_zone(up_uri, scroll_act)
             register_scroll_zone(dn_uri, scroll_act)
-            up_btn = ActionBtn("\uf077", up_uri, active=False, tone="neutral" if off > 0 else "muted")
-            dn_btn = ActionBtn("\uf078", dn_uri, active=False, tone="neutral" if (off + win_size) < total else "muted")
-            search_right = f"{up_btn} {dn_btn} {rescan_b}"
-        else:
-            search_right = rescan_b
-        bx.add_kv(t("cc_printers.kv_search_drv"), flt, right_markup=search_right)
+            up_btn = ActionBtn("\uf077", up_uri, tone="neutral" if off > 0 else "muted")
+            dn_btn = ActionBtn("\uf078", dn_uri, tone="neutral" if (off + win_size) < total else "muted")
+            nav_acts = [up_btn, dn_btn]
+        bx.add_kv(t("cc_printers.kv_search_drv"), flt, right_markup=rescan_b)
 
         if has_auto_box:
-            auto_box_m = _build_auto_found_box_markup(bx, cc_panel, canvas, d, auto_info)
-            bx.add_kv(t("cc_printers.kv_auto_found"), auto_box_m)
+            _render_auto_found_table(bx, canvas, d, auto_info, nav_acts)
             pend_pkg = str(cc_panel.get_state("prn_pkg_confirm", "") or "")
             pend_it = next((c for c in auto_info["items"] if c.get("pkg") == pend_pkg and not c.get("installed")), None)
             if pend_it:
@@ -280,51 +227,32 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
                     f"{ActionBtn(t('common.cancel'), 'cc_prn:cancel_pkg_confirm', tone='neutral')}"
                 )
                 bx.add_kv("", conf_btns)
-            leg_w = _wizard_inner_width(bx, canvas)
-            col1_w = 30
-            col2_w = max(24, leg_w - col1_w - 1)
-            d_hi = _glyph_1col(canvas, RelevanceGlyph(95, show_pct=False))
-            d_md = _glyph_1col(canvas, RelevanceGlyph(65, show_pct=False))
-            d_lo = _glyph_1col(canvas, RelevanceGlyph(45, show_pct=False))
-            leg1_left = (
+
+            d_hi = RelevanceGlyph(95, show_pct=False)
+            d_md = RelevanceGlyph(65, show_pct=False)
+            d_lo = RelevanceGlyph(45, show_pct=False)
+            leg1 = (
                 f"{d_hi} {Txt(t('cc_printers.leg_high'), role='val')}  "
                 f"{d_md} {Txt(t('cc_printers.leg_med'), role='val')}  "
-                f"{d_lo} {Txt(t('cc_printers.leg_low'), role='val')}"
+                f"{d_lo} {Txt(t('cc_printers.leg_low'), role='val')}  "
+                f"{Txt('— ' + t('cc_printers.leg_prob_desc'), role='schema')}"
             )
-            leg1_right = Txt("— " + t("cc_printers.leg_prob_desc"), role="schema")
-            leg_dots = canvas.format_table_row(
-                [leg1_left, leg1_right],
-                col_widths=[col1_w, col2_w],
-                aligns=["left", "left"],
-                left_margin="",
-                sep_cols=1,
+            leg2 = (
+                f"{_cmp_arrow(True)} {Txt(t('cc_printers.leg_up_desc'), role='val')}   "
+                f"{_cmp_arrow(False)} {Txt(t('cc_printers.leg_dn_desc'), role='schema')}"
             )
-            leg2_left = f"{_cmp_arrow(canvas, True)} {Txt(t('cc_printers.leg_up_desc'), role='val')}"
-            leg2_right = f"{_cmp_arrow(canvas, False)} {Txt(t('cc_printers.leg_dn_desc'), role='schema')}"
-            leg_arrows = canvas.format_table_row(
-                [leg2_left, leg2_right],
-                col_widths=[col1_w, col2_w],
-                aligns=["left", "left"],
-                left_margin="",
-                sep_cols=1,
-            )
-            bx.add_kv("", leg_dots)
-            bx.add_kv("", leg_arrows)
+            bx.add_row(f"  {leg1}")
+            bx.add_row(f"  {leg2}")
             gap_adv = auto_info.get("gap_advice", "")
             if gap_adv == "test_local_first":
-                lead_g = _glyph_1col(canvas, Txt("\u25b8", role="attention"))
-                bx.add_kv("", f"{lead_g} {Txt(t('cc_printers.leg_gap_test_local'), role='schema')} {_cmp_arrow(canvas, True)}")
+                bx.add_row(f"  {Txt('\u25b8', role='attention')} {Txt(t('cc_printers.leg_gap_test_local'), role='schema')} {_cmp_arrow(True)}")
             elif gap_adv == "install_pkg_first":
-                lead_g = _glyph_1col(canvas, Txt("\u25b8", role="vitality"))
-                adv_m = (
-                    f"{lead_g} {Txt(t('cc_printers.leg_gap_install_first_pre'), role='schema')} "
-                    f"{d_hi} {_cmp_arrow(canvas, True)} "
-                    f"{Txt(t('cc_printers.leg_gap_install_first_post'), role='schema')}"
+                bx.add_row(
+                    f"  {Txt('\u25b8', role='vitality')} {Txt(t('cc_printers.leg_gap_install_first_pre'), role='schema')} "
+                    f"{d_hi} {_cmp_arrow(True)} {Txt(t('cc_printers.leg_gap_install_first_post'), role='schema')}"
                 )
-                bx.add_kv("", adv_m)
             elif gap_adv == "local_optimal" and auto_info["total"] > 0:
-                lead_g = _glyph_1col(canvas, Txt("\u25b8", role="vitality"))
-                bx.add_kv("", f"{lead_g} {Txt(t('cc_printers.leg_gap_local_optimal'), role='schema')}")
+                bx.add_row(f"  {Txt('\u25b8', role='vitality')} {Txt(t('cc_printers.leg_gap_local_optimal'), role='schema')}")
     elif d["drv_mode"] == "ppd":
         ppd_btn = ActionBtn(t("cc_printers.browse_ppd_btn"), "cc_prn:browse_ppd", tone="neutral")
         if d["ppd_path"]:
@@ -425,53 +353,6 @@ def _render_attached_wizard(
         t("cc_printers.ph_queue_name"),
         t("cc_printers.set_name_btn"),
     )
-    _draft_scalar_row(
-        bx,
-        canvas,
-        t("cc_printers.kv_description"),
-        "desc",
-        d["desc"],
-        t("cc_printers.ph_description"),
-        t("cc_printers.set_desc_btn"),
-    )
-    _draft_scalar_row(
-        bx,
-        canvas,
-        t("cc_printers.kv_location"),
-        "loc",
-        d["loc"],
-        t("cc_printers.ph_location"),
-        t("cc_printers.set_loc_btn"),
-    )
-
-    if is_manual:
-        proto_pills = " ".join(
-            SelectPill(lbl, f"cc_prn:draft_proto:{pid}", selected=(d["proto"] == pid))
-            for pid, lbl, _tpl in get_proto_presets()
-        )
-        bx.add_kv(t("cc_printers.kv_protocol"), proto_pills)
-
-    if is_tcp or d["proto"] == "socket":
-        tcp_mode_pills = " ".join(
-            SelectPill(lbl, f"cc_prn:draft_tcp_port:{port}", selected=(d["tcp_port"] == port))
-            for port, lbl in (
-                (9100, t("cc_printers.tcp_mode_9100")),
-                (631, t("cc_printers.tcp_mode_631")),
-                (515, t("cc_printers.tcp_mode_515")),
-            )
-        )
-        bx.add_kv(t("cc_printers.kv_tcp_port_mode"), tcp_mode_pills)
-
-    if is_manual and d["proto"] != "usb":
-        _draft_scalar_row(
-            bx,
-            canvas,
-            t("cc_printers.kv_host_ip"),
-            "host",
-            d["host"],
-            t("cc_printers.ph_host_ip"),
-            t("cc_printers.set_host_btn"),
-        )
 
     _ph_map = {
         "socket": build_tcp_uri("10.10.0.45", d["tcp_port"]),
@@ -494,8 +375,81 @@ def _render_attached_wizard(
         extra_right=probe_b,
     )
 
-    _render_driver_selector(bx, cc_panel, canvas, d, smart)
     _render_install_actions(bx, daemon, d, include_cancel=True)
+
+    adv_summary_parts = [d["proto"].upper()]
+    if d["host"]:
+        adv_summary_parts.append(d["host"])
+    if d["desc"]:
+        adv_summary_parts.append(canvas.truncate_plain(d["desc"], 24))
+    if d["loc"]:
+        adv_summary_parts.append(canvas.truncate_plain(d["loc"], 18))
+
+    def _build_wiz_adv(sub_bx: Box) -> None:
+        _draft_scalar_row(
+            sub_bx,
+            canvas,
+            t("cc_printers.kv_description"),
+            "desc",
+            d["desc"],
+            t("cc_printers.ph_description"),
+            t("cc_printers.set_desc_btn"),
+        )
+        _draft_scalar_row(
+            sub_bx,
+            canvas,
+            t("cc_printers.kv_location"),
+            "loc",
+            d["loc"],
+            t("cc_printers.ph_location"),
+            t("cc_printers.set_loc_btn"),
+        )
+        proto_pills = " ".join(
+            SelectPill(lbl, f"cc_prn:draft_proto:{pid}", selected=(d["proto"] == pid))
+            for pid, lbl, _tpl in get_proto_presets()
+        )
+        sub_bx.add_kv(t("cc_printers.kv_protocol"), proto_pills)
+        if is_tcp or d["proto"] == "socket":
+            tcp_mode_pills = " ".join(
+                SelectPill(lbl, f"cc_prn:draft_tcp_port:{port}", selected=(d["tcp_port"] == port))
+                for port, lbl in (
+                    (9100, t("cc_printers.tcp_mode_9100")),
+                    (631, t("cc_printers.tcp_mode_631")),
+                    (515, t("cc_printers.tcp_mode_515")),
+                )
+            )
+            sub_bx.add_kv(t("cc_printers.kv_tcp_port_mode"), tcp_mode_pills)
+        if d["proto"] != "usb":
+            smb_auth = ActionBtn(t("cc_printers.smb_auth_btn"), "cc_prn:smb_auth_prompt", tone="apply") if d["proto"] == "smb" else ""
+            _draft_scalar_row(
+                sub_bx,
+                canvas,
+                t("cc_printers.kv_host_ip"),
+                "host",
+                d["host"],
+                t("cc_printers.ph_host_ip"),
+                t("cc_printers.set_host_btn"),
+                extra_right=smb_auth,
+            )
+            if d["proto"] == "smb":
+                sub_bx.add_kv("", Txt(d["uri"] or uri_ph, role="schema"), requires=["smbclient"])
+
+    bx.add_collapsible(
+        cc_panel,
+        "prn_wiz_adv",
+        t("cc_printers.sec_wiz_adv_uri"),
+        _build_wiz_adv,
+        summary="  ·  ".join(adv_summary_parts),
+    )
+
+    _strat, _args, res_drv_lbl = resolve_effective_driver(d, smart)
+    bx.add_collapsible(
+        cc_panel,
+        "prn_wiz_drv",
+        t("cc_printers.sec_wiz_driver"),
+        lambda sub_bx: _render_driver_selector(sub_bx, cc_panel, canvas, d, smart),
+        summary=canvas.truncate_plain(res_drv_lbl, 60),
+    )
 
 
 def _render_split_table_with_wizard(
@@ -589,7 +543,6 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
         actions=box_acts,
         highlighted=False,
     )
-    disc_box.add_row(" ")
 
     sub_items = [
         SelectPill(sub, f"cc_prn:tcp_subnet_pick:{sub}", selected=(tcp_st["active_subnet"] == sub))
@@ -607,7 +560,6 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
         )
     )
     disc_box.add_kv(t("cc_printers.kv_tcp_subnet"), " ".join(sub_items))
-    disc_box.add_row(" ")
 
     if not unified_entries:
         hint = (
@@ -675,7 +627,6 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
                 is_manual=True,
             )
 
-    disc_box.add_row(" ")
     cards.append(disc_box)
 
     # --- Card 4: CUPS Printer Classes & Failover Pools ---
@@ -693,7 +644,6 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
         actions=[FoldIconBtn(is_cls_open, f"ui:state:prn_sec_classes:{'false' if is_cls_open else 'true'}")],
         highlighted=False,
     )
-    cls_box.add_row(" ")
     if not is_cls_open:
         cls_box.add_row(f"  {Txt(cls_summary, role='schema')}")
     else:
@@ -746,7 +696,6 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
                     for p in snap["printers"][:8]
                 )
                 cls_box.add_kv(t("cc_printers.kv_pool_members_of", p0=sel_cls_name), mem_pills, right_markup=new_pool_b)
-    cls_box.add_row(" ")
     cards.append(cls_box)
     return cards
 

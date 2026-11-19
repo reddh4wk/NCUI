@@ -40,7 +40,6 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         actions=svc_acts,
         highlighted=False,
     )
-    svc_box.add_row(" ")
 
     cups_badge = StateBadge(is_up, t("common.active"), t("cc_printers.stopped"))
     if is_up:
@@ -64,7 +63,7 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         if daemon["avahi_active"]
         else ActionBtn(t("cc_printers.start_btn"), "cc_prn:svc:start:avahi-daemon.service", tone="apply")
     )
-    svc_box.add_kv(t("cc_printers.kv_avahi_mdns"), avahi_badge, right_markup=avahi_btn)
+    svc_box.add_kv(t("cc_printers.kv_avahi_mdns"), avahi_badge, right_markup=avahi_btn, requires=["avahi-browse"])
 
     priv_svc = get_privileged_action("cups_service")
     priv_grp = get_privileged_action("cups_sysgroup")
@@ -90,7 +89,6 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         grp_right = ""
     svc_box.add_kv(t("cc_printers.kv_admin_access"), grp_badge, right_markup=grp_right)
 
-    svc_box.add_row(" ")
     cards.append(svc_box)
 
     # --- Global Server Policies (`cupsctl`) ---
@@ -101,7 +99,6 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         actions=[port_ind],
         highlighted=False,
     )
-    pol_box.add_row(" ")
     if not is_up:
         pol_box.add_row(f"  {Txt(t('cc_printers.policies_offline_hint'), role='attention')}")
     pol_box.add_kv(t("cc_printers.pol_share_printers"), _policy_row_val("share-printers", srv["_share_printers"], is_up))
@@ -165,7 +162,6 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         summary=diag_summary,
     )
 
-    pol_box.add_row(" ")
     cards.append(pol_box)
     return cards
 
