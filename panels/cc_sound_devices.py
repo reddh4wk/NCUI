@@ -1,17 +1,33 @@
 #!/usr/bin/env python3
-import json
-import re
-import time
-from core import log, probe
-from core.config import CONFIG, _update_toml_key_in_section
+from urllib.parse import quote
 from core.i18n import t
-from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, ProgressBar, SelectPill, Slider, StateBadge, Txt
+from ui.kit import Box, SelectPill, Txt
 from panels.cc_engine_sound import (
     _feedback_cards,
     _get_pipewire_cards,
 )
+
+
+def _pack_profile_rows(profs: list[dict], card_name: str, active_prof: str, canvas: Canvas) -> list[str]:
+    q_card = quote(card_name, safe="")
+    rows: list[str] = []
+    cur_pills: list[str] = []
+    cur_len = 0
+    for p in profs:
+        lbl = canvas.truncate_plain(p["desc"], 24 if len(profs) > 1 else 40)
+        pill = SelectPill(lbl, f"cc_aud:card_prof:{q_card}:{quote(p['id'], safe='')}", selected=(p["id"] == active_prof))
+        pill_w = len(lbl) + 5
+        if cur_pills and (cur_len + 1 + pill_w > 50 or len(cur_pills) >= 2):
+            rows.append(" ".join(cur_pills))
+            cur_pills = [pill]
+            cur_len = pill_w
+        else:
+            cur_pills.append(pill)
+            cur_len += (1 if cur_pills else 0) + pill_w
+    if cur_pills:
+        rows.append(" ".join(cur_pills))
+    return rows
 
 
 def _build_devices_tab_standard(cc_panel, canvas: Canvas) -> list:
@@ -19,35 +35,39 @@ def _build_devices_tab_standard(cc_panel, canvas: Canvas) -> list:
     out_cards = _feedback_cards()
     if not cards_hw:
         b = Box(t("cc_audio.audio_hardware_profiles_pipewire"), icon="\uf2db", highlighted=False)
-        b.add_row(" ")
         b.add_row(f"  {Txt(t('cc_audio.no_audio_cards_detected_via_pactl'), role='inactive')}")
-        b.add_row(" ")
         return out_cards + [b]
 
     for c in cards_hw:
+        avail_profs = [p for p in c["profiles"] if p["avail"] or p["id"] == c["active_profile"]]
+        active_desc = next((p["desc"] for p in avail_profs if p["id"] == c["active_profile"]), c["active_profile"] or t("common.off"))
         cb = Box(
-            c["desc"][:48],
+            canvas.truncate_plain(c["desc"], 48),
             icon="\uf028",
-            actions=[Txt(c["active_profile"][:26] or t("common.off"), role="schema")],
             highlighted=False,
         )
-        cb.add_row(" ")
-        cb.add_kv(t("cc_audio.card_node"), Txt(c["name"], role="schema"))
-        avail_profs = [p for p in c["profiles"] if p["avail"] or p["id"] == c["active_profile"]]
-        for p in avail_profs[:5]:
-            is_act = p["id"] == c["active_profile"]
-            p_id = p["id"]
-            c_name = c["name"]
-            cb.add_row(
-                f"  {SelectPill(p['desc'][:44], f'cc_aud:card_prof:{c_name}:{p_id}', selected=is_act)}",
+        cb.add_kv(t("cc_audio.card_node"), Txt(c["name"], role="val"))
+        cb.add_kv(t("cc_audio.active_profile"), Txt(canvas.truncate_plain(active_desc, 44), role="val"))
+
+        packed_rows = _pack_profile_rows(avail_profs, c["name"], c["active_profile"], canvas)
+        visible_rows = packed_rows[:3]
+        for idx, row_markup in enumerate(visible_rows):
+            cb.add_kv(t("cc_audio.profiles") if idx == 0 else "", row_markup, requires=["pactl"])
+
+        if len(packed_rows) > 3:
+            rem_profs = avail_profs[sum(row.count("[●") + row.count("[○") for row in visible_rows):]
+            rem_rows = packed_rows[3:]
+
+            def _more(bx: Box, rows_rem=rem_rows):
+                for rm in rows_rem:
+                    bx.add_kv("", rm, requires=["pactl"])
+
+            cb.add_collapsible(
+                cc_panel,
+                f"aud_profs_{c['name']}",
+                t("cc_audio.other_profiles", p0=len(rem_profs)),
+                _more,
             )
-        if len(avail_profs) > 5:
-            def _more(bx: Box, rem=avail_profs[5:], cn=c["name"], ap=c["active_profile"]):
-                for rp in rem:
-                    rp_id = rp["id"]
-                    bx.add_row(f"  {SelectPill(rp['desc'][:44], f'cc_aud:card_prof:{cn}:{rp_id}', selected=(rp_id == ap))}")
-            cb.add_collapsible(cc_panel, f"aud_profs_{c['name']}", t("cc_audio.other_profiles", p0=len(avail_profs) - 5), _more)
-        cb.add_row(" ")
         out_cards.append(cb)
     return out_cards
 

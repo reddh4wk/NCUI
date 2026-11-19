@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from urllib.parse import quote
 from core.config import THEME
 from core.i18n import t
 from ui.canvas import Canvas
@@ -11,6 +12,7 @@ from panels.cc_engine_sound import (
     get_default_sink_status,
     get_audio_devices,
     get_sink_inputs,
+    get_source_outputs,
     set_default_device,
     step_device_volume,
     handle_cc_audio_link,
@@ -51,18 +53,17 @@ class AudioPanel(BasePanel):
                 max_cols=target_cols,
             )
             msg = t("audio.no_input_detected") if is_input else t("audio.no_output_detected")
-            empty_box.add_row(" ")
             empty_box.add_row(f"  {Txt(msg, role='inactive')}")
-            empty_box.add_row(" ")
             return [empty_box]
         for d in devices:
+            q_name = quote(d["name"], safe="")
             icon = ("\uf131" if d["mute"] else "\uf130") if is_input else speaker_icon(d["vol"], d["mute"])
             eff_max_desc = max_desc if (max_desc > 45 or not d["is_default"]) else 29
             disp_desc = canvas.truncate_plain(d["desc"], eff_max_desc)
             mute_btn = ActionBtn(
                 t("audio.unmute") if d["mute"] else t("audio.mute"),
-                f"aud:{prefix}:mute:{d['name']}",
-                tone="warn" if d["mute"] else "neutral",
+                f"aud:{prefix}:mute:{q_name}",
+                tone="apply" if d["mute"] else "danger_soft",
             )
             def_badge = [StateBadge(True, t("audio.default_badge"), on_tone="ok")] if d["is_default"] else []
             box = Box(
@@ -74,22 +75,16 @@ class AudioPanel(BasePanel):
                 min_cols=target_cols,
                 max_cols=target_cols,
             )
-            box.add_row(" ")
-            slider_m = Slider(d["vol"], f"aud:{prefix}:vol:{d['name']}", min_val=0, max_val=max_vol, width=15, show_pct=True, scroll_prefix=f"aud:{prefix}:scroll:{d['name']}")
-            st_badge = StateBadge(
-                not d["mute"],
-                d["state"],
-                t("audio.mute_2"),
-                on_tone="ok" if d["state"] == "RUNNING" else "ok_soft",
-            )
+            slider_m = Slider(d["vol"], f"aud:{prefix}:vol:{q_name}", min_val=0, max_val=max_vol, width=15, show_pct=True, scroll_prefix=f"aud:{prefix}:scroll:{q_name}", enabled=not d["mute"])
+            st_badge = StateBadge(d["state"] == "RUNNING", d["state"], d["state"])
+            mute_badge = f"  {StateBadge(False, '', t('audio.mute_2'))}" if d["mute"] else ""
             vol_lbl = f"{t('audio.vol_label'):<6}"
             st_lbl = f"{t('audio.state_label'):<6}"
             box.add_row(f"  {Txt(vol_lbl, role='schema')} {slider_m}")
             box.add_row(
-                f"  {Txt(st_lbl, role='schema')} {st_badge}",
+                f"  {Txt(st_lbl, role='schema')} {st_badge}{mute_badge}",
                 right_markup=mute_btn,
             )
-            box.add_row(" ")
             cards.append(
                 AsciiCard(
                     box,
@@ -118,7 +113,9 @@ class AudioPanel(BasePanel):
 
         if expanded:
             cards.append(Divider(t("audio.app_mixer"), icon="\uf1de", align="right"))
-        apps = get_sink_inputs()
+        out_apps = [(a, "app", "\uf001") for a in get_sink_inputs()]
+        in_apps = [(a, "rec", "\uf130") for a in get_source_outputs()]
+        apps = out_apps + in_apps
         if not apps:
             empty_mixer = Box(
                 t("audio.app_mixer").title(),
@@ -127,18 +124,16 @@ class AudioPanel(BasePanel):
                 min_cols=target_cols,
                 max_cols=target_cols,
             )
-            empty_mixer.add_row(" ")
             empty_mixer.add_row(f"  {Txt(t('audio.no_active_apps'), role='inactive')}")
-            empty_mixer.add_row(" ")
             cards.append(empty_mixer)
         else:
-            for app in apps:
-                app_ic = "\uf6a9" if app["mute"] else "\uf001"
+            for app, sc, act_ic in apps:
+                app_ic = "\uf6a9" if app["mute"] else act_ic
                 app_title = canvas.truncate_plain(app["label"], max_desc)
                 app_mute = ActionBtn(
                     t("audio.unmute") if app["mute"] else t("audio.mute"),
-                    f"aud:app:mute:{app['index']}",
-                    tone="warn" if app["mute"] else "neutral",
+                    f"aud:{sc}:mute:{app['index']}",
+                    tone="apply" if app["mute"] else "danger_soft",
                 )
                 app_box = Box(
                     app_title,
@@ -147,13 +142,11 @@ class AudioPanel(BasePanel):
                     min_cols=target_cols,
                     max_cols=target_cols,
                 )
-                app_box.add_row(" ")
-                app_slider = Slider(app["vol"], f"aud:app:vol:{app['index']}", min_val=0, max_val=max_vol, width=14, show_pct=True, scroll_prefix=f"aud:app:scroll:{app['index']}")
+                app_slider = Slider(app["vol"], f"aud:{sc}:vol:{app['index']}", min_val=0, max_val=max_vol, width=14, show_pct=True, scroll_prefix=f"aud:{sc}:scroll:{app['index']}", enabled=not app["mute"])
                 app_box.add_row(
                     f"  {Txt(t('audio.mixer_label'), role='schema')} {app_slider}",
                     right_markup=app_mute,
                 )
-                app_box.add_row(" ")
                 cards.append(app_box)
         return cards
 
