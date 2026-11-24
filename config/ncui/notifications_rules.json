@@ -14,5 +14,9 @@
       "cmd": ""
     }
   },
-  "group_by_app": true
+  "group_by_app": true,
+  "popup_enabled": true,
+  "popup_timeout": 5,
+  "popup_position": "top-center",
+  "popup_effect": "slide_fade"
 }

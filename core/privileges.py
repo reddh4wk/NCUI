@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NC-UI Centralized Privileged Actions & Sudoers Registry (`core/privileges.py`)."""
 
+import atexit
 import getpass
 import json
 import os
@@ -20,6 +21,137 @@ SUDOERS_DIR = "/etc/sudoers.d"
 SUDOERS_STATE_FILE = os.path.join(CONFIG_DIR, "sudoers_state.json")
 
 _SUDO_L_CACHE = {"ts": 0.0, "text": "", "ok": False}
+_SUDO_SESSION = {"unlocked": False, "expires_at": 0.0, "timeout_sec": 300.0}
+_SUDO_ALIVE_CACHE = {"ts": 0.0, "ok": False}
+
+
+def _detect_sudo_timeout_sec() -> float:
+    ok, txt = _get_sudo_list_cached()
+    if ok and txt:
+        m = re.search(r"timestamp_timeout\s*=\s*([0-9]+(?:\.[0-9]+)?)", txt)
+        if m:
+            try:
+                mins = float(m.group(1))
+                if mins > 0:
+                    return max(30.0, mins * 60.0)
+            except ValueError:
+                pass
+    return 300.0
+
+
+def lock_sudo_session(drop_ticket: bool = True) -> None:
+    """Lock the in-memory batch privilege session and invalidate this process's sudo ticket."""
+    _SUDO_SESSION["unlocked"] = False
+    _SUDO_SESSION["expires_at"] = 0.0
+    _SUDO_ALIVE_CACHE["ts"] = 0.0
+    _SUDO_ALIVE_CACHE["ok"] = False
+    if drop_ticket and probe.has_bin("sudo"):
+        probe.run_cmd(["sudo", "-k"], timeout=1.0)
+
+
+atexit.register(lock_sudo_session)
+
+
+def unlock_sudo_session(password: str) -> tuple[bool, str]:
+    """Verify sudo password once and unlock batch privilege operations until timeout/panel exit."""
+    pwd = str(password or "")
+    if not pwd:
+        return False, t("privileges.err_auth_cancelled")
+    try:
+        res = subprocess.run(
+            ["sudo", "-k", "-S", "-v", "-p", ""],
+            input=f"{pwd}\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8.0,
+        )
+    except Exception as e:
+        lock_sudo_session(drop_ticket=False)
+        return False, str(e)
+    if res.returncode != 0:
+        lock_sudo_session(drop_ticket=False)
+        out_s = (res.stdout or "").strip()
+        return False, out_s or t("privileges.err_auth_cancelled")
+
+    t_sec = _detect_sudo_timeout_sec()
+    now = time.monotonic()
+    _SUDO_SESSION["unlocked"] = True
+    _SUDO_SESSION["timeout_sec"] = t_sec
+    _SUDO_SESSION["expires_at"] = now + t_sec
+    _SUDO_ALIVE_CACHE["ts"] = now
+    _SUDO_ALIVE_CACHE["ok"] = True
+    mins = max(1, int(round(t_sec / 60.0)))
+    return True, t("privileges.ok_session_unlocked", mins=mins)
+
+
+def is_sudo_session_unlocked() -> bool:
+    """Return True only while unlocked in memory, within timeout, and sudo ticket is still alive."""
+    if not _SUDO_SESSION["unlocked"]:
+        return False
+    now = time.monotonic()
+    if now >= _SUDO_SESSION["expires_at"]:
+        lock_sudo_session(drop_ticket=False)
+        return False
+    if (now - _SUDO_ALIVE_CACHE["ts"]) >= 2.0:
+        ok, _ = probe.run_cmd(["sudo", "-n", "true"], timeout=0.8)
+        _SUDO_ALIVE_CACHE["ts"] = now
+        _SUDO_ALIVE_CACHE["ok"] = bool(ok)
+        if not ok:
+            lock_sudo_session(drop_ticket=False)
+            return False
+    return True
+
+
+def get_sudo_session_remaining_sec() -> int:
+    if not _SUDO_SESSION["unlocked"]:
+        return 0
+    return max(0, int(round(_SUDO_SESSION["expires_at"] - time.monotonic())))
+
+
+def build_sudo_padlock_actions() -> list[str]:
+    """Return top-border padlock status/action controls for batch sudoers editing."""
+    if is_sudo_session_unlocked():
+        rem = get_sudo_session_remaining_sec()
+        rem_s = f"{max(1, (rem + 30) // 60)}m" if rem >= 60 else f"{rem}s"
+        return [
+            Badge(f"\uf09c {t('privileges.badge_unlocked', rem=rem_s)}", style="warn"),
+            ActionBtn(f"\uf023 {t('privileges.btn_lock_session')}", "priv:lock", tone="danger_soft"),
+        ]
+    return [ActionBtn(f"\uf023 {t('privileges.btn_unlock_session')}", "priv:unlock", tone="warn")]
+
+_POLKIT_AGENT_TOKENS = (
+    "soteria",
+    "polkit-gnome",
+    "polkit-kde",
+    "lxqt-policykit",
+    "mate-polkit",
+    "xfce-polkit",
+    "hyprpolkitagent",
+    "pantheon-agent-polkit",
+    "polkit-dumb-agent",
+    "polkit-mate",
+)
+
+
+def has_polkit_agent() -> bool:
+    """Return True if a graphical Polkit authentication agent is active in /proc."""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return False
+    for pid in entries:
+        if not pid.isdigit():
+            continue
+        try:
+            comm = open(f"/proc/{pid}/comm", "r", encoding="utf-8", errors="ignore").read().strip().lower()
+            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        blob = f"{comm} {cmdline}"
+        if any(tok in blob for tok in _POLKIT_AGENT_TOKENS):
+            return True
+    return False
 
 
 def _current_user() -> str:
@@ -170,9 +302,14 @@ PRIVILEGED_ACTIONS: dict[str, PrivilegedAction] = {
                 "/usr/bin/cpupower frequency-set -g powersave",
                 "/usr/bin/cpupower frequency-set -g ondemand",
                 "/usr/bin/cpupower frequency-set -g conservative",
+                "/usr/bin/cpupower set -e default",
+                "/usr/bin/cpupower set -e performance",
+                "/usr/bin/cpupower set -e balance_performance",
+                "/usr/bin/cpupower set -e balance_power",
+                "/usr/bin/cpupower set -e power",
                 "/usr/bin/tee /sys/devices/system/cpu/cpufreq/boost",
             ],
-            ["/usr/bin/cpupower", "frequency-set", "-g", "schedutil"],
+            ["/usr/bin/cpupower", "frequency-set", "-g", "powersave"],
         ),
         PrivilegedAction(
             "power_logind",
@@ -181,6 +318,26 @@ PRIVILEGED_ACTIONS: dict[str, PrivilegedAction] = {
                 "/usr/bin/tee /etc/systemd/logind.conf.d/ncui.conf",
             ],
             ["/usr/bin/mkdir", "-p", "/etc/systemd/logind.conf.d"],
+        ),
+        PrivilegedAction(
+            "gaming_mode",
+            [
+                "/usr/local/sbin/nc-gaming.sh on",
+                "/usr/local/sbin/nc-gaming.sh off",
+                "/usr/local/sbin/nc-gaming.sh status",
+            ],
+            ["/usr/local/sbin/nc-gaming.sh", "status"],
+        ),
+        PrivilegedAction(
+            "power_fan_profile",
+            [
+                "/usr/local/sbin/nc-fan-profile.sh silent",
+                "/usr/local/sbin/nc-fan-profile.sh balanced",
+                "/usr/local/sbin/nc-fan-profile.sh cool",
+                "/usr/local/sbin/nc-fan-profile.sh apply-stdin",
+                "/usr/local/sbin/nc-fan-profile.sh status",
+            ],
+            ["/usr/local/sbin/nc-fan-profile.sh", "status"],
         ),
     )
 }
@@ -224,7 +381,7 @@ def validate_sudoers_text(content: str) -> tuple[bool, str]:
             pass
 
 
-def _run_as_root(script: str, password: str = None) -> tuple[bool, str]:
+def _run_as_root(script: str, password: str = None, use_session: bool = False) -> tuple[bool, str]:
     try:
         if password is not None:
             res = subprocess.run(
@@ -235,20 +392,36 @@ def _run_as_root(script: str, password: str = None) -> tuple[bool, str]:
                 text=True,
                 timeout=12.0,
             )
-        else:
+            return res.returncode == 0, (res.stdout or "").strip()
+        if use_session and is_sudo_session_unlocked():
             res = subprocess.run(
-                ["pkexec", "bash", "-c", script],
+                ["sudo", "-n", "bash", "-c", script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=20.0,
+                timeout=12.0,
             )
+            out_s = (res.stdout or "").strip()
+            if res.returncode == 0:
+                _SUDO_SESSION["expires_at"] = time.monotonic() + _SUDO_SESSION["timeout_sec"]
+                return True, out_s
+            low_s = out_s.lower()
+            if any(tok in low_s for tok in ("password is required", "no tty", "not allowed")):
+                lock_sudo_session(drop_ticket=False)
+            return False, out_s
+        res = subprocess.run(
+            ["pkexec", "bash", "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20.0,
+        )
         return res.returncode == 0, (res.stdout or "").strip()
     except Exception as e:
         return False, str(e)
 
 
-def authorize_action(action_id: str, password: str = None, run_after: bool = True) -> tuple[bool, str]:
+def authorize_action(action_id: str, password: str = None, run_after: bool = True, use_session: bool = False) -> tuple[bool, str]:
     act = get_privileged_action(action_id)
     if not act:
         return False, t("privileges.err_unknown_priv_action", action_id=action_id)
@@ -270,7 +443,7 @@ def authorize_action(action_id: str, password: str = None, run_after: bool = Tru
             f"/usr/bin/install -o root -g root -m 0440 {q_tmp} {q_dst} && "
             f"/usr/bin/visudo -cf {q_dst}"
         )
-        ok, msg = _run_as_root(script, password=password)
+        ok, msg = _run_as_root(script, password=password, use_session=use_session)
         if not ok:
             return False, msg or t("privileges.err_auth_cancelled")
     finally:
@@ -289,13 +462,13 @@ def authorize_action(action_id: str, password: str = None, run_after: bool = Tru
     return True, t("privileges.ok_installed", filename=act.filename)
 
 
-def revoke_action(action_id: str, password: str = None) -> tuple[bool, str]:
+def revoke_action(action_id: str, password: str = None, use_session: bool = False) -> tuple[bool, str]:
     act = get_privileged_action(action_id)
     if not act:
         return False, t("privileges.err_unknown_action", action_id=action_id)
     script = f"/usr/bin/rm -f {shlex.quote(act.filename)}"
-    ok, msg = _run_as_root(script, password=password)
-    if not ok and password is None:
+    ok, msg = _run_as_root(script, password=password, use_session=use_session)
+    if not ok and password is None and not use_session:
         return False, msg or t("privileges.err_revoke_cancelled")
     if not ok:
         return False, msg or t("privileges.err_revoke_failed")
@@ -376,24 +549,27 @@ def build_privilege_modal_card(cc_panel, canvas: Canvas, is_it: bool = False) ->
     bx.add_kv(t("privileges.lbl_seccheck"), Txt(t("privileges.seccheck_val"), role="val"))
     bx.add_kv(t("privileges.lbl_notice"), Txt(act.warning(), role="attention"))
     bx.add_section(t("privileges.sec_preview"))
+    polkit_ok = has_polkit_agent()
     if mode == "revoke":
         bx.add_row(f"  {Txt(t('privileges.rm_comment', filename=act.filename), role='interrupt')}")
         bx.add_row(" ")
-        bx.add_row(
-            f"  {ActionBtn(t('privileges.btn_revoke_pwd'), f'priv:prompt_rev:{act.id}', tone='danger_soft')}  "
-            f"{ActionBtn(t('privileges.btn_revoke_polkit'), f'priv:pkexec_rev:{act.id}', tone='warn')}  "
-            f"{ActionBtn(t('common.cancel'), 'priv:cancel', tone='neutral')}"
-        )
+        rev_btns = [ActionBtn(t("privileges.btn_revoke_pwd"), f"priv:prompt_rev:{act.id}", tone="danger_soft")]
+        if polkit_ok:
+            rev_btns.append(ActionBtn(t("privileges.btn_revoke_polkit"), f"priv:pkexec_rev:{act.id}", tone="warn"))
+        rev_btns.append(ActionBtn(t("common.cancel"), "priv:cancel", tone="neutral"))
+        bx.add_row("  " + "  ".join(rev_btns))
     else:
         for ln in act.sudoers_content().splitlines():
             bx.add_row(f"  {Txt(canvas.truncate_plain(ln, canvas.inner_cols - 6), role='val' if not ln.startswith('#') else 'schema')}")
         bx.add_row(" ")
-        bx.add_row(
-            f"  {ActionBtn(t('privileges.btn_grant_pwd'), f'priv:prompt_auth:{act.id}', tone='apply')}  "
-            f"{ActionBtn(t('privileges.btn_grant_polkit'), f'priv:pkexec_auth:{act.id}', tone='apply')}  "
-            f"{ActionBtn(t('privileges.btn_run_once'), f'priv:prompt_once:{act.id}', tone='warn')}  "
-            f"{ActionBtn(t('privileges.btn_auth_tab'), 'priv:goto_auth', tone='neutral')}"
-        )
+        grant_btns = [ActionBtn(t("privileges.btn_grant_pwd"), f"priv:prompt_auth:{act.id}", tone="apply")]
+        if polkit_ok:
+            grant_btns.append(ActionBtn(t("privileges.btn_grant_polkit"), f"priv:pkexec_auth:{act.id}", tone="apply"))
+        grant_btns.extend([
+            ActionBtn(t("privileges.btn_run_once"), f"priv:prompt_once:{act.id}", tone="warn"),
+            ActionBtn(t("privileges.btn_auth_tab"), "priv:goto_auth", tone="neutral"),
+        ])
+        bx.add_row("  " + "  ".join(grant_btns))
     bx.add_row(" ")
     cards.append(bx)
     return cards
@@ -408,12 +584,40 @@ def handle_privilege_link(cc_panel, uri: str) -> bool:
 
     if cmd == "cancel":
         STATE.set("privileges", "pending_action", "")
+    elif cmd == "unlock":
+        cc_panel.request_prompt(
+            "priv_unlock|session",
+            t("privileges.prompt_unlock"),
+            "",
+            secret=True,
+            title=t("privileges.prompt_unlock_title"),
+            required=True,
+        )
+        return True
+    elif cmd == "lock":
+        lock_sudo_session(drop_ticket=True)
+        _set_priv_fb(True, t("privileges.ok_session_locked"))
     elif cmd == "request" and aid in PRIVILEGED_ACTIONS:
-        STATE.set("privileges", "pending_action", aid)
-        STATE.set("privileges", "auth_mode", "grant")
+        if is_sudo_session_unlocked():
+            ok, msg = authorize_action(aid, use_session=True, run_after=True)
+            _set_priv_fb(ok, msg)
+            STATE.set("privileges", "pending_action", "")
+            if not ok and not is_sudo_session_unlocked():
+                request_privilege_modal(cc_panel, aid)
+        else:
+            STATE.set("privileges", "pending_action", aid)
+            STATE.set("privileges", "auth_mode", "grant")
     elif cmd == "revoke" and aid in PRIVILEGED_ACTIONS:
-        STATE.set("privileges", "pending_action", aid)
-        STATE.set("privileges", "auth_mode", "revoke")
+        if is_sudo_session_unlocked():
+            ok, msg = revoke_action(aid, use_session=True)
+            _set_priv_fb(ok, msg)
+            STATE.set("privileges", "pending_action", "")
+            if not ok and not is_sudo_session_unlocked():
+                STATE.set("privileges", "pending_action", aid)
+                STATE.set("privileges", "auth_mode", "revoke")
+        else:
+            STATE.set("privileges", "pending_action", aid)
+            STATE.set("privileges", "auth_mode", "revoke")
     elif cmd == "goto_auth":
         STATE.set("privileges", "pending_action", "")
         if hasattr(cc_panel, "set_section"):
@@ -481,6 +685,12 @@ def handle_privilege_prompt(cc_panel, action_id: str, text: str) -> bool:
     if "|" not in action_id or not pwd:
         return False
     kind, aid = action_id.split("|", 1)
+    if kind == "priv_unlock":
+        ok, msg = unlock_sudo_session(pwd)
+        _set_priv_fb(ok, msg)
+        if ok:
+            STATE.set("privileges", "pending_action", "")
+        return True
     if kind == "priv_auth":
         ok, msg = authorize_action(aid, password=pwd, run_after=True)
         _set_priv_fb(ok, msg)

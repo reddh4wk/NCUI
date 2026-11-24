@@ -8,15 +8,9 @@ import signal
 import subprocess
 import sys
 import time
-from urllib.parse import parse_qs, urlparse
-import gi
-
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk
 from core import probe
 from core.completion import catalog_xkb_layouts, rank_candidates
-from core.config import CONFIG_DIR, ROOT_DIR
+from core.config import CONFIG_DIR
 from core.i18n import get_active_language, set_language, t
 from core.privileges import (
     build_privilege_modal_card,
@@ -33,16 +27,6 @@ MACROS_FILE = os.path.join(CONFIG_DIR, "macros.json")
 MACROS_EXPORT_FILE = os.path.join(CONFIG_DIR, "macros_export.json")
 SHORTCUTS_STORE_FILE = os.path.join(CONFIG_DIR, "shortcuts_store.json")
 MACRO_PLAY_BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-macro-play")
-VIDEO_WP_BIN = os.path.join(ROOT_DIR, "bin", "nc-video-wallpaper")
-_YT_WALL_DIR = os.path.expanduser("~/.local/nc-desktop/wallpapers/yt")
-_VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")
-_YT_VID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_YT_PL_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
-_YT_PL_RAW_RE = re.compile(r"^(?:PL|UU|FL|LP|RD|OLAK5uy_)[A-Za-z0-9_-]{10,}$")
-_YT_HOSTS = {
-    "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
-    "youtube-nocookie.com", "www.youtube-nocookie.com", "youtu.be", "www.youtu.be",
-}
 XKB_BASE_LST = "/usr/share/X11/xkb/rules/base.lst"
 
 DEFAULT_NIRI_SHORTCUTS = [
@@ -65,7 +49,7 @@ DEFAULT_NIRI_SHORTCUTS = [
     {"id": "sys_kbd_next", "cat": "system", "combo": "Mod+Space", "action": 'switch-layout "next"'},
     {"id": "sys_nc_cc", "cat": "system", "combo": "Mod+I", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "popup" "settings"'},
     {"id": "sys_nc_shot", "cat": "system", "combo": "Mod+Print", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "action" "capture" "repeat"'},
-    {"id": "sys_overlay", "cat": "system", "combo": "Mod+Shift+Slash", "action": "show-hotkey-overlay"},
+    {"id": "sys_overlay", "cat": "system", "combo": "Mod+Shift+Slash", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "popup" "hotkeys"'},
     {"id": "sys_quit", "cat": "system", "combo": "Mod+Shift+E", "action": "quit"},
     # Apps defaults
     {"id": "app_term", "cat": "apps", "combo": "Mod+Return", "action": 'spawn "ghostty"'},
@@ -95,12 +79,27 @@ _NIRI_KEY_ALIASES = {
 
 _COMMON_KEYCODES = {
     "Escape": 1, "1": 2, "2": 3, "3": 4, "4": 5, "5": 6, "6": 7, "7": 8, "8": 9, "9": 10, "0": 11,
-    "BackSpace": 14, "Tab": 15, "Q": 16, "W": 17, "E": 18, "R": 19, "T": 20, "Y": 21, "U": 22,
-    "I": 23, "O": 24, "P": 25, "Return": 28, "Ctrl_L": 29, "A": 30, "S": 31, "D": 32, "F": 33,
-    "G": 34, "H": 35, "J": 36, "K": 37, "L": 38, "Shift_L": 42, "Z": 44, "X": 45, "C": 46, "V": 47,
-    "B": 48, "N": 49, "M": 50, "Alt_L": 56, "Space": 57, "F1": 59, "F2": 60, "F3": 61, "F4": 62,
+    "Minus": 12, "Equal": 13, "BackSpace": 14, "Tab": 15, "Q": 16, "W": 17, "E": 18, "R": 19, "T": 20,
+    "Y": 21, "U": 22, "I": 23, "O": 24, "P": 25, "BracketLeft": 26, "BracketRight": 27, "Return": 28,
+    "Ctrl_L": 29, "Control_L": 29, "A": 30, "S": 31, "D": 32, "F": 33, "G": 34, "H": 35, "J": 36,
+    "K": 37, "L": 38, "Semicolon": 39, "Apostrophe": 40, "Grave": 41, "Shift_L": 42, "BackSlash": 43,
+    "Z": 44, "X": 45, "C": 46, "V": 47, "B": 48, "N": 49, "M": 50, "Comma": 51, "Period": 52,
+    "Slash": 53, "Shift_R": 54, "Alt_L": 56, "Space": 57, "F1": 59, "F2": 60, "F3": 61, "F4": 62,
     "F5": 63, "F6": 64, "F7": 65, "F8": 66, "F9": 67, "F10": 68, "F11": 87, "F12": 88,
-    "Up": 103, "Left": 105, "Right": 106, "Down": 108, "Delete": 111, "Pause": 119, "Super_L": 125,
+    "Control_R": 97, "Alt_R": 100, "Up": 103, "Left": 105, "Right": 106, "Down": 108, "Delete": 111,
+    "Pause": 119, "Super_L": 125, "Super_R": 126,
+}
+
+_TEXT_CHAR_TO_KEY = {
+    " ": ("Space", False), "\t": ("Tab", False), "\n": ("Return", False),
+    "-": ("Minus", False), "_": ("Minus", True), "=": ("Equal", False), "+": ("Equal", True),
+    "[": ("BracketLeft", False), "{": ("BracketLeft", True), "]": ("BracketRight", False), "}": ("BracketRight", True),
+    ";": ("Semicolon", False), ":": ("Semicolon", True), "'": ("Apostrophe", False), '"': ("Apostrophe", True),
+    "`": ("Grave", False), "~": ("Grave", True), "\\": ("BackSlash", False), "|": ("BackSlash", True),
+    ",": ("Comma", False), "<": ("Comma", True), ".": ("Period", False), ">": ("Period", True),
+    "/": ("Slash", False), "?": ("Slash", True),
+    "!": ("1", True), "@": ("2", True), "#": ("3", True), "$": ("4", True), "%": ("5", True),
+    "^": ("6", True), "&": ("7", True), "*": ("8", True), "(": ("9", True), ")": ("0", True),
 }
 
 _FALLBACK_XKB_LAYOUTS = [
@@ -115,6 +114,8 @@ _FALLBACK_XKB_LAYOUTS = [
 
 _RUNTIME_REC = {"held": {}, "last_ts": 0.0, "steps": []}
 _XKB_LAYOUTS_CACHE: list[tuple[str, str]] | None = None
+_OPT_KBD: dict[str, tuple[float, int]] = {}
+_OPT_MOUSE: dict[str, tuple[float, float]] = {}
 
 
 from core.config import _update_toml_key_in_section
@@ -230,9 +231,11 @@ def _std_action_lookup() -> dict[str, dict]:
     for d in DEFAULT_NIRI_SHORTCUTS:
         res[_norm_action_str(d["action"])] = d
         by_id[d["id"]] = d
-    # Also recognize single-string nc-ctl command variants
+    # Also recognize single-string nc-ctl command variants & legacy overlay
     res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl popup settings"'] = by_id["sys_nc_cc"]
     res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl action capture repeat"'] = by_id["sys_nc_shot"]
+    res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl popup hotkeys"'] = by_id["sys_overlay"]
+    res["show-hotkey-overlay"] = by_id["sys_overlay"]
     return res
 
 
@@ -298,6 +301,11 @@ def _collect_keyboard_state() -> dict:
                 combo = m_b.group(1).strip()
                 action = _norm_action_str(m_b.group(2))
                 state["binds"].append({"combo": combo, "action": action, "cat": _action_cat(action)})
+    now = time.monotonic()
+    for sk in ("repeat_rate", "repeat_delay"):
+        ov = _OPT_KBD.get(sk)
+        if ov and (now - ov[0]) < 2.5:
+            state[sk] = ov[1]
     return state
 
 
@@ -566,115 +574,8 @@ def _advance_conflict_wizard(cc_panel, wizard: dict, mode_msg: str = "") -> None
         STATE.set("keyboard", "conflict_wizard", wizard)
 
 
-def parse_youtube_url(raw_str: str) -> dict:
-    s = str(raw_str or "").strip()
-    empty = {"ok": False, "video_id": "", "playlist_id": "", "is_playlist": False, "canonical_url": "", "kind": ""}
-    if not s:
-        return empty
-    if _YT_VID_RE.match(s):
-        return {
-            "ok": True,
-            "video_id": s,
-            "playlist_id": "",
-            "is_playlist": False,
-            "canonical_url": f"https://www.youtube.com/watch?v={s}",
-            "kind": "YT VIDEO",
-        }
-    if _YT_PL_RAW_RE.match(s):
-        return {
-            "ok": True,
-            "video_id": "",
-            "playlist_id": s,
-            "is_playlist": True,
-            "canonical_url": f"https://www.youtube.com/playlist?list={s}",
-            "kind": "YT PLAYLIST",
-        }
-    cand = s if re.match(r"^https?://", s, re.IGNORECASE) else (f"https://{s}" if "." in s else "")
-    if not cand:
-        return empty
-    try:
-        parsed = urlparse(cand)
-    except Exception:
-        return empty
-    host = (parsed.hostname or "").lower()
-    if host not in _YT_HOSTS:
-        return empty
-    qs = parse_qs(parsed.query)
-    parts = [p for p in parsed.path.split("/") if p]
-    vid = ""
-    plid = (qs.get("list") or [""])[0].strip()
-    if host.endswith("youtu.be"):
-        if parts and _YT_VID_RE.match(parts[0]):
-            vid = parts[0]
-    else:
-        if parsed.path.startswith("/watch") or "v" in qs:
-            v_cand = (qs.get("v") or [""])[0].strip()
-            if _YT_VID_RE.match(v_cand):
-                vid = v_cand
-        elif len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
-            if _YT_VID_RE.match(parts[1]):
-                vid = parts[1]
-    if plid and not _YT_PL_RE.match(plid):
-        plid = ""
-    is_pl = bool(plid)
-    if not vid and not plid:
-        return empty
-    if is_pl and vid:
-        canonical = f"https://www.youtube.com/watch?v={vid}&list={plid}"
-    elif is_pl:
-        canonical = f"https://www.youtube.com/playlist?list={plid}"
-    else:
-        canonical = f"https://www.youtube.com/watch?v={vid}"
-    return {
-        "ok": True,
-        "video_id": vid,
-        "playlist_id": plid,
-        "is_playlist": is_pl,
-        "canonical_url": canonical,
-        "kind": "YT PLAYLIST" if is_pl else "YT VIDEO",
-    }
-
-
-def _detect_macro_media_kind(src: str) -> str:
-    s = str(src or "").strip()
-    if not s:
-        return ""
-    yt = parse_youtube_url(s)
-    if yt["ok"]:
-        return yt["kind"]
-    base = os.path.basename(s.rstrip("/"))
-    if base.startswith("yt_pl_"):
-        return "YT PLAYLIST"
-    if s.lower().endswith(_VIDEO_EXTS) or os.path.isfile(os.path.expanduser(s)):
-        return "VIDEO"
-    if s.startswith(("http://", "https://")):
-        return "STREAM"
-    return ""
-
-
-def _read_wl_clipboard() -> str:
-    if probe.has_bin("wl-paste"):
-        ok, out = probe.run_cmd(["wl-paste", "-n"], timeout=1.5)
-        if ok and out:
-            return out.strip()
-    if probe.has_bin("xclip"):
-        ok, out = probe.run_cmd(["xclip", "-o", "-selection", "clipboard"], timeout=1.5)
-        if ok and out:
-            return out.strip()
-    try:
-        from gi.repository import Gtk
-        txt = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()
-        if txt:
-            return txt.strip()
-    except Exception:
-        pass
-    return ""
-
-
 def _norm_macro(m: dict, idx: int = 0) -> dict:
     p_key = str(m.get("panic_key") or "F12")
-    deliv = str(m.get("media_delivery") or "stream")
-    mloop = str(m.get("media_loop") or "loop")
     return {
         "id": str(m.get("id") or f"mac_{idx}"),
         "name": str(m.get("name") or f"Macro {idx + 1}"),
@@ -697,11 +598,6 @@ def _norm_macro(m: dict, idx: int = 0) -> dict:
         "cmd": str(m.get("cmd") or ""),
         "panic_key": p_key if p_key in ("F12", "Pause") else "F12",
         "countdown_s": max(0, min(15, int(m.get("countdown_s", 0) or 0))),
-        "media_source": str(m.get("media_source") or "").strip(),
-        "media_delivery": deliv if deliv in ("download", "stream") else "stream",
-        "media_loop": mloop if mloop in ("loop", "once") else "loop",
-        "media_mute": bool(m.get("media_mute", True)),
-        "media_volume": max(0, min(100, int(m.get("media_volume", 60) or 60))),
     }
 
 
@@ -764,7 +660,7 @@ def _find_saved_macro(macro_id: str, macros: list[dict] = None) -> dict | None:
 def is_macro_draft_dirty(draft: dict, macros: list[dict] = None) -> bool:
     saved = _find_saved_macro(draft.get("id", ""), macros)
     if saved is None:
-        return bool(draft.get("steps") or draft.get("combo") or draft.get("media_source") or draft.get("cmd"))
+        return bool(draft.get("steps") or draft.get("combo") or draft.get("cmd"))
     return _norm_macro(draft) != _norm_macro(saved)
 
 
@@ -823,121 +719,19 @@ def _simulate_macro_sandbox(draft: dict) -> str:
     return f'{trace}  =>  "{out_s}"' if out_s else trace
 
 
-def _primary_output_name() -> str:
-    if probe.has_bin("niri"):
-        ok, out = probe.run_cmd(["niri", "msg", "-j", "outputs"], timeout=0.6)
-        if ok and out:
-            try:
-                data = json.loads(out)
-                if isinstance(data, dict) and data:
-                    return sorted(data.keys())[0]
-            except Exception:
-                pass
-    return "DP-1"
-
-
-def _find_cached_yt_file(yt: dict) -> str:
-    if not yt or not yt.get("ok"):
-        return ""
-    if yt.get("is_playlist") and yt.get("playlist_id"):
-        pl_dir = os.path.join(_YT_WALL_DIR, f"yt_pl_{yt['playlist_id']}")
-        if os.path.isdir(pl_dir) and any(fn.lower().endswith(_VIDEO_EXTS) for fn in os.listdir(pl_dir)):
-            return pl_dir
-        return ""
-    vid = yt.get("video_id") or ""
-    if vid and os.path.isdir(_YT_WALL_DIR):
-        for ext in _VIDEO_EXTS:
-            cand = os.path.join(_YT_WALL_DIR, f"yt_{vid}{ext}")
-            if os.path.isfile(cand):
-                return cand
-    return ""
-
-
-def _spawn_macro_media_player(target: str, macro: dict) -> None:
-    mon = _primary_output_name()
-    is_mute = bool(macro.get("media_mute", True))
-    vol = max(0, min(100, int(macro.get("media_volume", 60) or 60)))
-    mloop = str(macro.get("media_loop") or "loop")
-    deliv = str(macro.get("media_delivery") or "stream")
-    kind = _detect_macro_media_kind(target)
-    if probe.has_bin("mpvpaper"):
-        opts = [f"input-ipc-server=/tmp/nc_mpvpaper_{mon}.sock"]
-        if target.startswith("http") or deliv == "stream":
-            opts.extend(["ytdl=yes", "ytdl-format=bv*[height<=1080]+ba/b[height<=1080]/b"])
-        opts.append("keep-open=yes" if mloop == "once" else ("loop-playlist=inf" if kind == "YT PLAYLIST" or os.path.isdir(target) else "loop=inf"))
-        opts.append("no-audio" if is_mute else f"volume={vol}")
-        probe.spawn_bg(["mpvpaper", "-o", " ".join(opts), mon, target])
-    elif os.path.isfile(VIDEO_WP_BIN):
-        probe.spawn_bg([
-            sys.executable, VIDEO_WP_BIN,
-            "--output", mon, "--target", target,
-            "--loop", mloop, "--mute", "1" if is_mute else "0",
-            "--volume", str(vol), "--ipc-socket", f"/tmp/nc_mpvpaper_{mon}.sock",
-        ])
-    elif probe.has_bin("mpv"):
-        args = ["mpv", "--no-terminal"]
-        if mloop == "loop":
-            args.append("--loop-playlist=inf" if kind == "YT PLAYLIST" else "--loop=inf")
-        args.append("--no-audio" if is_mute else f"--volume={vol}")
-        args.append(target)
-        probe.spawn_bg(args)
-
-
-def _trigger_macro_media(macro: dict, cc_panel=None) -> str:
-    src = str(macro.get("media_source") or "").strip()
-    if not src:
-        return ""
-    yt = parse_youtube_url(src)
-    deliv = str(macro.get("media_delivery") or "stream")
-    if yt["ok"] and deliv == "download":
-        cached = _find_cached_yt_file(yt)
-        if cached:
-            _spawn_macro_media_player(cached, macro)
-            return cached
-        if probe.has_bin("yt-dlp"):
-            STATE.set("keyboard", "macro_yt_dl", True)
-            os.makedirs(_YT_WALL_DIR, exist_ok=True)
-            is_pl = bool(yt["is_playlist"] and yt["playlist_id"])
-            out_tpl = (
-                os.path.join(_YT_WALL_DIR, f"yt_pl_{yt['playlist_id']}", "%(playlist_index)03d_%(id)s.%(ext)s")
-                if is_pl
-                else os.path.join(_YT_WALL_DIR, "yt_%(id)s.%(ext)s")
-            )
-            cmd = [
-                "yt-dlp",
-                "--yes-playlist" if is_pl else "--no-playlist",
-                "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
-                "--merge-output-format", "mp4",
-                "-o", out_tpl,
-                yt["canonical_url"],
-            ]
-
-            def _dl():
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
-                return _find_cached_yt_file(yt) or yt["canonical_url"]
-
-            def _done(resolved: str):
-                STATE.set("keyboard", "macro_yt_dl", False)
-                _spawn_macro_media_player(resolved, macro)
-                if cc_panel and cc_panel.shell:
-                    cc_panel.shell.refresh_view()
-
-            probe.run_async(_dl, on_done=_done)
-            return yt["canonical_url"]
-    target = yt["canonical_url"] if yt["ok"] else os.path.expanduser(src)
-    _spawn_macro_media_player(target, macro)
-    return target
-
-
 def _save_macro_draft_entry(d: dict) -> list[dict]:
     macros = _load_macros()
     for i, m in enumerate(macros):
         if m["id"] == d["id"]:
             macros[i] = d
             _save_macros(macros)
+            from core.pad_mapper_core import reload_pad_mapper_if_running
+            reload_pad_mapper_if_running()
             return macros
     macros.append(d)
     _save_macros(macros)
+    from core.pad_mapper_core import reload_pad_mapper_if_running
+    reload_pad_mapper_if_running()
     return macros
 
 
@@ -996,6 +790,9 @@ def _build_niri_action_from_draft(d: dict) -> str:
 
 
 def _decode_gdk_event(event) -> tuple[str, list[str], str, int]:
+    import gi
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk
     keysym = Gdk.keyval_name(event.keyval) or f"Key_{event.keyval}"
     hw = int(getattr(event, "hardware_keycode", 0) or 0)
     evdev_code = max(0, hw - 8)
@@ -1075,7 +872,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             cc_panel.shell.refresh_view()
         return True
 
-    if cap_mode in ("shortcut_combo", "macro_trigger", "conflict_rebind"):
+    if cap_mode in ("shortcut_combo", "macro_trigger", "conflict_rebind", "ctrl_bind"):
         if keysym == "Escape" and not mods:
             _stop_capture(cc_panel)
             _set_kbd_feedback(True, t("cc_keyboard.key_capture_cancelled"))
@@ -1094,6 +891,15 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             return True
 
         combo = "+".join(mods + [niri_k])
+        if cap_mode == "ctrl_bind":
+            _stop_capture(cc_panel)
+            from core.pad_mapper_core import resolve_combo_codes
+            from panels.cc_input_controllers import apply_captured_pad_key
+            codes = resolve_combo_codes(combo, extra_code=evdev_code)
+            apply_captured_pad_key(combo, codes)
+            if cc_panel.shell:
+                cc_panel.shell.refresh_view()
+            return True
         if cap_mode == "conflict_rebind":
             wiz = dict(STATE.get("keyboard", "conflict_wizard", {}) or {})
             step_i = int(wiz.get("step", 0))
@@ -1120,7 +926,8 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         return True
 
     if cap_mode == "macro_rec":
-        if keysym == "F12" and not mods:
+        stop_key = str(_get_macro_draft().get("panic_key") or "F12")
+        if keysym == stop_key and not mods:
             _finish_macro_recording(cc_panel)
             return True
         if evdev_code in _RUNTIME_REC["held"]:
@@ -1131,6 +938,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         _RUNTIME_REC["last_ts"] = now
         steps.append({"key": niri_k if not is_mod_only else keysym, "keycode": evdev_code, "delay_ms": delay_ms, "hold_ms": 60})
         _RUNTIME_REC["held"][evdev_code] = (len(steps) - 1, now)
+        STATE.set("keyboard", "macro_sel_step", len(steps) - 1)
         _set_macro_draft(steps=list(steps))
         if cc_panel.shell:
             cc_panel.shell.refresh_view()
@@ -1157,7 +965,7 @@ def handle_cc_keyboard_key_release(cc_panel, event) -> bool:
                 cc_panel.shell.refresh_view()
         return True
 
-    if cap_mode in ("shortcut_combo", "macro_trigger", "conflict_rebind"):
+    if cap_mode in ("shortcut_combo", "macro_trigger", "conflict_rebind", "ctrl_bind"):
         STATE.set("keyboard", "capture_preview", "")
         if cc_panel.shell:
             cc_panel.shell.refresh_view()
@@ -1186,19 +994,93 @@ def _feedback_box(is_it: bool = False) -> list:
     return [FeedbackBox(t("cc_keyboard.keyboard_configuration_status"), bool(fb["ok"]), fb["msg"])]
 
 
-def _calc_macro_total_ms(steps: list, timing_mode: str, fixed_ms: int, speed: float) -> int:
+def compile_macro_timeline(steps: list, timing_mode: str, fixed_ms: int, speed: float) -> tuple[list[dict], int]:
+    """Compila la timeline reale degli step (identica a bin/nc-macro-play) con timestamp e corsie di overlap."""
     if not steps:
-        return 0
+        return [], 0
     spd = max(0.1, float(speed or 1.0))
-    if timing_mode == "zero":
-        return int(len(steps) * 6)
-    tot = 0.0
-    for st in steps:
-        if timing_mode == "fixed":
-            tot += fixed_ms / spd + max(8.0, fixed_ms / spd)
+    fms = max(5, int(fixed_ms or 25))
+    cur_ms = 0.0
+    max_end = 0.0
+    lane_ends: list[float] = []
+    out: list[dict] = []
+    for idx, st in enumerate(steps):
+        key_s = str(st.get("key", "?"))
+        raw_d = max(0, int(st.get("delay_ms", 0) or 0))
+        raw_h = max(10, int(st.get("hold_ms", 50) or 50))
+        if timing_mode == "zero":
+            eff_d = 0.0 if idx == 0 else 6.0
+            eff_h = 4.0
+            start_ms = float(idx * 6.0)
+            end_ms = start_ms + 4.0
+        elif timing_mode == "fixed":
+            eff_d = fms / spd
+            eff_h = max(8.0, fms / spd)
+            cur_ms += eff_d
+            start_ms = cur_ms
+            end_ms = start_ms + eff_h
         else:
-            tot += (float(st.get("delay_ms", 0)) + max(10.0, float(st.get("hold_ms", 50)))) / spd
-    return int(round(tot))
+            eff_d = float(raw_d) / spd
+            eff_h = max(10.0, float(raw_h)) / spd
+            cur_ms += eff_d
+            start_ms = cur_ms
+            end_ms = start_ms + eff_h
+        lane = -1
+        for li, le in enumerate(lane_ends):
+            if start_ms >= le - 0.1:
+                lane = li
+                lane_ends[li] = end_ms
+                break
+        if lane < 0:
+            lane = len(lane_ends)
+            lane_ends.append(end_ms)
+        max_end = max(max_end, end_ms)
+        is_mod = key_s in _MOD_KEYS or key_s.startswith(("Shift", "Ctrl", "Control", "Alt", "Super", "Mod"))
+        out.append({
+            "idx": idx,
+            "key": key_s,
+            "keycode": int(st.get("keycode", 0) or 0),
+            "raw_delay": raw_d,
+            "raw_hold": raw_h,
+            "eff_delay": eff_d,
+            "eff_hold": eff_h,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "lane": lane,
+            "is_mod": is_mod,
+        })
+    return out, int(round(max_end))
+
+
+def _calc_macro_total_ms(steps: list, timing_mode: str, fixed_ms: int, speed: float) -> int:
+    _items, tot = compile_macro_timeline(steps, timing_mode, fixed_ms, speed)
+    return tot
+
+
+def _text_to_macro_steps(text: str, existing_count: int = 0) -> list[dict]:
+    """Converte una stringa in una sequenza di step evdev (con Shift sovrapposto per maiuscole/simboli)."""
+    steps: list[dict] = []
+    for ch in text:
+        delay = 0 if (existing_count == 0 and not steps) else 45
+        if ch in _TEXT_CHAR_TO_KEY:
+            k_name, need_shift = _TEXT_CHAR_TO_KEY[ch]
+        elif "a" <= ch <= "z":
+            k_name, need_shift = ch.upper(), False
+        elif "A" <= ch <= "Z":
+            k_name, need_shift = ch, True
+        elif "0" <= ch <= "9":
+            k_name, need_shift = ch, False
+        else:
+            continue
+        kc = _COMMON_KEYCODES.get(k_name, 0)
+        if kc <= 0:
+            continue
+        if need_shift:
+            steps.append({"key": "Shift_L", "keycode": 42, "delay_ms": delay, "hold_ms": 85})
+            steps.append({"key": k_name, "keycode": kc, "delay_ms": 20, "hold_ms": 45})
+        else:
+            steps.append({"key": k_name, "keycode": kc, "delay_ms": delay, "hold_ms": 45})
+    return steps
 
 
 def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
@@ -1208,11 +1090,19 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
     st = _collect_keyboard_state()
 
     if act.startswith("rate:"):
-        ok, msg = _update_kbd_kdl("repeat-rate", max(10, min(100, int(round(float(act.split(":", 1)[1]))))))
-        _set_kbd_feedback(ok, msg)
+        rate = max(10, min(100, int(round(float(act.split(":", 1)[1])))))
+        _OPT_KBD["repeat_rate"] = (time.monotonic(), rate)
+        probe.enqueue_latest("kbd_kdl_rate", lambda r=rate: _update_kbd_kdl("repeat-rate", r), debounce_ms=160)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
     elif act.startswith("delay:"):
-        ok, msg = _update_kbd_kdl("repeat-delay", max(150, min(1000, int(round(float(act.split(":", 1)[1]))))))
-        _set_kbd_feedback(ok, msg)
+        delay = max(150, min(1000, int(round(float(act.split(":", 1)[1])))))
+        _OPT_KBD["repeat_delay"] = (time.monotonic(), delay)
+        probe.enqueue_latest("kbd_kdl_delay", lambda d=delay: _update_kbd_kdl("repeat-delay", d), debounce_ms=160)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
     elif act.startswith("numlock:"):
         ok, msg = _update_kbd_kdl("numlock", act.split(":", 1)[1] == "on")
         _set_kbd_feedback(ok, msg)
@@ -1364,7 +1254,16 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         _RUNTIME_REC["steps"].clear()
         _RUNTIME_REC["last_ts"] = time.monotonic()
         STATE.set("keyboard", "capture_mode", "macro_rec")
+        STATE.set("keyboard", "macro_sel_step", 0)
         _set_macro_draft(steps=[])
+        if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+            cc_panel.shell.set_key_capture_grab(True)
+    elif act == "macro_rec_append":
+        d = _get_macro_draft()
+        _RUNTIME_REC["held"].clear()
+        _RUNTIME_REC["steps"] = [dict(s) for s in d["steps"]]
+        _RUNTIME_REC["last_ts"] = time.monotonic()
+        STATE.set("keyboard", "capture_mode", "macro_rec")
         if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
             cc_panel.shell.set_key_capture_grab(True)
     elif act == "macro_rec_stop":
@@ -1455,34 +1354,6 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             on_commit=lambda txt: _set_macro_draft(repeat_mode="count", repeat_count=max(1, min(999, int(txt.strip())))),
         )
         return True
-    elif act == "macro_media_prompt":
-        cc_panel.request_prompt("cc_kbd_macro_media", t("cc_keyboard.media_source_prompt"), _get_macro_draft()["media_source"], title=t("cc_keyboard.media_source_title"), required=True, completion="path_file")
-        return True
-    elif act == "macro_paste_yt":
-        clip = _read_wl_clipboard()
-        yt = parse_youtube_url(clip)
-        if yt["ok"]:
-            _set_macro_draft(media_source=yt["canonical_url"])
-            _set_kbd_feedback(True, t("cc_keyboard.media_yt_pasted", p0=yt["kind"], p1=yt["canonical_url"]))
-        elif clip and (clip.startswith(("http://", "https://")) or os.path.exists(os.path.expanduser(clip))):
-            _set_macro_draft(media_source=clip)
-            _set_kbd_feedback(True, t("cc_keyboard.media_src_set_msg", p0=clip))
-        else:
-            _set_kbd_feedback(False, t("cc_keyboard.media_clip_invalid"))
-    elif act == "macro_media_clear":
-        _set_macro_draft(media_source="")
-    elif act.startswith("macro_media_deliv:"):
-        deliv = act.split(":", 1)[1]
-        if deliv in ("download", "stream"):
-            _set_macro_draft(media_delivery=deliv)
-    elif act.startswith("macro_media_loop:"):
-        ml = act.split(":", 1)[1]
-        if ml in ("loop", "once"):
-            _set_macro_draft(media_loop=ml)
-    elif act.startswith("macro_media_mute:"):
-        _set_macro_draft(media_mute=(act.split(":", 1)[1] == "1"))
-    elif act.startswith("macro_media_vol:"):
-        _set_macro_draft(media_volume=max(0, min(100, int(round(float(act.split(":", 1)[1]))))))
     elif act == "macro_norm":
         d = _get_macro_draft()
         for i, s in enumerate(d["steps"]):
@@ -1492,7 +1363,63 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         _set_kbd_feedback(True, t("cc_keyboard.normalized_all_steps_to_35ms_delay"))
     elif act == "macro_clear_steps":
         _RUNTIME_REC["steps"].clear()
+        STATE.set("keyboard", "macro_sel_step", 0)
         _set_macro_draft(steps=[])
+    elif act == "macro_inline_text":
+        def _commit_text_steps(txt: str) -> None:
+            val = str(txt or "")
+            if not val:
+                return
+            d_m = _get_macro_draft()
+            added = _text_to_macro_steps(val, existing_count=len(d_m["steps"]))
+            if not added:
+                return
+            new_steps = list(d_m["steps"]) + added
+            STATE.set("keyboard", "macro_sel_step", len(new_steps) - 1)
+            _set_macro_draft(steps=new_steps)
+            _set_kbd_feedback(True, t("cc_keyboard.inserted_text_steps", p0=len(added)))
+        start_inline_input(
+            entry_id="cc_mac_text_add",
+            shell=cc_panel.shell,
+            trigger_uri=uri,
+            initial_text="",
+            max_len=48,
+            on_commit=_commit_text_steps,
+        )
+        return True
+    elif act.startswith("step_select:"):
+        idx = int(act.split(":", 1)[1])
+        steps = _get_macro_draft()["steps"]
+        if steps:
+            STATE.set("keyboard", "macro_sel_step", max(0, min(len(steps) - 1, idx)))
+    elif act.startswith("step_nudge:"):
+        _, s_i, fld, s_delta = act.split(":", 3)
+        idx, delta = int(s_i), int(s_delta)
+        steps = [dict(s) for s in _get_macro_draft()["steps"]]
+        if 0 <= idx < len(steps) and fld in ("delay_ms", "hold_ms"):
+            lo = 0 if fld == "delay_ms" else 10
+            steps[idx][fld] = max(lo, min(10000, int(steps[idx].get(fld, lo)) + delta))
+            STATE.set("keyboard", "macro_sel_step", idx)
+            _set_macro_draft(steps=steps)
+    elif act.startswith("step_set_timing:"):
+        _, s_i, s_del, s_hold = act.split(":", 3)
+        idx = int(s_i)
+        steps = [dict(s) for s in _get_macro_draft()["steps"]]
+        if 0 <= idx < len(steps):
+            steps[idx]["delay_ms"] = max(0, min(10000, int(s_del)))
+            steps[idx]["hold_ms"] = max(10, min(10000, int(s_hold)))
+            STATE.set("keyboard", "macro_sel_step", idx)
+            _set_macro_draft(steps=steps)
+    elif act.startswith("step_dup:"):
+        idx = int(act.split(":", 1)[1])
+        steps = [dict(s) for s in _get_macro_draft()["steps"]]
+        if 0 <= idx < len(steps):
+            clone = dict(steps[idx])
+            if clone["delay_ms"] == 0:
+                clone["delay_ms"] = 45
+            steps.insert(idx + 1, clone)
+            STATE.set("keyboard", "macro_sel_step", idx + 1)
+            _set_macro_draft(steps=steps)
     elif act == "step_inline_add":
         def _commit_step_add(txt: str) -> None:
             val = str(txt or "").strip()
@@ -1505,6 +1432,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             evc = _COMMON_KEYCODES.get(key, _COMMON_KEYCODES.get(key.upper(), 30))
             d_m = _get_macro_draft()
             steps_n = list(d_m["steps"]) + [{"key": key, "keycode": evc, "delay_ms": del_ms, "hold_ms": hold_ms}]
+            STATE.set("keyboard", "macro_sel_step", len(steps_n) - 1)
             _set_macro_draft(steps=steps_n)
         start_inline_input(
             entry_id="cc_mac_step_add",
@@ -1546,12 +1474,14 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         nxt = idx + delta
         if 0 <= idx < len(steps) and 0 <= nxt < len(steps):
             steps[idx], steps[nxt] = steps[nxt], steps[idx]
+            STATE.set("keyboard", "macro_sel_step", nxt)
             _set_macro_draft(steps=steps)
     elif act.startswith("step_del:"):
         idx = int(act.split(":", 1)[1])
         steps = _get_macro_draft()["steps"]
         if 0 <= idx < len(steps):
             steps.pop(idx)
+            STATE.set("keyboard", "macro_sel_step", max(0, min(len(steps) - 1, idx)) if steps else 0)
             _set_macro_draft(steps=steps)
     elif act == "macro_save_draft":
         d = _get_macro_draft()
@@ -1559,15 +1489,9 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         _set_kbd_feedback(True, t("cc_keyboard.saved_macro_steps", p0=d['name'], p1=len(d['steps'])))
     elif act in ("macro_play_draft", "macro_run_engine"):
         d = _get_macro_draft()
-        if not d["steps"] and not d["cmd"] and d["media_source"]:
-            _save_macro_draft_entry(d)
-            _trigger_macro_media(d, cc_panel)
-            _set_kbd_feedback(True, t("cc_keyboard.running_macro", p0=d["name"]))
-        elif _ensure_uinput_or_request(cc_panel):
+        if _ensure_uinput_or_request(cc_panel):
             _save_macro_draft_entry(d)
             probe.spawn_bg([MACRO_PLAY_BIN, d["id"]])
-            if d["media_source"]:
-                _trigger_macro_media(d, cc_panel)
             _set_kbd_feedback(True, t("cc_keyboard.replaying_macro_via_nc_macro_play", p0=d['name']))
     elif act == "macro_bind_draft":
         d = _get_macro_draft()
@@ -1575,24 +1499,25 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             _save_macro_draft_entry(d)
             ok, msg = _update_niri_bind(d["combo"], f'spawn "{MACRO_PLAY_BIN}" "{d["id"]}"')
             _set_kbd_feedback(ok, msg)
+    elif act == "macro_unbind_draft":
+        d = _get_macro_draft()
+        if d["combo"]:
+            ok, msg = _update_niri_bind(d["combo"], remove=True)
+            _set_kbd_feedback(ok, msg)
     elif act.startswith("macro_load:"):
         idx = int(act.split(":", 1)[1])
         macros = _load_macros()
         if 0 <= idx < len(macros):
             _RUNTIME_REC["steps"].clear()
+            STATE.set("keyboard", "macro_sel_step", 0)
             STATE.set("keyboard", "macro_draft", macros[idx])
     elif act.startswith("run_macro:"):
         idx = int(act.split(":", 1)[1])
         macros = _load_macros()
         if 0 <= idx < len(macros):
             m = macros[idx]
-            if not m["steps"] and not m["cmd"] and m["media_source"]:
-                _trigger_macro_media(m, cc_panel)
-                _set_kbd_feedback(True, t("cc_keyboard.running_macro", p0=m["name"]))
-            elif _ensure_uinput_or_request(cc_panel):
+            if _ensure_uinput_or_request(cc_panel):
                 probe.spawn_bg([MACRO_PLAY_BIN, m["id"]])
-                if m["media_source"]:
-                    _trigger_macro_media(m, cc_panel)
                 _set_kbd_feedback(True, t("cc_keyboard.running_macro", p0=m['name']))
     elif act.startswith("bind_macro:"):
         idx = int(act.split(":", 1)[1])
@@ -1610,6 +1535,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         if 0 <= idx < len(macros):
             macros.pop(idx)
             _save_macros(macros)
+            from core.pad_mapper_core import reload_pad_mapper_if_running
+            reload_pad_mapper_if_running()
     elif act.startswith("lib_flt:"):
         STATE.set("keyboard", "macro_lib_filter", act.split(":", 1)[1])
     elif act == "lib_search_open":
@@ -1693,12 +1620,18 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             trigger_uri=uri,
             initial_text=str(STATE.get("keyboard", "shortcut_query", "") or ""),
             max_len=40,
-            on_change=lambda txt: STATE.set("keyboard", "shortcut_query", str(txt or "")),
-            on_commit=lambda txt: STATE.set("keyboard", "shortcut_query", str(txt or "").strip()),
+            on_change=lambda txt: (STATE.set("keyboard", "shortcut_query", str(txt or "")), STATE.set("keyboard", "bind_page", 0)),
+            on_commit=lambda txt: (STATE.set("keyboard", "shortcut_query", str(txt or "").strip()), STATE.set("keyboard", "bind_page", 0)),
         )
         return True
     elif act == "bind_flt_clear":
         STATE.set("keyboard", "shortcut_query", "")
+        STATE.set("keyboard", "bind_page", 0)
+    elif act.startswith("bind_page:"):
+        STATE.set("keyboard", "bind_page", max(0, int(act.split(":", 1)[1])))
+    elif act == "bind_new":
+        STATE.set("keyboard", "bind_draft", {})
+        _stop_capture(cc_panel)
     elif act.startswith("bind_mode:"):
         _set_bind_draft(mode=act.split(":", 1)[1])
     elif act.startswith("bind_std_cat:"):
@@ -1781,8 +1714,11 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             b = st["binds"][idx]
             a_str = b["action"]
             std = _std_action_lookup().get(_norm_action_str(a_str))
+            nc_match = re.search(r'nc-ctl"\s+"(popup|settings)"\s+"([a-z0-9_]+)"', a_str)
             if std:
                 _set_bind_draft(combo=b["combo"], mode="standard", std_cat=std["cat"], std_act=std["action"], edit_orig=b["combo"])
+            elif nc_match:
+                _set_bind_draft(combo=b["combo"], mode="ncui", nc_target=f"{nc_match.group(1)} {nc_match.group(2)}", edit_orig=b["combo"])
             elif a_str.startswith("spawn "):
                 try:
                     cmd_s = shlex.join(shlex.split(a_str[6:]))
@@ -1800,6 +1736,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             _set_kbd_feedback(ok, t("cc_keyboard.unbound_and_moved_action_to_orphan", p0=b['combo']))
     elif act.startswith("bind_flt:"):
         STATE.set("keyboard", "bind_filter", act.split(":", 1)[1])
+        STATE.set("keyboard", "bind_page", 0)
     elif act.startswith("del_bind:"):
         ok, msg = _update_niri_bind(act.split(":", 1)[1], remove=True, auto_reload=True)
         _set_kbd_feedback(ok, msg)
@@ -1859,20 +1796,6 @@ def handle_cc_keyboard_prompt(cc_panel, action_id: str, text: str) -> bool:
         return True
     if action_id == "cc_kbd_mac_rep" and val.isdigit():
         _set_macro_draft(repeat_mode="count", repeat_count=max(1, min(999, int(val))))
-        return True
-    if action_id == "cc_kbd_macro_media":
-        if not val:
-            _set_macro_draft(media_source="")
-            return True
-        yt = parse_youtube_url(val)
-        if yt["ok"]:
-            _set_macro_draft(media_source=yt["canonical_url"])
-            _set_kbd_feedback(True, t("cc_keyboard.media_yt_pasted", p0=yt["kind"], p1=yt["canonical_url"]))
-        elif val.startswith(("http://", "https://")) or os.path.exists(os.path.expanduser(val)):
-            _set_macro_draft(media_source=val)
-            _set_kbd_feedback(True, t("cc_keyboard.media_src_set_msg", p0=val))
-        else:
-            _set_kbd_feedback(False, t("cc_keyboard.media_src_invalid"))
         return True
     if action_id == "cc_kbd_step_add" and val:
         parts = [p.strip() for p in val.split(",")]
@@ -2019,6 +1942,9 @@ def _collect_mouse_state() -> dict:
         st["tp_tap"] = _mouse_has_flag(tb, "tap")
         st["tp_dwt"] = _mouse_has_flag(tb, "dwt")
         st["tp_natural_scroll"] = _mouse_has_flag(tb, "natural-scroll")
+    ov_as = _OPT_MOUSE.get("accel_speed")
+    if ov_as and (time.monotonic() - ov_as[0]) < 2.5:
+        st["accel_speed"] = ov_as[1]
     return st
 
 
@@ -2085,11 +2011,19 @@ def handle_cc_mouse_link(cc_panel, uri: str) -> bool:
         ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-profile", f'"{prof}"'))
     elif cmd == "accel" and len(parts) >= 3:
         val = max(-1.0, min(1.0, float(parts[2])))
-        ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{val:.2f}"))
+        _OPT_MOUSE["accel_speed"] = (time.monotonic(), val)
+        probe.enqueue_latest("mouse_accel_kdl", lambda v=val: _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{v:.2f}")), debounce_ms=160)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
     elif cmd == "accel_step" and len(parts) >= 3:
         cur = _collect_mouse_state()["accel_speed"]
         val = max(-1.0, min(1.0, round(cur + float(parts[2]), 2)))
-        ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{val:.2f}"))
+        _OPT_MOUSE["accel_speed"] = (time.monotonic(), val)
+        probe.enqueue_latest("mouse_accel_kdl", lambda v=val: _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{v:.2f}")), debounce_ms=160)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
     elif cmd == "tp" and len(parts) >= 4:
         flag, en = parts[2], (parts[3] == "1")
         ok, msg = _mutate_niri_input("touchpad", lambda b: _mouse_set_flag_in_block(b, flag, en))
@@ -2107,10 +2041,16 @@ def handle_cc_mouse_link(cc_panel, uri: str) -> bool:
 def handle_cc_input_link(cc_panel, uri: str) -> bool:
     if handle_cc_keyboard_link(cc_panel, uri):
         return True
+    if uri.startswith("cc_ctrl:"):
+        from panels.cc_input_controllers import handle_cc_controllers_link
+        return handle_cc_controllers_link(cc_panel, uri)
     return handle_cc_mouse_link(cc_panel, uri)
 
 
 def handle_cc_input_prompt(cc_panel, action_id: str, text: str) -> bool:
+    if action_id.startswith("cc_ctrl_"):
+        from panels.cc_input_controllers import handle_cc_controllers_prompt
+        return handle_cc_controllers_prompt(cc_panel, action_id, text)
     return handle_cc_keyboard_prompt(cc_panel, action_id, text)
 
 

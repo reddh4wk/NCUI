@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import atexit
 import base64
+import colorsys
 import copy
 import ctypes
 import fcntl
@@ -30,6 +31,19 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, GLib
 from core import probe
+from core.asciifier import (
+    ASCIIFY_DEFAULTS,
+    CHAR_SETS as ASCII_CHAR_SETS,
+    COLOR_MODES as ASCII_COLOR_MODES,
+    clear_ascii_cache,
+    get_ascii_cache_stats,
+    get_cached_ascii_path,
+    image_cache_key,
+    is_pillow_available,
+    normalize_cfg as normalize_asciify_cfg,
+    render_ascii_folder,
+    render_ascii_image,
+)
 from core.config import (
     BOX_STYLES,
     CONFIG_DIR,
@@ -56,6 +70,8 @@ from core.config import (
     set_layout_margins,
     set_row_gap,
     set_surface_bg,
+    set_sys_notif_opacity_pct,
+    set_toast_opacity_pct,
     set_ui_transparency_pct,
     set_waybar_sync_color,
     set_waybar_sync_opacity,
@@ -601,8 +617,183 @@ _XCUR_SYMLINKS = {
 }
 
 
+NCUI_CURSOR_NAME = "NCUI Cursor"
+NCUI_CURSOR_PREFIX = "NCUI-Cursor"
+NCUI_CURSOR_ASSETS_DIR = os.path.join(ROOT_DIR, "assets", "cursors", "ncui-cursor")
+
+
+def is_ncui_cursor_name(name: str) -> bool:
+    s = str(name or "").strip().lower()
+    return s in ("ncui cursor", "ncui-cursor") or s.startswith("ncui-cursor-")
+
+
+def _hex_to_hsv(hex_color: str, fallback: str) -> tuple[float, float, float]:
+    h = str(hex_color or "").strip().lstrip("#")
+    if len(h) != 6 or not re.match(r"^[0-9a-fA-F]{6}$", h):
+        h = fallback.lstrip("#")
+    return colorsys.rgb_to_hsv(int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
+
+
+def _parse_xcursor_frames(path: str) -> list[tuple[int, int, int, int, int, int, bytes]]:
+    with open(path, "rb") as f:
+        data = f.read()
+    if len(data) < 16:
+        return []
+    magic, hdr_sz, _ver, ntoc = struct.unpack_from("<4sIII", data, 0)
+    if magic != b"Xcur":
+        return []
+    frames = []
+    for i in range(ntoc):
+        off = hdr_sz + i * 12
+        if off + 12 > len(data):
+            break
+        ctype, subtype, pos = struct.unpack_from("<III", data, off)
+        if ctype != 0xFFFD0002 or pos + 36 > len(data):
+            continue
+        chdr, _ct2, csub, _cv, w, h, xhot, yhot, delay = struct.unpack_from("<IIIIIIIII", data, pos)
+        pix_start = pos + chdr
+        pix_len = w * h * 4
+        if pix_start + pix_len > len(data):
+            continue
+        frames.append((int(csub or subtype or max(w, h)), w, h, xhot, yhot, delay, data[pix_start : pix_start + pix_len]))
+    return frames
+
+
+def _recolor_xcursor_bgra(
+    raw: bytes,
+    intent_hsv: tuple[float, float, float],
+    fault_hsv: tuple[float, float, float],
+) -> bytes:
+    ih, isat, ival = intent_hsv
+    fh, fsat, fval = fault_hsv
+    out = bytearray(raw)
+    n = len(out)
+    i = 0
+    while i < n:
+        a = out[i + 3]
+        if a > 0:
+            b, g, r = out[i], out[i + 1], out[i + 2]
+            inv_a = 1.0 / float(a)
+            ur = min(1.0, r * inv_a)
+            ug = min(1.0, g * inv_a)
+            ub = min(1.0, b * inv_a)
+            hh, ss, vv = colorsys.rgb_to_hsv(ur, ug, ub)
+            deg = hh * 360.0
+            if ss >= 0.15 and 130.0 <= deg <= 240.0:
+                nr, ng, nb = colorsys.hsv_to_rgb(ih, min(1.0, isat * (ss / 0.63)), min(1.0, ival * vv))
+                out[i] = min(a, int(round(nb * a)))
+                out[i + 1] = min(a, int(round(ng * a)))
+                out[i + 2] = min(a, int(round(nr * a)))
+            elif ss >= 0.15 and (deg <= 40.0 or deg >= 320.0):
+                nr, ng, nb = colorsys.hsv_to_rgb(fh, min(1.0, fsat * (ss / 0.65)), min(1.0, fval * vv))
+                out[i] = min(a, int(round(nb * a)))
+                out[i + 1] = min(a, int(round(ng * a)))
+                out[i + 2] = min(a, int(round(nr * a)))
+        i += 4
+    return bytes(out)
+
+
+def ensure_ncui_cursor_installed(intent_hex: str = "", fault_hex: str = "") -> str:
+    if not os.path.isdir(NCUI_CURSOR_ASSETS_DIR):
+        return "Adwaita"
+    colors = THEME.get("colors", {})
+    raw_i = str(intent_hex or colors.get("intent", "#00f0ff")).strip().lstrip("#").lower()
+    raw_f = str(fault_hex or colors.get("fault", "#ff2442")).strip().lstrip("#").lower()
+    if not re.match(r"^[0-9a-f]{6}$", raw_i):
+        raw_i = "00f0ff"
+    if not re.match(r"^[0-9a-f]{6}$", raw_f):
+        raw_f = "ff2442"
+
+    disk_name = f"{NCUI_CURSOR_PREFIX}-{raw_i}-{raw_f}"
+    os.makedirs(USER_ICONS_DIR, exist_ok=True)
+    dest_dir = os.path.join(USER_ICONS_DIR, disk_name)
+    if not os.path.isfile(os.path.join(dest_dir, "cursors", "left_ptr")):
+        intent_hsv = _hex_to_hsv(f"#{raw_i}", "#00f0ff")
+        fault_hsv = _hex_to_hsv(f"#{raw_f}", "#ff2442")
+        tmp_dir = os.path.join(USER_ICONS_DIR, f".{disk_name}.tmp-{os.getpid()}")
+        cur_dir = os.path.join(tmp_dir, "cursors")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        os.makedirs(cur_dir, exist_ok=True)
+        try:
+            for fn in sorted(os.listdir(NCUI_CURSOR_ASSETS_DIR)):
+                sp = os.path.join(NCUI_CURSOR_ASSETS_DIR, fn)
+                if not os.path.isfile(sp):
+                    continue
+                frames = _parse_xcursor_frames(sp)
+                if not frames:
+                    continue
+                recolored = [
+                    (nom, w, h, xhot, yhot, delay, _recolor_xcursor_bgra(raw, intent_hsv, fault_hsv))
+                    for (nom, w, h, xhot, yhot, delay, raw) in frames
+                ]
+                _write_xcursor_file(os.path.join(cur_dir, fn), recolored)
+            for target_role, aliases in _XCUR_SYMLINKS.items():
+                if not os.path.exists(os.path.join(cur_dir, target_role)):
+                    continue
+                for alias in aliases:
+                    ap = os.path.join(cur_dir, alias)
+                    if not os.path.exists(ap):
+                        try:
+                            os.symlink(target_role, ap)
+                        except OSError:
+                            pass
+            with open(os.path.join(tmp_dir, "index.theme"), "w", encoding="utf-8") as f:
+                f.write(
+                    f"[Icon Theme]\nName={NCUI_CURSOR_NAME}\n"
+                    f"Comment=NC-UI built-in theme-synced cursor (intent=#{raw_i}, fault=#{raw_f})\n"
+                    f"Inherits=Adwaita\n"
+                )
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            os.replace(tmp_dir, dest_dir)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+
+    # Prune stale color-tagged variants so ~/.local/share/icons stays tidy
+    try:
+        for entry in os.listdir(USER_ICONS_DIR):
+            if entry.startswith(f"{NCUI_CURSOR_PREFIX}-") and entry != disk_name:
+                shutil.rmtree(os.path.join(USER_ICONS_DIR, entry), ignore_errors=True)
+    except OSError:
+        pass
+
+    # Maintain stable fallback alias directory inheriting the active color-tagged build
+    alias_dir = os.path.join(USER_ICONS_DIR, NCUI_CURSOR_PREFIX)
+    try:
+        os.makedirs(alias_dir, exist_ok=True)
+        with open(os.path.join(alias_dir, "index.theme"), "w", encoding="utf-8") as f:
+            f.write(f"[Icon Theme]\nName={NCUI_CURSOR_NAME}\nInherits={disk_name}\n")
+    except OSError:
+        pass
+    return disk_name
+
+
+def sync_ncui_cursor_if_active() -> bool:
+    if os.environ.get("NC_UI_OFFSCREEN") == "1":
+        return False
+    cur_t, cur_sz = _read_cursor_cfg()
+    if not is_ncui_cursor_name(cur_t):
+        return False
+    ok, _msg = _apply_cursor_cfg(NCUI_CURSOR_NAME, cur_sz)
+    return ok
+
+
 def _list_cursor_themes() -> list[dict]:
     found = {}
+    if os.path.isdir(NCUI_CURSOR_ASSETS_DIR):
+        try:
+            n_master = sum(1 for fn in os.listdir(NCUI_CURSOR_ASSETS_DIR) if os.path.isfile(os.path.join(NCUI_CURSOR_ASSETS_DIR, fn)))
+        except OSError:
+            n_master = 15
+        n_links = sum(len(v) for k, v in _XCUR_SYMLINKS.items() if os.path.isfile(os.path.join(NCUI_CURSOR_ASSETS_DIR, k)))
+        found[NCUI_CURSOR_NAME] = {
+            "name": NCUI_CURSOR_NAME,
+            "path": NCUI_CURSOR_ASSETS_DIR,
+            "is_builtin": True,
+            "is_user": False,
+            "count": n_master + n_links,
+            "has_archive": False,
+        }
     for root in SYS_ICONS_DIRS:
         if not os.path.isdir(root):
             continue
@@ -611,7 +802,7 @@ def _list_cursor_themes() -> list[dict]:
         except OSError:
             continue
         for name in entries:
-            if name in ("default", "hicolor") or name in found:
+            if name in ("default", "hicolor", NCUI_CURSOR_PREFIX) or name.startswith(f"{NCUI_CURSOR_PREFIX}-") or name in found:
                 continue
             cur_dir = os.path.join(root, name, "cursors")
             if not os.path.isdir(cur_dir):
@@ -625,13 +816,14 @@ def _list_cursor_themes() -> list[dict]:
             found[name] = {
                 "name": name,
                 "path": os.path.join(root, name),
+                "is_builtin": False,
                 "is_user": os.path.abspath(root) == os.path.abspath(USER_ICONS_DIR),
                 "count": cnt,
                 "has_archive": os.path.isfile(os.path.join(CURSORS_STORE_DIR, f"{name}.zip")),
             }
     if "Adwaita" not in found:
-        found["Adwaita"] = {"name": "Adwaita", "path": "/usr/share/icons/Adwaita", "is_user": False, "count": 0, "has_archive": False}
-    return sorted(found.values(), key=lambda x: (0 if x["is_user"] else 1, x["name"].lower()))
+        found["Adwaita"] = {"name": "Adwaita", "path": "/usr/share/icons/Adwaita", "is_builtin": False, "is_user": False, "count": 0, "has_archive": False}
+    return sorted(found.values(), key=lambda x: (0 if x.get("is_builtin") else (1 if x["is_user"] else 2), x["name"].lower()))
 
 
 def _read_cursor_cfg() -> tuple[str, int]:
@@ -649,6 +841,8 @@ def _read_cursor_cfg() -> tuple[str, int]:
                 size_v = int(m_s.group(1))
         except Exception:
             pass
+    if is_ncui_cursor_name(theme_n):
+        theme_n = NCUI_CURSOR_NAME
     return theme_n or "Adwaita", max(16, min(64, int(size_v or 24)))
 
 
@@ -697,11 +891,14 @@ def _update_gtk_ini_cursor(ini_path: str, theme_name: str, size_val: int) -> Non
 
 
 def _apply_cursor_cfg(theme_name: str, size_val: int) -> tuple[bool, str]:
-    clean_t = str(theme_name or "Adwaita").strip() or "Adwaita"
+    raw_t = str(theme_name or "Adwaita").strip() or "Adwaita"
+    is_ncui = is_ncui_cursor_name(raw_t)
+    clean_t = NCUI_CURSOR_NAME if is_ncui else raw_t
+    disk_t = ensure_ncui_cursor_installed() if is_ncui else clean_t
     clean_sz = max(16, min(64, int(size_val or 24)))
     STATE.set("personalization", "cursor_theme", clean_t)
     STATE.set("personalization", "cursor_size", clean_sz)
-    arch_name = f"{clean_t}.zip" if os.path.isfile(os.path.join(CURSORS_STORE_DIR, f"{clean_t}.zip")) else ""
+    arch_name = "" if is_ncui else (f"{clean_t}.zip" if os.path.isfile(os.path.join(CURSORS_STORE_DIR, f"{clean_t}.zip")) else "")
     typo = THEME.setdefault("typography", {})
     typo["cursor_theme"] = clean_t
     typo["cursor_size"] = clean_sz
@@ -713,7 +910,7 @@ def _apply_cursor_cfg(theme_name: str, size_val: int) -> tuple[bool, str]:
         os.path.expanduser("~/.config/gtk-4.0/settings.ini"),
     ):
         try:
-            _update_gtk_ini_cursor(ini_p, clean_t, clean_sz)
+            _update_gtk_ini_cursor(ini_p, disk_t, clean_sz)
         except OSError:
             pass
 
@@ -724,17 +921,17 @@ def _apply_cursor_cfg(theme_name: str, size_val: int) -> tuple[bool, str]:
         try:
             os.makedirs(os.path.dirname(def_p), exist_ok=True)
             with open(def_p, "w", encoding="utf-8") as f:
-                f.write(f"[Icon Theme]\nName=Default\nInherits={clean_t}\n")
+                f.write(f"[Icon Theme]\nName=Default\nInherits={disk_t}\n")
         except OSError:
             pass
 
-    os.environ["XCURSOR_THEME"] = clean_t
+    os.environ["XCURSOR_THEME"] = disk_t
     os.environ["XCURSOR_SIZE"] = str(clean_sz)
     try:
         from gi.repository import Gtk
         settings = Gtk.Settings.get_default()
         if settings is not None:
-            settings.set_property("gtk-cursor-theme-name", clean_t)
+            settings.set_property("gtk-cursor-theme-name", disk_t)
             settings.set_property("gtk-cursor-theme-size", clean_sz)
     except Exception:
         pass
@@ -743,14 +940,14 @@ def _apply_cursor_cfg(theme_name: str, size_val: int) -> tuple[bool, str]:
         try:
             old_txt = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read()
             txt = old_txt
-            c_blk = f'cursor {{\n    xcursor-theme "{clean_t}"\n    xcursor-size {clean_sz}\n}}'
+            c_blk = f'cursor {{\n    xcursor-theme "{disk_t}"\n    xcursor-size {clean_sz}\n}}'
             m_blk = re.search(r"(?ms)^[ \t]*cursor\s*\{[^\}]*\}", txt)
             if m_blk:
                 blk = m_blk.group(0)
                 if re.search(r"xcursor-theme\s+\"[^\"]*\"", blk):
-                    blk = re.sub(r'xcursor-theme\s+"[^"]*"', f'xcursor-theme "{clean_t}"', blk)
+                    blk = re.sub(r'xcursor-theme\s+"[^"]*"', f'xcursor-theme "{disk_t}"', blk)
                 else:
-                    blk = blk.rstrip("}") + f'    xcursor-theme "{clean_t}"\n}}'
+                    blk = blk.rstrip("}") + f'    xcursor-theme "{disk_t}"\n}}'
                 if re.search(r"xcursor-size\s+\d+", blk):
                     blk = re.sub(r"xcursor-size\s+\d+", f"xcursor-size {clean_sz}", blk)
                 else:
@@ -1022,6 +1219,8 @@ def convert_windows_cursor_zip(zip_path: str, custom_name: str = "") -> tuple[bo
 
 
 def _delete_cursor_theme(name: str) -> tuple[bool, str]:
+    if is_ncui_cursor_name(name):
+        return False, t("cc_personalization.cur_del_builtin_err")
     clean = os.path.basename(str(name or "").strip())
     if not clean:
         return False, "Invalid cursor theme"
@@ -1067,6 +1266,11 @@ _BG_FRAME_EXTRACTING: set = set()
 _BG_YT_THUMBS: set = set()
 _WP_USER_TOUCHED: bool = False
 _YT_DL_SEQ: int = 0
+_ASCII_APPLY_SEQ: int = 0
+_ASCII_APPLY_STATUS: str = ""
+_ASCII_PREVIEW_PENDING: set = set()
+_LAST_ASCII_PREVIEW: dict[str, str] = {}
+_MEDIA_DIM_CACHE: dict[tuple[str, int], tuple[int, int]] = {}
 _YT_VID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_PL_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 _YT_PL_RAW_RE = re.compile(r"^(?:PL|UU|FL|LP|RD|OLAK5uy_)[A-Za-z0-9_-]{10,}$")
@@ -1491,6 +1695,189 @@ def get_selected_monitors(out_names: list[str] = None) -> list[str]:
     return [o for o in out_names if o in raw]
 
 
+def get_ascii_apply_status() -> str:
+    return _ASCII_APPLY_STATUS
+
+
+def _norm_align(raw) -> str:
+    v = str(raw or "center").strip().lower()
+    return v if v in ("top", "center", "bottom") else "center"
+
+
+def get_media_dimensions(path: str) -> tuple[int, int]:
+    """Return cached (width, height) of a local image/GIF/video header, or (0, 0)."""
+    raw = str(path or "").strip()
+    if not raw or raw.startswith("http"):
+        return 0, 0
+    ap = os.path.abspath(os.path.expanduser(raw))
+    if not os.path.isfile(ap):
+        return 0, 0
+    try:
+        mtime_ns = int(os.stat(ap).st_mtime_ns)
+    except OSError:
+        mtime_ns = 0
+    ck = (ap, mtime_ns)
+    if ck in _MEDIA_DIM_CACHE:
+        return _MEDIA_DIM_CACHE[ck]
+
+    w, h = 0, 0
+    kind = detect_media_kind(ap)
+    if kind in ("IMAGE", "GIF"):
+        try:
+            from PIL import Image
+            with Image.open(ap) as im:
+                w, h = int(im.size[0]), int(im.size[1])
+        except Exception:
+            try:
+                _fmt, pw, ph = GdkPixbuf.Pixbuf.get_file_info(ap)
+                w, h = int(pw or 0), int(ph or 0)
+            except Exception:
+                w, h = 0, 0
+    elif kind in ("VIDEO", "YT VIDEO") and probe.has_bin("ffprobe"):
+        ok_p, out_p = probe.run_cmd(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", ap],
+            timeout=1.5,
+        )
+        if ok_p and "x" in out_p:
+            try:
+                ps = out_p.splitlines()[0].strip().split("x", 1)
+                w, h = int(ps[0]), int(ps[1])
+            except (ValueError, IndexError):
+                w, h = 0, 0
+
+    if len(_MEDIA_DIM_CACHE) > 128:
+        _MEDIA_DIM_CACHE.clear()
+    _MEDIA_DIM_CACHE[ck] = (w, h)
+    return w, h
+
+
+def should_show_scene_alignment(scene_path: str, fit: str, sel_mons: list[str], outputs_data: dict) -> bool:
+    """Return True when fit is 'fill' and the local scene is proportionally taller than >=1 selected monitor."""
+    if str(fit or "fill") != "fill":
+        return False
+    mw, mh = get_media_dimensions(scene_path)
+    if mw <= 0 or mh <= 0:
+        return False
+    media_ar = mw / float(mh)
+    mons = list(sel_mons or sorted((outputs_data or {}).keys()))
+    for m in mons:
+        ow, oh = _get_monitor_resolution(m, outputs_data)
+        if ow > 0 and oh > 0 and media_ar < (ow / float(oh)) - 0.02:
+            return True
+    return False
+
+
+def _cancel_pending_ascii_apply() -> None:
+    global _ASCII_APPLY_SEQ, _ASCII_APPLY_STATUS
+    _ASCII_APPLY_SEQ += 1
+    _ASCII_APPLY_STATUS = ""
+
+
+def get_editor_asciify_cfg() -> dict:
+    return normalize_asciify_cfg({
+        "enabled": STATE.get("desktop", "ascii_enabled", False),
+        "mode": STATE.get("desktop", "ascii_mode", "color"),
+        "chars": STATE.get("desktop", "ascii_chars", "standard"),
+        "density": STATE.get("desktop", "ascii_density", 1.0),
+        "tint": STATE.get("desktop", "ascii_tint", 0.22),
+        "scale": STATE.get("desktop", "ascii_scale", 1.0),
+        "contrast": STATE.get("desktop", "ascii_contrast", 1.0),
+        "brightness": STATE.get("desktop", "ascii_brightness", 1.0),
+        "invert": STATE.get("desktop", "ascii_invert", False),
+    })
+
+
+def _set_editor_asciify_cfg(cfg: dict) -> dict:
+    c = normalize_asciify_cfg(cfg)
+    for k in ("enabled", "mode", "chars", "density", "tint", "scale", "contrast", "brightness", "invert"):
+        STATE.set("desktop", f"ascii_{k}", c[k])
+    return c
+
+
+def _find_static_image_file(target: str, current_image: str = "") -> str:
+    t_str = os.path.expanduser(str(target or "").strip())
+    if current_image:
+        for cand in (
+            current_image if os.path.isabs(current_image) else "",
+            os.path.join(t_str, current_image) if t_str else "",
+            os.path.join(WALL_DIR, current_image),
+        ):
+            if cand and os.path.isfile(cand) and cand.lower().endswith(_IMAGE_EXTS):
+                return cand
+    if t_str:
+        for cand in (t_str, os.path.join(WALL_DIR, t_str)):
+            if os.path.isfile(cand) and cand.lower().endswith(_IMAGE_EXTS):
+                return cand
+        for d in (t_str, os.path.join(WALL_DIR, t_str)):
+            if os.path.isdir(d):
+                found = []
+                for base, dirs, files in os.walk(d, followlinks=True):
+                    rel = os.path.relpath(base, d)
+                    if (0 if rel == "." else len(rel.split(os.sep))) >= 1:
+                        dirs[:] = []
+                    for fn in files:
+                        if fn.lower().endswith(_IMAGE_EXTS):
+                            found.append(os.path.join(base, fn))
+                if found:
+                    found.sort()
+                    return found[0]
+    return ""
+
+
+def _ensure_ascii_preview(src_img: str, asc_cfg: dict, cc_panel=None) -> str:
+    ap = os.path.abspath(os.path.expanduser(str(src_img or "")))
+    cached = get_cached_ascii_path(ap, asc_cfg, preview=True) or get_cached_ascii_path(ap, asc_cfg, preview=False)
+    if cached:
+        _LAST_ASCII_PREVIEW[ap] = cached
+        return cached
+    if os.environ.get("NC_UI_OFFSCREEN") == "1":
+        try:
+            out_p = render_ascii_image(ap, asc_cfg, preview=True)
+            if out_p:
+                _LAST_ASCII_PREVIEW[ap] = out_p
+            return out_p
+        except Exception:
+            return ""
+    ck = image_cache_key(ap, asc_cfg, preview=True)
+    if ck not in _ASCII_PREVIEW_PENDING:
+        _ASCII_PREVIEW_PENDING.add(ck)
+
+        def _work():
+            try:
+                return render_ascii_image(ap, asc_cfg, preview=True)
+            except Exception:
+                return ""
+            finally:
+                _ASCII_PREVIEW_PENDING.discard(ck)
+
+        def _done(path: str):
+            if path and os.path.isfile(path):
+                _LAST_ASCII_PREVIEW[ap] = path
+                if cc_panel and cc_panel.shell:
+                    cc_panel.shell.refresh_view()
+
+        probe.run_async(_work, on_done=_done)
+    prev = _LAST_ASCII_PREVIEW.get(ap, "")
+    return prev if (prev and os.path.isfile(prev)) else ""
+
+
+def _norm_asc_diff(src: dict) -> tuple:
+    a = normalize_asciify_cfg(src.get("asciify"))
+    if not a["enabled"]:
+        return (False,)
+    return (
+        True,
+        a["mode"],
+        a["chars"],
+        a["density"],
+        a["tint"],
+        a["scale"],
+        a["contrast"],
+        a["brightness"],
+        a["invert"],
+    )
+
+
 def _get_editor_draft_spec() -> dict:
     wp_mode = str(STATE.get("desktop", "wp_mode", "scene"))
     if wp_mode == "scene":
@@ -1515,6 +1902,7 @@ def _get_editor_draft_spec() -> dict:
             "mode": "scene" if path else "none",
             "target": path,
             "fit": fit,
+            "align": _norm_align(STATE.get("desktop", "scene_align", "center")),
             "image_path": img_p,
             "frames": frms,
             "media_kind": kind,
@@ -1523,6 +1911,7 @@ def _get_editor_draft_spec() -> dict:
             "playlist_order": str(STATE.get("desktop", "playlist_order", "sequential") or "sequential"),
             "video_mute": bool(STATE.get("desktop", "video_mute", True)),
             "video_volume": int(STATE.get("desktop", "video_volume", 60) or 60),
+            "asciify": get_editor_asciify_cfg() if (kind == "IMAGE" or not path) else dict(ASCIIFY_DEFAULTS),
         }
     if wp_mode == "slideshow":
         folder = str(STATE.get("desktop", "slide_folder", WALL_DIR) or WALL_DIR)
@@ -1537,6 +1926,7 @@ def _get_editor_draft_spec() -> dict:
             "slide_speed": str(STATE.get("desktop", "slide_speed", "1.5s") or "1.5s"),
             "image_path": extract_media_preview_frame(first_media) if first_media else "",
             "frames": extract_media_preview_frames(first_media) if first_media else [],
+            "asciify": get_editor_asciify_cfg(),
         }
     if wp_mode == "solid":
         hex_col = _resolve_solid_hex(STATE.get("desktop", "solid_hex", "#000000") or "#000000")
@@ -1566,11 +1956,14 @@ def _norm_spec_for_diff(src: dict) -> tuple:
         return ("none",)
     if mode == "scene":
         mk = str(src.get("media_kind") or detect_media_kind(target))
+        fit_val = str(src.get("fit") or "fill")
         base = [
             "scene",
             target,
-            str(src.get("fit") or "fill"),
+            fit_val,
         ]
+        if fit_val == "fill":
+            base.append(_norm_align(src.get("align", "center")))
         if mk in ("VIDEO", "YT VIDEO", "YT PLAYLIST") or target.startswith("http"):
             mute = bool(src.get("video_mute", True))
             base.extend([
@@ -1582,6 +1975,8 @@ def _norm_spec_for_diff(src: dict) -> tuple:
             base.append(str(src.get("yt_delivery") or ("stream" if target.startswith("http") else "download")))
         if mk == "YT PLAYLIST":
             base.append(str(src.get("playlist_order") or "sequential"))
+        if mk == "IMAGE":
+            base.append(_norm_asc_diff(src))
         return tuple(base)
     if mode == "slideshow":
         shuf_val = str(src.get("shuffle", "true")).lower()
@@ -1594,6 +1989,7 @@ def _norm_spec_for_diff(src: dict) -> tuple:
             order,
             str(src.get("trans") or src.get("transition") or "fade"),
             str(src.get("slide_speed") or "1.5s"),
+            _norm_asc_diff(src),
         )
     if mode == "ncmatrix":
         charset = str(src.get("charset") or ("katakana" if str(src.get("japanese", True)).lower() == "true" else "ascii"))
@@ -1632,6 +2028,17 @@ def _read_live_src(out_name: str, live_cache: dict = None) -> dict:
             disk_st = {}
     ov = live_cache.get(out_name) if isinstance(live_cache.get(out_name), dict) else {}
     ov_ts = float(ov.get("ts", 0.0) or 0.0) if ov else 0.0
+    if disk_st.get("source_target"):
+        disk_st = dict(disk_st)
+        disk_st["rendered_target"] = str(disk_st.get("rendered_target") or disk_st.get("target") or "")
+        disk_st["target"] = str(disk_st["source_target"])
+        disk_st["asciify"] = normalize_asciify_cfg(disk_st.get("asciify"))
+    elif (not disk_st.get("source_target")) and ov.get("rendered_target") and disk_st.get("target") == ov.get("rendered_target"):
+        disk_st = dict(disk_st)
+        disk_st["source_target"] = str(ov.get("source_target") or ov.get("target") or "")
+        disk_st["rendered_target"] = str(ov.get("rendered_target") or "")
+        disk_st["target"] = str(disk_st["source_target"])
+        disk_st["asciify"] = normalize_asciify_cfg(ov.get("asciify"))
     return ov if (ov and ov_ts >= disk_mtime) else (disk_st or ov)
 
 
@@ -1661,7 +2068,7 @@ def _stage_current_to_selected() -> None:
     STATE.set("desktop", "staged_preview", staged)
 
 
-def get_desktop_preview_state(outputs_data: dict) -> dict:
+def get_desktop_preview_state(outputs_data: dict, cc_panel=None) -> dict:
     """Resolve current [LIVE] or staged [PREVIEW *] desktop state per monitor."""
     staged_map = STATE.get("desktop", "staged_preview", {})
     staged_map = staged_map if isinstance(staged_map, dict) else {}
@@ -1684,6 +2091,7 @@ def get_desktop_preview_state(outputs_data: dict) -> dict:
 
         img_path, frames = "", []
         media_kind = str(detect_media_kind(target) or src.get("media_kind") or "")
+        asc = normalize_asciify_cfg(src.get("asciify"))
         if mode in ("scene", "slideshow"):
             yt_src = _resolve_yt_source(target) if mode == "scene" else {"ok": False}
             if yt_src["ok"] and (target.startswith("http") or not os.path.exists(os.path.expanduser(target))):
@@ -1699,6 +2107,22 @@ def get_desktop_preview_state(outputs_data: dict) -> dict:
                 if not frames and img_path:
                     frames = [img_path]
 
+            if asc["enabled"] and is_pillow_available():
+                cur_rendered = ""
+                if not is_staged and mode == "slideshow" and src.get("rendered_target") and cur_img:
+                    cand_r = os.path.join(str(src["rendered_target"]), cur_img)
+                    if os.path.isfile(cand_r):
+                        cur_rendered = cand_r
+                if cur_rendered:
+                    img_path = cur_rendered
+                    frames = [cur_rendered]
+                else:
+                    prev_src = _find_static_image_file(target, cur_img) if (mode == "slideshow" or media_kind == "IMAGE") else ""
+                    if prev_src:
+                        asc_prev = _ensure_ascii_preview(prev_src, asc, cc_panel=cc_panel)
+                        img_path = asc_prev
+                        frames = [asc_prev] if asc_prev else []
+
         hex_col = _resolve_solid_hex(src.get("hex") or target) if mode == "solid" else ""
         charset = str(src.get("charset") or ("katakana" if str(src.get("japanese", True)).lower() == "true" else "ascii"))
         shuf_val = str(src.get("shuffle", "true")).lower()
@@ -1709,6 +2133,7 @@ def get_desktop_preview_state(outputs_data: dict) -> dict:
             "staged": is_staged,
             "target": target,
             "fit": str(src.get("fit") or "fill"),
+            "align": _norm_align(src.get("align", "center")),
             "image_path": img_path,
             "frames": frames,
             "media_kind": media_kind,
@@ -1727,6 +2152,7 @@ def get_desktop_preview_state(outputs_data: dict) -> dict:
             "slide_speed": str(src.get("slide_speed") or "1.5s"),
             "video_mute": bool(src.get("video_mute", True)),
             "video_volume": int(src.get("video_volume", 60) or 60),
+            "asciify": asc,
         }
     return result
 
@@ -1754,11 +2180,15 @@ def sync_editor_from_live_monitors(outputs_data: dict = None) -> None:
         if st.get("target"):
             updates["scene_path"] = st["target"]
         updates["scene_fit"] = st.get("fit") or "fill"
+        updates["scene_align"] = _norm_align(st.get("align", "center"))
         updates["yt_delivery"] = st.get("yt_delivery") or ("stream" if str(st.get("target", "")).startswith("http") else "download")
         updates["video_loop"] = st.get("video_loop") or "loop"
         updates["playlist_order"] = st.get("playlist_order") or "sequential"
         updates["video_mute"] = bool(st.get("video_mute", True))
         updates["video_volume"] = int(st.get("video_volume", 60) or 60)
+        asc = normalize_asciify_cfg(st.get("asciify"))
+        for ak in ("enabled", "mode", "chars", "density", "tint", "scale", "contrast", "brightness", "invert"):
+            updates[f"ascii_{ak}"] = asc[ak]
     elif m == "slideshow":
         if st.get("target"):
             updates["slide_folder"] = st["target"]
@@ -1766,6 +2196,9 @@ def sync_editor_from_live_monitors(outputs_data: dict = None) -> None:
         updates["slide_order"] = st.get("order") or "shuffle"
         updates["slide_trans"] = st.get("trans") or "fade"
         updates["slide_speed"] = st.get("slide_speed") or "1.5s"
+        asc = normalize_asciify_cfg(st.get("asciify"))
+        for ak in ("enabled", "mode", "chars", "density", "tint", "scale", "contrast", "brightness", "invert"):
+            updates[f"ascii_{ak}"] = asc[ak]
     elif m == "solid":
         updates["solid_hex"] = _resolve_solid_hex(st.get("hex") or st.get("target") or "#000000")
     elif m == "ncmatrix":
@@ -2918,19 +3351,48 @@ def _handle_youtube_input(cc_panel, raw_input: str, from_clipboard: bool = False
     return True
 
 
-def _apply_staged_wallpapers() -> tuple[bool, str]:
-    global _WP_USER_TOUCHED
-    outs_data = _get_niri_outputs()
-    outs = sorted(outs_data.keys())
-    staged = dict(STATE.get("desktop", "staged_preview", {}) or {})
-    if not staged:
-        sel = get_selected_monitors(outs)
-        if not sel:
-            return False, t("cc_personalization.wp_no_selection")
-        spec = _get_editor_draft_spec()
-        staged = {m: spec for m in sel}
+def _merge_desktop_json_meta(mon: str, extra: dict) -> None:
+    st_dir = os.path.join(NC_DESKTOP_BASE, "state")
+    sf = os.path.join(st_dir, f"{mon}.json")
+    data = {}
+    if os.path.isfile(sf):
+        try:
+            with open(sf, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+    data.update(extra)
+    data.setdefault("output", mon)
+    try:
+        os.makedirs(st_dir, exist_ok=True)
+        tmp_sf = f"{sf}.tmp.{os.getpid()}.{threading.get_ident()}"
+        with open(tmp_sf, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_sf, sf)
+    except Exception:
+        pass
 
-    live = dict(STATE.get("desktop", "out_live", {}) or {})
+
+def _spec_needs_asciify(spec: dict) -> bool:
+    if not isinstance(spec, dict):
+        return False
+    m = spec.get("mode", "")
+    target = str(spec.get("target", "") or "")
+    if not target:
+        return False
+    asc = normalize_asciify_cfg(spec.get("asciify"))
+    if not asc["enabled"]:
+        return False
+    if m == "slideshow":
+        return True
+    if m in ("scene", "image"):
+        return (spec.get("media_kind") or detect_media_kind(target)) == "IMAGE"
+    return False
+
+
+def _cleanup_orphan_monitors(outs: list[str], live: dict) -> None:
     st_dir = os.path.join(NC_DESKTOP_BASE, "state")
     pid_dir = os.path.join(NC_DESKTOP_BASE, "pids")
     orphan_outs = set()
@@ -2950,238 +3412,267 @@ def _apply_staged_wallpapers() -> tuple[bool, str]:
             pass
         live.pop(orph, None)
 
-    applied_mons = []
-    modes_used = set()
-    for mon, spec in staged.items():
-        if not isinstance(spec, dict):
-            continue
-        m_kind = spec.get("mode", "scene")
-        modes_used.add(m_kind)
-        async_grace = 0.0
-        if m_kind == "scene" and spec.get("target"):
-            target_p = spec["target"]
-            media_kind = spec.get("media_kind") or detect_media_kind(target_p)
-            is_video_or_yt = media_kind in ("VIDEO", "YT VIDEO", "YT PLAYLIST") or target_p.startswith("http")
-            video_bin = os.path.join(ROOT_DIR, "bin", "nc-video-wallpaper")
-            if is_video_or_yt and (probe.has_bin("mpvpaper") or os.path.isfile(video_bin)):
-                old_pids = _collect_output_wallpaper_pids(mon)
-                is_mute = bool(spec.get("video_mute", True))
-                vol = max(0, min(100, int(spec.get("video_volume", 60) or 60)))
-                yt_deliv = str(spec.get("yt_delivery") or ("stream" if target_p.startswith("http") else "download"))
-                vid_loop = str(spec.get("video_loop") or "loop")
-                pl_order = str(spec.get("playlist_order") or "sequential")
-                fit_mode = str(spec.get("fit") or "fill")
-                ipc_sock = f"/tmp/nc_mpvpaper_{mon}.sock"
-                try:
-                    if os.path.exists(ipc_sock):
-                        os.remove(ipc_sock)
-                except OSError:
-                    pass
-                mon_w, mon_h = _get_monitor_resolution(mon, outs_data)
-                target_h = _target_yt_height(mon_w, mon_h)
 
-                if probe.has_bin("mpvpaper"):
-                    opts = [f"input-ipc-server={ipc_sock}"]
-                    if target_p.startswith("http") or yt_deliv == "stream":
-                        opts.append("ytdl=yes")
-                        opts.append(f"ytdl-format=bv*[height<={target_h}]+ba/b[height<={target_h}]/b")
-                    if vid_loop == "once":
-                        opts.append("keep-open=yes")
-                    elif media_kind == "YT PLAYLIST" or os.path.isdir(target_p):
-                        opts.append("loop-playlist=inf")
-                    else:
-                        opts.append("loop=inf")
-                    if media_kind == "YT PLAYLIST" and pl_order == "shuffle":
-                        opts.append("shuffle")
-                    if fit_mode == "fit":
-                        opts.append("panscan=0.0")
-                    elif fit_mode == "stretch":
-                        opts.append("keepaspect=no")
-                    elif fit_mode == "center":
-                        opts.append("video-unscaled=yes")
-                    else:
-                        opts.append("panscan=1.0")
-                    opts.append("no-audio" if is_mute else f"volume={vol}")
-                    new_pid = _spawn_bg_pid(["mpvpaper", "-o", " ".join(opts), mon, target_p])
-                else:
-                    new_pid = _spawn_bg_pid([
-                        sys.executable,
-                        video_bin,
-                        "--output", mon,
-                        "--target", target_p,
-                        "--fit", fit_mode,
-                        "--loop", vid_loop,
-                        "--order", pl_order,
-                        "--mute", "1" if is_mute else "0",
-                        "--volume", str(vol),
-                        "--width", str(mon_w),
-                        "--height", str(mon_h),
-                        "--max-height", str(target_h),
-                        "--ipc-socket", ipc_sock,
-                    ])
-
-                if new_pid > 0:
-                    vid_pf = os.path.join(pid_dir, f"video_{mon}.pid")
-                    try:
-                        os.makedirs(pid_dir, exist_ok=True)
-                        with open(vid_pf, "w", encoding="utf-8") as pf:
-                            pf.write(f"{new_pid}\n")
-                    except OSError:
-                        pass
-                stale_pfs = tuple(
-                    os.path.join(pid_dir, pfn)
-                    for pfn in _wallpaper_pid_files(mon)
-                    if pfn != f"video_{mon}.pid"
-                )
-                _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.35, remove_pf=stale_pfs)
-
-                _save_desktop_json_state(mon, {
-                    "output": mon,
-                    "mode": "scene",
-                    "target": target_p,
-                    "fit": fit_mode,
-                    "media_kind": media_kind,
-                    "yt_delivery": yt_deliv,
-                    "video_loop": vid_loop,
-                    "playlist_order": pl_order,
-                    "video_mute": is_mute,
-                    "video_volume": vol,
-                })
-            else:
-                run_desktop_cli(["-o", mon, "-f", spec.get("fit", "fill"), "-i", target_p])
-                async_grace = 2.5
-        elif m_kind == "none" or (m_kind == "scene" and not spec.get("target")):
-            _stop_mpvpaper(mon)
-            probe.run_cmd(["bash", resolve_script_path(), "-o", mon, "--stop"], timeout=2.0)
-            _save_desktop_json_state(mon, {"output": mon, "mode": "none"})
-        elif m_kind == "slideshow" and spec.get("target"):
-            args = ["-o", mon, "-d", spec["target"], "-n", spec.get("interval", "5m"), "-t", spec.get("trans", "fade")]
-            if spec.get("order") == "sequential":
-                args.append("--no-shuffle")
-            run_desktop_cli(args)
-            async_grace = 2.5
-        elif m_kind == "solid":
-            hex_val = _resolve_solid_hex(spec.get("hex") or spec.get("target") or "#000000")
+def _apply_single_non_ascii_monitor(mon: str, spec: dict, outs_data: dict, live: dict) -> tuple[bool, float, str]:
+    """Apply a single non-ASCIIfied monitor wallpaper spec; returns (ok, async_grace, err_msg)."""
+    pid_dir = os.path.join(NC_DESKTOP_BASE, "pids")
+    m_kind = spec.get("mode", "scene")
+    async_grace = 0.0
+    if m_kind == "scene" and spec.get("target"):
+        target_p = spec["target"]
+        media_kind = spec.get("media_kind") or detect_media_kind(target_p)
+        is_video_or_yt = media_kind in ("VIDEO", "YT VIDEO", "YT PLAYLIST") or target_p.startswith("http")
+        video_bin = os.path.join(ROOT_DIR, "bin", "nc-video-wallpaper")
+        if is_video_or_yt and (probe.has_bin("mpvpaper") or os.path.isfile(video_bin)):
             old_pids = _collect_output_wallpaper_pids(mon)
-            if probe.has_bin("swaybg"):
-                new_pid = _spawn_bg_pid(["swaybg", "-o", mon, "-c", hex_val, "-m", "solid_color"])
-                sol_pf = os.path.join(pid_dir, f"solid_{mon}.pid")
-                if new_pid > 0:
-                    try:
-                        os.makedirs(pid_dir, exist_ok=True)
-                        with open(sol_pf, "w", encoding="utf-8") as pf:
-                            pf.write(f"{new_pid}\n")
-                    except OSError:
-                        pass
-                stale_pfs = tuple(
-                    os.path.join(pid_dir, pfn)
-                    for pfn in _wallpaper_pid_files(mon)
-                    if pfn != f"solid_{mon}.pid"
-                )
-                _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.30, remove_pf=stale_pfs)
-            else:
-                run_desktop_cli(["-o", mon, "--solid", hex_val])
-                if old_pids:
-                    stale_pfs = tuple(os.path.join(pid_dir, pfn) for pfn in _wallpaper_pid_files(mon))
-                    _kill_pids_after_overlap(old_pids, new_pid=0, delay=0.25, remove_pf=stale_pfs)
-            _save_desktop_json_state(mon, {
-                "output": mon,
-                "mode": "solid",
-                "target": hex_val,
-                "hex": hex_val,
-                "bgcolor": hex_val.lstrip("#").lower(),
-            })
-        elif m_kind in ("ncmatrix", "cmatrix"):
-            ncmatrix_bin = os.path.join(ROOT_DIR, "bin", "ncmatrix")
-            if not (os.path.isfile(ncmatrix_bin) and os.access(ncmatrix_bin, os.X_OK)):
-                return False, f"Binary not found: {ncmatrix_bin}"
-            cs = str(spec.get("charset") or "katakana")
-            col = str(spec.get("color") or "green")
-            spd = str(spec.get("speed") or "4")
-            sz = str(spec.get("size") or "9")
-            cm_trans = str(spec.get("cm_trans") or spec.get("transition") or "flow")
+            is_mute = bool(spec.get("video_mute", True))
+            vol = max(0, min(100, int(spec.get("video_volume", 60) or 60)))
+            yt_deliv = str(spec.get("yt_delivery") or ("stream" if target_p.startswith("http") else "download"))
+            vid_loop = str(spec.get("video_loop") or "loop")
+            pl_order = str(spec.get("playlist_order") or "sequential")
+            fit_mode = str(spec.get("fit") or "fill")
+            ipc_sock = f"/tmp/nc_mpvpaper_{mon}.sock"
             try:
-                with open(f"/tmp/ncmatrix_{mon}.conf", "w", encoding="utf-8") as cf:
-                    cf.write(
-                        f"charset={cs}\ncolor={col}\nspeed={spd}\nfont_size={sz}\n"
-                        f"transition={'drain' if cm_trans == 'drain' else 'flow'}\nbold=2\nasync=1\nfade=1\n"
-                    )
+                if os.path.exists(ipc_sock):
+                    os.remove(ipc_sock)
             except OSError:
                 pass
+            mon_w, mon_h = _get_monitor_resolution(mon, outs_data)
+            target_h = _target_yt_height(mon_w, mon_h)
 
-            running_pid = _get_running_ncmatrix_pid(mon)
-            prev_live = _read_live_src(mon, live)
-            prev_size = str(prev_live.get("size") or "9")
-            pid_file = os.path.join(pid_dir, f"ncmatrix_{mon}.pid")
-
-            if running_pid > 0 and cm_trans != "instant":
-                other_pids = [p for p in _collect_output_wallpaper_pids(mon) if p != running_pid]
-                if other_pids:
-                    stale_pfs = tuple(
-                        os.path.join(pid_dir, pfn)
-                        for pfn in _wallpaper_pid_files(mon)
-                        if pfn != f"ncmatrix_{mon}.pid"
-                    )
-                    _kill_pids_after_overlap(other_pids, new_pid=running_pid, delay=0.05, remove_pf=stale_pfs)
-                sig = signal.SIGUSR2 if (cm_trans == "drain" or prev_size != sz) else signal.SIGUSR1
-                try:
-                    os.kill(running_pid, sig)
-                except OSError:
-                    running_pid = 0
-
-            if running_pid <= 0 or cm_trans == "instant":
-                old_pids = _collect_output_wallpaper_pids(mon)
-                mon_w, mon_h = _get_monitor_resolution(mon, outs_data)
-                logical = (outs_data.get(mon) or {}).get("logical") or {}
-                lx, ly = logical.get("x"), logical.get("y")
-                ipc_sock = f"/tmp/nc_mpvpaper_{mon}.sock"
-                try:
-                    if os.path.exists(ipc_sock):
-                        os.remove(ipc_sock)
-                except OSError:
-                    pass
-                cmd = [
-                    ncmatrix_bin,
-                    "--wallpaper",
+            if probe.has_bin("mpvpaper"):
+                opts = [f"input-ipc-server={ipc_sock}"]
+                if target_p.startswith("http") or yt_deliv == "stream":
+                    opts.append("ytdl=yes")
+                    opts.append(f"ytdl-format=bv*[height<={target_h}]+ba/b[height<={target_h}]/b")
+                if vid_loop == "once":
+                    opts.append("keep-open=yes")
+                elif media_kind == "YT PLAYLIST" or os.path.isdir(target_p):
+                    opts.append("loop-playlist=inf")
+                else:
+                    opts.append("loop=inf")
+                if media_kind == "YT PLAYLIST" and pl_order == "shuffle":
+                    opts.append("shuffle")
+                if fit_mode == "fit":
+                    opts.append("panscan=0.0")
+                elif fit_mode == "stretch":
+                    opts.append("keepaspect=no")
+                elif fit_mode == "center":
+                    opts.append("video-unscaled=yes")
+                else:
+                    opts.append("panscan=1.0")
+                    al_v = _norm_align(spec.get("align", "center"))
+                    opts.append(f"video-align-y={-1 if al_v == 'top' else (1 if al_v == 'bottom' else 0)}")
+                opts.append("no-audio" if is_mute else f"volume={vol}")
+                new_pid = _spawn_bg_pid(["mpvpaper", "-o", " ".join(opts), mon, target_p])
+            else:
+                new_pid = _spawn_bg_pid([
+                    sys.executable,
+                    video_bin,
                     "--output", mon,
-                    "--charset", cs,
-                    "--color", col,
-                    "--speed", spd,
-                    "--font-size", sz,
+                    "--target", target_p,
+                    "--fit", fit_mode,
+                    "--align", _norm_align(spec.get("align", "center")),
+                    "--loop", vid_loop,
+                    "--order", pl_order,
+                    "--mute", "1" if is_mute else "0",
+                    "--volume", str(vol),
                     "--width", str(mon_w),
                     "--height", str(mon_h),
-                    "--pid-file", pid_file,
+                    "--max-height", str(target_h),
                     "--ipc-socket", ipc_sock,
-                    "-a", "-b",
-                ]
-                if lx is not None and ly is not None:
-                    cmd.extend(["--x", str(int(lx)), "--y", str(int(ly))])
-                new_pid = _spawn_bg_pid(cmd)
-                if new_pid > 0:
-                    try:
-                        os.makedirs(pid_dir, exist_ok=True)
-                        with open(pid_file, "w", encoding="utf-8") as pf:
-                            pf.write(f"{new_pid}\n")
-                    except OSError:
-                        pass
+                ])
+
+            if new_pid > 0:
+                vid_pf = os.path.join(pid_dir, f"video_{mon}.pid")
+                try:
+                    os.makedirs(pid_dir, exist_ok=True)
+                    with open(vid_pf, "w", encoding="utf-8") as pf:
+                        pf.write(f"{new_pid}\n")
+                except OSError:
+                    pass
+            stale_pfs = tuple(
+                os.path.join(pid_dir, pfn)
+                for pfn in _wallpaper_pid_files(mon)
+                if pfn != f"video_{mon}.pid"
+            )
+            _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.35, remove_pf=stale_pfs)
+
+            _save_desktop_json_state(mon, {
+                "output": mon,
+                "mode": "scene",
+                "target": target_p,
+                "fit": fit_mode,
+                "align": _norm_align(spec.get("align", "center")),
+                "media_kind": media_kind,
+                "yt_delivery": yt_deliv,
+                "video_loop": vid_loop,
+                "playlist_order": pl_order,
+                "video_mute": is_mute,
+                "video_volume": vol,
+            })
+        else:
+            run_desktop_cli(["-o", mon, "-f", spec.get("fit", "fill"), "--align", _norm_align(spec.get("align", "center")), "-i", target_p])
+            async_grace = 2.5
+    elif m_kind == "none" or (m_kind == "scene" and not spec.get("target")):
+        _stop_mpvpaper(mon)
+        probe.run_cmd(["bash", resolve_script_path(), "-o", mon, "--stop"], timeout=2.0)
+        _save_desktop_json_state(mon, {"output": mon, "mode": "none"})
+    elif m_kind == "slideshow" and spec.get("target"):
+        args = ["-o", mon, "-d", spec["target"], "-f", spec.get("fit", "fill"), "-n", spec.get("interval", "5m"), "-t", spec.get("trans", "fade")]
+        if spec.get("order") == "sequential":
+            args.append("--no-shuffle")
+        run_desktop_cli(args)
+        async_grace = 2.5
+    elif m_kind == "solid":
+        hex_val = _resolve_solid_hex(spec.get("hex") or spec.get("target") or "#000000")
+        old_pids = _collect_output_wallpaper_pids(mon)
+        if probe.has_bin("swaybg"):
+            new_pid = _spawn_bg_pid(["swaybg", "-o", mon, "-c", hex_val, "-m", "solid_color"])
+            sol_pf = os.path.join(pid_dir, f"solid_{mon}.pid")
+            if new_pid > 0:
+                try:
+                    os.makedirs(pid_dir, exist_ok=True)
+                    with open(sol_pf, "w", encoding="utf-8") as pf:
+                        pf.write(f"{new_pid}\n")
+                except OSError:
+                    pass
+            stale_pfs = tuple(
+                os.path.join(pid_dir, pfn)
+                for pfn in _wallpaper_pid_files(mon)
+                if pfn != f"solid_{mon}.pid"
+            )
+            _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.30, remove_pf=stale_pfs)
+        else:
+            run_desktop_cli(["-o", mon, "--solid", hex_val])
+            if old_pids:
+                stale_pfs = tuple(os.path.join(pid_dir, pfn) for pfn in _wallpaper_pid_files(mon))
+                _kill_pids_after_overlap(old_pids, new_pid=0, delay=0.25, remove_pf=stale_pfs)
+        _save_desktop_json_state(mon, {
+            "output": mon,
+            "mode": "solid",
+            "target": hex_val,
+            "hex": hex_val,
+            "bgcolor": hex_val.lstrip("#").lower(),
+        })
+    elif m_kind in ("ncmatrix", "cmatrix"):
+        ncmatrix_bin = os.path.join(ROOT_DIR, "bin", "ncmatrix")
+        if not (os.path.isfile(ncmatrix_bin) and os.access(ncmatrix_bin, os.X_OK)):
+            return False, 0.0, f"Binary not found: {ncmatrix_bin}"
+        cs = str(spec.get("charset") or "katakana")
+        col = str(spec.get("color") or "green")
+        spd = str(spec.get("speed") or "4")
+        sz = str(spec.get("size") or "9")
+        cm_trans = str(spec.get("cm_trans") or spec.get("transition") or "flow")
+        try:
+            with open(f"/tmp/ncmatrix_{mon}.conf", "w", encoding="utf-8") as cf:
+                cf.write(
+                    f"charset={cs}\ncolor={col}\nspeed={spd}\nfont_size={sz}\n"
+                    f"transition={'drain' if cm_trans == 'drain' else 'flow'}\nbold=2\nasync=1\nfade=1\n"
+                )
+        except OSError:
+            pass
+
+        running_pid = _get_running_ncmatrix_pid(mon)
+        prev_live = _read_live_src(mon, live)
+        prev_size = str(prev_live.get("size") or "9")
+        pid_file = os.path.join(pid_dir, f"ncmatrix_{mon}.pid")
+
+        if running_pid > 0 and cm_trans != "instant":
+            other_pids = [p for p in _collect_output_wallpaper_pids(mon) if p != running_pid]
+            if other_pids:
                 stale_pfs = tuple(
                     os.path.join(pid_dir, pfn)
                     for pfn in _wallpaper_pid_files(mon)
                     if pfn != f"ncmatrix_{mon}.pid"
                 )
-                _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.35, remove_pf=stale_pfs)
+                _kill_pids_after_overlap(other_pids, new_pid=running_pid, delay=0.05, remove_pf=stale_pfs)
+            sig = signal.SIGUSR2 if (cm_trans == "drain" or prev_size != sz) else signal.SIGUSR1
+            try:
+                os.kill(running_pid, sig)
+            except OSError:
+                running_pid = 0
 
-            _save_desktop_json_state(mon, {
-                "output": mon,
-                "mode": "ncmatrix",
-                "target": "ncmatrix",
-                "charset": cs,
-                "color": col,
-                "speed": spd,
-                "size": sz,
-                "cm_trans": cm_trans,
-                "japanese": (cs == "katakana"),
-            })
+        if running_pid <= 0 or cm_trans == "instant":
+            old_pids = _collect_output_wallpaper_pids(mon)
+            mon_w, mon_h = _get_monitor_resolution(mon, outs_data)
+            logical = (outs_data.get(mon) or {}).get("logical") or {}
+            lx, ly = logical.get("x"), logical.get("y")
+            ipc_sock = f"/tmp/nc_mpvpaper_{mon}.sock"
+            try:
+                if os.path.exists(ipc_sock):
+                    os.remove(ipc_sock)
+            except OSError:
+                pass
+            cmd = [
+                ncmatrix_bin,
+                "--wallpaper",
+                "--output", mon,
+                "--charset", cs,
+                "--color", col,
+                "--speed", spd,
+                "--font-size", sz,
+                "--width", str(mon_w),
+                "--height", str(mon_h),
+                "--pid-file", pid_file,
+                "--ipc-socket", ipc_sock,
+                "-a", "-b",
+            ]
+            if lx is not None and ly is not None:
+                cmd.extend(["--x", str(int(lx)), "--y", str(int(ly))])
+            new_pid = _spawn_bg_pid(cmd)
+            if new_pid > 0:
+                try:
+                    os.makedirs(pid_dir, exist_ok=True)
+                    with open(pid_file, "w", encoding="utf-8") as pf:
+                        pf.write(f"{new_pid}\n")
+                except OSError:
+                    pass
+            stale_pfs = tuple(
+                os.path.join(pid_dir, pfn)
+                for pfn in _wallpaper_pid_files(mon)
+                if pfn != f"ncmatrix_{mon}.pid"
+            )
+            _kill_pids_after_overlap(old_pids, new_pid=new_pid, delay=0.35, remove_pf=stale_pfs)
+
+        _save_desktop_json_state(mon, {
+            "output": mon,
+            "mode": "ncmatrix",
+            "target": "ncmatrix",
+            "charset": cs,
+            "color": col,
+            "speed": spd,
+            "size": sz,
+            "cm_trans": cm_trans,
+            "japanese": (cs == "katakana"),
+        })
+    return True, async_grace, ""
+
+
+def _apply_staged_wallpapers() -> tuple[bool, str]:
+    global _WP_USER_TOUCHED
+    outs_data = _get_niri_outputs()
+    outs = sorted(outs_data.keys())
+    staged = dict(STATE.get("desktop", "staged_preview", {}) or {})
+    if not staged:
+        sel = get_selected_monitors(outs)
+        if not sel:
+            return False, t("cc_personalization.wp_no_selection")
+        spec = _get_editor_draft_spec()
+        staged = {m: spec for m in sel}
+
+    live = dict(STATE.get("desktop", "out_live", {}) or {})
+    _cleanup_orphan_monitors(outs, live)
+
+    applied_mons = []
+    modes_used = set()
+    for mon, spec in staged.items():
+        if not isinstance(spec, dict):
+            continue
+        modes_used.add(spec.get("mode", "scene"))
+        ok, async_grace, err = _apply_single_non_ascii_monitor(mon, spec, outs_data, live)
+        if not ok:
+            return False, err
         ent = dict(spec)
         ent["ts"] = time.time() + async_grace
         live[mon] = ent
@@ -3193,6 +3684,130 @@ def _apply_staged_wallpapers() -> tuple[bool, str]:
     if not applied_mons:
         return False, t("cc_personalization.wp_no_selection")
     return True, t("cc_personalization.wp_applied_msg", p0=", ".join(sorted(modes_used)), p1=", ".join(applied_mons))
+
+
+def _start_apply_staged_wallpapers(cc_panel, staged_input: dict = None) -> None:
+    global _ASCII_APPLY_SEQ, _ASCII_APPLY_STATUS
+    if not is_pillow_available():
+        _set_pers_fb(False, t("cc_personalization.wp_ascii_pillow_missing"))
+        return
+
+    outs_data = _get_niri_outputs()
+    outs = sorted(outs_data.keys())
+    staged = dict(staged_input if staged_input is not None else (STATE.get("desktop", "staged_preview", {}) or {}))
+    if not staged:
+        sel = get_selected_monitors(outs)
+        if not sel:
+            _set_pers_fb(False, t("cc_personalization.wp_no_selection"))
+            return
+        spec = _get_editor_draft_spec()
+        staged = {m: spec for m in sel}
+
+    live_snap = dict(STATE.get("desktop", "out_live", {}) or {})
+    _ASCII_APPLY_SEQ += 1
+    my_seq = _ASCII_APPLY_SEQ
+    _ASCII_APPLY_STATUS = t("cc_personalization.wp_ascii_rendering_init")
+    last_ui_ts = [0.0]
+
+    def _set_status(msg: str, force: bool = False) -> None:
+        global _ASCII_APPLY_STATUS
+        if my_seq != _ASCII_APPLY_SEQ:
+            return
+        _ASCII_APPLY_STATUS = msg
+        now = time.monotonic()
+        if force or (now - last_ui_ts[0]) >= 0.12:
+            last_ui_ts[0] = now
+            if cc_panel and cc_panel.shell:
+                GLib.idle_add(lambda: (cc_panel.shell.refresh_view() if cc_panel and cc_panel.shell else None) and False)
+
+    def _work():
+        live = dict(live_snap)
+        applied_mons = []
+        modes_used = set()
+        try:
+            _cleanup_orphan_monitors(outs, live)
+            script = resolve_script_path()
+            for mon, spec in staged.items():
+                if my_seq != _ASCII_APPLY_SEQ:
+                    return ("cancelled", "", live, [])
+                if not isinstance(spec, dict):
+                    continue
+                m_kind = spec.get("mode", "scene")
+                modes_used.add(m_kind)
+                if _spec_needs_asciify(spec):
+                    asc = normalize_asciify_cfg(spec.get("asciify"))
+                    target_p = str(spec["target"])
+                    if m_kind in ("scene", "image"):
+                        align_mode = _norm_align(spec.get("align", "center"))
+                        _set_status(t("cc_personalization.wp_ascii_rendering_single", p0=os.path.basename(target_p)), force=True)
+                        rendered = render_ascii_image(target_p, asc, preview=False)
+                        if my_seq != _ASCII_APPLY_SEQ:
+                            return ("cancelled", "", live, [])
+                        ok_cmd, out_cmd, err_cmd = probe.run_cmd_full(["bash", script, "-o", mon, "-f", spec.get("fit", "fill"), "--align", align_mode, "-i", rendered], timeout=20.0)
+                        if not ok_cmd:
+                            return ("err", (err_cmd or out_cmd or "apply failed").strip(), live, applied_mons)
+                        _merge_desktop_json_meta(mon, {"source_target": target_p, "rendered_target": rendered, "align": align_mode, "asciify": asc})
+                        ent = dict(spec)
+                        ent["rendered_target"] = rendered
+                        ent["ts"] = time.time() + 1.0
+                        live[mon] = ent
+                    else:
+                        def _on_prog(idx: int, tot: int, fname: str) -> None:
+                            _set_status(t("cc_personalization.wp_ascii_rendering_slide", p0=idx, p1=tot, p2=fname))
+
+                        out_dir, _n_ok, _n_tot = render_ascii_folder(
+                            target_p,
+                            asc,
+                            progress_cb=_on_prog,
+                            cancel_check=lambda: my_seq != _ASCII_APPLY_SEQ,
+                        )
+                        if my_seq != _ASCII_APPLY_SEQ:
+                            return ("cancelled", "", live, [])
+                        if not out_dir:
+                            return ("err", t("cc_personalization.wp_ascii_no_images"), live, applied_mons)
+                        args = ["bash", script, "-o", mon, "-d", out_dir, "-f", spec.get("fit", "fill"), "-n", spec.get("interval", "5m"), "-t", spec.get("trans", "fade")]
+                        if spec.get("order") == "sequential":
+                            args.append("--no-shuffle")
+                        ok_cmd, out_cmd, err_cmd = probe.run_cmd_full(args, timeout=20.0)
+                        if not ok_cmd:
+                            return ("err", (err_cmd or out_cmd or "apply failed").strip(), live, applied_mons)
+                        time.sleep(0.25)
+                        _merge_desktop_json_meta(mon, {"source_target": target_p, "rendered_target": out_dir, "asciify": asc})
+                        ent = dict(spec)
+                        ent["rendered_target"] = out_dir
+                        ent["ts"] = time.time() + 2.5
+                        live[mon] = ent
+                else:
+                    ok, async_grace, err = _apply_single_non_ascii_monitor(mon, spec, outs_data, live)
+                    if not ok:
+                        return ("err", err, live, applied_mons)
+                    ent = dict(spec)
+                    ent["ts"] = time.time() + async_grace
+                    live[mon] = ent
+                applied_mons.append(mon)
+            if not applied_mons:
+                return ("err", t("cc_personalization.wp_no_selection"), live, [])
+            return ("ok", t("cc_personalization.wp_applied_msg", p0=", ".join(sorted(modes_used)), p1=", ".join(applied_mons)), live, applied_mons)
+        except Exception as e:
+            return ("err", str(e), live, applied_mons)
+
+    def _done(res):
+        global _WP_USER_TOUCHED, _ASCII_APPLY_STATUS
+        if my_seq != _ASCII_APPLY_SEQ:
+            return
+        _ASCII_APPLY_STATUS = ""
+        kind, msg, live_out, _mons = res
+        if kind == "ok":
+            STATE.set("desktop", "out_live", live_out)
+            STATE.set("desktop", "staged_preview", {})
+            _WP_USER_TOUCHED = False
+            _set_pers_fb(True, msg)
+        elif kind == "err":
+            _set_pers_fb(False, msg)
+        if cc_panel and cc_panel.shell:
+            cc_panel.shell.refresh_view()
+
+    probe.run_async(_work, on_done=_done)
 
 
 def _sync_theme_aliases() -> None:
@@ -3229,6 +3844,7 @@ def _apply_full_preset(cc_panel, pid: str) -> None:
     STATE.set("appearance", "transparency_pct", max(5, min(100, int(round(win_op * 100.0)))))
     _sync_theme_aliases()
     _save_theme_file(THEME_PATH, THEME)
+    sync_ncui_cursor_if_active()
     if cc_panel.shell:
         cc_panel.shell._apply_css()
     _set_pers_fb(True, t("cc_personalization.applied_preset", p0=spec["label"]))
@@ -3284,6 +3900,7 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
                 m_id = "ncmatrix"
             if m_id in ("scene", "slideshow", "ncmatrix", "solid"):
                 _cancel_pending_yt_dl()
+                _cancel_pending_ascii_apply()
                 _close_embedded_yazi(cancelled=True)
                 STATE.set("desktop", "wp_mode", m_id)
                 if m_id == "solid" and not STATE.get("desktop", "solid_hex"):
@@ -3439,16 +4056,149 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
                 _stage_current_to_selected()
         elif act == "apply_staged":
             _close_embedded_yazi(cancelled=True)
-            ok, msg = _apply_staged_wallpapers()
-            _set_pers_fb(ok, msg)
+            pending_staged = dict(STATE.get("desktop", "staged_preview", {}) or {})
+            if not pending_staged:
+                sel_m = get_selected_monitors(outs)
+                if sel_m:
+                    d_spec = _get_editor_draft_spec()
+                    pending_staged = {m: d_spec for m in sel_m}
+            if any(_spec_needs_asciify(sp) for sp in pending_staged.values()):
+                _start_apply_staged_wallpapers(cc_panel, pending_staged)
+            else:
+                _cancel_pending_ascii_apply()
+                ok, msg = _apply_staged_wallpapers()
+                _set_pers_fb(ok, msg)
         elif act == "reset_staged":
             _cancel_pending_yt_dl()
+            _cancel_pending_ascii_apply()
             _close_embedded_yazi(cancelled=True)
             set_inline_entry_error("cm_col_custom", "")
             STATE.set("desktop", "staged_preview", {})
             _WP_USER_TOUCHED = False
             sync_editor_from_live_monitors()
             _set_pers_fb(True, t("cc_personalization.wp_reset_msg"))
+        elif act.startswith("align:"):
+            a_val = act.split(":", 1)[1]
+            if a_val in ("top", "center", "bottom"):
+                STATE.set("desktop", "scene_align", a_val)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+        elif act.startswith("ascii_toggle:"):
+            STATE.set("desktop", "ascii_enabled", act.split(":", 1)[1] == "1")
+            _WP_USER_TOUCHED = True
+            _stage_current_to_selected()
+        elif act.startswith("ascii_mode:"):
+            m_val = act.split(":", 1)[1]
+            if m_val in ASCII_COLOR_MODES:
+                STATE.set("desktop", "ascii_mode", m_val)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+        elif act.startswith("ascii_chars:"):
+            c_val = act.split(":", 1)[1]
+            if c_val in ASCII_CHAR_SETS:
+                STATE.set("desktop", "ascii_chars", c_val)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+        elif act == "inline_ascii_chars":
+            cur_c = str(get_editor_asciify_cfg().get("chars", "standard") or "")
+            init_c = "" if cur_c in ASCII_CHAR_SETS else cur_c
+
+            def _commit_ascii_chars(raw_s: str) -> None:
+                global _WP_USER_TOUCHED
+                # Do NOT .strip(): leading spaces represent empty dark cells.
+                STATE.set("desktop", "ascii_chars", raw_s)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+
+            start_inline_input(
+                entry_id="cc_desk_ascii_chars",
+                shell=cc_panel.shell,
+                trigger_uri=uri,
+                initial_text=init_c,
+                max_len=96,
+                validator=lambda s: len(s) >= 2 and s.strip() != "",
+                on_commit=_commit_ascii_chars,
+            )
+            return True
+        elif act.startswith("ascii_density:"):
+            try:
+                v = round(max(0.25, min(2.5, float(act.split(":", 1)[1]))), 2)
+                STATE.set("desktop", "ascii_density", v)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+            except ValueError:
+                pass
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+            return True
+        elif act.startswith("ascii_tint:"):
+            try:
+                v = round(max(0.0, min(1.0, float(act.split(":", 1)[1]))), 2)
+                STATE.set("desktop", "ascii_tint", v)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+            except ValueError:
+                pass
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+            return True
+        elif act.startswith("ascii_scale:"):
+            try:
+                v = round(max(0.25, min(1.5, float(act.split(":", 1)[1]))), 2)
+                STATE.set("desktop", "ascii_scale", v)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+            except ValueError:
+                pass
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+            return True
+        elif act.startswith("ascii_contrast:"):
+            try:
+                v = round(max(0.5, min(2.0, float(act.split(":", 1)[1]))), 2)
+                STATE.set("desktop", "ascii_contrast", v)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+            except ValueError:
+                pass
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+            return True
+        elif act.startswith("ascii_brightness:"):
+            try:
+                v = round(max(0.5, min(2.0, float(act.split(":", 1)[1]))), 2)
+                STATE.set("desktop", "ascii_brightness", v)
+                _WP_USER_TOUCHED = True
+                _stage_current_to_selected()
+            except ValueError:
+                pass
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+            return True
+        elif act.startswith("ascii_invert:"):
+            STATE.set("desktop", "ascii_invert", act.split(":", 1)[1] == "1")
+            _WP_USER_TOUCHED = True
+            _stage_current_to_selected()
+        elif act == "ascii_defaults":
+            cfg_def = dict(ASCIIFY_DEFAULTS)
+            cfg_def["enabled"] = True
+            _set_editor_asciify_cfg(cfg_def)
+            _WP_USER_TOUCHED = True
+            _stage_current_to_selected()
+            _set_pers_fb(True, t("cc_personalization.wp_ascii_defaults_msg"))
+        elif act == "ascii_cancel":
+            _cancel_pending_ascii_apply()
+            _set_pers_fb(True, t("cc_personalization.wp_ascii_cancelled"))
+        elif act == "ascii_clear_cache":
+            keep_paths = set()
+            for mon_n in outs:
+                l_src = _read_live_src(mon_n)
+                rt = str(l_src.get("rendered_target") or "")
+                if rt:
+                    keep_paths.add(rt)
+            removed_n, _freed_b = clear_ascii_cache(keep_paths=keep_paths)
+            _LAST_ASCII_PREVIEW.clear()
+            _set_pers_fb(True, t("cc_personalization.wp_ascii_cache_cleared", p0=removed_n))
         elif act == "prompt_yt":
             _close_embedded_yazi(cc_panel=cc_panel, cancelled=True)
             cur_u = str(STATE.get("desktop", "yt_url", "") or "https://youtube.com/watch?v=")
@@ -3513,8 +4263,7 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
     if not uri.startswith("cc_pers:"):
         return False
     act = uri[len("cc_pers:"):]
-    if act != "surf_bg_custom":
-        cancel_inline_entry(refresh=False)
+    cancel_inline_entry(refresh=False)
 
     if act.startswith("wb_view:"):
         cc_panel.set_state("wb_sub_view", act.split(":", 1)[1])
@@ -3525,46 +4274,30 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
             set_box_opacity_pct(int(round(float(act.split(":", 1)[1]))))
         except Exception:
             pass
-    elif act.startswith("surf_bg:"):
-        hx = act.split(":", 1)[1]
-        set_inline_entry_error("surf_bg_custom", "")
-        norm_hx = set_surface_bg(hx, sync_waybar=False)
-        _refresh_surface_companions(norm_hx)
-        _save_theme_file(THEME_PATH, THEME)
-        if cc_panel.shell:
-            cc_panel.shell._apply_css()
-    elif act == "inline_surf_bg":
-        start_inline_input(
-            entry_id="cc_pers_surf_bg",
-            shell=cc_panel.shell,
-            trigger_uri=uri,
-            initial_text=get_surface_bg_hex(),
-            max_len=6,
-            strip_leading_hash=True,
-            uppercase=True,
-            validator=lambda s: bool(re.match(r"^[0-9a-fA-F]{6}$", s.strip())),
-            on_commit=lambda s: handle_cc_personalization_prompt(cc_panel, "cc_pers_surf_bg", "#" + s.strip().lower()),
-        )
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
         return True
-    elif act == "surf_bg_custom":
-        def _commit_surf_bg(raw_v: str) -> None:
-            norm_hx = set_surface_bg(f"#{raw_v.lower()}", sync_waybar=False)
-            _refresh_surface_companions(norm_hx)
-            _save_theme_file(THEME_PATH, THEME)
-            if cc_panel.shell:
-                cc_panel.shell._apply_css()
-
-        def _invalid_surf_bg(_raw_v: str) -> None:
-            set_inline_entry_error("surf_bg_custom", t("cc_personalization.wp_err_invalid_hex"))
-
-        start_inline_entry(
-            "surf_bg_custom",
-            shell=cc_panel.shell,
-            max_len=6,
-            validator=lambda s: bool(re.match(r"^[0-9A-Fa-f]{6}$", s)),
-            on_commit=_commit_surf_bg,
-            on_invalid=_invalid_surf_bg,
-        )
+    elif act.startswith("toast_op:"):
+        try:
+            clamped = set_toast_opacity_pct(int(round(float(act.split(":", 1)[1]))))
+            if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "show_toast"):
+                cc_panel.shell.show_toast(
+                    t("cc_personalization.toast_opacity_preview", p0=clamped),
+                    level="ok",
+                    title=t("cc_personalization.toast_layer_opacity"),
+                )
+        except Exception:
+            pass
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
+    elif act.startswith("sys_notif_op:"):
+        try:
+            set_sys_notif_opacity_pct(int(round(float(act.split(":", 1)[1]))))
+        except Exception:
+            pass
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
         return True
     elif act == "wb_sync_op":
         set_waybar_sync_opacity(not get_waybar_sync_opacity())
@@ -3636,6 +4369,8 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
             THEME["colors"].update(derive_axis_companions(target_axis, val, get_surface_bg_hex()))
             _sync_theme_aliases()
             _save_theme_file(THEME_PATH, THEME)
+            if target_axis in ("intent", "fault"):
+                sync_ncui_cursor_if_active()
             if cc_panel.shell:
                 cc_panel.shell._apply_css()
             _set_pers_fb(True, t("cc_personalization.color_updated_to", p0=target_axis, p1=val))
@@ -3661,6 +4396,7 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
         STATE.set("appearance", "transparency_pct", max(5, min(100, int(round(win_op * 100.0)))))
         _sync_theme_aliases()
         _save_theme_file(THEME_PATH, THEME)
+        sync_ncui_cursor_if_active()
         if cc_panel.shell:
             cc_panel.shell._apply_css()
         _set_pers_fb(True, t("cc_personalization.reset_theme_to_cyber_nightcity_def"))
@@ -3911,7 +4647,7 @@ def _apply_loaded_theme(cc_panel, loaded: dict, src_dir: str = "") -> None:
     cs = int(typo.get("cursor_size") or 24)
     ca = os.path.basename(str(typo.get("cursor_archive") or "").strip())
     if ct:
-        installed = any(os.path.isdir(os.path.join(r, ct, "cursors")) for r in SYS_ICONS_DIRS)
+        installed = is_ncui_cursor_name(ct) or any(os.path.isdir(os.path.join(r, ct, "cursors")) for r in SYS_ICONS_DIRS)
         if not installed and ca:
             for cand_dir in (src_dir, CURSORS_STORE_DIR):
                 cand_zip = os.path.join(cand_dir, ca) if cand_dir else ""
@@ -3919,6 +4655,8 @@ def _apply_loaded_theme(cc_panel, loaded: dict, src_dir: str = "") -> None:
                     convert_windows_cursor_zip(cand_zip, custom_name=ct)
                     break
         _apply_cursor_cfg(ct, cs)
+    else:
+        sync_ncui_cursor_if_active()
     _save_theme_file(THEME_PATH, THEME)
     if cc_panel and cc_panel.shell:
         cc_panel.shell._apply_css()
@@ -3978,17 +4716,6 @@ def handle_cc_personalization_prompt(cc_panel, action_id: str, text: str) -> boo
             _set_pers_fb(False, t("cc_personalization.wp_invalid_hex_err", p0=val))
         return True
 
-    if action_id == "cc_pers_surf_bg":
-        if re.match(r"^#[0-9a-fA-F]{6}$", val):
-            norm_hx = set_surface_bg(val.lower(), sync_waybar=False)
-            _refresh_surface_companions(norm_hx)
-            _save_theme_file(THEME_PATH, THEME)
-            if cc_panel.shell:
-                cc_panel.shell._apply_css()
-            _set_pers_fb(True, t("cc_personalization.color_updated_to", p0="surface_bg", p1=norm_hx))
-        else:
-            _set_pers_fb(False, t("cc_personalization.invalid_hex_color", p0=val))
-        return True
     if action_id.startswith("cc_pers_col|"):
         k = action_id.split("|", 1)[1]
         if re.match(r"^#[0-9a-fA-F]{6}$", val):
@@ -4004,6 +4731,8 @@ def handle_cc_personalization_prompt(cc_panel, action_id: str, text: str) -> boo
                 THEME["colors"].update(derive_axis_companions(target_axis, val.lower(), get_surface_bg_hex()))
                 _sync_theme_aliases()
                 _save_theme_file(THEME_PATH, THEME)
+                if target_axis in ("intent", "fault"):
+                    sync_ncui_cursor_if_active()
                 if cc_panel.shell:
                     cc_panel.shell._apply_css()
                 _set_pers_fb(True, t("cc_personalization.updated", p0=target_axis, p1=val.lower()))

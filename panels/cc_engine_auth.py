@@ -155,7 +155,7 @@ def handle_cc_auth_link(cc_panel, uri: str) -> bool:
         probe.open_terminal(["bash", "-c", "sudo -l; echo; sudo visudo -c; echo; read -p 'Press Enter to close...'"])
         _MSG = t("cc_auth.opened_sudoers_verification_in_ter")
     elif cmd == "usbguard_term":
-        cmd_s = f"sudo {shlex.quote(_USBGUARD_HELPER)}" if os.path.exists(_USBGUARD_HELPER) else "sudo usbguard list-devices"
+        cmd_s = f"sudo {shlex.quote(_USBGUARD_HELPER)} list" if os.path.exists(_USBGUARD_HELPER) else "sudo usbguard list-devices"
         probe.open_terminal(["bash", "-c", f"{cmd_s}; echo; read -p 'Press Enter to close...'"])
         _MSG = t("cc_auth.opened_usbguard_terminal")
     elif cmd == "priv_inspect" and arg:

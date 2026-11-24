@@ -11,7 +11,7 @@ from core.i18n import t
 from core.state import STATE
 from ui.kit import FeedbackBox
 
-_CACHE_TTL = 1.5
+_CACHE_TTL = 0.9
 _DEV_CACHE: dict[bool, tuple[float, list[dict]]] = {}
 _STREAM_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _META_CACHE: tuple[float, tuple[str, str]] | None = None
@@ -26,34 +26,51 @@ _VOL_LOCK = threading.Lock()
 _VOL_EVENT = threading.Event()
 _PENDING_VOL: dict[tuple[str, str], list[str]] = {}
 _VOL_THREAD: threading.Thread | None = None
+_VOL_IN_FLIGHT: bool = False
+_LAST_VOL_TS: float = 0.0
 
 
 def _pactl_vol_worker() -> None:
+    global _VOL_IN_FLIGHT, _LAST_VOL_TS
     while True:
         _VOL_EVENT.wait()
         while True:
             with _VOL_LOCK:
                 if not _PENDING_VOL:
+                    _VOL_IN_FLIGHT = False
                     _VOL_EVENT.clear()
                     break
                 key, vals = next(iter(_PENDING_VOL.items()))
                 del _PENDING_VOL[key]
+                _VOL_IN_FLIGHT = True
             cmd, target = key
-            if probe.has_bin("pactl"):
-                probe.run_cmd(["pactl", cmd, target, *vals], timeout=1.5)
+            try:
+                if probe.has_bin("pactl"):
+                    probe.run_cmd(["pactl", cmd, target, *vals], timeout=1.5)
+            finally:
+                with _VOL_LOCK:
+                    _LAST_VOL_TS = time.monotonic()
+                    if not _PENDING_VOL:
+                        _VOL_IN_FLIGHT = False
 
 
 def _queue_pactl_vol(cmd: str, target: str, val: int | list[int]) -> None:
-    global _VOL_THREAD
+    global _VOL_THREAD, _LAST_VOL_TS
     if not probe.has_bin("pactl"):
         return
     vals = [f"{int(v)}%" for v in val] if isinstance(val, list) else [f"{int(val)}%"]
     with _VOL_LOCK:
         _PENDING_VOL[(cmd, str(target))] = vals
+        _LAST_VOL_TS = time.monotonic()
         if _VOL_THREAD is None or not _VOL_THREAD.is_alive():
             _VOL_THREAD = threading.Thread(target=_pactl_vol_worker, name="nc-pactl-vol", daemon=True)
             _VOL_THREAD.start()
         _VOL_EVENT.set()
+
+
+def is_sound_busy() -> bool:
+    with _VOL_LOCK:
+        return bool(_PENDING_VOL or _VOL_IN_FLIGHT or (time.monotonic() - _LAST_VOL_TS) < 0.45)
 
 
 def parse_channel_volumes(vol_obj: dict) -> dict[str, int]:

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime
 import io
 import json
 import os
@@ -31,6 +32,7 @@ META_FILE = os.path.expanduser("~/.cache/nc_clipboard_meta.json")
 PINS_FILE = os.path.expanduser("~/.cache/nc-ui/clipboard_pins.json")
 CACHE_DIR = "/tmp/nc_clipboard_cache"
 TEXT_CACHE_FILE = os.path.join(CACHE_DIR, "texts.json")
+SCREENSHOTS_DIR = os.path.expanduser("~/Pictures/Screenshots")
 _THUMB_W = 440
 _THUMB_H = 96
 _MEM_TEXT_CACHE: dict[str, str] | None = None
@@ -117,6 +119,51 @@ def _get_image_thumb_pixbuf(item_id: str, line_item: str, preview: str) -> GdkPi
     return None
 
 
+def _detect_image_ext(raw_bytes: bytes, match_line: str) -> str:
+    if raw_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw_bytes.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WEBP":
+        return "webp"
+    if raw_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if raw_bytes.startswith(b"BM"):
+        return "bmp"
+    low = match_line.lower()
+    if " jpg " in low or " jpeg " in low:
+        return "jpg"
+    return "webp" if " webp " in low else "png"
+
+
+def _save_clipboard_image(item_id: str) -> tuple[bool, str]:
+    ok, out = probe.run_cmd(["cliphist", "list"], timeout=1.5)
+    if not ok or not out:
+        return False, ""
+    match_line = next((l for l in out.splitlines() if l.startswith(f"{item_id}\t")), None)
+    if not match_line:
+        return False, ""
+    try:
+        p1 = subprocess.Popen(["cliphist", "decode"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        raw_bytes, _ = p1.communicate(input=match_line.encode("utf-8"), timeout=2.5)
+        if not raw_bytes:
+            return False, ""
+        ext = _detect_image_ext(raw_bytes, match_line)
+        os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        fname = f"clipboard_{item_id}_{stamp}.{ext}"
+        dest_path = os.path.join(SCREENSHOTS_DIR, fname)
+        tmp_path = os.path.join(SCREENSHOTS_DIR, f".{fname}.tmp")
+        with open(tmp_path, "wb") as f:
+            f.write(raw_bytes)
+        os.replace(tmp_path, dest_path)
+        if os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
+            return True, fname
+    except Exception:
+        pass
+    return False, ""
+
+
 def _load_pins() -> list[str]:
     if not os.path.exists(PINS_FILE):
         return []
@@ -175,13 +222,32 @@ class Panel(BasePanel):
     id = "clipboard"
     icon = "\uf0ea"
     hover_highlight = True
+    refresh_ms = 1500
 
     def __init__(self, shell=None):
         self.title = t("clipboard.title", "Clipboard")
         super().__init__(shell)
         self.search_query = ""
+        self.last_saved: tuple[str, bool, str] | None = None
+        self._last_clip_sig = None
         if os.environ.get("NC_UI_OFFSCREEN") != "1":
             probe.run_async(lambda: sync_image_watcher(is_image_capture_enabled()))
+
+    def _compute_clip_sig(self) -> tuple | None:
+        if not probe.has_bin("cliphist"):
+            return None
+        img_enabled = is_image_capture_enabled()
+        ok, out = probe.run_cmd(["cliphist", "list"], timeout=1.5)
+        lines = [l for l in out.splitlines() if l.strip()] if ok else []
+        if not img_enabled:
+            lines = [l for l in lines if "[[ binary data" not in l]
+        return (tuple(lines[:30]), len(lines), tuple(_load_pins()), img_enabled)
+
+    def should_refresh_on_tick(self) -> bool:
+        sig = self._compute_clip_sig()
+        changed = self._last_clip_sig is not None and sig != self._last_clip_sig
+        self._last_clip_sig = sig
+        return changed
 
     def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
         if not probe.has_bin("cliphist"):
@@ -205,6 +271,7 @@ class Panel(BasePanel):
             raw_lines = all_lines
 
         pins = _load_pins()
+        self._last_clip_sig = (tuple(raw_lines[:30]), len(raw_lines), tuple(pins), img_enabled)
         live_q = get_inline_entry_buffer() if get_active_inline_entry() == "wp_clip_flt" else self.search_query
 
         # --- HERO BAR: Contatore, Toggle Cattura Immagini, Ricerca Live & Wipe ---
@@ -241,6 +308,13 @@ class Panel(BasePanel):
             f"{Txt(t('clipboard.items'), role='schema')} {Txt(str(len(raw_lines)), role='val')}",
             right_markup=img_toggle_btn,
         )
+        if self.last_saved:
+            saved_id, saved_ok, saved_fname = self.last_saved
+            if saved_ok:
+                fb_txt = Txt(f"● {t('clipboard.saved_msg', p0=saved_fname)}", role="vitality")
+            else:
+                fb_txt = Txt(t("clipboard.save_err_msg", p0=saved_id), role="fault")
+            hdr_box.add_row(f"  {fb_txt}")
         hdr_box.add_row(" ")
         cards = [hdr_box]
 
@@ -308,10 +382,13 @@ class Panel(BasePanel):
                     continue
                 pixbuf = _get_image_thumb_pixbuf(item_id, line_item, preview)
                 if pixbuf:
+                    is_just_saved = bool(self.last_saved and self.last_saved[0] == str(item_id) and self.last_saved[1])
+                    save_lbl = t("clipboard.saved_btn") if is_just_saved else t("clipboard.save_to_file")
                     img_box = Box(
                         ts,
                         icon="\uf03e",
                         actions=[
+                            ActionBtn(save_lbl, f"clip:save:{item_id}", tone="apply"),
                             Txt(t("clipboard.img"), role="schema"),
                             ActionBtn("x", f"clip:del:{item_id}", tone="danger_soft"),
                         ],
@@ -439,6 +516,12 @@ class Panel(BasePanel):
                         os.remove(os.path.join(CACHE_DIR, fn))
                     except OSError:
                         pass
+            self.request_throttled_refresh()
+            return
+        if uri.startswith("clip:save:"):
+            target_id = uri.split(":", 2)[2]
+            ok_s, fname = _save_clipboard_image(target_id)
+            self.last_saved = (str(target_id), ok_s, fname)
             self.request_throttled_refresh()
             return
         if uri.startswith("clip:unpin:"):

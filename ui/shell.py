@@ -38,10 +38,13 @@ from ui.canvas import Canvas
 from ui.kit import (
     PALETTE,
     ActionBtn,
+    Badge,
     Box,
     Divider,
     InspectorCell,
+    StateBadge,
     Txt,
+    advance_slider_uri,
     cancel_inline_entry,
     commit_active_inline_entry,
     get_active_inline_entry,
@@ -74,6 +77,7 @@ DEFAULT_PANEL_TO_WB_MODULE = {
     "network": "custom/netcycle",
     "cpu": "custom/cpu",
     "ram": "custom/ram",
+    "gpu": "custom/gpu",
     "notifications": "custom/notifications",
     "session": "custom/session",
     "power": "custom/power",
@@ -104,6 +108,8 @@ class ShellWindow(Gtk.Window):
         self._wb_layout_cache = None
         self._niri_geom_cache = None
         self._last_allocated_w = 0
+        self._allocated_cc_h = None
+        self._cc_refit_pending = False
         self._ignore_leave_until = 0.0
         self._mouse_inside = False
         self._leave_close_source_id = None
@@ -119,6 +125,15 @@ class ShellWindow(Gtk.Window):
         self.root_overlay = None
         self.cc_search_holder = None
         self.cc_search_listbox = None
+        self.toast_holder = None
+        self.toast_listbox = None
+        self._toast_timer_id = None
+        self._toast_hovered = False
+        self._toast_level = "ok"
+        self._toast_duration_ms = 0
+        self._action_seq = {}
+        self._last_fb_by_view = {}
+        self._last_view_key = None
         self._inline_entry = None
         self._suppress_inline_sync = False
         self.click_x = anchor_x if (anchor_x is not None and anchor_x > 0) else -1
@@ -179,6 +194,11 @@ class ShellWindow(Gtk.Window):
         self.connect("scroll-event", self._on_scrolled_window_scroll)
         self.connect("realize", self._on_realize)
         self.connect("size-allocate", self._on_size_allocate)
+        self._geom_sig_ids = []
+        if screen is not None and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            self._geom_sig_ids.append((screen, screen.connect("monitors-changed", self._on_screen_geometry_signal)))
+            self._geom_sig_ids.append((screen, screen.connect("size-changed", self._on_screen_geometry_signal)))
+            self.connect("destroy", self._on_shell_destroy)
 
         self.refresh_view()
         if self.mode == "settings":
@@ -259,18 +279,38 @@ class ShellWindow(Gtk.Window):
 
     def _compute_cc_content_cols(self) -> int:
         cfg_w = int(CONFIG.get("control_center", {}).get("width_px", 960))
+        _mon, mon_w, _mon_h = self._resolve_target_monitor()
+        _, outer_mar = get_layout_margins()
+        eff_w = min(cfg_w, max(640, mon_w - (2 * outer_mar)))
         m_left, m_right, _m_top, _m_bot, hbox_gap = self._get_inner_box_margins()
         nav_w_px = int(round(self.nav_canvas.total_px))
-        avail_px = max(320.0, float(cfg_w - m_left - m_right - hbox_gap - nav_w_px))
+        avail_px = max(320.0, float(eff_w - m_left - m_right - hbox_gap - nav_w_px))
         return max(44, int(avail_px // self.nav_canvas.char_w))
 
+    def _uses_layer_shell_cc_height(self) -> bool:
+        return self.mode == "settings" and HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1"
+
     def _get_cc_target_height_px(self) -> int:
+        if self._uses_layer_shell_cc_height() and self._allocated_cc_h is not None and self._allocated_cc_h >= 240:
+            return int(self._allocated_cc_h)
         _mon, _mon_w, mon_h = self._resolve_target_monitor()
-        if os.environ.get("NC_UI_OFFSCREEN") == "1" and mon_h < 1200:
+        if os.environ.get("NC_UI_OFFSCREEN") == "1" and not os.environ.get("NC_SHOT_MON_H") and mon_h < 1200:
             mon_h = 1440
         _, outer_mar = get_layout_margins()
         wb_top = int(self.wb_look.get("top", 30 + outer_mar))
-        return max(540, mon_h - wb_top - outer_mar - outer_mar)
+        return max(320, mon_h - wb_top - outer_mar - outer_mar)
+
+    def _get_popup_bounds_px(self) -> tuple[int, int]:
+        _mon, mon_w, mon_h = self._resolve_target_monitor()
+        if os.environ.get("NC_UI_OFFSCREEN") == "1" and not os.environ.get("NC_SHOT_MON_H") and mon_h < 1200:
+            mon_h = 1440
+        _, outer_mar = get_layout_margins()
+        wb_top = int(self.wb_look.get("top", 30 + outer_mar))
+        pad = int(self.geom.get("panel_padding", 10)) * 2
+        bw = int(self.geom.get("window_border_width", 1))
+        max_win_w = max(380, mon_w - (2 * outer_mar))
+        max_win_h = max(240, mon_h - wb_top - outer_mar - pad - (2 * bw))
+        return max_win_w, max_win_h
 
     def _measure_cc_box_px(self, item) -> int:
         bm = item.box_model if hasattr(item, "box_model") else item
@@ -298,7 +338,8 @@ class ShellWindow(Gtk.Window):
 
     def get_cc_avail_body_height_px(self, extra_top_cards: list = None) -> int:
         _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
-        avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot)
+        bw = int(self.geom.get("window_border_width", 1))
+        avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot - (2 * bw))
         c = self.content_canvas
         std_row_h = getattr(c, "_std_row_h_px", 0)
         if std_row_h <= 0:
@@ -314,6 +355,8 @@ class ShellWindow(Gtk.Window):
                 hdr_h = sum(std_row_h if "\u200b" in ln else base_h for ln in hdr_ch._last_markup.splitlines())
         used_h = hdr_h + spacing
         for ec in (extra_top_cards or ()):
+            if getattr(ec, "_toast_meta", None):
+                continue
             used_h += self._measure_cc_box_px(ec) + spacing
         return max(240, avail_list_h - used_h)
 
@@ -450,6 +493,13 @@ class ShellWindow(Gtk.Window):
         return ctx
 
     def _resolve_target_monitor(self) -> tuple:
+        if os.environ.get("NC_UI_OFFSCREEN") == "1":
+            ov_w = os.environ.get("NC_SHOT_MON_W", "").strip()
+            ov_h = os.environ.get("NC_SHOT_MON_H", "").strip()
+            if ov_w.isdigit() and ov_h.isdigit():
+                display = Gdk.Display.get_default()
+                mon = display.get_primary_monitor() if display else None
+                return mon, max(320, int(ov_w)), max(240, int(ov_h))
         niri_ctx = self._query_niri_context()
         logical = niri_ctx.get("logical") or {}
         niri_w = int(logical.get("width", 0)) if logical.get("width") else 0
@@ -602,7 +652,7 @@ class ShellWindow(Gtk.Window):
             ordered.append((pid, p_mode))
 
         if not ordered:
-            for pid in ("settings", "calendar", "display", "clipboard", "capture", "audio", "network", "cpu", "ram", "notifications", "session"):
+            for pid in ("settings", "calendar", "display", "clipboard", "capture", "audio", "network", "cpu", "ram", "gpu", "notifications", "session"):
                 ordered.append((pid, "settings" if pid == "settings" else "popup"))
         return ordered
 
@@ -683,12 +733,22 @@ class ShellWindow(Gtk.Window):
 
         return 46.0
 
+    def _is_centered_overlay(self) -> bool:
+        return self.mode == "popup" and bool(getattr(self.panel, "centered_overlay", False))
+
+    def _default_keyboard_mode(self):
+        return GtkLayerShell.KeyboardMode.EXCLUSIVE if self._is_centered_overlay() else GtkLayerShell.KeyboardMode.ON_DEMAND
+
     def _init_layer_shell(self) -> None:
         if not HAS_LAYER_SHELL or os.environ.get("NC_UI_OFFSCREEN") == "1":
             return
+        is_centered = self._is_centered_overlay()
         GtkLayerShell.init_for_window(self)
-        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)
-        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+        GtkLayerShell.set_layer(
+            self,
+            GtkLayerShell.Layer.OVERLAY if is_centered else GtkLayerShell.Layer.TOP,
+        )
+        GtkLayerShell.set_keyboard_mode(self, self._default_keyboard_mode())
 
         target_mon, _, _ = self._resolve_target_monitor()
         if target_mon is not None:
@@ -714,6 +774,16 @@ class ShellWindow(Gtk.Window):
             )
             return
 
+        if is_centered:
+            for edge in (
+                GtkLayerShell.Edge.TOP,
+                GtkLayerShell.Edge.BOTTOM,
+                GtkLayerShell.Edge.LEFT,
+                GtkLayerShell.Edge.RIGHT,
+            ):
+                GtkLayerShell.set_anchor(self, edge, False)
+            return
+
         wb = self._read_waybar_layout()
         is_bottom = (wb.get("position") == "bottom")
         v_edge = GtkLayerShell.Edge.BOTTOM if is_bottom else GtkLayerShell.Edge.TOP
@@ -722,7 +792,7 @@ class ShellWindow(Gtk.Window):
         self._apply_dynamic_anchor()
 
     def _apply_dynamic_anchor(self, actual_win_w: int = None) -> None:
-        if not HAS_LAYER_SHELL or self.mode == "settings" or os.environ.get("NC_UI_OFFSCREEN") == "1":
+        if not HAS_LAYER_SHELL or self.mode == "settings" or self._is_centered_overlay() or os.environ.get("NC_UI_OFFSCREEN") == "1":
             return
 
         target_mon, mon_w, _mon_h = self._resolve_target_monitor()
@@ -805,8 +875,29 @@ class ShellWindow(Gtk.Window):
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, False)
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
 
+    def _on_cc_height_allocated(self) -> bool:
+        self._cc_refit_pending = False
+        if self.mode != "settings":
+            return False
+        has_fill = any(
+            getattr(c.box_model if hasattr(c, "box_model") else c, "fill_window", False)
+            for c in self.listbox.get_children()
+        )
+        if has_fill or getattr(self.panel, "section", "") in ("updates", "telemetry"):
+            self.refresh_view()
+        else:
+            self._adjust_scroll_height()
+        return False
+
     def _on_size_allocate(self, _widget, allocation) -> None:
         self._cancel_leave_close()
+        if self._uses_layer_shell_cc_height() and allocation.height >= 240:
+            h_px = int(allocation.height)
+            if self._allocated_cc_h is None or abs(h_px - self._allocated_cc_h) >= 1:
+                self._allocated_cc_h = h_px
+                if not self._cc_refit_pending:
+                    self._cc_refit_pending = True
+                    GLib.idle_add(self._on_cc_height_allocated)
         if allocation.width > 40 and abs(allocation.width - self._last_allocated_w) > 2:
             self._last_allocated_w = allocation.width
             self._apply_dynamic_anchor(actual_win_w=allocation.width)
@@ -832,9 +923,6 @@ class ShellWindow(Gtk.Window):
         bc = self.colors["window_border"]
         c_pri = p["focus"]
         c_acc = p["intent"]
-        ar, ag, ab, _ = _parse_rgba_components(c_acc)
-        map_bg = f"rgba({ar}, {ag}, {ab}, 0.14)"
-        map_bg_hov = f"rgba({ar}, {ag}, {ab}, 0.28)"
 
         css = f"""
         window {{
@@ -848,20 +936,6 @@ class ShellWindow(Gtk.Window):
             background-color: {bg};
             border-radius: {rad}px;
             border: {bw}px solid {bc};
-        }}
-        #niri-map-out {{
-            background: {map_bg};
-            background-color: {map_bg};
-            border: 2px solid {c_acc};
-            border-radius: 8px;
-            color: {c_pri};
-        }}
-        #niri-map-out:hover {{
-            background: {map_bg_hov};
-            background-color: {map_bg_hov};
-        }}
-        #niri-map-out label {{
-            color: {c_pri};
         }}
         list, row, scrolledwindow, scrollbar, #nc-card-eb {{
             background: transparent;
@@ -965,7 +1039,13 @@ class ShellWindow(Gtk.Window):
         # Blocco orizzontale UI-wide: nel Control Center non propaga mai la larghezza naturale dei figli
         self.scrolled_window.set_propagate_natural_width(self.mode != "settings")
         self.scrolled_window.set_propagate_natural_height(self.mode != "settings")
-        max_h = self._get_cc_target_height_px() if self.mode == "settings" else int(self.geom["popup_max_height"])
+        p_max = self.panel.get_max_height() if hasattr(self.panel, "get_max_height") else None
+        raw_max_h = self._get_cc_target_height_px() if self.mode == "settings" else int(p_max or self.geom["popup_max_height"])
+        if self.mode == "settings":
+            max_h = raw_max_h
+        else:
+            _mw, max_popup_h = self._get_popup_bounds_px()
+            max_h = min(raw_max_h, max_popup_h)
         self.scrolled_window.set_max_content_height(max_h)
         self.scrolled_window.set_can_focus(False)
         self.scrolled_window.connect("scroll-event", self._on_scrolled_window_scroll)
@@ -1009,8 +1089,27 @@ class ShellWindow(Gtk.Window):
             hbox.pack_start(self.scrolled_window, True, True, 0)
             outer_vbox.pack_start(self.prompt_bar, False, False, 0)
 
+        self.toast_listbox = Gtk.ListBox()
+        self.toast_listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.toast_listbox.set_can_focus(False)
+        self.toast_holder = Gtk.EventBox()
+        self.toast_holder.set_visible_window(False)
+        self.toast_holder.set_halign(Gtk.Align.END)
+        self.toast_holder.set_valign(Gtk.Align.END)
+        self.toast_holder.add_events(
+            Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
+        self.toast_holder.connect("enter-notify-event", self._on_toast_enter)
+        self.toast_holder.connect("leave-notify-event", self._on_toast_leave)
+        self.toast_holder.add(self.toast_listbox)
+        self.toast_holder.set_no_show_all(True)
+        self.toast_holder.hide()
+        self.root_overlay.add_overlay(self.toast_holder)
+        self.connect("destroy", lambda *_a: self._cancel_toast_timer())
+
         if self.mode == "settings":
-            self.set_size_request(self._get_cc_target_width_px(), self._get_cc_target_height_px())
+            target_h = -1 if self._uses_layer_shell_cc_height() else self._get_cc_target_height_px()
+            self.set_size_request(self._get_cc_target_width_px(), target_h)
         else:
             self.set_size_request(self._total_window_px(), -1)
 
@@ -1046,6 +1145,54 @@ class ShellWindow(Gtk.Window):
             self._last_sw_size = None
         self._adjust_scroll_height()
 
+    def _on_shell_destroy(self, _widget) -> None:
+        try:
+            from core.privileges import is_sudo_session_unlocked, lock_sudo_session
+            if is_sudo_session_unlocked():
+                lock_sudo_session(drop_ticket=True)
+        except Exception:
+            pass
+        if self._refresh_source_id is not None:
+            try:
+                GLib.source_remove(self._refresh_source_id)
+            except Exception:
+                pass
+            self._refresh_source_id = None
+        for obj, sid in getattr(self, "_geom_sig_ids", ()):
+            try:
+                obj.disconnect(sid)
+            except Exception:
+                pass
+        self._geom_sig_ids = []
+
+    def _on_screen_geometry_signal(self, *_args) -> None:
+        GLib.idle_add(self.on_display_geometry_changed)
+
+    def on_display_geometry_changed(self) -> bool:
+        self._niri_geom_cache = None
+        self._wb_layout_cache = None
+        self._allocated_cc_h = None
+        self._ink_insets = None
+        self._last_nav_height_px = -1
+        self._last_nav_state = None
+        self._nav_sized = False
+        self._last_win_size = None
+        self._last_sw_size = None
+        self._last_render_sig = None
+        self._stable_cols_key = None
+        self._stable_cols_val = 0
+        if self.mode == "settings":
+            cc_cols = self._compute_cc_content_cols()
+            self.content_canvas.set_cols(cc_cols)
+        if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            target_mon, _, _ = self._resolve_target_monitor()
+            if target_mon is not None:
+                GtkLayerShell.set_monitor(self, target_mon)
+        self.refresh_view()
+        if os.environ.get("NC_UI_OFFSCREEN") != "1":
+            GLib.timeout_add(180, lambda: self._adjust_scroll_height() and False)
+        return False
+
     def _check_step_rate_limit(self, continuous: bool = False) -> bool:
         return allow_step_input(continuous=continuous)
 
@@ -1071,7 +1218,13 @@ class ShellWindow(Gtk.Window):
                         ch.set_focused_anchor(None)
 
     def _dispatch_slider_step(self, target: dict, direction: str, continuous: bool = False, scroll_card=None) -> bool:
-        step_uri = target.get("inc_uri") if direction == "up" else target.get("dec_uri")
+        prefix = target.get("action_prefix", "")
+        if prefix:
+            step_uri = advance_slider_uri(prefix, direction)
+            if not step_uri:
+                return True
+        else:
+            step_uri = target.get("inc_uri") if direction == "up" else target.get("dec_uri")
         if not step_uri:
             return False
         if self._check_step_rate_limit(continuous=continuous):
@@ -1150,10 +1303,13 @@ class ShellWindow(Gtk.Window):
 
     def _on_timer_tick(self) -> bool:
         if (
-            not self.panel.is_busy()
+            self.get_visible()
+            and not self.is_cc_search_open()
+            and not self.panel.is_busy()
             and not self.prompt_bar.get_visible()
             and not get_active_inline_entry()
             and not self.is_pointer_busy()
+            and self.panel.should_refresh_on_tick()
         ):
             self.refresh_view()
         return True
@@ -1184,9 +1340,11 @@ class ShellWindow(Gtk.Window):
 
         if self.mode == "settings":
             _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+            bw = int(self.geom.get("window_border_width", 1))
             tot_w = self._get_cc_target_width_px()
             tot_h = self._get_cc_target_height_px()
-            avail_list_h = max(120, tot_h - m_top - m_bot)
+            avail_list_h = max(120, tot_h - m_top - m_bot - (2 * bw))
+            ls_cc_h = self._uses_layer_shell_cc_height()
 
             if avail_list_h != self._last_nav_height_px or not getattr(self, "_nav_sized", False):
                 if avail_list_h != self._last_nav_height_px:
@@ -1200,7 +1358,7 @@ class ShellWindow(Gtk.Window):
                 else:
                     self.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
                 nav_w_px = int(round(self.nav_canvas.total_px))
-                self.nav_scrolled.set_size_request(nav_w_px, avail_list_h)
+                self.nav_scrolled.set_size_request(nav_w_px, -1 if ls_cc_h else avail_list_h)
                 self._nav_sized = True
 
             hdr_nat_h = 0
@@ -1212,23 +1370,28 @@ class ShellWindow(Gtk.Window):
                 self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             else:
                 self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+            self.scrolled_window.set_max_content_height(avail_body_h)
             right_w_px = int(round(self.content_canvas.total_px))
             if self.header_listbox is not None:
                 self.header_listbox.set_size_request(right_w_px, -1)
-            sw_sz = (right_w_px, avail_body_h)
+            sw_sz = (right_w_px, -1 if ls_cc_h else avail_body_h)
             if getattr(self, "_last_sw_size", None) != sw_sz:
                 self._last_sw_size = sw_sz
-                self.scrolled_window.set_size_request(right_w_px, avail_body_h)
-            win_sz = (tot_w, tot_h)
+                self.scrolled_window.set_size_request(*sw_sz)
+            win_sz = (tot_w, -1 if ls_cc_h else tot_h)
             if getattr(self, "_last_win_size", None) != win_sz:
                 self._last_win_size = win_sz
-                self.set_size_request(tot_w, tot_h)
-                self.resize(tot_w, tot_h)
+                self.set_size_request(*win_sz)
+                if not ls_cc_h:
+                    self.resize(tot_w, tot_h)
             return False
 
         pad = int(self.geom.get("panel_padding", 10)) * 2
         bw = int(self.geom.get("window_border_width", 1))
-        max_h = int(self.geom["popup_max_height"])
+        p_max = self.panel.get_max_height() if hasattr(self.panel, "get_max_height") else None
+        _mw, max_popup_h = self._get_popup_bounds_px()
+        max_h = min(int(p_max or self.geom["popup_max_height"]), max_popup_h)
+        self.scrolled_window.set_max_content_height(max_h)
         avail_list_h = max(60, max_h - prompt_h)
         if nat_h > avail_list_h:
             self.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -1318,7 +1481,7 @@ class ShellWindow(Gtk.Window):
             and not self.prompt_bar.get_visible()
             and not STATE.get("keyboard", "capture_mode", "")
         ):
-            GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+            GtkLayerShell.set_keyboard_mode(self, self._default_keyboard_mode())
 
     def _on_inline_entry_changed(self, entry) -> None:
         if self._suppress_inline_sync or not get_active_inline_entry():
@@ -1332,6 +1495,7 @@ class ShellWindow(Gtk.Window):
 
     def _on_inline_entry_activate(self, _entry) -> None:
         if get_active_inline_entry():
+            self._mark_action_dispatched()
             commit_active_inline_entry(shell=self)
 
     def _on_inline_entry_key_press(self, _widget, event) -> bool:
@@ -1348,6 +1512,7 @@ class ShellWindow(Gtk.Window):
             cancel_inline_entry(refresh=True)
             return True
         if kv in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self._mark_action_dispatched()
             return commit_active_inline_entry(shell=self)
         if kv in (Gdk.KEY_Tab, Gdk.KEY_KP_Tab, Gdk.KEY_ISO_Left_Tab):
             rev = is_shift or (kv == Gdk.KEY_ISO_Left_Tab)
@@ -1450,6 +1615,161 @@ class ShellWindow(Gtk.Window):
         self.cc_search_holder.show_all()
         self.cc_search_holder.set_no_show_all(True)
 
+    def _current_view_key(self) -> tuple[str, str, str]:
+        sec = str(getattr(self.panel, "section", getattr(self.panel, "active_section", "")) or "")
+        if hasattr(self.panel, "get_subtab"):
+            sub = str(self.panel.get_subtab() or "")
+        else:
+            sub = str(getattr(self.panel, "active_tab", getattr(self.panel, "active_subtab", "")) or "")
+        return (str(self.panel_id or ""), sec, sub)
+
+    def _cancel_toast_timer(self) -> None:
+        if self._toast_timer_id is not None:
+            try:
+                GLib.source_remove(self._toast_timer_id)
+            except Exception:
+                pass
+            self._toast_timer_id = None
+
+    def _mark_action_dispatched(self) -> None:
+        vk = self._current_view_key()
+        self._action_seq[vk] = int(self._action_seq.get(vk, 0)) + 1
+        if self._toast_level == "err" and self.toast_holder is not None and self.toast_holder.get_visible():
+            self.dismiss_toast()
+
+    @staticmethod
+    def _is_nav_only_uri(uri: str) -> bool:
+        u = str(uri or "")
+        if u.startswith((
+            "cc:section:",
+            "cc:subtab:",
+            "cc:lang:",
+            "cc:global_search_",
+            "cc:search_jump:",
+            "ui:toggle_expand",
+            "ui:refresh",
+            "ui:tab:",
+            "ui:state:",
+            "ui:panel:",
+            "ui:open_settings",
+            "ui:close",
+            "ui:prompt:",
+            "http://",
+            "https://",
+            "ncui:toast_",
+        )):
+            return True
+        return ":select_out:" in u or ":select_iface:" in u or ":inspect:" in u
+
+    def dismiss_toast(self) -> None:
+        self._cancel_toast_timer()
+        self._toast_hovered = False
+        if self.toast_listbox is not None:
+            for ch in self.toast_listbox.get_children():
+                self.toast_listbox.remove(ch)
+        if self.toast_holder is not None:
+            self.toast_holder.hide()
+
+    def _on_toast_timeout(self) -> bool:
+        self._toast_timer_id = None
+        if not self._toast_hovered:
+            self.dismiss_toast()
+        return False
+
+    def _on_toast_enter(self, *_args) -> bool:
+        self._toast_hovered = True
+        self._cancel_toast_timer()
+        return False
+
+    def _on_toast_leave(self, *_args) -> bool:
+        self._toast_hovered = False
+        if (
+            self.toast_holder is not None
+            and self.toast_holder.get_visible()
+            and self._toast_duration_ms > 0
+            and os.environ.get("NC_UI_OFFSCREEN") != "1"
+        ):
+            self._cancel_toast_timer()
+            self._toast_timer_id = GLib.timeout_add(1200, self._on_toast_timeout)
+        return False
+
+    def show_toast(self, msg: str, level: str = "ok", title: str = "", duration_ms: int | None = None) -> None:
+        if self.toast_holder is None or self.toast_listbox is None:
+            return
+        msg_str = str(msg or "").strip()
+        if not msg_str:
+            return
+        self._cancel_toast_timer()
+        lvl = level if level in ("ok", "warn", "err") else "ok"
+        if duration_ms is None:
+            eff_dur = 2600 if lvl == "ok" else (4500 if lvl == "warn" else 0)
+        else:
+            eff_dur = max(0, int(duration_ms))
+
+        self._toast_level = lvl
+        self._toast_duration_ms = eff_dur
+        self._toast_hovered = False
+
+        pal = get_semantic_palette()
+        if lvl == "ok":
+            icon = "\uf00c"
+            badge = StateBadge(True, t("common.ok"))
+            msg_col = pal["focus_val"]
+        elif lvl == "warn":
+            icon = "\uf071"
+            badge = Badge(t("common.warn"), style="warn")
+            msg_col = pal["attention"]
+        else:
+            icon = "\uf071"
+            badge = Badge(t("common.err"), style="crit")
+            msg_col = pal["fault"]
+
+        eff_title = str(title or t("common.status")).strip()
+        brk_extra = sum(len(x) for x in (THEME.get("ascii", {}).get("title_brackets") or ("[ ", " ]")))
+        if self.mode == "settings":
+            max_cols = min(68, max(38, self.content_canvas.total_cols - 6))
+        else:
+            max_cols = min(44, max(28, self.content_canvas.total_cols - 2))
+        min_cols = min(max_cols, max(38, len(eff_title) + 21 + brk_extra))
+        toast_cols = max(min_cols, min(max_cols, len(msg_str) + 8))
+
+        toast_canvas = Canvas(total_cols=toast_cols)
+        ov_box = Box(
+            eff_title,
+            icon=icon,
+            actions=[badge, ActionBtn("x", "ncui:toast_close", tone="danger_soft")],
+            highlighted=True,
+            fixed_width=True,
+            min_cols=toast_cols,
+            max_cols=toast_cols,
+        )
+        ov_box.is_overlay = True
+        ov_box.is_toast = True
+        ov_box.add_row(" ")
+        ov_box.add_text_block(msg_str, color=msg_col)
+        ov_box.add_row(" ")
+
+        for ch in self.toast_listbox.get_children():
+            self.toast_listbox.remove(ch)
+        ov_card = AsciiCard(ov_box, toast_canvas, on_link=self.dispatch_uri, hover_enable=False)
+        self.toast_listbox.add(ov_card)
+
+        if self.mode == "settings":
+            _ml, m_right, _mt, m_bot, _gap = self._get_inner_box_margins()
+        else:
+            pad = int(self.geom.get("panel_padding", 10))
+            m_right = pad
+            m_bot = pad
+        prompt_off = (max(0, self.prompt_bar.get_allocated_height()) + 8) if (self.prompt_bar and self.prompt_bar.get_visible()) else 0
+        self.toast_holder.set_margin_end(m_right + int(round(self.content_canvas.char_w)))
+        self.toast_holder.set_margin_bottom(m_bot + int(round(self.content_canvas.char_h * 0.6)) + prompt_off)
+        self.toast_holder.set_no_show_all(False)
+        self.toast_holder.show_all()
+        self.toast_holder.set_no_show_all(True)
+
+        if eff_dur > 0 and os.environ.get("NC_UI_OFFSCREEN") != "1":
+            self._toast_timer_id = GLib.timeout_add(eff_dur, self._on_toast_timeout)
+
     def activate_prompt(
         self,
         action_id: str,
@@ -1479,7 +1799,7 @@ class ShellWindow(Gtk.Window):
     def hide_prompt(self) -> None:
         self.bump_leave_guard(0.40)
         if HAS_LAYER_SHELL and self.mode != "settings" and os.environ.get("NC_UI_OFFSCREEN") != "1":
-            GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+            GtkLayerShell.set_keyboard_mode(self, self._default_keyboard_mode())
         self.prompt_bar.deactivate()
 
     def _on_prompt_change(self, act_id: str, text: str) -> None:
@@ -1493,6 +1813,7 @@ class ShellWindow(Gtk.Window):
         if not act_id:
             self.hide_prompt()
             return
+        self._mark_action_dispatched()
         if act_id.startswith("cmd:"):
             self.hide_prompt()
             raw_cmd = act_id[4:].replace("{input}", text)
@@ -1501,7 +1822,7 @@ class ShellWindow(Gtk.Window):
         else:
             self.panel.on_prompt_submit(act_id, text)
             if not self.prompt_bar.get_visible() and HAS_LAYER_SHELL and self.mode != "settings" and os.environ.get("NC_UI_OFFSCREEN") != "1":
-                GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
+                GtkLayerShell.set_keyboard_mode(self, self._default_keyboard_mode())
             self.refresh_view()
 
     def dispatch_uri(self, uri: str) -> None:
@@ -1518,7 +1839,12 @@ class ShellWindow(Gtk.Window):
         if uri == "cc:global_search_close":
             self.close_cc_global_search()
             return
+        if uri == "ncui:toast_close":
+            self.dismiss_toast()
+            return
         cancel_inline_entry(refresh=False)
+        if not self._is_nav_only_uri(uri):
+            self._mark_action_dispatched()
         if uri.startswith("cc:search_jump:"):
             parts = uri.split(":", 3)
             sec_id = parts[2] if len(parts) > 2 else ""
@@ -1711,11 +2037,12 @@ class ShellWindow(Gtk.Window):
             avail_h_px = max(240, int(target_h_px))
         else:
             _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
+            bw = int(self.geom.get("window_border_width", 1))
             prompt_h = 0
             if hasattr(self, "prompt_bar") and self.prompt_bar.get_visible():
                 _pm, p_nat = self.prompt_bar.get_preferred_height()
                 prompt_h = max(p_nat, int(self.content_canvas.char_h * 3 + 12)) + 6
-            avail_h_px = max(360, self._get_cc_target_height_px() - m_top - m_bot - prompt_h)
+            avail_h_px = max(360, self._get_cc_target_height_px() - m_top - m_bot - (2 * bw) - prompt_h)
 
         active_sec = getattr(self.panel, "section", self.panel_id)
         is_rounded = (THEME.get("ascii", {}).get("box_style", "rounded") in ("rounded", "dashed"))
@@ -1785,6 +2112,7 @@ class ShellWindow(Gtk.Window):
 
         active_idx = 0
         span_h = y1 - y0
+        ic_pt = 18500 if self._nav_cell_height_px >= 44.0 else max(12500, int(round(self._nav_cell_height_px * 400)))
         for idx, (sec_id, ic) in enumerate(nav_items):
             cell_top = y0 + idx * span_h / float(n_items)
             cell_bot = y0 + (idx + 1) * span_h / float(n_items)
@@ -1808,7 +2136,7 @@ class ShellWindow(Gtk.Window):
             ic_lbl = Gtk.Label()
             ic_lbl.set_halign(Gtk.Align.CENTER)
             ic_lbl.set_valign(Gtk.Align.CENTER)
-            ic_lbl.set_markup(f"<span color='{col}' size='18500'>{ic}</span>")
+            ic_lbl.set_markup(f"<span color='{col}' size='{ic_pt}'>{ic}</span>")
             eb.add(ic_lbl)
 
             def _on_cell_press(_w, ev, target_sec=sec_id):
@@ -1820,14 +2148,14 @@ class ShellWindow(Gtk.Window):
                     return True
                 return False
 
-            def _on_cell_enter(_w, _ev, lbl=ic_lbl, glyph=ic, active=is_cur):
+            def _on_cell_enter(_w, _ev, lbl=ic_lbl, glyph=ic, active=is_cur, pt_sz=ic_pt):
                 self._on_card_pointer_activity("enter")
                 if not active:
-                    lbl.set_markup(f"<span color='{p['focus']}' size='18500'>{glyph}</span>")
+                    lbl.set_markup(f"<span color='{p['focus']}' size='{pt_sz}'>{glyph}</span>")
                 return False
 
-            def _on_cell_leave(_w, _ev, lbl=ic_lbl, glyph=ic, base_col=col):
-                lbl.set_markup(f"<span color='{base_col}' size='18500'>{glyph}</span>")
+            def _on_cell_leave(_w, _ev, lbl=ic_lbl, glyph=ic, base_col=col, pt_sz=ic_pt):
+                lbl.set_markup(f"<span color='{base_col}' size='{pt_sz}'>{glyph}</span>")
                 return False
 
             eb.connect("button-press-event", _on_cell_press)
@@ -2086,6 +2414,39 @@ class ShellWindow(Gtk.Window):
         target_lb.show_all()
         return ascii_cards, False
 
+    @staticmethod
+    def _extract_feedback_toasts(raw_cards: list) -> tuple[list, list]:
+        filtered = []
+        toasts = []
+        for item in (raw_cards or []):
+            bm = getattr(item, "box_model", None) or item
+            meta = getattr(bm, "_toast_meta", None)
+            if isinstance(meta, dict) and meta.get("msg"):
+                toasts.append(meta)
+            else:
+                filtered.append(item)
+        return filtered, toasts
+
+    def _sync_feedback_toasts(self, toast_metas: list) -> None:
+        vk = self._current_view_key()
+        if self._last_view_key is not None and vk != self._last_view_key and self._toast_level == "err":
+            self.dismiss_toast()
+        self._last_view_key = vk
+        cur_seq = int(self._action_seq.get(vk, 0))
+        prev_present, prev_payload, prev_seq = self._last_fb_by_view.get(vk, (False, None, -1))
+        if toast_metas:
+            chosen = next((m for m in reversed(toast_metas) if not m.get("ok")), toast_metas[-1])
+            payload = (chosen.get("title", ""), bool(chosen.get("ok")), str(chosen.get("msg", "")))
+            if (not prev_present) or (payload != prev_payload) or (cur_seq != prev_seq):
+                self.show_toast(
+                    chosen.get("msg", ""),
+                    level=("ok" if chosen.get("ok") else "err"),
+                    title=chosen.get("title", ""),
+                )
+            self._last_fb_by_view[vk] = (True, payload, cur_seq)
+        else:
+            self._last_fb_by_view[vk] = (False, None, cur_seq)
+
     def refresh_view(self) -> bool:
         nav_vadj = self.nav_scrolled.get_vadjustment() if self.mode == "settings" and hasattr(self, "nav_scrolled") else None
         nav_scroll_val = nav_vadj.get_value() if nav_vadj else 0.0
@@ -2093,11 +2454,14 @@ class ShellWindow(Gtk.Window):
         vadj = self.scrolled_window.get_vadjustment()
         scroll_val = vadj.get_value() if vadj else 0.0
 
+        toast_metas = []
         if self.mode == "settings":
             self._populate_settings_nav()
             cc_cols = self._compute_cc_content_cols()
             self.content_canvas.set_cols(cc_cols)
-            raw_cards = self.panel.build_cards(self.content_canvas, force_expanded=True)
+            raw_cards, toast_metas = self._extract_feedback_toasts(
+                self.panel.build_cards(self.content_canvas, force_expanded=True)
+            )
             for c_item in raw_cards:
                 if isinstance(c_item, (Box, Divider)):
                     c_item._forced_cols = cc_cols
@@ -2118,7 +2482,8 @@ class ShellWindow(Gtk.Window):
             ]
             if fill_items and raw_cards:
                 _ml, _mr, m_top, m_bot, _gap = self._get_inner_box_margins()
-                avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot)
+                bw = int(self.geom.get("window_border_width", 1))
+                avail_list_h = max(240, self._get_cc_target_height_px() - m_top - m_bot - (2 * bw))
                 spacing = int(self.geom.get("card_spacing", 4))
                 used_px = self._measure_cc_box_px(raw_cards[0]) + (spacing if len(raw_cards) > 1 else 0)
                 for idx_b, b_item in enumerate(raw_cards[1:]):
@@ -2131,16 +2496,22 @@ class ShellWindow(Gtk.Window):
                     bm_f.min_height_px = target_fill_px
         else:
             is_exp = self.panel.is_expanded
-            base_cols = self.panel.get_cols()
-            state_key = (self.panel_id, is_exp)
+            pad = int(self.geom.get("panel_padding", 10)) * 2
+            bw = int(self.geom.get("window_border_width", 1))
+            max_popup_w, _ = self._get_popup_bounds_px()
+            max_popup_cols = max(44, int((max_popup_w - pad - (2 * bw)) // self.content_canvas.char_w))
+            base_cols = min(self.panel.get_cols(), max_popup_cols)
+            state_key = (self.panel_id, is_exp, max_popup_cols)
             if self._stable_cols_key != state_key:
                 self._stable_cols_key = state_key
                 self._stable_cols_val = base_cols
 
             self.content_canvas.set_cols(base_cols)
-            raw_cards = self.panel.build_cards(self.content_canvas, force_expanded=False)
+            raw_cards, toast_metas = self._extract_feedback_toasts(
+                self.panel.build_cards(self.content_canvas, force_expanded=False)
+            )
             shared_cols = sync_boxes_width(raw_cards, self.content_canvas, max(base_cols, self._stable_cols_val))
-            self._stable_cols_val = max(self._stable_cols_val, shared_cols)
+            self._stable_cols_val = min(max(self._stable_cols_val, shared_cols), max_popup_cols)
             self.content_canvas.set_cols(self._stable_cols_val)
 
         specs = []
@@ -2224,6 +2595,7 @@ class ShellWindow(Gtk.Window):
         self._rebuild_focus_targets()
         self._apply_dynamic_anchor()
         self._render_cc_global_search_overlay()
+        self._sync_feedback_toasts(toast_metas)
         if same_layout:
             return True
         self._adjust_scroll_height()
@@ -2243,7 +2615,7 @@ class ShellWindow(Gtk.Window):
 
     def _confirm_leave_close(self) -> bool:
         self._leave_close_source_id = None
-        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
+        if self.mode == "settings" or self._is_centered_overlay() or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
             return False
         if time.monotonic() < self._ignore_leave_until or self.is_pointer_busy():
             return False
@@ -2272,7 +2644,7 @@ class ShellWindow(Gtk.Window):
             if isinstance(child, AsciiCard):
                 child.set_hovered_visual(False)
 
-        if self.mode == "settings" or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
+        if self.mode == "settings" or self._is_centered_overlay() or self.panel.is_busy() or self.prompt_bar.get_visible() or get_active_inline_entry():
             return False
 
         self._cancel_leave_close()
@@ -2333,12 +2705,16 @@ class ShellWindow(Gtk.Window):
         if is_shift and event.keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
             if self.mode == "settings":
                 return self._cycle_subtab(-1)
+            if self._is_centered_overlay():
+                return True
             self._surf_waybar_panel(-1)
             return True
 
         if is_shift and event.keyval in (Gdk.KEY_Right, Gdk.KEY_KP_Right):
             if self.mode == "settings":
                 return self._cycle_subtab(1)
+            if self._is_centered_overlay():
+                return True
             self._surf_waybar_panel(1)
             return True
 

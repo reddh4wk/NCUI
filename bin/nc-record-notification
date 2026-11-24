@@ -7,23 +7,59 @@ import datetime
 import json
 import os
 import re
+import shutil
+import socket
+import subprocess
 import sys
 
 HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
 RULES_FILE = os.path.expanduser("~/.config/nc-ui/notifications_rules.json")
 ADDONS_CONF = os.path.expanduser("~/.config/nc-ui/nc-addons.conf")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+POPUP_BIN = os.path.join(ROOT_DIR, "bin", "nc-notify-popup")
 
 
 def _load_rules() -> dict:
+    base = {
+        "dnd": False,
+        "quiet_enabled": False,
+        "quiet_window": "23:00-07:00",
+        "min_urgency": "low",
+        "muted_apps": [],
+        "popup_enabled": False,
+        "popup_timeout": 5,
+        "popup_position": "top-right",
+        "popup_effect": "slide",
+    }
     if os.path.exists(RULES_FILE):
         try:
             with open(RULES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    return data
+                    base.update(data)
         except Exception:
             pass
-    return {"dnd": False, "min_urgency": "low", "muted_apps": []}
+    return base
+
+
+def _in_quiet_hours(rules: dict) -> bool:
+    if not rules.get("quiet_enabled"):
+        return False
+    m = re.match(r"^\s*(\d{2}):(\d{2})-(\d{2}):(\d{2})\s*$", str(rules.get("quiet_window") or ""))
+    if not m:
+        return False
+    sh, sm, eh, em = (int(x) for x in m.groups())
+    if sh > 23 or eh > 23 or sm > 59 or em > 59:
+        return False
+    now = datetime.datetime.now()
+    cur_m = now.hour * 60 + now.minute
+    start_m = sh * 60 + sm
+    end_m = eh * 60 + em
+    if start_m == end_m:
+        return True
+    if start_m > end_m:
+        return cur_m >= start_m or cur_m < end_m
+    return start_m <= cur_m < end_m
 
 
 def _get_max_notifications() -> int:
@@ -36,6 +72,43 @@ def _get_max_notifications() -> int:
         except Exception:
             pass
     return 50
+
+
+def _dispatch_popup(item: dict) -> None:
+    if shutil.which("swaync-client"):
+        try:
+            subprocess.Popen(
+                ["swaync-client", "--hide-latest"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+
+    raw = json.dumps(item, ensure_ascii=False)
+    sock_path = f"/tmp/nc_notify_popup_{os.getuid()}.sock"
+    if os.path.exists(sock_path):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.25)
+                s.connect(sock_path)
+                s.sendall((raw + "\n").encode("utf-8"))
+            return
+        except Exception:
+            pass
+
+    if os.path.exists(POPUP_BIN):
+        try:
+            subprocess.Popen(
+                [sys.executable, POPUP_BIN, "--payload", raw],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
 
 
 def record_notification(app_name: str, summary: str, body: str, urgency: str = "normal", notif_id=None) -> None:
@@ -84,13 +157,15 @@ def record_notification(app_name: str, summary: str, body: str, urgency: str = "
         except Exception:
             pass
 
-    # Avoid duplicate identical items within 1 second
+    # Avoid duplicate identical items within 1.5 seconds
     if notifs:
         latest = notifs[0]
-        if (latest.get("title") == new_item["title"] and
-            latest.get("body") == new_item["body"] and
-            latest.get("app_name") == new_item["app_name"] and
-            abs(latest.get("id", 0) - new_item["id"]) < 1500):
+        if (
+            latest.get("title") == new_item["title"]
+            and latest.get("body") == new_item["body"]
+            and latest.get("app_name") == new_item["app_name"]
+            and abs(latest.get("id", 0) - new_item["id"]) < 1500
+        ):
             return
 
     notifs.insert(0, new_item)
@@ -102,6 +177,9 @@ def record_notification(app_name: str, summary: str, body: str, urgency: str = "
             json.dump(notifs, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
+
+    if rules.get("popup_enabled") and not rules.get("dnd") and not _in_quiet_hours(rules):
+        _dispatch_popup(new_item)
 
 
 def main():

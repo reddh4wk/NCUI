@@ -1,11 +1,49 @@
 #!/usr/bin/env python3
 import os
+import re
 from core.config import CONFIG, get_hide_unavailable_settings
 from core.i18n import get_active_language, t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, SelectPill, Txt
+from ui.kit import ActionBtn, Box, SelectPill, Txt, get_semantic_palette
 from panels.cc_engine_settings import _feedback_cards, _read_log_window
+
+_HERO_LOGO_LINES = (
+    "███╗   ██╗ ██████╗      ██╗   ██╗██╗",
+    "████╗  ██║██╔════╝      ██║   ██║██║",
+    "██╔██╗ ██║██║     █████╗██║   ██║██║",
+    "██║╚██╗██║██║     ╚════╝██║   ██║██║",
+    "██║ ╚████║╚██████╗      ╚██████╔╝██║",
+    "╚═╝  ╚═══╝ ╚═════╝       ╚═════╝ ╚═╝",
+)
+
+
+def _build_hero_banner_box(canvas: Canvas) -> Box:
+    p = get_semantic_palette()
+    pt = int(canvas.base_pango_size)
+    b_hero = Box("", highlighted=False)
+    b_hero.add_row(" ")
+    pills_line = (
+        f"{SelectPill(t('cc_settings.hero_online'), 'cc:section:sysinfo', selected=True)}  "
+        f"{ActionBtn(t('cc_settings.hero_deterministic'), 'cc:section:personalization', tone='apply')}"
+    )
+    right_lines = (
+        "",
+        Txt(t("cc_settings.hero_tag_1"), role="val"),
+        Txt(t("cc_settings.hero_tag_2"), role="val"),
+        Txt(t("cc_settings.hero_tag_3"), role="val"),
+        "",
+        pills_line,
+    )
+    pad = " " * max(2, (canvas.inner_cols - 69) // 2)
+    for raw_logo, r_txt in zip(_HERO_LOGO_LINES, right_lines):
+        logo_m = re.sub(r"(█+)", f"<span color='{p['focus']}' size='{pt}'>\\1</span>", raw_logo)
+        logo_m = re.sub(r"([╔╗╚╝═║]+)", f"<span color='{p['schema']}' size='{pt}'>\\1</span>", logo_m)
+        row_m = f"{pad}{logo_m}    {r_txt}" if r_txt else f"{pad}{logo_m}"
+        b_hero.add_row(row_m)
+    b_hero.add_row(" ")
+    return b_hero
+
 
 def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     hide_unavail = get_hide_unavailable_settings()
@@ -14,6 +52,7 @@ def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     log_lvl = int(gen.get("log_level", 3))
     lang = get_active_language()
     cards = _feedback_cards()
+    cards.append(_build_hero_banner_box(canvas))
 
     b = Box(
         t("cc_settings.behavior_diagnostics"),

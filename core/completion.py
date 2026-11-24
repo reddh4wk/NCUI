@@ -264,6 +264,9 @@ def step_tab_completion(
         pref_items = [it for it in bins if it[0].lower().startswith(ql)] if ql else bins[:40]
         return _step_list_completion(cur_text, pref_items or bins, [], cur_idx, reverse)
 
+    if provider == "niri_windows":
+        return _step_list_completion(cur_text, catalog_niri_windows(), cached_candidates, cur_idx, reverse)
+
     items = provider(cur_text) if callable(provider) else list(provider)
     return _step_list_completion(cur_text, items, cached_candidates, cur_idx, reverse)
 
@@ -320,8 +323,10 @@ def _scan_desktop_entries() -> list[dict]:
     def _load() -> list[dict]:
         dirs = [
             os.path.expanduser("~/.local/share/applications"),
+            os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
             "/usr/local/share/applications",
             "/usr/share/applications",
+            "/var/lib/flatpak/exports/share/applications",
         ]
         seen: set[str] = set()
         entries: list[dict] = []
@@ -340,13 +345,11 @@ def _scan_desktop_entries() -> list[dict]:
                 name = fn[:-8]
                 mimes = ""
                 wmclass = ""
+                no_display = False
                 try:
                     with open(fp, "r", encoding="utf-8", errors="ignore") as f:
                         in_entry = False
-                        for _ in range(70):
-                            ln = f.readline()
-                            if not ln:
-                                break
+                        for ln in f:
                             s = ln.strip()
                             if s.startswith("["):
                                 if in_entry:
@@ -356,25 +359,43 @@ def _scan_desktop_entries() -> list[dict]:
                             if not in_entry or "=" not in s:
                                 continue
                             k, v = s.split("=", 1)
-                            if k == "Name" and v.strip():
-                                name = v.strip()
+                            k = k.strip()
+                            v = v.strip()
+                            if k == "Name" and v:
+                                name = v
                             elif k == "MimeType":
-                                mimes = v.strip().lower()
+                                mimes = v.lower()
                             elif k == "StartupWMClass":
-                                wmclass = v.strip()
+                                wmclass = v
+                            elif k == "NoDisplay":
+                                no_display = (v.lower() == "true")
                 except OSError:
                     pass
+                mimes_list: list[str] = []
+                seen_m: set[str] = set()
+                for part in mimes.split(";"):
+                    pm = part.strip().lower()
+                    if pm and "/" in pm and pm not in seen_m:
+                        seen_m.add(pm)
+                        mimes_list.append(pm)
                 entries.append({
                     "id": fn,
                     "stem": fn[:-8],
                     "name": name,
                     "mimes": mimes,
+                    "mimes_list": mimes_list,
                     "wmclass": wmclass,
+                    "no_display": no_display,
+                    "path": fp,
                 })
         entries.sort(key=lambda e: (e["name"].lower(), e["id"].lower()))
         return entries
 
     return _cached("desktop_entries", 20.0, _load)
+
+
+def invalidate_desktop_cache() -> None:
+    _CACHE.pop("desktop_entries", None)
 
 
 def catalog_desktop_apps(mime_hint: str = "") -> list[tuple[str, str, str]]:
@@ -383,8 +404,9 @@ def catalog_desktop_apps(mime_hint: str = "") -> list[tuple[str, str, str]]:
     major = mh.split("/", 1)[0] + "/" if "/" in mh else ""
 
     def _prio(e: dict) -> tuple[int, str]:
+        ml = e.get("mimes_list") or ()
         ms = e["mimes"]
-        if mh and mh in ms:
+        if mh and (mh in ml or mh in ms):
             return (0, e["name"].lower())
         if major and major in ms:
             return (1, e["name"].lower())
@@ -409,6 +431,34 @@ def normalize_desktop_id(raw: str) -> str:
         if e["id"].lower() == low or e["stem"].lower() == low:
             return e["id"]
     return s if s.endswith(".desktop") else f"{s}.desktop"
+
+
+def catalog_niri_windows() -> list[tuple[str, str, str]]:
+    """List currently open Wayland/XWayland windows via niri IPC (cached 2s)."""
+    def _load() -> list[tuple[str, str, str]]:
+        seen: set[tuple[str, str]] = set()
+        out: list[tuple[str, str, str]] = []
+        if probe.has_bin("niri"):
+            ok, raw = probe.run_cmd(["niri", "msg", "-j", "windows"], timeout=0.9)
+            if ok and raw:
+                try:
+                    for w in json.loads(raw):
+                        aid = str(w.get("app_id") or "").strip()
+                        title = str(w.get("title") or "").strip()
+                        val = aid or title
+                        if not val:
+                            continue
+                        key = (val.lower(), title.lower()[:32])
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        lbl = f"{val} — {title[:32]}" if title else val
+                        out.append((val, lbl, f"{val} {title}".lower()))
+                except Exception:
+                    pass
+        return out or catalog_window_app_ids()[:16]
+
+    return _cached("niri_windows", 2.0, _load)
 
 
 def catalog_window_app_ids(extra_apps: list[str] | None = None) -> list[tuple[str, str, str]]:
@@ -478,6 +528,10 @@ def catalog_cursor_themes() -> list[tuple[str, str, str]]:
         ]
         found: list[str] = []
         seen: set[str] = set()
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if os.path.isdir(os.path.join(root_dir, "assets", "cursors", "ncui-cursor")):
+            found.append("NCUI Cursor")
+            seen.add("NCUI Cursor")
         for r in roots:
             if not os.path.isdir(r):
                 continue
@@ -486,7 +540,7 @@ def catalog_cursor_themes() -> list[tuple[str, str, str]]:
             except OSError:
                 continue
             for nm in names:
-                if nm in ("default", "hicolor") or nm in seen:
+                if nm in ("default", "hicolor", "NCUI-Cursor") or nm.startswith("NCUI-Cursor-") or nm in seen:
                     continue
                 cdir = os.path.join(r, nm, "cursors")
                 try:

@@ -24,7 +24,7 @@ class Panel(BasePanel):
     refresh_ms = 2000
 
     def __init__(self, shell=None):
-        self.title = t("printers_popup.title")
+        self.title = t("printers_popup.title") if shell is not None else self.id
         super().__init__(shell)
 
     def get_cols(self, force_expanded: bool = False) -> int:

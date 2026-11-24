@@ -84,6 +84,9 @@ class BasePanel:
     def is_busy(self) -> bool:
         return False
 
+    def should_refresh_on_tick(self) -> bool:
+        return True
+
     # --- Prompt Bar ---
     def request_prompt(
         self,
@@ -140,7 +143,7 @@ def load_panel(panel_id: str, shell=None, mode: str = "popup") -> BasePanel:
     pid = str(panel_id or "network").strip()
 
     raw_name = pid[3:] if pid.startswith(("wp_", "ww_")) else pid
-    base_mod_name = "wp_system" if raw_name in ("cpu", "ram", "system") else f"wp_{raw_name}"
+    base_mod_name = "wp_system" if raw_name in ("cpu", "ram", "gpu", "system") else f"wp_{raw_name}"
 
     user_plugin = os.path.join(CONFIG_DIR, "plugins", f"{base_mod_name}.py")
     sys_plugin = os.path.join(os.path.dirname(__file__), f"{base_mod_name}.py")

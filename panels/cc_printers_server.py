@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NC-UI Control Center — CUPS Server, Sharing & Diagnostics (`panels/cc_printers_server.py`)."""
 
+import re
 from core.i18n import t
 from core.privileges import build_privilege_modal_card, get_privileged_action
 from ui.canvas import Canvas
@@ -12,6 +13,43 @@ from panels.cc_engine_printers import (
     get_cups_logs,
     get_cups_server_settings,
 )
+
+_CUPS_LOG_RE = re.compile(r"^([EWID])\s+\[(\d{2})/([A-Za-z]{3})/\d{4}:(\d{2}:\d{2}):\d{2}[^\]]*\]\s*(.*)$")
+
+
+def _parse_cups_log_line(ln: str) -> tuple[str, str, str, str]:
+    s = str(ln or "").strip()
+    m = _CUPS_LOG_RE.match(s)
+    if m:
+        code, day, mon, hm, body = m.groups()
+        ts = f"{day} {mon} {hm}"
+        if code == "E":
+            return t("common.err"), "fault", ts, body.strip()
+        if code == "W":
+            return t("common.warn"), "attention", ts, body.strip()
+        return t("cc_printers.log_lvl_info"), "schema", ts, body.strip()
+    low = s.lower()
+    if "error" in low or "fail" in low:
+        return t("common.err"), "fault", "\u2014", s
+    if "warn" in low:
+        return t("common.warn"), "attention", "\u2014", s
+    return t("cc_printers.log_lvl_info"), "schema", "\u2014", s
+
+
+def _build_status_grid_rows(items: dict, absent_label: str) -> list[list[str]]:
+    cells = []
+    for nm, is_ok in items.items():
+        if is_ok:
+            cells.append(f"{Txt('\u25cf', role='vitality')} {Txt(nm, role='val')}  {Txt(t('common.ok'), role='vitality')}")
+        else:
+            cells.append(f"{Txt('\u25cb', role='inactive')} {Txt(nm, role='inactive')}  {Txt(absent_label, role='inactive')}")
+    rows = []
+    for i in range(0, len(cells), 3):
+        chunk = cells[i : i + 3]
+        while len(chunk) < 3:
+            chunk.append("")
+        rows.append(chunk)
+    return rows
 
 
 def _policy_row_val(flag_name: str, is_on: bool, is_up: bool) -> str:
@@ -121,38 +159,67 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
     )
 
     def _build_diag(bx: Box) -> None:
-        logs = get_cups_logs(max_lines=8)
-        clr_b = ActionBtn(t("cc_printers.clear_logs_btn"), "cc_prn:clear_logs", tone="warn") if logs else ""
+        logs = get_cups_logs(max_lines=10)
+        spool_meta = t("cc_printers.spool_files_fmt", p0=daemon["spool_files"], p1=format_bytes_short(daemon["spool_bytes"]))
         bx.add_kv(
             t("cc_printers.kv_spool_dir"),
-            Txt(f"/var/spool/cups  ·  {daemon['spool_files']} files ({format_bytes_short(daemon['spool_bytes'])})", role="val"),
-            right_markup=clr_b,
+            f"{Txt('/var/spool/cups', role='val')}  {Txt('·', role='inactive')}  {Txt(spool_meta, role='schema')}",
         )
-        stack_items = [
-            f"{nm}: {Txt(t('common.ok') if ok_b else t('cc_printers.missing_bin'), role='vitality' if ok_b else 'inactive')}"
-            for nm, ok_b in tools.items()
-        ]
-        bx.add_kv(t("cc_printers.kv_filter_stack"), "  ·  ".join(stack_items[:3]))
-        bx.add_kv("", "  ·  ".join(stack_items[3:]))
 
-        pack_items = [
-            f"{nm}: {Txt(t('common.ok') if ok_p else t('cc_printers.opt_missing'), role='vitality' if ok_p else 'inactive')}"
-            for nm, ok_p in drv_packs.items()
-        ]
-        bx.add_kv(t("cc_printers.kv_driver_packs"), " · ".join(pack_items[:3]))
-        bx.add_kv("", " · ".join(pack_items[3:]))
+        bx.add_section(f"{t('cc_printers.kv_filter_stack')} ({ok_tools}/{len(tools)})")
+        bx.add_table(
+            headers=["", "", ""],
+            widths=[25, 25, "flex"],
+            rows=_build_status_grid_rows(tools, t("cc_printers.missing_bin")),
+            aligns=["left", "left", "left"],
+            show_headers=False,
+        )
 
-        dismiss_log_b = ActionBtn(t("cc_printers.dismiss_log_view_btn"), "cc_prn:dismiss_logs_view", tone="danger_soft") if logs else ""
-        bx.add_section(t("cc_printers.sec_error_log"), actions=[dismiss_log_b] if dismiss_log_b else [])
+        bx.add_section(f"{t('cc_printers.kv_driver_packs')} ({ok_packs}/{len(drv_packs)})")
+        bx.add_table(
+            headers=["", "", ""],
+            widths=[25, 25, "flex"],
+            rows=_build_status_grid_rows(drv_packs, "\u2014"),
+            aligns=["left", "left", "left"],
+            show_headers=False,
+        )
+
+        log_acts = []
+        if logs:
+            log_acts.append(ActionBtn(t("cc_printers.clear_logs_btn"), "cc_prn:clear_logs", tone="warn"))
+            log_acts.append(ActionBtn(t("cc_printers.dismiss_log_view_btn"), "cc_prn:dismiss_logs_view", tone="danger_soft"))
+        bx.add_section(t("cc_printers.sec_error_log"), actions=log_acts)
         if not logs:
             bx.add_row(f"  {Txt(t('cc_printers.no_logs_hint'), role='inactive')}")
         else:
             if not daemon["avahi_active"] and any("ippfind" in ln and "status 2" in ln for ln in logs):
                 bx.add_row(f"  {Txt(t('cc_printers.ippfind_avahi_hint'), role='attention')}")
+            grouped: list[list] = []
             for ln in logs:
-                low = ln.lower()
-                r = "fault" if ln.startswith("E ") or "error" in low else ("attention" if ln.startswith("W ") or "warn" in low else "schema")
-                bx.add_row(f"  {Txt(canvas.truncate_plain(ln, canvas.inner_cols - 6), role=r)}")
+                lvl_s, role, ts_s, body = _parse_cups_log_line(ln)
+                if grouped and grouped[-1][0] == lvl_s and grouped[-1][3] == body:
+                    grouped[-1][2] = ts_s
+                    grouped[-1][4] += 1
+                else:
+                    grouped.append([lvl_s, role, ts_s, body, 1])
+            log_rows = []
+            for lvl_s, role, ts_s, body, cnt in grouped:
+                msg_s = f"{body} (\u00d7{cnt})" if cnt > 1 else body
+                log_rows.append([
+                    Txt(lvl_s, role=role),
+                    Txt(ts_s, role="schema"),
+                    Txt(msg_s, role=role if role == "fault" else "val"),
+                ])
+            bx.add_table(
+                headers=[
+                    t("cc_printers.log_col_lvl"),
+                    t("cc_printers.log_col_time"),
+                    t("cc_printers.log_col_msg"),
+                ],
+                widths=[7, 13, "flex"],
+                rows=log_rows,
+                aligns=["left", "left", "left"],
+            )
 
     pol_box.add_collapsible(
         cc_panel,

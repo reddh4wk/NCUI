@@ -6,7 +6,8 @@ from core.config import (
     get_box_opacity_pct,
     get_layout_margins,
     get_row_gap,
-    get_surface_bg_hex,
+    get_sys_notif_opacity_pct,
+    get_toast_opacity_pct,
     get_ui_transparency_pct,
     get_waybar_sync_color,
     get_waybar_sync_opacity,
@@ -180,10 +181,11 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     cards.append(sb_box)
 
     # =====================================================================
-    # BOX 2 — Dual-Layer Opacity & Base Surface Color
+    # BOX 2 — Opacity Layers & Waybar Sync
     # =====================================================================
     box_op_pct = get_box_opacity_pct()
-    surf_hex = get_surface_bg_hex()
+    toast_op_pct = get_toast_opacity_pct()
+    sys_notif_op_pct = get_sys_notif_opacity_pct()
     wb_sync_op = get_waybar_sync_opacity()
     wb_sync_col = get_waybar_sync_color()
 
@@ -200,53 +202,15 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     else:
         tr_sl = Slider(trans_pct, "cc:trans", min_val=5, max_val=100, width=26, show_pct=True, step=5)
         surf_box.add_kv(t("cc_personalization.window_transparency"), tr_sl)
-        p_btns = " ".join(
-            SelectPill(f"{p}%", f"cc:trans:{p}", selected=(abs(trans_pct - p) <= 1))
-            for p in (25, 40, 60, 75, 86, 100)
-        )
-        surf_box.add_kv(t("cc_personalization.quick_presets"), p_btns)
 
         box_sl = Slider(box_op_pct, "cc_pers:box_op", min_val=0, max_val=100, width=26, show_pct=True, step=5)
         surf_box.add_kv(t("cc_personalization.box_layer_opacity"), box_sl)
-        box_presets = [
-            (0, t("cc_personalization.box_op_0_flat")),
-            (35, "35%"),
-            (55, "55%"),
-            (72, "72%"),
-            (85, "85%"),
-            (100, t("cc_personalization.box_op_100_solid")),
-        ]
-        box_p_btns = " ".join(
-            SelectPill(lbl, f"cc_pers:box_op:{val}", selected=(abs(box_op_pct - val) <= 1))
-            for val, lbl in box_presets
-        )
-        surf_box.add_kv(t("cc_personalization.box_op_presets"), box_p_btns)
 
-        surf_presets = [
-            ("#080a0f", t("cc_personalization.surf_obsidian")),
-            ("#000000", t("cc_personalization.surf_pitch_black")),
-            ("#070d17", t("cc_personalization.surf_cyber_trench")),
-            ("#041107", t("cc_personalization.surf_robco_crt")),
-            ("#141923", t("cc_personalization.surf_arctic_slate")),
-        ]
-        is_custom_surf = surf_hex.lower() not in {hx for hx, _ in surf_presets}
-        surf_btns = " ".join(
-            SelectPill(lbl, f"cc_pers:surf_bg:{hx}", selected=(surf_hex.lower() == hx))
-            for hx, lbl in surf_presets
-        )
-        surf_custom_fld = InlineField(
-            "cc_pers_surf_bg",
-            "cc_pers:inline_surf_bg",
-            value=(surf_hex.upper() if is_custom_surf else ""),
-            empty_label=t("cc_personalization.hex_2"),
-            placeholder="#080A0F",
-            width=9,
-            icon="",
-            tone="neutral",
-            is_hex_color=True,
-            selected=is_custom_surf,
-        )
-        surf_box.add_kv(t("cc_personalization.base_surface_color"), surf_btns, right_markup=surf_custom_fld)
+        toast_sl = Slider(toast_op_pct, "cc_pers:toast_op", min_val=0, max_val=100, width=26, show_pct=True, step=5)
+        surf_box.add_kv(t("cc_personalization.toast_layer_opacity"), toast_sl)
+
+        sys_notif_sl = Slider(sys_notif_op_pct, "cc_pers:sys_notif_op", min_val=0, max_val=100, width=26, show_pct=True, step=5)
+        surf_box.add_kv(t("cc_personalization.sys_notif_layer_opacity"), sys_notif_sl)
 
         wb_sync_btns = (
             f"{SelectPill(t('cc_personalization.wb_sync_opacity'), 'cc_pers:wb_sync_op', selected=wb_sync_op)} "

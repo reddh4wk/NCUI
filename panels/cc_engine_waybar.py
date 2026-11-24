@@ -39,6 +39,7 @@ KNOWN_WAYBAR_PLUGINS = {
     "custom/netcycle":      {"icon": "\uf6ff"},
     "custom/cpu":           {"icon": "\uf2db"},
     "custom/ram":           {"icon": "\uf538"},
+    "custom/gpu":           {"icon": "\U000f08ae"},
     "custom/ups":           {"icon": "\uf240"},
     "custom/kb_layout":     {"icon": "\uf11c"},
     "custom/telegram":      {"icon": "\ue217"},
@@ -190,31 +191,29 @@ def handle_cc_waybar_link(cc_panel, uri: str) -> bool:
         both_active = ("niri/window" in active_all and "custom/media" in active_all)
         try:
             set_waybar_width_pct(target, int(round(float(val_s))), both_active_on_bar=both_active)
-            _write_wb_config(data, reload_bar=False)
+            from core import probe
+            snap = json.loads(json.dumps(data))
+            probe.enqueue_latest("wb_width_write", lambda d=snap: _write_wb_config(d, reload_bar=False), debounce_ms=120)
         except Exception:
             pass
-        if cc_panel.shell:
-            cc_panel.shell.refresh_view()
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
         return True
 
-    if act.startswith("tg_glow:"):
-        val = (act.split(":", 1)[1] == "1")
-        STATE.set("waybar", "telegram_glow", val)
-        if cc_panel.shell:
-            cc_panel.shell.refresh_view()
+    if act.startswith("sys_glow:"):
+        STATE.set("waybar", "sys_glow_enabled", act.split(":", 1)[1] == "1")
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
         return True
 
-    if act.startswith("tg_trig:"):
-        trig_val = act.split(":", 1)[1]
-        if trig_val in ("both", "title", "notif"):
-            STATE.set("waybar", "telegram_trigger", trig_val)
-        if cc_panel.shell:
-            cc_panel.shell.refresh_view()
-        return True
-
-    if act == "tg_focus":
-        from core import probe
-        probe.spawn_bg(["sh", "-c", "id=$(niri msg -j windows 2>/dev/null | jq -r '.[] | select((.app_id // \"\") | test(\"telegram\"; \"i\")) | .id' | head -n1); if [ -n \"$id\" ]; then niri msg action focus-window --id \"$id\"; else nohup sh -c 'Telegram || telegram-desktop' >/dev/null 2>&1 & fi"])
+    if act.startswith("sys_glow_thresh:"):
+        try:
+            v = max(50, min(95, int(round(float(act.split(":", 1)[1])))))
+            STATE.set("waybar", "sys_glow_threshold", v)
+        except Exception:
+            pass
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
         return True
 
     if act.startswith("prn_vis:"):

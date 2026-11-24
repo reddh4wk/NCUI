@@ -183,8 +183,8 @@ L'unico caso in tutta l'interfaccia in cui è consentito dipingere un glifo con 
    - Nei popup a singolo `Box` o composti da sezioni paritetiche (es. `wp_network`, `wp_audio`, `wp_calendar`, `wp_display`, `wp_kb_layout`, `wp_ups`, `wp_session`, `wp_capture`, `wp_printers`), **tutti** i `Box` usano `highlighted=False` per evitare un doppio bordo bianco abbagliante a ridosso della cornice esterna della finestra.
    - `highlighted=True` è ammesso nei popup **solo** su un Header Box di filtro/riepilogo che governa una lista sottostante di card figlie (`wp_clipboard`, `wp_notifications`, `wp_system`).
 3. **Hover sulla Cornice del `Box`:** Il cambio di bordo in bianco al passaggio del mouse (`hover_enable=True`) è attivo **solo** sulle card interamente cliccabili (`on_row_click`, es. singola voce clipboard) o dotate di `scroll_action` di viewport; sui normali `Box` contenitori è disabilitato (`hover_enable=False`).
-4. **Doppio Livello di Opacità Disaccoppiato (`core/config.py`):**
-   - `Window Opacity` governa il fondale della finestra; `NC-Box Opacity` e `Base Surface Color` governano il riempimento Cairo interno agli `nc-box` (incluse le protrusioni sul titolo e sulle azioni del bordo superiore); gli overlay flottanti (`is_overlay=True`) forzano opacità `>= 0.97` con ombra portata.
+4. **Livelli di Opacità Disaccoppiati (`core/config.py`):**
+   - `Window Opacity` governa il fondale della finestra; `NC-Box Opacity` e `Base Surface Color` governano il riempimento Cairo interno agli `nc-box` (incluse le protrusioni sul titolo e sulle azioni del bordo superiore); `Notification Opacity` (`toast_opacity`, default `0.95`) governa in modo indipendente i toast flottanti di conferma (`is_toast=True`, con ombra portata strettamente esterna via `EVEN_ODD`), mentre gli overlay interattivi (es. Ricerca Globale con `is_overlay=True`) forzano opacità `>= 0.97` con ombra portata.
    - La modifica live di opacità e colore aggiorna istantaneamente NC-UI ma **non riavvia Waybar** (`sync_waybar=False` di default): la sincronizzazione con Waybar avviene solo su click esplicito (`[✓ Apply Waybar]` / `[Apply Bar]`) per evitare flicker della barra durante la calibrazione.
 
 ### 5.3 Spaziature Interne ai `Box`, tra Righe e tra `Box`
@@ -254,3 +254,30 @@ Tutti gli inserimenti di testo in NC-UI sono ricondotti a **5 archetipi determin
    - `Shift + ↑/↓` (`PgUp`/`PgDn`): cambia sezione nella Sidebar del Control Center, oppure espande/comprime un popup Waybar che lo supporta.
    - `Ctrl + F`: apre e focalizza la Ricerca Globale del Control Center.
    - `Esc`: annulla nell'ordine un input inline/prompt attivo, chiude l'overlay di ricerca globale, oppure chiude la finestra NC-UI.
+
+---
+
+## 9. Feedback Operativo e Notifiche Toast Flottanti (`Zero Layout Shift`)
+
+1. **Legge di Zero Layout Shift:**
+   - È **vietato** inserire o rimuovere card `Box` temporanee o righe condizionali di esito nel flusso verticale del pannello, poiché spostano i controlli sotto il puntatore e generano ricalcoli di altezza sulle tabelle.
+   - L'intero feedback operativo dell'interfaccia è ripartito in modo ortogonale su **3 canali esclusivi**:
+     1. **Stato persistente di sistema/servizio** (`● ENABLED`, `PREVIEW *`, `OFFLINE`, `MISSING: <bin>`) → `StateBadge` / `Badge` sul bordo superiore del `Box` pertinente.
+     2. **Errore di formato durante la digitazione** → evidenziazione in-place `fault_bg` sul campo (`InlineField` / `NcPromptBar`).
+     3. **Esito transitorio di un'azione eseguita** (`OK` / `WARN` / `ERR` post-comando, salvataggio configurazioni, sync, apply) → **Floating Toast `NC-Box` centralizzato** tramite `ShellWindow.show_toast(...)` (o `FeedbackBox(...)` con `_toast_meta`, intercettato automaticamente fuori dal flusso verticale in `ShellWindow.refresh_view()`).
+
+2. **Geometria, Morfologia e Opacità del Toast (`ui/shell.py` & `ui/widgets.py`):**
+   - Montato su `root_overlay` e ancorato in **basso a destra** (traslato automaticamente sopra un'eventuale `NcPromptBar` attiva), in modalità **single-slot** (una nuova notifica sostituisce la precedente; vietate pile verticali di toast).
+   - Usa `highlighted=True`, `is_overlay=True`, `is_toast=True`: cornice bianca da overlay flottante, opacità governata in tempo reale da `Notification Opacity` (`toast_opacity` in `theme.toml`, default `0.95`) e ombra portata strettamente esterna (`cairo.FillRule.EVEN_ODD`), così da non scurire mai l'interno quando l'utente abbassa l'opacità.
+   - Bordo superiore uniforme: `[ Icona  Titolo ] ─── <Badge> [x]`, dove:
+     - `ok`: icona `\uf00c`, `StateBadge(True, t("common.ok"))` (`vitality_bg`), testo corpo `focus_val`.
+     - `warn`: icona `\uf071`, `Badge(t("common.warn"), style="warn")` (`attention_bg`), testo corpo `attention`.
+     - `err`: icona `\uf071`, `Badge(t("common.err"), style="crit")` (`fault_bg`), testo corpo `fault`.
+     - Pulsante di chiusura `[x]` (`ActionBtn("x", "ncui:toast_close", tone="danger_soft")`), sempre allineato al bordo destro senza sfasamenti grazie al calcolo esatto dei `title_brackets` e alla guardia pixel-esatta in `Box.render`.
+
+3. **Ciclo di Vita Deterministico & Anti-Ghost Replay:**
+   - **`ok`:** auto-dismiss dopo **`2.6s`**, messo automaticamente in pausa finché il puntatore resta in hover sul toast e ripreso con **`1.2s`** di grazia all'uscita.
+   - **`warn`:** auto-dismiss dopo **`4.5s`** (con pausa in hover).
+   - **`err`:** **persistente** finché l'utente non clicca `[x]`, non cambia sezione/sottoscheda o non avvia una nuova azione mutante.
+   - **Zero *ghost replay*:** il tracciamento per vista (`_current_view_key()` + sequenza azioni filtrata da `_is_nav_only_uri`) garantisce che refresh periodici, chiusura con `[x]`, espansione/compressione sezioni (`ui:state:*`), selezioni Master-Detail o cambi di scheda non facciano mai riapparire vecchi feedback.
+   - Le notifiche di sistema (`notify-send`) restano riservate ai soli test espliciti del demone notifiche/UPS; tutte le conferme operative UI usano il Toast `NC-Box` interno.

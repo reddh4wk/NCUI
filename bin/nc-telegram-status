@@ -3,12 +3,7 @@
 """NC-UI Telegram Status Agent for Waybar (`custom/telegram`)."""
 
 import json
-import os
-import re
 import subprocess
-
-STATE_FILE = os.path.expanduser("~/.cache/nc-ui/state.json")
-HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
 
 
 def _is_telegram_running() -> bool:
@@ -23,92 +18,14 @@ def _is_telegram_running() -> bool:
         return False
 
 
-def _get_settings() -> tuple[bool, str]:
-    glow = True
-    trigger = "both"
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                wb = data.get("waybar", {})
-                glow = bool(wb.get("telegram_glow", True))
-                trigger = str(wb.get("telegram_trigger", "both")).lower()
-        except Exception:
-            pass
-    return glow, trigger
-
-
-def _check_niri_title_unread() -> int:
-    try:
-        out = subprocess.check_output(
-            ["niri", "msg", "-j", "windows"],
-            stderr=subprocess.DEVNULL,
-            timeout=0.8,
-        )
-        windows = json.loads(out)
-        for w in windows:
-            app_id = str(w.get("app_id") or "").lower()
-            if "telegram" in app_id:
-                title = str(w.get("title") or "")
-                # Matches title containing - (5), (5), etc. with count >= 1
-                m = re.search(r"\(([1-9]\d*)\)", title)
-                if m:
-                    count = int(m.group(1))
-                    if count > 0:
-                        return count
-    except Exception:
-        pass
-    return 0
-
-
-def _check_notif_unread() -> int:
-    if not os.path.exists(HIST_FILE):
-        return 0
-    try:
-        with open(HIST_FILE, "r", encoding="utf-8") as f:
-            notifs = json.load(f)
-        count = 0
-        for n in notifs:
-            if n.get("deleted"):
-                continue
-            app = str(n.get("app_name") or n.get("app") or "").lower()
-            title = str(n.get("title") or "").lower()
-            if "telegram" in app or "telegram" in title:
-                count += 1
-        return count
-    except Exception:
-        pass
-    return 0
-
-
 def main():
     if not _is_telegram_running():
         print(json.dumps({"text": "", "class": "module-nc-empty"}))
         return
-
-    glow_enabled, trigger = _get_settings()
-    has_unread = False
-    details = []
-
-    if glow_enabled:
-        if trigger in ("both", "title"):
-            t_cnt = _check_niri_title_unread()
-            if t_cnt > 0:
-                has_unread = True
-                details.append(f"{t_cnt} in title")
-        if trigger in ("both", "notif", "notifications"):
-            n_cnt = _check_notif_unread()
-            if n_cnt > 0:
-                has_unread = True
-                details.append(f"{n_cnt} notif")
-
-    cls = "module-nc unread" if has_unread else "module-nc"
-    tip = f"Telegram ({', '.join(details)})" if has_unread else "Telegram Desktop"
-
     print(json.dumps({
         "text": "\ue217",
-        "class": cls,
-        "tooltip": tip,
+        "class": "module-nc",
+        "tooltip": "Telegram Desktop",
     }))
 
 

@@ -32,7 +32,7 @@ class Panel(_CCBackendPanel):
     hover_highlight = True
 
     def __init__(self, shell=None):
-        self.title = t("network.title")
+        self.title = t("network.title") if shell is not None else self.id
         super().__init__(shell)
 
     def get_cols(self, force_expanded: bool = False) -> int:

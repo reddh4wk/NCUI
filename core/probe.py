@@ -3,7 +3,7 @@ import os
 import shutil
 import subprocess
 import threading
-from gi.repository import GLib
+import time
 from core.config import CONFIG
 from core import log
 
@@ -83,6 +83,7 @@ def run_async(fn, on_done=None) -> None:
         try:
             result = fn()
             if on_done:
+                from gi.repository import GLib
                 GLib.idle_add(on_done, result)
         except Exception as e:
             log.error(f"run_async error: {e}")
@@ -103,6 +104,45 @@ def spawn_bg(cmd: list) -> None:
         log.error(f"spawn_bg error ({cmd}): {e}")
 
 
+_LATEST_LOCK = threading.Lock()
+_LATEST_COND = threading.Condition(_LATEST_LOCK)
+_LATEST_JOBS: dict[str, tuple[float, object]] = {}
+_LATEST_THREAD: threading.Thread | None = None
+
+
+def _latest_worker() -> None:
+    while True:
+        due_fns = []
+        with _LATEST_COND:
+            while not _LATEST_JOBS:
+                _LATEST_COND.wait()
+            now = time.monotonic()
+            next_due = min(t_due for t_due, _fn in _LATEST_JOBS.values())
+            if next_due > now:
+                _LATEST_COND.wait(timeout=next_due - now)
+                continue
+            ready_keys = [k for k, (t_due, _fn) in _LATEST_JOBS.items() if t_due <= now + 0.002]
+            for k in ready_keys:
+                due_fns.append(_LATEST_JOBS.pop(k)[1])
+        for fn in due_fns:
+            try:
+                fn()
+            except Exception as e:
+                log.error(f"enqueue_latest error: {e}")
+
+
+def enqueue_latest(key: str, fn, debounce_ms: int = 0) -> None:
+    """Coalesce rapid updates by key, running only the newest callback after debounce_ms."""
+    global _LATEST_THREAD
+    due = time.monotonic() + (max(0, int(debounce_ms)) / 1000.0)
+    with _LATEST_COND:
+        _LATEST_JOBS[str(key)] = (due, fn)
+        if _LATEST_THREAD is None or not _LATEST_THREAD.is_alive():
+            _LATEST_THREAD = threading.Thread(target=_latest_worker, name="nc-async-latest", daemon=True)
+            _LATEST_THREAD.start()
+        _LATEST_COND.notify_all()
+
+
 def copy_clipboard(text: str) -> None:
     if not text:
         return
@@ -113,9 +153,19 @@ def copy_clipboard(text: str) -> None:
         log.error(f"copy_clipboard error: {e}")
 
 
+KNOWN_TERMINALS = (
+    "ghostty", "kitty", "foot", "alacritty", "wezterm", "konsole",
+    "gnome-terminal", "xfce4-terminal", "rio", "tilix", "xterm", "urxvt", "st",
+)
+
+
+def list_installed_terminals() -> list[str]:
+    return [term for term in KNOWN_TERMINALS if has_bin(term)]
+
+
 def open_terminal(args: list) -> None:
     pref = CONFIG["general"].get("terminal", "auto")
-    candidates = [pref] if pref != "auto" else ["ghostty", "kitty", "foot", "alacritty"]
+    candidates = ([pref] if pref != "auto" else []) + list_installed_terminals()
     term = next((shutil.which(c) for c in candidates if shutil.which(c)), "kitty")
     spawn_bg([term, "-e"] + list(args))
 

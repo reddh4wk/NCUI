@@ -58,6 +58,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-l", "--lang", choices=["en", "it", ""], default="", help="Forza lingua (en/it).")
     parser.add_argument("-f", "--focus", type=int, default=-1, help="Focus tastiera su bottone X.")
     parser.add_argument("-w", "--wait-ms", type=int, default=260, help="Wait asincrono in ms.")
+    parser.add_argument("--mon-size", type=str, default="", help="Simula risoluzione logica monitor WxH (es. 2560x720).")
+    parser.add_argument("--scale", type=float, default=1.0, help="Simula scaling factor (es. 1.25, 1.5, 2.0).")
+    parser.add_argument("--viewport", action="store_true", help="Mantiene il viewport reale invece di sbloccare l'altezza infinita.")
     parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode.")
     parser.add_argument("pos_args", nargs="*", help="Argomenti posizionali: [section] [subtab] [output_png]")
     return parser
@@ -126,6 +129,33 @@ def main() -> int:
             return 2
 
     os.environ["NC_UI_OFFSCREEN"] = "1"
+    scale_f = max(0.5, float(getattr(args, "scale", 1.0) or 1.0))
+    if getattr(args, "mon_size", ""):
+        m_wh = str(args.mon_size).lower().split("x", 1)
+        if len(m_wh) == 2 and m_wh[0].strip().isdigit() and m_wh[1].strip().isdigit():
+            os.environ["NC_SHOT_MON_W"] = m_wh[0].strip()
+            os.environ["NC_SHOT_MON_H"] = m_wh[1].strip()
+    elif abs(scale_f - 1.0) > 0.01:
+        phys_w, phys_h = 2560, 1440
+        try:
+            import json, subprocess
+            res = subprocess.run(["niri", "msg", "-j", "focused-output"], capture_output=True, text=True, timeout=0.6)
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                modes = data.get("modes") or []
+                ci = data.get("current_mode")
+                if ci is not None and 0 <= ci < len(modes):
+                    phys_w = int(modes[ci].get("width", phys_w))
+                    phys_h = int(modes[ci].get("height", phys_h))
+                else:
+                    lg = data.get("logical") or {}
+                    sc_cur = float(lg.get("scale", 1.0) or 1.0)
+                    phys_w = int(round(float(lg.get("width", phys_w)) * sc_cur))
+                    phys_h = int(round(float(lg.get("height", phys_h)) * sc_cur))
+        except Exception:
+            pass
+        os.environ["NC_SHOT_MON_W"] = str(max(640, int(round(phys_w / scale_f))))
+        os.environ["NC_SHOT_MON_H"] = str(max(480, int(round(phys_h / scale_f))))
     broadway_proc = None
 
     try:
@@ -236,7 +266,37 @@ def main() -> int:
         bw = int(THEME["geometry"].get("window_border_width", 1))
 
         final_w = target_w
-        if args.mode == "settings":
+        if args.viewport:
+            if args.mode == "settings":
+                _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
+                v_chrome = m_top + m_bot
+                final_h = max(320, win._get_cc_target_height_px())
+                content_h = max(240, final_h - v_chrome - (2 * bw))
+                win._populate_settings_nav(target_h_px=content_h)
+                if getattr(win, "header_listbox", None) is not None:
+                    win.header_listbox.set_size_request(right_w_px, -1)
+                avail_body_h = max(80, content_h - hdr_nat_h)
+                win.scrolled_window.set_policy(
+                    Gtk.PolicyType.NEVER,
+                    Gtk.PolicyType.AUTOMATIC if list_nat_h > avail_body_h else Gtk.PolicyType.NEVER,
+                )
+                win.scrolled_window.set_max_content_height(avail_body_h)
+                win.scrolled_window.set_size_request(right_w_px, avail_body_h)
+                win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
+            else:
+                pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
+                p_max = win.panel.get_max_height() if hasattr(win.panel, "get_max_height") else None
+                _mw, max_popup_h = win._get_popup_bounds_px()
+                max_h = min(int(p_max or THEME["geometry"]["popup_max_height"]), max_popup_h)
+                list_h = min(list_nat_h, max_h) if list_nat_h > max_h else max(list_nat_h, 24)
+                win.scrolled_window.set_policy(
+                    Gtk.PolicyType.NEVER,
+                    Gtk.PolicyType.AUTOMATIC if list_nat_h > max_h else Gtk.PolicyType.NEVER,
+                )
+                win.scrolled_window.set_max_content_height(max_h)
+                win.scrolled_window.set_size_request(right_w_px, list_h)
+                final_h = max(120, list_h + pad + (2 * bw))
+        elif args.mode == "settings":
             _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
             v_chrome = m_top + m_bot
             content_h = max(hdr_nat_h + list_nat_h, win._get_cc_target_height_px() - v_chrome, 240)
@@ -266,10 +326,16 @@ def main() -> int:
         off.size_allocate(alloc_rect)
         root_widget.size_allocate(alloc_rect)
 
-        while Gtk.events_pending():
+        for _ in range(120):
+            if not Gtk.events_pending():
+                break
             Gtk.main_iteration_do(False)
 
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, final_w, final_h)
+        import math
+        dev_scale = max(1, int(math.ceil(scale_f))) if abs(scale_f - 1.0) > 0.01 and scale_f > 1.0 else 1
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, final_w * dev_scale, final_h * dev_scale)
+        if dev_scale > 1:
+            surface.set_device_scale(float(dev_scale), float(dev_scale))
         cr = cairo.Context(surface)
 
         bg_col = get_effective_window_bg(win.wb_look.get("bg"))
@@ -291,6 +357,12 @@ def main() -> int:
         _msg_err(f"Errore durante la generazione dello screenshot: {e}\n{traceback.format_exc()}")
         return 1
     finally:
+        tel_mod = sys.modules.get("panels.cc_engine_telemetry")
+        if tel_mod is not None and hasattr(tel_mod, "close_embedded_tuis"):
+            try:
+                tel_mod.close_embedded_tuis()
+            except Exception:
+                pass
         if args.lang in ("en", "it") and prev_lang != args.lang:
             reload_locale(prev_lang)
         if broadway_proc is not None:

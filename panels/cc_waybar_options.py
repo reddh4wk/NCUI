@@ -166,38 +166,38 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
     len_box.add_row(Txt(t("cc_waybar.music_bar_updates_live_immediately"), role="schema"))
     cards.append(len_box)
 
-    # ── CARD 4: TELEGRAM PLUGIN OPTIONS (custom/telegram) ──
-    tg_glow = bool(STATE.get("waybar", "telegram_glow", True))
-    tg_trig = str(STATE.get("waybar", "telegram_trigger", "both")).lower()
-    if tg_trig not in ("both", "title", "notif"):
-        tg_trig = "both"
-
-    tg_badge = StateBadge(tg_glow, t("cc_waybar.cyan_glow_on"), t("cc_waybar.glow_off"), on_tone="ok")
-    tg_box = Box(
-        t("cc_waybar.telegram_desktop_plugin_custom_tel"),
-        icon="\ue217",
-        actions=[
-            tg_badge,
-            ActionBtn(t("cc_waybar.focus_window"), "cc_wb:tg_focus", tone="neutral"),
-        ],
+    # ── CARD 4: CPU & RAM CRITICAL GLOW (custom/cpu, custom/ram) ──
+    sys_glow = bool(STATE.get("waybar", "sys_glow_enabled", True))
+    sys_thresh = max(50, min(95, int(STATE.get("waybar", "sys_glow_threshold", 80) or 80)))
+    sys_badge = StateBadge(sys_glow, t("cc_waybar.sys_glow_on", p0=sys_thresh), t("cc_waybar.sys_glow_off"), on_tone="crit")
+    sys_box = Box(
+        t("cc_waybar.sys_glow_card_title"),
+        icon="\uf2db",
+        actions=[sys_badge],
         highlighted=False,
     )
-    tg_box.add_row(" ")
-    tg_box.add_kv(
-        t("cc_waybar.electric_cyan_glow_effect_00f0ff"),
-        f"{SelectPill(t('common.on'), 'cc_wb:tg_glow:1', selected=tg_glow)} {SelectPill(t('common.off'), 'cc_wb:tg_glow:0', selected=not tg_glow)}",
+    sys_box.add_row(" ")
+    sys_box.add_kv(
+        t("cc_waybar.sys_glow_enable_lbl"),
+        f"{SelectPill(t('common.on'), 'cc_wb:sys_glow:1', selected=sys_glow)} "
+        f"{SelectPill(t('common.off'), 'cc_wb:sys_glow:0', selected=not sys_glow)}",
     )
-    trig_pills = " ".join([
-        SelectPill(t("cc_waybar.both"), "cc_wb:tg_trig:both", selected=(tg_trig == "both")),
-        SelectPill(t("cc_waybar.window_title"), "cc_wb:tg_trig:title", selected=(tg_trig == "title")),
-        SelectPill(t("cc_waybar.active_notifications"), "cc_wb:tg_trig:notif", selected=(tg_trig == "notif")),
-    ])
-    tg_box.add_kv(t("cc_waybar.glow_trigger_mode"), trig_pills)
-    tg_box.add_row(
-        f"  {Txt('•', role='schema')} {Txt(t('cc_waybar.detects_unread_count_in_niri_windo'), role='schema')}"
+    sys_box.add_kv(
+        t("cc_waybar.sys_glow_thresh_lbl"),
+        Slider(
+            sys_thresh,
+            "cc_wb:sys_glow_thresh",
+            min_val=50,
+            max_val=95,
+            width=18,
+            show_pct=True,
+            step_buttons=True,
+            step=5,
+            enabled=sys_glow,
+        ),
     )
-    tg_box.add_row(" ")
-    cards.append(tg_box)
+    sys_box.add_row(" ")
+    cards.append(sys_box)
 
     # ── CARD 5: PRINT SPOOLER INDICATOR PLUGIN (custom/printers) ──
     prn_vis = str(STATE.get("waybar", "printers_bar_mode", "auto") or "auto").lower()

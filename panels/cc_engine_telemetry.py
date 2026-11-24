@@ -16,13 +16,10 @@ import subprocess
 import termios
 import threading
 import time
-import gi
-
-gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib
 from core import probe
 from core.config import CONFIG, THEME
 from core.i18n import get_active_language, t
+from core.privileges import get_privileged_action, request_privilege_modal
 from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, Divider, FeedbackBox, ProgressBar, SelectPill, Sparkline, StateBadge, Txt
@@ -212,6 +209,216 @@ def get_ram_telemetry() -> dict:
     }
 
 
+def _safe_float(val: str, default: float = 0.0) -> float:
+    s = (val or "").strip()
+    if not s or s.startswith("[") or s.upper() == "N/A":
+        return default
+    try:
+        return float(s)
+    except Exception:
+        return default
+
+
+def _safe_int(val: str, default: int = 0) -> int:
+    s = (val or "").strip()
+    if not s or s.startswith("[") or s.upper() == "N/A":
+        return default
+    try:
+        return int(round(float(s)))
+    except Exception:
+        return default
+
+
+def _read_sysfs_txt(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _read_nvidia_gpu(include_procs: bool = False) -> dict | None:
+    if not shutil.which("nvidia-smi"):
+        return None
+    ok, out = probe.run_cmd(
+        [
+            "nvidia-smi",
+            "--query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,"
+            "temperature.gpu,fan.speed,power.draw,power.limit,clocks.current.graphics,"
+            "clocks.current.memory,pstate",
+            "--format=csv,noheader,nounits",
+        ],
+        timeout=1.5,
+    )
+    if not ok or not out:
+        return None
+    parts = []
+    for line in out.splitlines():
+        cand = [p.strip() for p in line.split(",")]
+        if len(cand) >= 12 and _safe_float(cand[4]) > 0.0:
+            parts = cand
+            break
+    if not parts:
+        return None
+
+    mem_used_mib = _safe_float(parts[3])
+    mem_tot_mib = _safe_float(parts[4])
+    fan_raw = parts[6].strip()
+    fan_pct = None if (not fan_raw or fan_raw.startswith("[") or fan_raw.upper() == "N/A") else _safe_int(fan_raw)
+    pstate_raw = parts[11].strip()
+    pstate = "" if (not pstate_raw or pstate_raw.startswith("[") or pstate_raw.upper() == "N/A") else pstate_raw
+
+    procs: list[dict] = []
+    if include_procs:
+        p_ok, p_out = probe.run_cmd(["nvidia-smi", "pmon", "-c", "1", "-s", "m"], timeout=1.5)
+        if p_ok and p_out:
+            by_pid: dict[int, dict] = {}
+            for pline in p_out.splitlines():
+                ps = pline.strip()
+                if not ps or ps.startswith("#"):
+                    continue
+                cols = ps.split(None, 5)
+                if len(cols) < 6 or cols[0] != "0" or not cols[1].isdigit():
+                    continue
+                pid = int(cols[1])
+                vram_mib = _safe_int(cols[3], 0)
+                name = _read_sysfs_txt(f"/proc/{pid}/comm") or os.path.basename(cols[5].split()[0])
+                if pid not in by_pid or vram_mib > by_pid[pid]["vram_mib"]:
+                    by_pid[pid] = {"pid": pid, "name": name, "vram_mib": vram_mib}
+            procs = sorted(by_pid.values(), key=lambda x: (-x["vram_mib"], x["name"]))
+
+    return {
+        "available": True,
+        "vendor": "nvidia",
+        "model": parts[0] or "NVIDIA GPU",
+        "util_pct": max(0.0, min(100.0, _safe_float(parts[1]))),
+        "mem_ctrl_pct": max(0.0, min(100.0, _safe_float(parts[2]))),
+        "vram_used": int(mem_used_mib * 1024 * 1024),
+        "vram_total": int(mem_tot_mib * 1024 * 1024),
+        "vram_pct": max(0.0, min(100.0, (mem_used_mib / mem_tot_mib) * 100.0)),
+        "temp_c": _safe_float(parts[5]),
+        "fan_pct": fan_pct,
+        "power_w": _safe_float(parts[7]),
+        "power_limit_w": _safe_float(parts[8]),
+        "gfx_mhz": _safe_int(parts[9]),
+        "mem_mhz": _safe_int(parts[10]),
+        "pstate": pstate,
+        "procs": procs,
+    }
+
+
+def _read_sysfs_gpu() -> dict | None:
+    for dev_dir in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+        card_name = os.path.basename(os.path.dirname(dev_dir))
+        if "-" in card_name:
+            continue
+        vram_tot = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "mem_info_vram_total")))
+        if vram_tot <= 0:
+            vram_tot = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "tile0/vram0/physical_vram_size_bytes")))
+        # Require dedicated VRAM (>= 256 MiB) to filter out integrated GPUs.
+        if vram_tot < 256 * 1024 * 1024:
+            continue
+
+        vendor_hex = _read_sysfs_txt(os.path.join(dev_dir, "vendor")).lower()
+        vendor = {"0x1002": "amd", "0x8086": "intel", "0x10de": "nvidia"}.get(vendor_hex, "gpu")
+        vram_used = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "mem_info_vram_used")))
+        util_pct = max(0.0, min(100.0, _safe_float(_read_sysfs_txt(os.path.join(dev_dir, "gpu_busy_percent")))))
+        model = _read_sysfs_txt(os.path.join(dev_dir, "product_name")) or {
+            "amd": "AMD Radeon GPU",
+            "intel": "Intel Arc GPU",
+            "nvidia": "NVIDIA GPU",
+        }.get(vendor, "Dedicated GPU")
+
+        temp_c = 0.0
+        fan_pct = None
+        power_w = 0.0
+        power_limit_w = 0.0
+        for hw in sorted(glob.glob(os.path.join(dev_dir, "hwmon", "hwmon*"))):
+            t_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "temp1_input")))
+            if t_raw > 0:
+                temp_c = t_raw / 1000.0 if t_raw > 200 else t_raw
+            p_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_average"))) or _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_input")))
+            if p_raw > 0:
+                power_w = p_raw / 1_000_000.0
+            cap_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_cap")))
+            if cap_raw > 0:
+                power_limit_w = cap_raw / 1_000_000.0
+            fan_cur = _safe_float(_read_sysfs_txt(os.path.join(hw, "fan1_input")))
+            fan_max = _safe_float(_read_sysfs_txt(os.path.join(hw, "fan1_max")))
+            if fan_max > 0 and fan_cur >= 0:
+                fan_pct = max(0, min(100, int(round((fan_cur / fan_max) * 100.0))))
+            else:
+                pwm_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "pwm1")), -1.0)
+                if pwm_raw >= 0:
+                    fan_pct = max(0, min(100, int(round((pwm_raw / 255.0) * 100.0))))
+            break
+
+        gfx_mhz = 0
+        mem_mhz = 0
+        for clk_file, target in (("pp_dpm_sclk", "gfx"), ("pp_dpm_mclk", "mem")):
+            for cline in _read_sysfs_txt(os.path.join(dev_dir, clk_file)).splitlines():
+                if "*" in cline:
+                    m = re.search(r"(\d+)\s*Mhz", cline, re.IGNORECASE)
+                    if m:
+                        if target == "gfx":
+                            gfx_mhz = int(m.group(1))
+                        else:
+                            mem_mhz = int(m.group(1))
+                    break
+
+        return {
+            "available": True,
+            "vendor": vendor,
+            "model": model,
+            "util_pct": util_pct,
+            "mem_ctrl_pct": 0.0,
+            "vram_used": vram_used,
+            "vram_total": vram_tot,
+            "vram_pct": max(0.0, min(100.0, (vram_used / float(vram_tot)) * 100.0)),
+            "temp_c": temp_c,
+            "fan_pct": fan_pct,
+            "power_w": power_w,
+            "power_limit_w": power_limit_w,
+            "gfx_mhz": gfx_mhz,
+            "mem_mhz": mem_mhz,
+            "pstate": "",
+            "procs": [],
+        }
+    return None
+
+
+def get_gpu_telemetry(include_procs: bool = False) -> dict:
+    nv = _read_nvidia_gpu(include_procs=include_procs)
+    if nv is not None:
+        return nv
+    sys_gpu = _read_sysfs_gpu()
+    if sys_gpu is not None:
+        return sys_gpu
+    return {
+        "available": False,
+        "vendor": "",
+        "model": "",
+        "util_pct": 0.0,
+        "mem_ctrl_pct": 0.0,
+        "vram_used": 0,
+        "vram_total": 0,
+        "vram_pct": 0.0,
+        "temp_c": 0.0,
+        "fan_pct": None,
+        "power_w": 0.0,
+        "power_limit_w": 0.0,
+        "gfx_mhz": 0,
+        "mem_mhz": 0,
+        "pstate": "",
+        "procs": [],
+    }
+
+
+def get_gpu_bar_pct() -> tuple[bool, float, float]:
+    g = get_gpu_telemetry(include_procs=False)
+    return bool(g["available"]), float(g["util_pct"]), float(g["vram_pct"])
+
+
 def get_process_list(sort_by: str = "cpu", group_by_app: bool = False) -> list[dict]:
     sort_flag = "-pcpu" if sort_by == "cpu" else "-rss"
     ok, out = probe.run_cmd(["ps", "-eo", "pid=,pcpu=,pmem=,rss=,nlwp=,stat=,comm=,args=", "--sort", sort_flag], timeout=2.0)
@@ -290,22 +497,153 @@ def _feedback_cards() -> list:
 from panels.cc_engine_sysinfo import _collect_about_data, _read_uptime
 
 
+_SCRIPT_DESC_KEYS = {
+    "nc-gaming.sh": "cc_system.desc_nc_gaming",
+    "nc-nas-conf.sh": "cc_system.desc_nc_nas_conf",
+    "nc-nas-mount.sh": "cc_system.desc_nc_nas_mount",
+    "nc-pkglist-save.sh": "cc_system.desc_nc_pkglist",
+    "nc-snapshot.sh": "cc_system.desc_nc_snapshot",
+    "nc-usbguard-helper.sh": "cc_system.desc_nc_usbguard",
+    "dc-arch-chroot.sh": "cc_system.desc_dc_chroot",
+    "dc-commit.sh": "cc_system.desc_dc_commit",
+    "dc-golden-image.sh": "cc_system.desc_dc_golden",
+}
+_NAS_SHARES = ("comics", "docker", "jellyfin", "music", "personal_folder", "photos", "torrent")
+
+
+def _read_first_line(path: str, default: str = "-") -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            val = f.readline().strip()
+            return val if val else default
+    except Exception:
+        return default
+
+
 def _discover_nc_scripts() -> list[dict]:
     scripts = []
     for base in ("/usr/local/sbin", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "utils")):
         if os.path.isdir(base):
             for fn in sorted(os.listdir(base)):
-                if fn.startswith("nc") and fn.endswith(".sh"):
-                    scripts.append({"name": fn, "path": os.path.join(base, fn), "scope": "sbin" if "/sbin" in base else "utils"})
+                if (fn.startswith("nc") or fn.startswith("dc-")) and fn.endswith(".sh"):
+                    scripts.append({
+                        "name": fn,
+                        "path": os.path.join(base, fn),
+                        "scope": "sbin" if "/sbin" in base else "utils",
+                        "desc_key": _SCRIPT_DESC_KEYS.get(fn, "cc_system.desc_util_generic"),
+                    })
     return scripts
 
 
-def _is_nas_mounted() -> bool:
+def _probe_nas_shares() -> dict:
+    mounted_mps: set[str] = set()
     try:
-        mounts = open("/proc/mounts", "r", encoding="utf-8").read()
-        return "/nas" in mounts or "10.10.0.20" in mounts
+        with open("/proc/self/mountinfo", "r", encoding="utf-8", errors="ignore") as f:
+            for ln in f:
+                parts = ln.split(" - ", 1)[0].split()
+                if len(parts) >= 5:
+                    mp = parts[4].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+                    mounted_mps.add(mp)
     except Exception:
-        return False
+        pass
+
+    base = "/nas"
+    run_hits = [s for s in _NAS_SHARES if f"/run/nas/{s}" in mounted_mps]
+    nas_hits = [s for s in _NAS_SHARES if f"/nas/{s}" in mounted_mps]
+    if run_hits and not nas_hits:
+        base = "/run/nas"
+        active = run_hits
+    else:
+        active = nas_hits
+    return {
+        "mounted": bool(active),
+        "count": len(active),
+        "total": len(_NAS_SHARES),
+        "base": base,
+        "shares": active,
+    }
+
+
+def _is_nas_mounted() -> bool:
+    return _probe_nas_shares()["mounted"]
+
+
+def _probe_gaming_mode() -> dict:
+    ptrace = _read_first_line("/proc/sys/kernel/yama/ptrace_scope", "n/a")
+    max_map = _read_first_line("/proc/sys/vm/max_map_count", "n/a")
+    dirty_r = _read_first_line("/proc/sys/vm/dirty_ratio", "n/a")
+    gov = _read_first_line(_CPU_GOV_PATH, "n/a")
+    ntsync = os.path.exists("/dev/ntsync")
+    is_gaming = (max_map == "2147483642" and dirty_r == "8") or (ptrace == "0" and max_map == "2147483642")
+    priv = get_privileged_action("gaming_mode")
+    return {
+        "available": os.path.exists("/usr/local/sbin/nc-gaming.sh"),
+        "is_gaming": is_gaming,
+        "ptrace": ptrace,
+        "max_map": max_map,
+        "dirty_r": dirty_r,
+        "gov": gov,
+        "ntsync": ntsync,
+        "priv_ok": bool(priv and priv.check_installed()),
+    }
+
+
+def _probe_duskcity_env() -> dict:
+    return {
+        "is_live": os.path.isdir("/run/recovery-ram/upper"),
+        "has_commit": os.path.exists("/usr/local/sbin/dc-commit.sh"),
+        "has_chroot": os.path.exists("/usr/local/sbin/dc-arch-chroot.sh"),
+        "has_golden": os.path.exists("/usr/local/sbin/dc-golden-image.sh"),
+    }
+
+
+def _probe_golden_images(nas_base: str) -> list[dict]:
+    img_root = os.path.join(nas_base, "personal_folder/Software/Linux/duskcity-archlinux/images")
+    if not os.path.isdir(img_root):
+        return []
+    out = []
+    try:
+        names = sorted(os.listdir(img_root))
+    except Exception:
+        return []
+    for name in names:
+        mdir = os.path.join(img_root, name)
+        mfile = os.path.join(mdir, "manifest.env")
+        if not os.path.isfile(mfile):
+            continue
+        kv = _read_env_kv(mfile)
+        date_str = kv.get("IMAGE_CREATED", "").strip()
+        if not date_str:
+            try:
+                with open(mfile, "r", encoding="utf-8", errors="ignore") as f:
+                    for _ in range(5):
+                        ln = f.readline()
+                        m = re.search(r"(\d{4}-\d{2}-\d{2})", ln or "")
+                        if m:
+                            date_str = m.group(1)
+                            break
+            except Exception:
+                pass
+        out.append({
+            "title": kv.get("IMAGE_TITLE") or name,
+            "date": date_str[:10] if date_str else "-",
+            "vg": kv.get("VG_NAME") or "vg0",
+            "desc": kv.get("IMAGE_DESCRIPTION") or "-",
+        })
+        if len(out) >= 12:
+            break
+    return out
+
+
+def _collect_power_tools_data() -> dict:
+    return {
+        "scripts": _discover_nc_scripts(),
+        "gaming": _probe_gaming_mode(),
+        "nas": _probe_nas_shares(),
+        "duskcity": _probe_duskcity_env(),
+        "has_pkglist": os.path.exists("/usr/local/sbin/nc-pkglist-save.sh"),
+        "has_usbguard": os.path.exists("/usr/local/sbin/nc-usbguard-helper.sh"),
+    }
 
 
 def _collect_storage_data() -> dict:
@@ -328,36 +666,88 @@ def _collect_storage_data() -> dict:
         if ok_lv and out_lv:
             lvs = [l.strip().split() for l in out_lv.splitlines() if l.strip()]
     nas_cfg = CONFIG.get("storage", {}).get("nas", {})
+    nas_info = _probe_nas_shares()
     return {
         "blk": blk,
         "lvs": lvs,
         "nas_host": nas_cfg.get("host", "10.10.0.20"),
-        "nas_mounted": _is_nas_mounted(),
+        "nas_mounted": nas_info["mounted"],
+        "nas_info": nas_info,
     }
 
 
+def _read_env_kv(path: str) -> dict:
+    out = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for ln in f:
+                    if "=" in ln and not ln.lstrip().startswith("#"):
+                        k, v = ln.split("=", 1)
+                        out[k.strip()] = v.strip().strip('"')
+        except Exception:
+            pass
+    return out
+
+
 def _collect_backup_data() -> dict:
-    nas_mounted = _is_nas_mounted()
+    nas_info = _probe_nas_shares()
+    nas_mounted = nas_info["mounted"]
     snaps = []
     if os.path.isdir("/var/lib/nightcity/snapshots"):
         try:
-            snaps = sorted(os.listdir("/var/lib/nightcity/snapshots"))
+            snaps = sorted(fn for fn in os.listdir("/var/lib/nightcity/snapshots") if not fn.startswith("."))
         except Exception:
             pass
-    hanoi_env = {}
-    if os.path.exists("/var/lib/nc-nas-conf/status.env"):
+    hanoi_env = _read_env_kv("/var/lib/nc-nas-conf/status.env")
+    dr_env = _read_env_kv("/var/lib/nightcity/dr-status.env")
+    duskcity_ok = (
+        dr_env.get("DUSKCITY_READY") == "1"
+        or any(
+            os.path.exists(p)
+            for p in (
+                "/efi/EFI/Linux/duskcity.efi",
+                "/boot/EFI/Linux/duskcity.efi",
+                "/efi/EFI/Linux/nightcity-recovery.efi",
+                "/boot/EFI/Linux/nightcity-recovery.efi",
+            )
+        )
+    )
+    snap_slots = []
+    for slot in ("auto", "stable"):
+        meta = _read_env_kv(f"/var/lib/nightcity/snapshots/{slot}.meta")
+        snap_slots.append({
+            "slot": slot,
+            "present": bool(meta),
+            "created": meta.get("CREATED_AT", "-") if meta else "-",
+            "kernel": meta.get("KERNEL", "-") if meta else "-",
+            "note": meta.get("NOTE", "-") if meta else "-",
+        })
+    ts_raw = hanoi_env.get("NC_STATUS_TIMESTAMP", "")
+    last_check = ""
+    if ts_raw.isdigit():
         try:
-            for l in open("/var/lib/nc-nas-conf/status.env").read().splitlines():
-                if "=" in l and not l.startswith("#"):
-                    k, v = l.split("=", 1)
-                    hanoi_env[k.strip()] = v.strip().strip('"')
+            last_check = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(ts_raw)))
         except Exception:
-            pass
+            last_check = ts_raw
+    hanoi_summary = {
+        "has_data": bool(hanoi_env),
+        "sys_alias": hanoi_env.get("NC_STATUS_SYS", "-"),
+        "last_check": last_check or "-",
+        "push_total": int(hanoi_env.get("NC_PUSH_TOTAL", "0") or "0") if str(hanoi_env.get("NC_PUSH_TOTAL", "0")).isdigit() else 0,
+        "pull_total": int(hanoi_env.get("NC_PULL_TOTAL", "0") or "0") if str(hanoi_env.get("NC_PULL_TOTAL", "0")).isdigit() else 0,
+    }
     return {
         "nas_mounted": nas_mounted,
+        "nas_info": nas_info,
         "snaps": snaps,
+        "snap_slots": snap_slots,
+        "dr_env": dr_env,
         "hanoi_env": hanoi_env,
-        "duskcity_exists": os.path.exists("/efi/EFI/Linux/duskcity.efi") or os.path.exists("/boot/EFI/Linux/duskcity.efi"),
+        "hanoi_summary": hanoi_summary,
+        "golden_images": _probe_golden_images(nas_info["base"]) if nas_mounted else [],
+        "duskcity_exists": duskcity_ok,
+        "duskcity_env": _probe_duskcity_env(),
     }
 
 
@@ -392,9 +782,33 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         _, key, val = act.split(":", 2)
         ok, _o, err = probe.run_cmd_full(["pkexec", "sysctl", "-w", f"{key}={val}"], timeout=4.0)
         _set_sys_fb(ok, f"{key}={val}" if ok else (err or "sysctl failed"))
+    elif act.startswith("gaming_mode:"):
+        target = act.split(":", 1)[1]
+        if target in ("on", "off"):
+            priv = get_privileged_action("gaming_mode")
+            if priv and priv.check_installed():
+                ok, out, err = probe.run_cmd_full(["sudo", "-n", "/usr/local/sbin/nc-gaming.sh", target], timeout=12.0)
+                gm = _probe_gaming_mode()
+                if ok and gm["is_gaming"] == (target == "on"):
+                    msg_key = "cc_system.gaming_switched_on" if target == "on" else "cc_system.gaming_switched_off"
+                    _set_sys_fb(True, t(msg_key, p0=gm["gov"]))
+                else:
+                    _set_sys_fb(False, t("cc_system.gaming_switch_err", p0=(err or out or "error")[:120]))
+            else:
+                request_privilege_modal(cc_panel, "gaming_mode")
+    elif act == "gaming_status":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-gaming.sh status; read -p 'Press Enter...'"])
+        return True
+    elif act == "pkglist_prompt":
+        cc_panel.request_prompt("cc_sys_pkglist", t("cc_system.pkglist_prompt_lbl"), "", title=t("cc_system.pkglist_prompt_title"))
+        return True
+    elif act == "usbguard_list":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-usbguard-helper.sh list; echo; read -p 'Press Enter...'"])
+        return True
     elif act.startswith("run_script:"):
         sp = act.split(":", 1)[1]
-        probe.open_terminal(["bash", "-c", f"{sp}; echo; read -p 'Done. Press Enter...'"])
+        prefix = "sudo " if sp.startswith("/usr/local/sbin/") else ""
+        probe.open_terminal(["bash", "-c", f"{prefix}{shlex.quote(sp)}; echo; read -p 'Done. Press Enter...'"])
         return True
     elif act.startswith("prompt_script:"):
         sp = act.split(":", 1)[1]
@@ -403,18 +817,52 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
     elif act == "mount_nas":
         probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-nas-mount.sh; read -p 'Press Enter...'"])
         return True
+    elif act == "nas_remount":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-nas-mount.sh -r; read -p 'Press Enter...'"])
+        return True
+    elif act == "nas_umount":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-nas-mount.sh -u; read -p 'Press Enter...'"])
+        return True
     elif act == "smart_check":
         probe.open_terminal(["bash", "-c", "for d in /dev/nvme*n1; do echo \"=== $d ===\"; sudo smartctl -H \"$d\"; done; read -p 'Press Enter...'"])
         return True
     elif act == "snap_create":
-        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --help; read -p 'Press Enter...'"])
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --new; echo; read -p 'Press Enter...'"])
         return True
-    elif act == "hanoi_backup":
+    elif act == "snap_status":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --status; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "snap_health":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --check-health && sudo /usr/local/sbin/nc-snapshot.sh --status; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "snap_delete":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --delete; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "snap_promote":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/nc-snapshot.sh --promote; echo; read -p 'Press Enter...'"])
+        return True
+    elif act in ("hanoi_backup", "hanoi_check", "hanoi_history", "hanoi_list"):
+        flag_map = {"hanoi_backup": "-s", "hanoi_check": "-c", "hanoi_history": "-H", "hanoi_list": "-l"}
         if not _is_nas_mounted():
             _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
         else:
-            probe.open_terminal(["bash", "-c", "/usr/local/sbin/nc-nas-conf.sh; read -p 'Press Enter...'"])
+            probe.open_terminal(["bash", "-c", f"sudo /usr/local/sbin/nc-nas-conf.sh {flag_map[act]}; read -p 'Press Enter...'"])
             return True
+    elif act == "dc_commit":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/dc-commit.sh; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "dc_commit_rebuild":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/dc-commit.sh --rebuild; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "dc_chroot":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/dc-arch-chroot.sh; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "dc_golden_save":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/dc-golden-image.sh --save; echo; read -p 'Press Enter...'"])
+        return True
+    elif act == "dc_golden_restore":
+        probe.open_terminal(["bash", "-c", "sudo /usr/local/sbin/dc-golden-image.sh --restore; echo; read -p 'Press Enter...'"])
+        return True
 
     if cc_panel.shell:
         cc_panel.shell.refresh_view()
@@ -424,7 +872,13 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
 def handle_cc_system_prompt(cc_panel, action_id: str, text: str) -> bool:
     if action_id.startswith("cc_sys_args|"):
         sp = action_id.split("|", 1)[1]
-        probe.open_terminal(["bash", "-c", f"{sp} {text}; echo; read -p 'Press Enter...'"])
+        prefix = "sudo " if sp.startswith("/usr/local/sbin/") else ""
+        probe.open_terminal(["bash", "-c", f"{prefix}{shlex.quote(sp)} {text}; echo; read -p 'Press Enter...'"])
+        return True
+    if action_id == "cc_sys_pkglist":
+        nm = str(text or "").strip()
+        cmd = f"sudo /usr/local/sbin/nc-pkglist-save.sh {shlex.quote(nm)}" if nm else "sudo /usr/local/sbin/nc-pkglist-save.sh snapshot"
+        probe.open_terminal(["bash", "-c", f"{cmd}; echo; read -p 'Press Enter...'"])
         return True
     return False
 
@@ -454,7 +908,10 @@ def _probe_limine() -> dict:
     if not entries:
         entries = list(_DEFAULT_ENTRIES)
     ukis = sorted(glob.glob("/boot/EFI/Linux/*.efi") + glob.glob("/efi/EFI/Linux/*.efi"))
-    snaps_n = len(glob.glob("/var/lib/nightcity/snapshots/*")) if os.path.isdir("/var/lib/nightcity/snapshots") else 0
+    if not ukis:
+        dr_env = _read_env_kv("/var/lib/nightcity/dr-status.env")
+        ukis = [f"/boot/EFI/Linux/{u}" for u in dr_env.get("UKI_NAMES", "").split(",") if u]
+    snaps_n = len([p for p in glob.glob("/var/lib/nightcity/snapshots/*") if not os.path.basename(p).startswith(".")]) if os.path.isdir("/var/lib/nightcity/snapshots") else 0
     return {
         "conf_path": conf_path or "/efi/limine/limine.conf",
         "readable": readable,
@@ -549,6 +1006,37 @@ def _tui_child_preexec() -> None:
         ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)
     except Exception:
         pass
+
+
+def _reap_orphan_btop() -> None:
+    """Termina eventuali processi btop avviati con /tmp/nc_btop.conf rimasti orfani sotto init/systemd --user."""
+    live_pids = {s.proc.pid for s in _TUI_SESSIONS.values() if s.proc is not None and s.proc.poll() is None}
+    for proc_dir in glob.glob("/proc/[0-9]*"):
+        try:
+            pid = int(os.path.basename(proc_dir))
+            if pid in live_pids:
+                continue
+            with open(os.path.join(proc_dir, "cmdline"), "rb") as f:
+                cmd = f.read().replace(b"\x00", b" ")
+            if b"/tmp/nc_btop.conf" not in cmd or b"btop" not in cmd:
+                continue
+            ppid = 0
+            with open(os.path.join(proc_dir, "status"), "r", encoding="utf-8", errors="ignore") as f:
+                for ln in f:
+                    if ln.startswith("PPid:"):
+                        ppid = int(ln.split(":", 1)[1].strip() or 0)
+                        break
+            is_orphan = ppid <= 1
+            if not is_orphan and ppid > 1:
+                try:
+                    with open(f"/proc/{ppid}/comm", "r", encoding="utf-8", errors="ignore") as f:
+                        is_orphan = f.read().strip() in ("systemd", "init")
+                except OSError:
+                    is_orphan = True
+            if is_orphan:
+                os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
 
 
 _TUI_SESSIONS: dict = {}
@@ -757,6 +1245,23 @@ class EmbeddedTuiSession:
         self.alive = True
         if os.environ.get("NC_UI_OFFSCREEN") == "1":
             self._pump_initial_offscreen(timeout_s=0.65)
+            self.master_fd = -1
+            try:
+                os.close(master)
+            except OSError:
+                pass
+            proc = self.proc
+            self.proc = None
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    proc.wait(timeout=0.3)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            return
         threading.Thread(target=self._read_loop, daemon=True).start()
 
     def _pump_initial_offscreen(self, timeout_s: float = 0.65) -> None:
@@ -958,6 +1463,7 @@ class EmbeddedTuiSession:
     def _request_redraw(self) -> None:
         if not self._redraw_pending:
             self._redraw_pending = True
+            from gi.repository import GLib
             GLib.idle_add(self._emit_redraw)
 
     def _emit_redraw(self) -> bool:
@@ -1007,6 +1513,8 @@ class EmbeddedTuiSession:
 
 
 def get_or_start_tui_session(tui_id: str, cmd: list[str], rows: int, cols: int, cc_panel=None) -> EmbeddedTuiSession:
+    if tui_id == "btop":
+        _reap_orphan_btop()
     sess = _TUI_SESSIONS.get(tui_id)
     if sess is not None and sess.alive and not sess.stopped and sess.cmd == list(cmd):
         if cc_panel is not None:
@@ -1035,6 +1543,7 @@ def close_embedded_tuis() -> None:
         sess = _TUI_SESSIONS.pop(tid, None)
         if sess is not None:
             sess.terminate()
+    _reap_orphan_btop()
     STATE.set("system", "active_tui", "")
 
 
@@ -1060,6 +1569,9 @@ def handle_cc_telemetry_key_press(cc_panel, event) -> bool:
     active_id = str(STATE.get("system", "active_tui", "") or "")
     if active_id not in ("btop", "nvtop"):
         return False
+    import gi
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Gdk
     if event.keyval == Gdk.KEY_Escape:
         set_active_tui("")
         return True

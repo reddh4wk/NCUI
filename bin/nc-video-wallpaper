@@ -141,13 +141,17 @@ def _find_gdk_monitor(out_name: str, niri_out: dict):
     return display.get_monitor(0) if n_mons > 0 else None
 
 
-def _build_vf(fit: str, w: int, h: int) -> str:
+def _build_vf(fit: str, w: int, h: int, align: str = "center") -> str:
     if fit == "fit":
         return f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"
     if fit == "stretch":
         return f"scale={w}:{h}:flags=bicubic"
     if fit == "center":
         return f"scale=min(iw\\,{w}):min(ih\\,{h}):force_original_aspect_ratio=decrease:flags=bicubic,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"
+    if align == "top":
+        return f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h}:(iw-{w})/2:0"
+    if align == "bottom":
+        return f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h}:(iw-{w})/2:ih-{h}"
     return f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,crop={w}:{h}"
 
 
@@ -699,7 +703,7 @@ class VideoWallpaperWindow(Gtk.Window):
     def _stream_frames(self, item: str, single_loop: bool) -> bool:
         self._cur_item = item
         vid_src, aud_src = _resolve_stream_urls(item, target_h=self.target_h)
-        vf = _build_vf(self.args.fit, self.dec_w, self.dec_h)
+        vf = _build_vf(self.args.fit, self.dec_w, self.dec_h, getattr(self.args, "align", "center"))
         fps = max(1, min(60, int(self.args.fps)))
         got_any_frame = False
 
@@ -820,6 +824,7 @@ def main() -> int:
     parser.add_argument("--output", required=True, help="Niri output port (e.g. DP-1, DP-3)")
     parser.add_argument("--target", required=True, help="Local video path, folder, or YouTube video/playlist URL")
     parser.add_argument("--fit", default="fill", choices=["fill", "fit", "center", "stretch"])
+    parser.add_argument("--align", default="center", choices=["top", "center", "bottom"])
     parser.add_argument("--loop", default="loop", choices=["loop", "once"])
     parser.add_argument("--order", default="sequential", choices=["sequential", "shuffle"])
     parser.add_argument("--mute", type=int, default=1)

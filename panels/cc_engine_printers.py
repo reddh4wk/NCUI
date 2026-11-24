@@ -3191,7 +3191,11 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
         if tail.isdigit():
             update_quick_print_draft(copies=int(tail))
             if shell:
-                shell.refresh_view()
+                from panels.base import BasePanel
+                if isinstance(getattr(shell, "panel", None), BasePanel):
+                    shell.panel.request_throttled_refresh()
+                else:
+                    shell.refresh_view()
         return True
 
     if act == "qp_copies_edit":

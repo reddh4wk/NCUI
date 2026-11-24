@@ -18,14 +18,14 @@ action = "clipboard_satty" # "clipboard" | "satty" | "save" | "clipboard_satty"
 
 [panels.refresh_ms]
 calendar      = 0
-notifications = 0
+notifications = 1500
 ram           = 2000
 cpu           = 2000
 network       = 1500
-audio         = 0
+audio         = 1500
 capture       = 0
 display       = 2000
-clipboard     = 0
+clipboard     = 1500
 power         = 3000
 ups           = 3000
 storage       = 5000
@@ -77,5 +77,6 @@ host = "10.10.0.20"
 ssh_user = "damiano"
 
 [waybar_plugins]
+lock_cmd = "/usr/bin/robcolm \"--lock\" \"--user\" \"damiano\""
 media_width_pct = 60
 window_width_pct = 40

@@ -6,6 +6,7 @@ from core import probe
 from core.i18n import t
 from core.privileges import (
     build_privilege_modal_card,
+    build_sudo_padlock_actions,
     get_privileged_action,
     list_privileged_actions,
 )
@@ -29,6 +30,7 @@ def _build_sudoers_standard(cc_panel, canvas: Canvas) -> list:
     reg_box = Box(
         t("cc_auth.centralized_privileged_actions_reg_n", p0=auth_cnt, p1=len(actions)),
         icon="\uf023",
+        actions=build_sudo_padlock_actions(),
         highlighted=False,
     )
     reg_box.add_row(" ")

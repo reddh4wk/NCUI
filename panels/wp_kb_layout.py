@@ -21,7 +21,7 @@ class Panel(BasePanel):
     refresh_ms = 2000
 
     def __init__(self, shell=None):
-        self.title = t("kb_layout.title")
+        self.title = t("kb_layout.title") if shell is not None else self.id
         super().__init__(shell)
 
     def get_cols(self, force_expanded: bool = False) -> int:

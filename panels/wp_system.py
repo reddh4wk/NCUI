@@ -2,6 +2,7 @@
 from core import probe
 from core.config import THEME
 from core.i18n import t
+from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Box, FoldIconBtn, ProgressBar, Sparkline, StateBadge, Txt
 from ui.markup import format_bytes_short
@@ -11,6 +12,8 @@ from panels.cc_engine_telemetry import (
     get_cpu_bar_pct,
     get_cpu_telemetry,
     get_ram_telemetry,
+    get_gpu_bar_pct,
+    get_gpu_telemetry,
 )
 
 
@@ -32,8 +35,12 @@ class SystemPanel(BasePanel):
     def __init__(self, panel_id: str, shell=None):
         self.id = panel_id
         self.is_cpu = (panel_id == "cpu")
-        self.title = t("system.cpu_title") if self.is_cpu else t("system.ram_title")
-        self.icon = "\uf2db" if self.is_cpu else "\uf538"
+        self.is_gpu = (panel_id == "gpu")
+        if shell is not None:
+            self.title = t("system.cpu_title") if self.is_cpu else (t("system.gpu_title") if self.is_gpu else t("system.ram_title"))
+        else:
+            self.title = self.id
+        self.icon = "\uf2db" if self.is_cpu else ("\U000f08ae" if self.is_gpu else "\uf538")
         super().__init__(shell)
         self.prev_stat = read_proc_stat() if self.is_cpu else {}
 
@@ -46,14 +53,24 @@ class SystemPanel(BasePanel):
 
     def get_bar_pill(self) -> dict:
         font = THEME["typography"]["font_family"]
+        glow_on = bool(STATE.get("waybar", "sys_glow_enabled", True))
+        thresh = max(50, min(95, int(STATE.get("waybar", "sys_glow_threshold", 80) or 80)))
         if self.is_cpu:
-            pct = get_cpu_bar_pct()
+            pct = float(get_cpu_bar_pct())
             text = f"{Txt('\uf2db', role='focus')}  <span font_family='{font}'>{Txt(f'{pct:2.0f}%', role='focus')}</span>"
+        elif self.is_gpu:
+            avail, util_pct, vram_pct = get_gpu_bar_pct()
+            if not avail:
+                return {"text": "", "tooltip": "", "class": "module-nc-empty"}
+            pct = max(util_pct, vram_pct)
+            text = f"{Txt('\U000f08ae', role='focus')}  <span font_family='{font}'>{Txt(f'{util_pct:2.0f}%', role='focus')}</span>"
         else:
             rm = get_ram_telemetry()
-            pct_s = f"{rm['pct']:2.0f}%"
+            pct = float(rm["pct"])
+            pct_s = f"{pct:2.0f}%"
             text = f"{Txt('\uf538', role='focus')}  <span font_family='{font}'>{Txt(pct_s, role='focus')}</span>"
-        return {"text": text, "tooltip": "", "class": "module-nc"}
+        css_cls = ["module-nc", "nc-glow-crit"] if (glow_on and pct >= thresh) else "module-nc"
+        return {"text": text, "tooltip": "", "class": css_cls}
 
     def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
         target_cols = 50
@@ -130,6 +147,102 @@ class SystemPanel(BasePanel):
                         aligns=["left", "left", "left", "left"],
                         show_headers=False,
                     )
+        elif self.is_gpu:
+            show_procs = bool(self.get_state("show_gpu_procs", False)) or force_expanded
+            tele = get_gpu_telemetry(include_procs=show_procs)
+            if not tele["available"]:
+                hero = Box(
+                    t("system.gpu_title"),
+                    icon="\U000f08ae",
+                    highlighted=False,
+                    min_cols=target_cols,
+                    max_cols=target_cols,
+                )
+                hero.add_row(" ")
+                hero.add_row(f"  {Txt(t('system.gpu_unavailable'), role='inactive')}")
+            else:
+                pstate = tele.get("pstate", "")
+                hdr_acts = [StateBadge(True, pstate.upper(), on_tone="ok")] if pstate else []
+                hero = Box(
+                    canvas.truncate_plain(tele["model"], 24),
+                    icon="\U000f08ae",
+                    actions=hdr_acts,
+                    highlighted=False,
+                    min_cols=target_cols,
+                    max_cols=target_cols,
+                )
+                hero.add_row(" ")
+                util_pct = tele["util_pct"]
+                hero.add_kv(
+                    t("system.gpu_load_kv"),
+                    f"{ProgressBar(util_pct, width=14)} {Txt(f'{util_pct:5.1f}%', role=_pct_role(util_pct))}",
+                )
+                vram_u_g = tele["vram_used"] / (1024.0 ** 3)
+                vram_t_g = tele["vram_total"] / (1024.0 ** 3)
+                vram_pct = tele["vram_pct"]
+                hero.add_kv(
+                    t("system.gpu_vram_kv"),
+                    f"{ProgressBar(vram_pct, width=12)} {Txt(f'{vram_u_g:4.1f}/{vram_t_g:.0f}G', role='val')} "
+                    f"{Txt(f'{vram_pct:4.0f}%', role=_pct_role(vram_pct))}",
+                )
+                temp = tele["temp_c"]
+                temp_role = "vitality" if temp < 65.0 else ("attention" if temp < 80.0 else ("interrupt" if temp < 85.0 else "fault"))
+                # Map thermal bands (<65 / <80 / <85 / >=85 °C) onto ProgressBar color thresholds (<50 / <75 / <90 / >=90%).
+                if temp < 65.0:
+                    temp_bar_pct = max(0.0, (temp / 65.0) * 49.0)
+                elif temp < 80.0:
+                    temp_bar_pct = 50.0 + ((temp - 65.0) / 15.0) * 24.0
+                elif temp < 85.0:
+                    temp_bar_pct = 75.0 + ((temp - 80.0) / 5.0) * 14.0
+                else:
+                    temp_bar_pct = min(100.0, 90.0 + ((temp - 85.0) / 10.0) * 10.0)
+                hero.add_kv(
+                    t("system.thermal_kv"),
+                    f"{ProgressBar(temp_bar_pct, width=14)} "
+                    f"{Txt(f'{temp:4.1f} °C', role=temp_role)}",
+                )
+                pwr_str = (
+                    f"{tele['power_w']:.1f} / {tele['power_limit_w']:.0f} W"
+                    if tele["power_limit_w"] > 0
+                    else f"{tele['power_w']:.1f} W"
+                )
+                pwr_val = Txt(pwr_str, role="val")
+                if tele["fan_pct"] is not None:
+                    fan_p = tele["fan_pct"]
+                    pwr_val += (
+                        f" {Txt('·', role='structure')} {Txt(t('system.gpu_fan_lbl'), role='schema')} "
+                        f"{Txt(f'{fan_p}%', role='val')}"
+                    )
+                hero.add_kv(t("system.gpu_power_kv"), pwr_val)
+                gfx_mhz = tele["gfx_mhz"]
+                mem_mhz = tele["mem_mhz"]
+                hero.add_kv(
+                    t("system.gpu_clocks_kv"),
+                    f"{Txt(f'{gfx_mhz} MHz', role='val')} {Txt(t('system.gpu_gfx_tag'), role='schema')} "
+                    f"{Txt('·', role='structure')} {Txt(f'{mem_mhz} MHz', role='val')} {Txt(t('system.gpu_mem_tag'), role='schema')}",
+                )
+
+                toggle_p_btn = FoldIconBtn(
+                    show_procs,
+                    f"ui:state:show_gpu_procs:{'false' if show_procs else 'true'}",
+                )
+                procs = tele.get("procs", [])
+                sec_title = f"{t('system.gpu_processes_sec')} ({len(procs)})" if show_procs else t("system.gpu_processes_sec")
+                hero.add_section(sec_title, actions=[toggle_p_btn])
+                if show_procs:
+                    if procs:
+                        p_rows = [
+                            [Txt(canvas.truncate_plain(p["name"], 24), role="focus"), Txt(f"{p['vram_mib']} MiB", role="val")]
+                            for p in procs[:8]
+                        ]
+                        hero.add_table(
+                            headers=[t("system.gpu_proc_col"), t("system.gpu_vram_col")],
+                            widths=["flex", 10],
+                            rows=p_rows,
+                            aligns=["left", "right"],
+                        )
+                    else:
+                        hero.add_row(f"  {Txt(t('system.gpu_no_procs'), role='inactive')}")
         else:
             rm = get_ram_telemetry()
             used_g = rm["used"] / (1024.0 ** 3)

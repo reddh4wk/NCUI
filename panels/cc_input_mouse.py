@@ -139,7 +139,12 @@ def _build_mouse_cursors_standard(cc_panel, canvas: Canvas) -> list:
     for c in cur_themes[:14]:
         nm = c["name"]
         is_act = (nm == cur_c_theme)
-        src_m = Txt(t("cc_personalization.cur_src_user"), role="schema") if c["is_user"] else Txt(t("cc_personalization.cur_src_sys"), role="schema")
+        if c.get("is_builtin"):
+            src_m = Txt(t("cc_personalization.cur_src_builtin"), role="schema")
+        elif c["is_user"]:
+            src_m = Txt(t("cc_personalization.cur_src_user"), role="schema")
+        else:
+            src_m = Txt(t("cc_personalization.cur_src_sys"), role="schema")
         if c["has_archive"]:
             src_m = f"{src_m} {Txt(t('cc_personalization.cur_archived_zip_badge'), role='schema')}"
         cnt_m = Txt(t("cc_personalization.cur_files_unit", p0=c["count"]) if c["count"] else "-", role="val")

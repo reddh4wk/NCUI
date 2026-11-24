@@ -6,17 +6,24 @@ from core.state import STATE
 SYS_LOCALES_DIR = os.path.join(ROOT_DIR, "locales")
 USER_LOCALES_DIR = os.path.join(CONFIG_DIR, "locales")
 
-_ACTIVE_LANG = "en"
+_ACTIVE_LANG: str | None = None
 _DICT_CACHE = {}
 
 
 def _candidate_dirs() -> list[str]:
-    return [
+    seen = set()
+    out = []
+    for d in (
         SYS_LOCALES_DIR,
         os.path.expanduser("~/Projects/ncui/locales"),
         os.path.expanduser("~/Projects/nc-ui/locales"),
         USER_LOCALES_DIR,
-    ]
+    ):
+        rp = os.path.realpath(d)
+        if rp not in seen:
+            seen.add(rp)
+            out.append(d)
+    return out
 
 
 def _load_lang_file(lang: str) -> dict:
@@ -59,6 +66,9 @@ def set_language(lang: str) -> None:
 
 
 def get_active_language() -> str:
+    global _ACTIVE_LANG
+    if _ACTIVE_LANG is None:
+        _ACTIVE_LANG = _resolve_configured_language()
     return _ACTIVE_LANG
 
 
@@ -103,6 +113,3 @@ def t_list(key: str, default: list = None) -> list:
     if isinstance(val, list):
         return val
     return list(default) if default is not None else []
-
-
-reload_locale()

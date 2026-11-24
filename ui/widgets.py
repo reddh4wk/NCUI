@@ -12,10 +12,10 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango, PangoCairo
-from core.config import THEME, _parse_rgba_components, get_box_opacity, get_surface_bg_rgb
+from core.config import THEME, _parse_rgba_components, get_box_opacity, get_surface_bg_rgb, get_sys_notif_opacity, get_toast_opacity
 from core.i18n import t
 from ui.canvas import Canvas
-from ui.kit import PALETTE, ActionBtn, Box, Txt, get_active_inline_entry, get_active_inline_uri, get_semantic_palette, get_slider_step_uris
+from ui.kit import PALETTE, ActionBtn, Box, Txt, get_active_inline_entry, get_active_inline_uri, get_semantic_palette, get_slider_step_uris, is_slider_enabled, set_slider_meta_value
 
 _ANCHOR_RE = re.compile(r"(<a\s+href=['\"]([^'\"]+)['\"]>)(.*?)(</a>)", re.IGNORECASE | re.DOTALL)
 _INNER_COLOR_RE = re.compile(r"\b(?:fg)?color=['\"][^'\"]*['\"]", re.IGNORECASE)
@@ -63,9 +63,9 @@ def clear_pointer_move_flag() -> None:
     _LAST_POINTER_MOVE_TS = 0.0
 
 
-def allow_step_input(max_per_sec: int = 10, continuous: bool = False) -> bool:
-    """Limita gli input a `max_per_sec` (default 10) in qualsiasi finestra mobile di 1.0s.
-    Se `continuous=True` (drag/trackpad/key-repeat), distribuisce gli step ad almeno 95ms."""
+def allow_step_input(max_per_sec: int = 24, continuous: bool = False) -> bool:
+    """Limita gli input a `max_per_sec` (default 24) in qualsiasi finestra mobile di 1.0s.
+    Se `continuous=True` (trackpad/key-repeat), distribuisce gli step ad almeno 95ms."""
     global _LAST_CONTINUOUS_INPUT_TS
     now = time.monotonic()
     if continuous and (now - _LAST_CONTINUOUS_INPUT_TS) < 0.095:
@@ -369,6 +369,8 @@ class AsciiCard(Gtk.ListBoxRow):
         self._anchor_byte_spans = []
         self._slider_byte_spans = []
         self._last_drag_slider_uri = None
+        self._press_handled_slider_uri = None
+        self._last_drag_ts = 0.0
         self._scroll_accum = 0.0
         self._last_scroll_ev_time = 0
         self._last_discrete_scroll_ts = 0.0
@@ -521,38 +523,49 @@ class AsciiCard(Gtk.ListBoxRow):
         self._slider_byte_spans = slider_spans
         self._focusable_links = focus_links
 
-    def _drag_slider_from_xy(self, widget: Gtk.Widget, ev_x: float, ev_y: float) -> None:
+    def _drag_slider_from_xy(self, widget: Gtk.Widget, ev_x: float, ev_y: float, immediate: bool = False) -> bool:
         if not self._button_down or not self._slider_byte_spans or not self.on_link:
-            return
+            return False
         try:
             if widget is not self.lbl:
                 res = widget.translate_coordinates(self.lbl, int(ev_x), int(ev_y))
                 if not res or not res[0]:
-                    return
+                    return False
                 _, lx, ly = res
             else:
                 lx, ly = int(ev_x), int(ev_y)
             layout = self.lbl.get_layout()
             if layout is None:
-                return
+                return False
             lbl_alloc = self.lbl.get_allocation()
             off_x, off_y = self.lbl.get_layout_offsets()
             rel_x = int(lx) - max(0, int(off_x - lbl_alloc.x))
             rel_y = int(ly) - max(0, int(off_y - lbl_alloc.y))
             inside, byte_idx, _ = layout.xy_to_index(int(rel_x * Pango.SCALE), int(rel_y * Pango.SCALE))
             if not inside:
-                return
+                return False
             for sb, eb, uri in self._slider_byte_spans:
                 if sb <= byte_idx < eb:
-                    if uri != self._last_drag_slider_uri:
-                        if not allow_step_input(continuous=True):
-                            return
-                        self._last_drag_slider_uri = uri
+                    prefix, _, val_s = uri.rpartition(":")
+                    if prefix and not is_slider_enabled(prefix):
                         self._link_activated = True
+                        return True
+                    if uri != self._last_drag_slider_uri:
+                        now = time.monotonic()
+                        if not immediate and (now - self._last_drag_ts) < 0.030:
+                            return True
+                        self._last_drag_ts = now
+                        self._last_drag_slider_uri = uri
+                        if immediate:
+                            self._press_handled_slider_uri = uri
+                        self._link_activated = True
+                        if prefix:
+                            set_slider_meta_value(prefix, val_s)
                         self.on_link(uri)
-                    return
+                    return True
         except Exception:
             pass
+        return False
 
     def _update_hovered_anchor_from_xy(
         self,
@@ -701,7 +714,7 @@ class AsciiCard(Gtk.ListBoxRow):
         if getattr(self, "eb", None) is not None:
             self.eb.queue_draw()
 
-    def _fit_and_crop_pixbuf(self, alloc_w: int = 0, alloc_h: int = 0) -> GdkPixbuf.Pixbuf:
+    def _fit_and_crop_pixbuf(self, alloc_w: int = 0, alloc_h: int = 0, scale_factor: int = 1) -> GdkPixbuf.Pixbuf:
         orig_w = self.pixbuf.get_width()
         orig_h = self.pixbuf.get_height()
         if orig_w <= 0 or orig_h <= 0:
@@ -727,12 +740,13 @@ class AsciiCard(Gtk.ListBoxRow):
                     lbl_h = int(n_lines * self.canvas.char_h)
 
         line_h = lbl_h / float(n_lines)
-        inner_w = max(24, int(round(lbl_w - (self.canvas.char_w * 2.5))))
-        inner_h = max(18, int(round(lbl_h - (line_h * 2.15))))
+        sf = max(1, int(scale_factor or 1))
+        inner_w = max(24, int(round(lbl_w - (self.canvas.char_w * 2.5)))) * sf
+        inner_h = max(18, int(round(lbl_h - (line_h * 2.15)))) * sf
 
         cached = self._cached_crop
-        if cached is not None and cached[0] is self.pixbuf and cached[1] == inner_w and cached[2] == inner_h:
-            return cached[3]
+        if cached is not None and cached[0] is self.pixbuf and cached[1] == inner_w and cached[2] == inner_h and cached[3] == sf:
+            return cached[4]
 
         if orig_w == inner_w and orig_h == inner_h:
             res = self.pixbuf
@@ -744,7 +758,7 @@ class AsciiCard(Gtk.ListBoxRow):
             off_x = max(0, (scaled_w - inner_w) // 2)
             off_y = max(0, (scaled_h - inner_h) // 2)
             res = scaled.new_subpixbuf(off_x, off_y, inner_w, inner_h)
-        self._cached_crop = (self.pixbuf, inner_w, inner_h, res)
+        self._cached_crop = (self.pixbuf, inner_w, inner_h, sf, res)
         return res
 
     def _wrap_pixbuf(self, label_widget: Gtk.Label) -> Gtk.Overlay:
@@ -752,7 +766,7 @@ class AsciiCard(Gtk.ListBoxRow):
         overlay.add(label_widget)
         img = Gtk.Image()
         self._img_widget = img
-        self._last_crop_size = (0, 0)
+        self._last_crop_size = (0, 0, 1)
         img.set_halign(Gtk.Align.CENTER)
         img.set_valign(Gtk.Align.CENTER)
         overlay.add_overlay(img)
@@ -760,10 +774,19 @@ class AsciiCard(Gtk.ListBoxRow):
 
         def _on_lbl_alloc(_lbl, alloc):
             if alloc.width > 40 and alloc.height > 30:
-                cur_sz = (alloc.width, alloc.height)
+                sf = max(1, int(img.get_scale_factor() or 1))
+                cur_sz = (alloc.width, alloc.height, sf)
                 if cur_sz != self._last_crop_size:
                     self._last_crop_size = cur_sz
-                    img.set_from_pixbuf(self._fit_and_crop_pixbuf(alloc.width, alloc.height))
+                    pb = self._fit_and_crop_pixbuf(alloc.width, alloc.height, scale_factor=sf)
+                    if sf > 1 and pb is not None:
+                        try:
+                            surf = Gdk.cairo_surface_create_from_pixbuf(pb, sf, img.get_window())
+                            img.set_from_surface(surf)
+                            return
+                        except Exception:
+                            pass
+                    img.set_from_pixbuf(pb)
 
         label_widget.connect("size-allocate", _on_lbl_alloc)
         return overlay
@@ -955,14 +978,27 @@ class AsciiCard(Gtk.ListBoxRow):
         bs = str(THEME.get("ascii", {}).get("box_style", "rounded"))
         rad = min(char_w * 0.65, line_0_h * 0.45, (x_right - x_left) * 0.25, (y_bot - y_top) * 0.25) if bs in ("rounded", "dashed") else 0.0
         is_overlay = bool(getattr(self.box_model, "is_overlay", False))
-        if is_overlay:
+        is_toast = bool(getattr(self.box_model, "is_toast", False))
+        is_sys_notif = bool(getattr(self.box_model, "is_sys_notif", False))
+        custom_op = getattr(self.box_model, "custom_opacity", None)
+        if custom_op is not None:
+            box_op = max(0.0, min(1.0, float(custom_op)))
+        elif is_sys_notif:
+            box_op = get_sys_notif_opacity()
+        elif is_toast:
+            box_op = get_toast_opacity()
+        elif is_overlay:
             box_op = max(0.97, box_op)
 
         cr.save()
         if is_overlay:
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.55)
+            shadow_a = 0.50 * max(0.18, box_op) if (is_toast or is_sys_notif) else 0.55
+            cr.set_source_rgba(0.0, 0.0, 0.0, shadow_a)
+            cr.set_fill_rule(cairo.FillRule.EVEN_ODD)
             self._trace_cw_rounded_rect(cr, x_left - 2.0, y_top + 3.0, (x_right - x_left) + 4.0, (y_bot - y_top) + 2.0, rad, rad, rad, rad)
+            self._trace_cw_rounded_rect(cr, x_left, y_top, x_right - x_left, y_bot - y_top, rad, rad, rad, rad)
             cr.fill()
+            cr.set_fill_rule(cairo.FillRule.WINDING)
         if box_op > 0.001:
             r_i, g_i, b_i = get_surface_bg_rgb()
             cr.set_operator(cairo.OPERATOR_OVER)
@@ -1038,8 +1074,16 @@ class AsciiCard(Gtk.ListBoxRow):
             y_v0 = y_top if getattr(self.box_model, "open_top", False) else (y_top + max(2.0, rad))
             y_v1 = y_bot if is_open_bot else (y_bot - max(2.0, rad))
             if y_v1 > y_v0:
-                vx0 = math.floor(x_left) + 0.5
-                vx1 = math.floor(x_right) + 0.5
+                try:
+                    dev_sx = float(cr.get_target().get_device_scale()[0])
+                except Exception:
+                    dev_sx = 1.0
+                if dev_sx <= 1.01:
+                    vx0 = math.floor(x_left) + 0.5
+                    vx1 = math.floor(x_right) + 0.5
+                else:
+                    vx0 = (round(x_left * dev_sx) + 0.5) / dev_sx
+                    vx1 = (round(x_right * dev_sx) + 0.5) / dev_sx
                 if bs == "double":
                     cr.set_line_width(1.0)
                     for dx in (-1.0, 1.0):
@@ -1237,11 +1281,23 @@ class AsciiCard(Gtk.ListBoxRow):
         PangoCairo.show_layout(cr, ic_layout)
 
     def _handle_link(self, _label, uri: str) -> bool:
+        if uri and uri == self._press_handled_slider_uri:
+            self._press_handled_slider_uri = None
+            self._button_down = False
+            self._last_drag_slider_uri = None
+            self._link_activated = True
+            return True
+        self._press_handled_slider_uri = None
         self._link_activated = True
         self._button_down = False
         self._last_drag_slider_uri = None
         if self.on_pointer_activity:
             self.on_pointer_activity("click")
+        if uri and ":" in uri:
+            prefix, _, val_s = uri.rpartition(":")
+            if not is_slider_enabled(prefix):
+                return True
+            set_slider_meta_value(prefix, val_s)
         if self.on_link and uri:
             GLib.idle_add(self._dispatch_link_deferred, uri)
             return True
@@ -1307,14 +1363,16 @@ class AsciiCard(Gtk.ListBoxRow):
                 self.set_hovered_visual(False)
         return False
 
-    def _on_button_press(self, _widget, event):
+    def _on_button_press(self, widget, event):
         if event.button != 1 or event.triggers_context_menu():
             return True
         self._button_down = True
         self._link_activated = False
         self._last_drag_slider_uri = None
+        self._press_handled_slider_uri = None
         if self.on_pointer_activity:
             self.on_pointer_activity("press")
+        self._drag_slider_from_xy(widget, event.x, event.y, immediate=True)
         return False
 
     def _on_button_release(self, _widget, event):
@@ -1334,7 +1392,7 @@ class AsciiCard(Gtk.ListBoxRow):
             self.on_row_click()
         return False
 
-    def _on_event_after(self, _widget, event) -> None:
+    def _on_event_after(self, widget, event) -> None:
         if event.type == Gdk.EventType.BUTTON_PRESS:
             ok_b, btn = event.get_button()
             if ok_b and btn == 1:
@@ -1342,6 +1400,9 @@ class AsciiCard(Gtk.ListBoxRow):
                 self._last_drag_slider_uri = None
                 if self.on_pointer_activity:
                     self.on_pointer_activity("press")
+                _ok_c, ex, ey = event.get_coords()
+                if _ok_c and self._press_handled_slider_uri is None:
+                    self._drag_slider_from_xy(widget, ex, ey, immediate=True)
         elif event.type == Gdk.EventType.BUTTON_RELEASE:
             ok_b, btn = event.get_button()
             if ok_b and btn == 1:

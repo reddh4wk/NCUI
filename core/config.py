@@ -73,7 +73,7 @@ DEFAULT_THEME = {
         "font_family": "Courier",
         "font_size": 11,
         "font_weight": "bold",
-        "cursor_theme": "Adwaita",
+        "cursor_theme": "NCUI Cursor",
         "cursor_size": 24,
         "cursor_archive": "",
     },
@@ -113,6 +113,8 @@ DEFAULT_THEME = {
         "surface_bg": "#080a0f",
         "window_opacity": 0.86,
         "box_opacity": 0.72,
+        "toast_opacity": 0.95,
+        "sys_notif_opacity": 0.95,
         "waybar_sync_opacity": True,
         "waybar_sync_color": True,
         "window_bg": "rgba(8, 10, 15, 0.86)",
@@ -208,14 +210,15 @@ DEFAULT_CONFIG = {
     "panels": {
         "refresh_ms": {
             "calendar":      0,
-            "notifications": 0,
+            "notifications": 1500,
             "ram":           1000,
             "cpu":           1000,
+            "gpu":           1000,
             "network":       1500,
-            "audio":         0,
+            "audio":         1500,
             "capture":       0,
             "display":       2000,
-            "clipboard":     0,
+            "clipboard":     1500,
             "power":         3000,
             "ups":           3000,
             "kb_layout":     2000,
@@ -394,6 +397,16 @@ def sanitize_theme_dict(theme_dict: dict) -> dict:
     except Exception:
         box_op = def_c["box_opacity"]
     colors["box_opacity"] = box_op
+    try:
+        toast_op = max(0.0, min(1.0, float(colors.get("toast_opacity", def_c["toast_opacity"]))))
+    except Exception:
+        toast_op = def_c["toast_opacity"]
+    colors["toast_opacity"] = toast_op
+    try:
+        sys_notif_op = max(0.0, min(1.0, float(colors.get("sys_notif_opacity", def_c["sys_notif_opacity"]))))
+    except Exception:
+        sys_notif_op = def_c["sys_notif_opacity"]
+    colors["sys_notif_opacity"] = sys_notif_op
     colors["waybar_sync_opacity"] = bool(colors.get("waybar_sync_opacity", True))
     colors["waybar_sync_color"] = bool(colors.get("waybar_sync_color", True))
 
@@ -791,7 +804,7 @@ def estimate_waybar_free_chars_budget() -> dict:
         active_mods = [
             "niri/workspaces", "niri/window", "custom/settings", "custom/calendar",
             "custom/desktop", "custom/cliphist", "custom/screenshot", "custom/audio",
-            "custom/netcycle", "custom/cpu", "custom/ram", "custom/notifications",
+            "custom/netcycle", "custom/cpu", "custom/ram", "custom/gpu", "custom/notifications",
         ]
 
     from core.state import STATE
@@ -808,6 +821,7 @@ def estimate_waybar_free_chars_budget() -> dict:
         "custom/netcycle": 270 if show_spd else 108,
         "custom/cpu": 88,
         "custom/ram": 88,
+        "custom/gpu": 88,
         "custom/notifications": 54,
         "custom/printers": 76 if STATE.get("waybar", "printers_bar_mode", "auto") == "always" else 0,
         "custom/ups": 115,
@@ -911,6 +925,28 @@ def get_box_opacity() -> float:
 
 def get_box_opacity_pct() -> int:
     return max(0, min(100, int(round(get_box_opacity() * 100.0))))
+
+
+def get_toast_opacity() -> float:
+    try:
+        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("toast_opacity", 0.95))))
+    except Exception:
+        return 0.95
+
+
+def get_toast_opacity_pct() -> int:
+    return max(0, min(100, int(round(get_toast_opacity() * 100.0))))
+
+
+def get_sys_notif_opacity() -> float:
+    try:
+        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("sys_notif_opacity", 0.95))))
+    except Exception:
+        return 0.95
+
+
+def get_sys_notif_opacity_pct() -> int:
+    return max(0, min(100, int(round(get_sys_notif_opacity() * 100.0))))
 
 
 def get_waybar_sync_opacity() -> bool:
@@ -1034,21 +1070,16 @@ def apply_waybar_palette(
                 )
                 new_css = _sub_keyframes(
                     new_css,
-                    "nc-glow-pulse-telegram",
+                    "nc-glow-crit",
                     lambda body: re.sub(
                         r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?:0\.08|0\.62)\)",
                         f"rgba({pr}, {pg}, {pb}, 0.62)",
                         re.sub(
                             r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?!(?:0\.08|0\.62)\))",
-                            f"rgba({ar}, {ag}, {ab}, ",
+                            f"rgba({cr}, {cg}, {cb}, ",
                             body,
                         ),
                     ),
-                )
-                new_css = _sub_keyframes(
-                    new_css,
-                    "nc-glow-crit",
-                    lambda body: re.sub(r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*", f"rgba({cr}, {cg}, {cb}, ", body),
                 )
                 block_rules = [
                     (r"#workspaces", {"background-color": f"rgba({pr}, {pg}, {pb}, 0.85)"}),
@@ -1067,15 +1098,33 @@ def apply_waybar_palette(
                     (r"#window", {"color": wb_fg}),
                     (r"#custom-media", {"color": wb_fg}),
                     (r"#wireplumber\.muted", {"color": wb_crit, "background-color": f"rgba({cr}, {cg}, {cb}, 0.15)"}),
-                    (r"#workspaces\s+button\.active[\s\S]*?#custom-notifications\.module-nc-alert", {"color": focus_hex}),
-                    (r"#custom-telegram\.unread", {"color": wb_acc}),
+                    (r"#workspaces\s+button\.active,\s*#workspaces\s+button\.focused", {
+                        "color": focus_hex,
+                        "background-color": f"rgba({vr}, {vg}, {vb}, 0.22)",
+                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({vr}, {vg}, {vb}, 0.44) 0%, rgba({vr}, {vg}, {vb}, 0.16) 65%, rgba({vr}, {vg}, {vb}, 0.0) 100%)",
+                        "box-shadow": f"0 0 2.5px 0 rgba({vr}, {vg}, {vb}, 0.45), inset 0 0 5px 0 rgba({vr}, {vg}, {vb}, 0.45)",
+                        "text-shadow": f"0 0 6px rgba({vr}, {vg}, {vb}, 0.90)",
+                    }),
+                    (r"\.nc-glow,\s*#custom-notifications\.nc-glow,\s*\.module-nc-alert,\s*#custom-notifications\.module-nc-alert", {
+                        "color": focus_hex,
+                        "background-color": f"rgba({vr}, {vg}, {vb}, 0.16)",
+                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({vr}, {vg}, {vb}, 0.30) 0%, rgba({vr}, {vg}, {vb}, 0.10) 65%, rgba({vr}, {vg}, {vb}, 0.0) 100%)",
+                        "box-shadow": f"0 0 2px 0 rgba({vr}, {vg}, {vb}, 0.35), inset 0 0 4px 0 rgba({vr}, {vg}, {vb}, 0.35)",
+                        "text-shadow": f"0 0 5px rgba({vr}, {vg}, {vb}, 0.70)",
+                    }),
                     (r"#custom-ups\.online", {"color": wb_act}),
                     (r"#custom-ups\.on-battery", {
                         "color": wb_warn,
                         "background-color": f"rgba({wr}, {wg}, {wb_c}, 0.18)",
                         "box-shadow": f"inset 0 0 4px rgba({wr}, {wg}, {wb_c}, 0.45)",
                     }),
-                    (r"#custom-ups\.low-battery", {"color": focus_hex}),
+                    (r"\.nc-glow-crit,\s*#custom-cpu\.nc-glow-crit,\s*#custom-ram\.nc-glow-crit,\s*#custom-gpu\.nc-glow-crit,\s*#custom-ups\.low-battery", {
+                        "color": focus_hex,
+                        "background-color": f"rgba({cr}, {cg}, {cb}, 0.24)",
+                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({cr}, {cg}, {cb}, 0.42) 0%, rgba({cr}, {cg}, {cb}, 0.16) 65%, rgba({cr}, {cg}, {cb}, 0.0) 100%)",
+                        "box-shadow": f"0 0 2.5px 0 rgba({cr}, {cg}, {cb}, 0.45), inset 0 0 5px 0 rgba({cr}, {cg}, {cb}, 0.45)",
+                        "text-shadow": f"0 0 6px rgba({cr}, {cg}, {cb}, 0.85)",
+                    }),
                     (r"#custom-ups\.offline", {"color": wb_crit, "background-color": f"rgba({cr}, {cg}, {cb}, 0.14)"}),
                     (r"#custom-printers\.printing", {"color": wb_acc}),
                     (r"#custom-printers\.warn", {
@@ -1117,6 +1166,7 @@ def apply_waybar_transparency(sync_opacity: bool = None, sync_color: bool = None
 
 
 def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
+    from core import probe
     from core.state import STATE
     clamped = max(5, min(100, int(opacity_pct)))
     STATE.set("appearance", "transparency_pct", clamped)
@@ -1128,8 +1178,12 @@ def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
     colors["window_bg"] = new_rgba
 
     targets = _theme_toml_targets()
-    _update_toml_key_in_section("colors", "window_opacity", f"{alpha:.2f}", target_files=targets, create_fallback=False)
-    _update_toml_key_in_section("colors", "window_bg", f'"{new_rgba}"', target_files=targets, create_fallback=False)
+
+    def _persist(a=alpha, rgba=new_rgba, tgts=targets) -> None:
+        _update_toml_key_in_section("colors", "window_opacity", f"{a:.2f}", target_files=tgts, create_fallback=False)
+        _update_toml_key_in_section("colors", "window_bg", f'"{rgba}"', target_files=tgts, create_fallback=False)
+
+    probe.enqueue_latest("theme_window_op_save", _persist, debounce_ms=150)
 
     if sync_waybar is True:
         apply_waybar_transparency(sync_opacity=True, sync_color=get_waybar_sync_color())
@@ -1137,10 +1191,44 @@ def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
 
 
 def set_box_opacity_pct(opacity_pct: int) -> int:
+    from core import probe
     clamped = max(0, min(100, int(opacity_pct)))
     box_op = round(clamped / 100.0, 2)
     THEME.setdefault("colors", {})["box_opacity"] = box_op
-    _update_toml_key_in_section("colors", "box_opacity", f"{box_op:.2f}", target_files=_theme_toml_targets(), create_fallback=False)
+    targets = _theme_toml_targets()
+    probe.enqueue_latest(
+        "theme_box_op_save",
+        lambda b=box_op, tgts=targets: _update_toml_key_in_section("colors", "box_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
+        debounce_ms=150,
+    )
+    return clamped
+
+
+def set_toast_opacity_pct(opacity_pct: int) -> int:
+    from core import probe
+    clamped = max(0, min(100, int(opacity_pct)))
+    toast_op = round(clamped / 100.0, 2)
+    THEME.setdefault("colors", {})["toast_opacity"] = toast_op
+    targets = _theme_toml_targets()
+    probe.enqueue_latest(
+        "theme_toast_op_save",
+        lambda b=toast_op, tgts=targets: _update_toml_key_in_section("colors", "toast_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
+        debounce_ms=150,
+    )
+    return clamped
+
+
+def set_sys_notif_opacity_pct(opacity_pct: int) -> int:
+    from core import probe
+    clamped = max(0, min(100, int(opacity_pct)))
+    sys_op = round(clamped / 100.0, 2)
+    THEME.setdefault("colors", {})["sys_notif_opacity"] = sys_op
+    targets = _theme_toml_targets()
+    probe.enqueue_latest(
+        "theme_sys_notif_op_save",
+        lambda b=sys_op, tgts=targets: _update_toml_key_in_section("colors", "sys_notif_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
+        debounce_ms=150,
+    )
     return clamped
 
 

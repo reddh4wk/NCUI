@@ -48,10 +48,25 @@ class Panel(BasePanel):
     id = "notifications"
     icon = "\uf0f3"
     hover_highlight = True
+    refresh_ms = 1500
 
     def __init__(self, shell=None):
-        self.title = t("notifications.title")
+        self.title = t("notifications.title") if shell is not None else self.id
         super().__init__(shell)
+        self._last_notif_sig = None
+
+    @staticmethod
+    def _notif_sig(active: list[dict]) -> tuple:
+        return tuple(
+            (n.get("id"), n.get("title"), n.get("body"), n.get("app_name") or n.get("app"))
+            for n in active
+        )
+
+    def should_refresh_on_tick(self) -> bool:
+        sig = self._notif_sig(get_active_notifs())
+        changed = self._last_notif_sig is not None and sig != self._last_notif_sig
+        self._last_notif_sig = sig
+        return changed
 
     def get_bar_pill(self) -> dict:
         active = get_active_notifs()
@@ -67,6 +82,7 @@ class Panel(BasePanel):
 
     def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
         active = get_active_notifs()
+        self._last_notif_sig = self._notif_sig(active)
         if not active:
             b = Box(t("notifications.title"), icon="\uf1f6")
             b.add_row(" ")

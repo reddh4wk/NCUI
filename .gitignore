@@ -6,3 +6,6 @@ bin/ncmatrix
 .gnome-panels/
 *.zip
 cyberdeck
+.aider*
+config/ncui/calendar.db*
+config/ncui/ical_feeds.json

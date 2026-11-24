@@ -1,16 +1,7 @@
 #!/usr/bin/env python3
-import json
-import os
-import re
-import shlex
-import tempfile
-import time
-from core import probe
-from core.config import CONFIG_DIR
 from core.i18n import t
-from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, InlineField, SelectPill, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, InlineField, SelectPill, Txt
 from panels.cc_engine_firewall import (
     _feedback_cards,
     _load_fw_store,
@@ -39,18 +30,32 @@ def _build_chains_tab(cc_panel, canvas: Canvas) -> list:
     for ch in ("input", "forward", "output"):
         lbl = t(f"cc_firewall.pol_{ch}")
         cur_p = pols.get(ch, "drop")
-        pills = f"{SelectPill(t('cc_firewall.drop_secure'), f'cc_fw:pol:{ch}:drop', selected=(cur_p == 'drop'))} {SelectPill(t('cc_firewall.accept_open'), f'cc_fw:pol:{ch}:accept', selected=(cur_p == 'accept'))}"
+        pills = (
+            f"{SelectPill(t('cc_firewall.drop_secure'), f'cc_fw:pol:{ch}:drop', selected=(cur_p == 'drop'))} "
+            f"{SelectPill(t('cc_firewall.accept_open'), f'cc_fw:pol:{ch}:accept', selected=(cur_p == 'accept'))}"
+        )
         pol_box.add_kv(lbl, pills)
     pol_box.add_kv(
         "$LAN_NETWORK",
         Txt(lan, role="val"),
-        right_markup=InlineField("fw_lan_net", "cc_fw:inline_lan", value="", empty_label=t("cc_firewall.edit_subnet"), placeholder="10.10.0.0/24", width=18, icon="\u270e", tone="neutral"),
+        right_markup=InlineField(
+            "fw_lan_net",
+            "cc_fw:inline_lan",
+            value="",
+            empty_label=t("cc_firewall.edit_subnet"),
+            placeholder="10.10.0.0/24",
+            width=18,
+            icon="\u270e",
+            tone="neutral",
+        ),
     )
     pol_box.add_row(" ")
     cards.append(pol_box)
 
     pre_box = Box(t("cc_firewall.quick_service_security_rule_preset"), icon="\uf0e7", highlighted=False)
     pre_box.add_row(" ")
+    col0_w = 24 if canvas.inner_cols < 86 else 28
+    match_max = max(12, canvas.inner_cols - (col0_w + 39))
     pre_rows = []
     for pid, p_spec in _PRESET_SPECS:
         p_lbl = t(f"cc_firewall.preset_{pid}")
@@ -59,16 +64,23 @@ def _build_chains_tab(cc_panel, canvas: Canvas) -> list:
         match_s = p_spec.get("dport") or p_spec.get("iface") or p_spec.get("ct") or p_spec.get("limit") or "all"
         verd_s = p_spec["verdict"].upper()
         pre_rows.append([
-            Txt(canvas.truncate_plain(p_lbl, 27), role="focus" if is_on else "schema"),
+            Txt(canvas.truncate_plain(p_lbl, col0_w), role="focus" if is_on else "schema"),
             Txt(_dir_short(p_spec["chain"]), role="val" if is_on else "inactive"),
             Txt(p_spec["proto"].upper(), role="val" if is_on else "inactive"),
-            Txt(canvas.truncate_plain(match_s, 18), role="schema"),
+            Txt(canvas.truncate_plain(match_s, match_max), role="schema"),
             Badge(verd_s, style=_verdict_style(verd_s)) if is_on else f"\u00a0{Txt(verd_s, role='inactive')}\u00a0",
-            SelectPill(t("common.enabled") if is_on else t("common.off"), f"cc_fw:preset:{pid}", selected=is_on),
+            SelectPill(t("common.on") if is_on else t("common.off"), f"cc_fw:preset:{pid}", selected=is_on),
         ])
     pre_box.add_table(
-        headers=[t("cc_firewall.preset_rule"), t("cc_firewall.dir"), t("cc_firewall.proto"), t("cc_firewall.port_match"), t("cc_firewall.verdict"), t("cc_firewall.status")],
-        widths=[27, 6, 7, "flex", 9, 13],
+        headers=[
+            t("cc_firewall.preset_rule"),
+            t("cc_firewall.dir"),
+            t("cc_firewall.proto"),
+            t("cc_firewall.port_match"),
+            t("cc_firewall.verdict"),
+            t("cc_firewall.status"),
+        ],
+        widths=[col0_w, 5, 6, "flex", 8, 8],
         rows=pre_rows,
         aligns=["left", "left", "left", "left", "left", "right"],
     )

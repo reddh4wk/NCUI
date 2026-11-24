@@ -28,6 +28,7 @@
         "custom/netcycle",
         "custom/cpu",
         "custom/ram",
+        "custom/gpu",
         "custom/ups",
         "custom/session"
     ],
@@ -41,7 +42,7 @@
     },
     "niri/window": {
         "format": "{title}",
-        "max-length": 164,
+        "max-length": 161,
         "tooltip": false
     },
     "custom/settings": {
@@ -115,6 +116,16 @@
         "interval": 3,
         "tooltip": false,
         "on-click": "/usr/local/lib/nc-ui/bin/nc-ctl popup ram",
+        "on-click-right": "/usr/local/lib/nc-ui/bin/nc-ctl settings telemetry resources"
+    },
+    "custom/gpu": {
+        "class": "module-nc",
+        "exec": "/usr/local/lib/nc-ui/bin/nc-bar-agent gpu",
+        "return-type": "json",
+        "interval": 2,
+        "hide-empty-text": true,
+        "tooltip": false,
+        "on-click": "/usr/local/lib/nc-ui/bin/nc-ctl popup gpu",
         "on-click-right": "/usr/local/lib/nc-ui/bin/nc-ctl settings telemetry resources"
     },
     "custom/ups": {

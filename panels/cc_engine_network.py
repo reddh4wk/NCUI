@@ -8,8 +8,6 @@ import threading
 import time
 import urllib.request
 
-from gi.repository import GLib
-
 from core.config import CONFIG, CONFIG_DIR, THEME, get_network_show_bar_speed
 from core.state import STATE
 from core.i18n import get_active_language, t
@@ -190,6 +188,7 @@ def validate_network_field(field: str, raw_val: str) -> tuple[bool, str, str]:
 
 
 def _set_feedback(target_key: str, state: str, msg: str = "", duration_ms: int = 1600, refresh_cb=None) -> None:
+    from gi.repository import GLib
     with _NET_LOCK:
         _APPLY_FEEDBACK[target_key] = {"state": state, "msg": msg, "ts": time.time()}
     if refresh_cb:
@@ -1266,6 +1265,7 @@ class Panel(BasePanel):
                         self.shell.refresh_view()
                     return False
 
+                from gi.repository import GLib
                 GLib.idle_add(_ui_update)
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -2332,6 +2332,7 @@ class Panel(BasePanel):
                 cur_map["bt_disc"] = True
                 self.set_state("open_sections", cur_map)
                 self.request_throttled_refresh()
+                from gi.repository import GLib
                 GLib.timeout_add(1500, lambda: self._trigger_full_resync("bt") or False)
             elif act in ("conn", "disc", "remove", "pair") and arg:
                 bt_cmd = {"conn": "connect", "disc": "disconnect", "remove": "remove", "pair": "pair"}[act]

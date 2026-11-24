@@ -4,7 +4,6 @@ from core.config import THEME
 from core.i18n import t
 from ui.canvas import Canvas
 from ui.kit import Box, Divider, Slider, Txt, ActionBtn, StateBadge
-from ui.widgets import AsciiCard
 from panels.base import BasePanel
 from panels.cc_engine_sound import (
     speaker_icon,
@@ -16,6 +15,7 @@ from panels.cc_engine_sound import (
     set_default_device,
     step_device_volume,
     handle_cc_audio_link,
+    is_sound_busy,
 )
 
 AUDIO_PANEL_COLS = 56
@@ -23,12 +23,16 @@ AUDIO_PANEL_COLS = 56
 
 class AudioPanel(BasePanel):
     hover_highlight = True
+    refresh_ms = 1500
 
     def __init__(self, panel_id: str = "audio", shell=None):
         self.id = panel_id
-        self.title = t("audio.title")
+        self.title = t("audio.title") if shell is not None else self.id
         self.icon = "\uf028"
         super().__init__(shell)
+
+    def is_busy(self) -> bool:
+        return is_sound_busy()
 
     def get_cols(self, force_expanded: bool = False) -> int:
         if force_expanded or self.is_expanded:
@@ -85,6 +89,7 @@ class AudioPanel(BasePanel):
                 f"  {Txt(st_lbl, role='schema')} {st_badge}{mute_badge}",
                 right_markup=mute_btn,
             )
+            from ui.widgets import AsciiCard
             cards.append(
                 AsciiCard(
                     box,

@@ -396,8 +396,9 @@ def _build_resources_standard(cc_panel, canvas: Canvas) -> list:
         )
         foot_probe = Box("", highlighted=False, open_top=True)
         chrome_px = shell._measure_cc_box_px(hdr_probe) + shell._measure_cc_box_px(foot_probe)
-        target_widget_h = max(int(round(20 * ch + 4)), int(per_card_px - chrome_px))
-        shared_rows = max(20, int((target_widget_h - 4) // ch))
+        min_rows = 24 if avail_total_h < 900 else 20
+        target_widget_h = max(int(round(min_rows * ch + 4)), int(per_card_px - chrome_px))
+        shared_rows = max(min_rows, int((target_widget_h - 4) // ch))
     else:
         shared_rows = 26
         target_widget_h = int(round(shared_rows * ch + 4))

@@ -11,7 +11,12 @@ from core.config import (
     set_ui_transparency_pct,
 )
 from core.i18n import get_active_language, list_available_languages, set_language, t
-from core.privileges import handle_privilege_link, handle_privilege_prompt
+from core.privileges import (
+    handle_privilege_link,
+    handle_privilege_prompt,
+    is_sudo_session_unlocked,
+    lock_sudo_session,
+)
 from core.state import STATE
 from panels.base import BasePanel
 from ui.canvas import Canvas
@@ -19,7 +24,7 @@ from ui.kit import ActionBtn, Box, InlineFilter, SelectPill, Txt, cancel_inline_
 
 SECTION_BLUEPRINTS = {
     "sysinfo":         {"icon": "\uf129", "tabs": ["overview"]},
-    "display":         {"icon": "\uf108", "tabs": ["monitors", "scaling"]},
+    "display":         {"icon": "\uf108", "tabs": ["monitors"]},
     "personalization": {"icon": "\uf53f", "tabs": ["theme", "wallpaper"]},
     "waybar":          {"icon": "\uf009", "tabs": ["layout", "options"]},
     "apps":            {"icon": "\uf1b2", "tabs": ["floating", "mime", "autostart"]},
@@ -33,7 +38,7 @@ SECTION_BLUEPRINTS = {
     "updates":         {"icon": "\uf0aa", "tabs": ["pacman", "aur", "flatpak", "orphans"]},
     "auth":            {"icon": "\uf023", "tabs": ["tpm", "keys", "polkit", "sudoers"]},
     "telemetry":       {"icon": "\uf0ad", "tabs": ["power_tools", "resources", "storage", "backup", "boot"]},
-    "settings":        {"icon": "\uf013", "tabs": ["interface", "notifications", "app_rules"]},
+    "settings":        {"icon": "\uf013", "tabs": ["interface", "notifications"]},
 }
 
 CONTROL_CENTER_SECTIONS = [(sec, bp["icon"]) for sec, bp in SECTION_BLUEPRINTS.items()]
@@ -58,6 +63,31 @@ _ENGINES = [
     ("waybar", "handle_cc_waybar_link", "handle_cc_waybar_prompt"),
 ]
 
+_CC_LIVE_REFRESH_MS: dict[tuple[str, str], int] = {
+    ("sound", "mixer"): 1500,
+    ("sound", "output"): 2000,
+    ("sound", "input"): 2000,
+    ("sound", "devices"): 2000,
+    ("network", "interfaces"): 2000,
+    ("network", "wifi_bt"): 2500,
+    ("network", "vpn_proxy"): 3000,
+    ("network", "wan_routing"): 3000,
+    ("printers", "queue"): 2000,
+    ("printers", "devices"): 3000,
+    ("printers", "server"): 3000,
+    ("firewall", "connections"): 2000,
+    ("power", "ups"): 2500,
+    ("power", "profiles"): 3000,
+    ("datetime", "time"): 1000,
+    ("telemetry", "resources"): 1500,
+    ("telemetry", "storage"): 4000,
+    ("sysinfo", "overview"): 5000,
+    ("input", "controllers"): 2500,
+    ("input", "macros"): 2000,
+    ("display", "monitors"): 2500,
+    ("auth", "sudoers"): 5000,
+}
+
 
 class ControlCenterPanel(BasePanel):
     id = "control_center"
@@ -73,6 +103,7 @@ class ControlCenterPanel(BasePanel):
         STATE.set("keyboard", "capture_preview", "")
         self.section = "sysinfo"
         self._ready = False
+        self._last_tick_sig = None
         init_sec = str(initial_section or "").strip()
         if init_sec:
             self.set_section(init_sec)
@@ -82,6 +113,65 @@ class ControlCenterPanel(BasePanel):
         self._ready = True
         if os.environ.get("NC_UI_OFFSCREEN") != "1":
             GLib.timeout_add(150, self._prewarm_updates)
+
+    def get_refresh_ms(self) -> int:
+        return int(_CC_LIVE_REFRESH_MS.get((self.section, self.get_subtab()), 0))
+
+    def is_busy(self) -> bool:
+        if (
+            STATE.get("keyboard", "capture_mode", "")
+            or STATE.get("desktop", "yazi_open", False)
+            or STATE.get("privileges", "pending_action", "")
+        ):
+            return True
+        if self.section == "sound":
+            from panels.cc_engine_sound import is_sound_busy
+            if is_sound_busy():
+                return True
+        return False
+
+    def _compute_gated_tick_sig(self, sec: str, sub: str, force: bool = True):
+        if (sec, sub) == ("input", "controllers"):
+            from panels.cc_input_controllers import discover_controllers
+            from core.pad_mapper_core import get_mapper_runtime_sig
+            devs = discover_controllers(force=force)
+            return (
+                tuple((d.get("id"), d.get("evdev"), d.get("connected"), d.get("battery")) for d in devs),
+                get_mapper_runtime_sig(),
+            )
+        if (sec, sub) == ("display", "monitors"):
+            from panels.cc_engine_display import get_niri_outputs_data
+            outs = get_niri_outputs_data() or {}
+            return tuple(
+                sorted(
+                    (
+                        k,
+                        v.get("current_mode"),
+                        (v.get("logical") or {}).get("x"),
+                        (v.get("logical") or {}).get("y"),
+                        (v.get("logical") or {}).get("scale"),
+                        (v.get("logical") or {}).get("transform"),
+                    )
+                    for k, v in outs.items()
+                )
+            )
+        if (sec, sub) == ("input", "macros"):
+            from panels.cc_engine_input import _is_macro_engine_running
+            return bool(_is_macro_engine_running())
+        return None
+
+    def should_refresh_on_tick(self) -> bool:
+        sec, sub = self.section, self.get_subtab()
+        if (sec, sub) == ("telemetry", "resources"):
+            if self.get_state("tui_btop_open", True) or self.get_state("tui_nvtop_open", True):
+                return False
+            return True
+        if (sec, sub) in (("input", "controllers"), ("display", "monitors"), ("input", "macros")):
+            sig = self._compute_gated_tick_sig(sec, sub, force=True)
+            changed = self._last_tick_sig is not None and sig != self._last_tick_sig
+            self._last_tick_sig = sig
+            return changed
+        return True
 
     def _prewarm_updates(self) -> bool:
         try:
@@ -116,9 +206,15 @@ class ControlCenterPanel(BasePanel):
         if getattr(self, "_ready", False) and sec_id != self.section:
             if self.section == "telemetry":
                 self._clear_telemetry_tuis()
+            if is_sudo_session_unlocked():
+                lock_sudo_session(drop_ticket=True)
+            STATE.set("privileges", "pending_action", "")
             cancel_inline_entry(refresh=False)
         self.section = sec_id
         self.set_state("active_section", sec_id)
+        self._last_tick_sig = None
+        if getattr(self, "_ready", False) and self.shell:
+            self.shell._setup_timer()
 
     def get_subtab(self) -> str:
         bp = SECTION_BLUEPRINTS.get(self.section, {})
@@ -134,12 +230,22 @@ class ControlCenterPanel(BasePanel):
             self._clear_telemetry_tuis()
         if self.section == "updates" and sub_id == "packages":
             sub_id = "pacman"
+        elif self.section == "display" and sub_id == "scaling":
+            sub_id = "monitors"
+        elif self.section == "settings" and sub_id == "app_rules":
+            sub_id = "notifications"
         tabs = SECTION_BLUEPRINTS.get(self.section, {}).get("tabs", [])
         if tabs and sub_id not in tabs:
             raise ValueError(f"Unknown subtab {sub_id!r} for section {self.section!r}")
         if getattr(self, "_ready", False) and sub_id != self.get_subtab():
+            if is_sudo_session_unlocked():
+                lock_sudo_session(drop_ticket=True)
+            STATE.set("privileges", "pending_action", "")
             cancel_inline_entry(refresh=False)
         self.set_state(f"subtab_{self.section}", sub_id)
+        self._last_tick_sig = None
+        if getattr(self, "_ready", False) and self.shell:
+            self.shell._setup_timer()
 
     def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
         cur_lang = get_active_language()
@@ -184,7 +290,10 @@ class ControlCenterPanel(BasePanel):
                 if sub_mod_name in sys.modules:
                     importlib.reload(sys.modules[sub_mod_name])
                 mod = importlib.import_module(sub_mod_name)
-            return [hdr_box] + mod.build_cards(self, canvas)
+            cards = [hdr_box] + mod.build_cards(self, canvas)
+            if (self.section, active_sub) in (("input", "controllers"), ("display", "monitors"), ("input", "macros")):
+                self._last_tick_sig = self._compute_gated_tick_sig(self.section, active_sub, force=False)
+            return cards
         except Exception as e:
             log.error(f"ControlCenter render error in {self.section}/{active_sub}: {e}\n{traceback.format_exc()}")
             err_box = Box(t("control_center.render_error", p0=f"{self.section}.{active_sub}"), icon="\uf071", highlighted=False)
@@ -246,7 +355,7 @@ class ControlCenterPanel(BasePanel):
                 set_ui_transparency_pct(val, sync_waybar=False)
                 if self.shell:
                     self.shell._apply_css()
-                    self.shell.refresh_view()
+                self.request_throttled_refresh()
             except Exception:
                 pass
         elif uri.startswith("cc:trans_scroll:"):
@@ -255,7 +364,7 @@ class ControlCenterPanel(BasePanel):
             set_ui_transparency_pct(cur + step, sync_waybar=False)
             if self.shell:
                 self.shell._apply_css()
-                self.shell.refresh_view()
+            self.request_throttled_refresh()
 
     def on_key_press(self, event) -> bool:
         if STATE.get("desktop", "yazi_open", False):

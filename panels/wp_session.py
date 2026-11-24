@@ -30,7 +30,7 @@ class Panel(BasePanel):
     hover_highlight = True
 
     def __init__(self, shell=None):
-        self.title = t("session.title")
+        self.title = t("session.title") if shell is not None else self.id
         super().__init__(shell)
         self.pending_confirm = ""  # "suspend" | "logout" | "reboot" | "poweroff"
 

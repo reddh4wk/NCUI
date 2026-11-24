@@ -513,12 +513,13 @@ cleanup_output_daemons() {
 }
 
 save_output_state() {
-    local out="${1}" mode="${2}" target="${3}" fit="${4}" trans="${5}" interval="${6}" color="${7}" speed="${8}" bgcolor="${9}" shuffle="${10}" japanese="${11:-false}"
+    local out="${1}" mode="${2}" target="${3}" fit="${4}" trans="${5}" interval="${6}" color="${7}" speed="${8}" bgcolor="${9}" shuffle="${10}" japanese="${11:-false}" align="${12:-center}"
     jq -n \
         --arg output "${out}" \
         --arg mode "${mode}" \
         --arg target "${target}" \
         --arg fit "${fit}" \
+        --arg align "${align}" \
         --arg transition "${trans}" \
         --arg interval "${interval}" \
         --arg color "${color}" \
@@ -532,6 +533,7 @@ save_output_state() {
             mode: $mode,
             target: $target,
             fit: $fit,
+            align: $align,
             transition: $transition,
             interval: $interval,
             color: $color,
@@ -547,7 +549,7 @@ save_output_state() {
 # 4. MOTORI GRAFICI: IMMAGINI, UNICOLOR, RANDOM, SLIDESHOW, NCMATRIX (ASCII/JP)
 # ==============================================================================
 apply_single_image() {
-    local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5:-18181a}"
+    local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5:-18181a}" align="${6:-center}"
     local awww_resize
     awww_resize="$(map_fit_to_awww "${fit}")" || return 1
 
@@ -558,6 +560,12 @@ apply_single_image() {
     fi
 
     local extra_args=()
+    if [[ "${awww_resize}" == "crop" ]]; then
+        case "${align,,}" in
+            top|bottom|center) extra_args+=(--crop-gravity "${align,,}") ;;
+            *)                 extra_args+=(--crop-gravity "center") ;;
+        esac
+    fi
     case "${actual_trans}" in
         wipe|wave)
             extra_args+=(--transition-angle 30 --transition-step 90 --transition-duration 1.4 --transition-fps 120)
@@ -583,12 +591,12 @@ apply_single_image() {
 }
 
 cmd_set_image() {
-    local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5}"
+    local out="${1}" img="${2}" fit="${3}" trans="${4}" bgcolor="${5}" align="${6:-center}"
     ensure_awww_daemon || return 1
     local old_pids=()
     mapfile -t old_pids < <(collect_output_daemon_pids "${out}")
-    apply_single_image "${out}" "${img}" "${fit}" "${trans}" "${bgcolor}" || return 1
-    save_output_state "${out}" "image" "${img}" "${fit}" "${trans}" "" "" "" "${bgcolor}" "" "false"
+    apply_single_image "${out}" "${img}" "${fit}" "${trans}" "${bgcolor}" "${align}" || return 1
+    save_output_state "${out}" "image" "${img}" "${fit}" "${trans}" "" "" "" "${bgcolor}" "" "false" "${align}"
     if (( ${#old_pids[@]} > 0 )); then
         sleep 0.25
         rm -f "${PID_DIR}/pause_${out}.flag" "/tmp/nc_mpvpaper_${out}.sock" \
@@ -909,11 +917,12 @@ restore_state_from_dir() {
     local sf
     shopt -s nullglob
     for sf in "${src_dir}"/*.json; do
-        local out mode target fit trans interval color speed bgcolor shuffle japanese
+        local out mode target fit align trans interval color speed bgcolor shuffle japanese
         out="$(jq -r '.output // empty' "${sf}")"
         mode="$(jq -r '.mode // empty' "${sf}")"
         target="$(jq -r '.target // empty' "${sf}")"
         fit="$(jq -r '.fit // "fill"' "${sf}")"
+        align="$(jq -r '.align // "center"' "${sf}")"
         trans="$(jq -r '.transition // "wipe"' "${sf}")"
         interval="$(jq -r '.interval // "5m"' "${sf}")"
         color="$(jq -r '.color // "green"' "${sf}")"
@@ -926,7 +935,7 @@ restore_state_from_dir() {
         resolve_outputs "${out}" >/dev/null 2>&1 || continue
 
         case "${mode}" in
-            image)     [[ -f "${target}" ]] && cmd_set_image "${out}" "${target}" "${fit}" "${trans}" "${bgcolor}" ;;
+            image)     [[ -f "${target}" ]] && cmd_set_image "${out}" "${target}" "${fit}" "${trans}" "${bgcolor}" "${align}" ;;
             solid)     cmd_set_solid "${out}" "${bgcolor}" ;;
             slideshow) [[ -d "${target}" ]] && cmd_set_slideshow "${out}" "${target}" "${fit}" "${trans}" "${interval}" "${bgcolor}" "${shuffle}" ;;
             ncmatrix|cmatrix) cmd_set_ncmatrix "${out}" "${color}" "${speed}" "${japanese}" ;;
@@ -1863,6 +1872,7 @@ execute_cli_args() {
     local fit_mode="fill"
     local transition="wipe"
     local interval="5m"
+    local align_mode="center"
     local bg_color="18181a"
     local shuffle="true"
     local cm_color="green"
@@ -1929,6 +1939,13 @@ execute_cli_args() {
             -f|--fit)
                 [[ -z "${2:-}" ]] && { msg_err "L'opzione '${1}' richiede una modalità (fill, fit, stretch, center)."; return 1; }
                 fit_mode="${2}"; shift 2 ;;
+            --align|--gravity)
+                [[ -z "${2:-}" ]] && { msg_err "L'opzione '${1}' richiede una posizione (top, center, bottom)."; return 1; }
+                case "${2,,}" in
+                    top|center|bottom) align_mode="${2,,}" ;;
+                    *) msg_err "Allineamento '${2}' non valido (top, center, bottom)."; return 1 ;;
+                esac
+                shift 2 ;;
             -t|--transition)
                 [[ -z "${2:-}" ]] && { msg_err "L'opzione '${1}' richiede un tipo di transizione."; return 1; }
                 transition="$(validate_transition "${2}")" || return 1; shift 2 ;;
@@ -1993,7 +2010,7 @@ execute_cli_args() {
             transition="$(validate_transition "${transition}")" || return 1
             outs="$(resolve_outputs "${target_output}")" || return 1
             while IFS= read -r out; do
-                [[ -n "${out}" ]] && { cmd_set_image "${out}" "${resolved_img}" "${fit_mode}" "${transition}" "${bg_color}" || return 1; }
+                [[ -n "${out}" ]] && { cmd_set_image "${out}" "${resolved_img}" "${fit_mode}" "${transition}" "${bg_color}" "${align_mode}" || return 1; }
             done <<< "${outs}" ;;
         "random")
             local outs out

@@ -2,9 +2,9 @@
 font_family = "Courier"
 font_size = 11
 font_weight = "bold"
-cursor_theme = "cyberpunk_2077_cursors_by_elfantasmaponi_df1c3mr"
+cursor_theme = "NCUI Cursor"
 cursor_size = 16
-cursor_archive = "cyberpunk_2077_cursors_by_elfantasmaponi_df1c3mr.zip"
+cursor_archive = ""
 
 [geometry]
 compact_cols = 44
@@ -38,9 +38,11 @@ search_brackets = ["▏", "▕"]
 search_cursor = "│"
 
 [colors]
+sys_notif_opacity = 0.90
 surface_bg = "#080a0f"
 window_opacity = 0.80
-box_opacity = 0.40
+box_opacity = 0.75
+toast_opacity = 0.10
 waybar_sync_opacity = true
 waybar_sync_color = true
 window_bg = "rgba(8, 10, 15, 0.80)"

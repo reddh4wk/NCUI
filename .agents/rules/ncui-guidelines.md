@@ -3,6 +3,8 @@ trigger: always_on
 description: Costituzione architetturale, di sistema (Nightcity), linguistica (i18n), deterministica e di validazione obbligatoria per qualsiasi modifica a NC-UI, con vincolo tassativo a ncui-golden_standard.md.
 ---
 
+- **Archivio di Riferimento (`.gnome-panels/`):** Directory di sola lettura ignorata da Git. Non ispezionarla durante i task ordinari; leggila solo quando viene richiesta esplicitamente un'analisi comparativa su uno specifico pannello (`.gnome-panels/<sezione>/`), estraendo esclusivamente gerarchia UX ed edge-case di validazione senza importare pattern `GObject`, `gsettings`, `mutter` o `libadwaita`.
+
 # NC-UI Architecture, System & Engineering Constitution
 
 Questa regola è attiva in modo permanente su **qualunque prompt**. Quando scrivi, modifichi o revisioni codice in questo repository, devi agire simultaneamente come **Systems Engineer** (codice minimale, deterministico, sicuro, zero dipendenze esterne) e come **Senior TUI/UI Designer**.

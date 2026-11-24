@@ -10,11 +10,17 @@ gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango, PangoCairo
 from core import probe
+from core.asciifier import (
+    CHAR_SETS,
+    COLOR_MODES,
+    get_ascii_cache_stats,
+    is_pillow_available,
+)
 from core.config import THEME
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, InlineEntry, InlineField, SelectPill, StateBadge, SwatchTxt, Txt, get_inline_entry_error, get_semantic_palette
+from ui.kit import ActionBtn, Badge, Box, InlineEntry, InlineField, SelectPill, Slider, StateBadge, SwatchTxt, Txt, get_inline_entry_error, get_semantic_palette
 from ui.widgets import AsciiCard
 from panels.cc_engine_personalization import (
     SOLID_CLASSIC_PRESETS,
@@ -28,9 +34,12 @@ from panels.cc_engine_personalization import (
     count_folder_media,
     detect_media_kind,
     get_active_yazi_session,
+    get_ascii_apply_status,
     get_desktop_preview_state,
+    get_editor_asciify_cfg,
     get_selected_monitors,
     is_live_15fps_enabled,
+    should_show_scene_alignment,
     sync_editor_from_live_monitors,
 )
 
@@ -86,35 +95,16 @@ def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
     cr.close_path()
 
 
-def _draw_open_box_frame(cr, alloc_w: float, alloc_h: float, char_w: float, border_hex: str) -> None:
-    x_l = char_w * 0.5
-    x_r = alloc_w - (char_w * 0.5)
-    y_b = alloc_h - 4.0
-    b_rad = 5.0 if THEME["ascii"].get("box_style", "rounded") == "rounded" else 0.0
-    br, bg_c, bb = _hex_to_rgb_f(border_hex, (0.26, 0.29, 0.36))
-    cr.set_source_rgb(br, bg_c, bb)
-    cr.set_line_width(1.2)
-    cr.new_sub_path()
-    cr.move_to(x_l, 0)
-    cr.line_to(x_l, y_b - b_rad)
-    if b_rad > 0:
-        cr.arc_negative(x_l + b_rad, y_b - b_rad, b_rad, math.pi, math.pi / 2)
-    cr.line_to(x_r - b_rad, y_b)
-    if b_rad > 0:
-        cr.arc_negative(x_r - b_rad, y_b - b_rad, b_rad, math.pi / 2, 0)
-    cr.line_to(x_r, 0)
-    cr.stroke()
-
-
-def _get_fitted_pixbuf(path: str, target_w: int, target_h: int, fit: str = "fill"):
-    """Scale preview pixbuf according to fit mode ('fill', 'fit', 'center', 'stretch')."""
+def _get_fitted_pixbuf(path: str, target_w: int, target_h: int, fit: str = "fill", align: str = "center"):
+    """Scale preview pixbuf according to fit mode ('fill', 'fit', 'center', 'stretch') and vertical crop align."""
     if not path or not os.path.isfile(path) or target_w < 8 or target_h < 8:
         return None
     try:
         mtime = os.path.getmtime(path)
     except OSError:
         mtime = 0.0
-    key = (path, mtime, int(target_w), int(target_h), fit)
+    norm_align = align if align in ("top", "center", "bottom") else "center"
+    key = (path, mtime, int(target_w), int(target_h), fit, norm_align)
     if key in _PIXBUF_CACHE:
         return _PIXBUF_CACHE[key]
     try:
@@ -139,7 +129,14 @@ def _get_fitted_pixbuf(path: str, target_w: int, target_h: int, fit: str = "fill
             sc = max(target_w / float(ow), target_h / float(oh))
             sw, sh = max(target_w, int(round(ow * sc))), max(target_h, int(round(oh * sc)))
             scaled = src.scale_simple(sw, sh, GdkPixbuf.InterpType.BILINEAR)
-            pb = scaled.new_subpixbuf(max(0, (sw - target_w) // 2), max(0, (sh - target_h) // 2), target_w, target_h)
+            crop_x = max(0, (sw - target_w) // 2)
+            if norm_align == "top":
+                crop_y = 0
+            elif norm_align == "bottom":
+                crop_y = max(0, sh - target_h)
+            else:
+                crop_y = max(0, (sh - target_h) // 2)
+            pb = scaled.new_subpixbuf(crop_x, crop_y, target_w, target_h)
             ox, oy = 0, 0
         res = (pb, ox, oy)
         if len(_PIXBUF_CACHE) > 48:
@@ -159,11 +156,12 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         on_toggle_monitor,
         map_width: int = 840,
         char_w: float = 8.0,
-        border_hex: str = "#43495c",
         live_15fps: bool = True,
         max_map_height: int = 230,
         padding: int = 12,
         footer_text: str = "",
+        inset_x: int | None = None,
+        font_px: float | None = None,
     ):
         super().__init__()
         self.set_visible_window(False)
@@ -174,12 +172,14 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         self.on_toggle_monitor = on_toggle_monitor
         self.map_width = max(380, int(map_width))
         self.char_w = max(5.0, float(char_w))
-        self.border_hex = border_hex
         self.live_15fps = bool(live_15fps)
         self.max_map_height = int(max_map_height)
         self.padding = int(padding)
         self.footer_text = str(footer_text or "").strip()
-        self.footer_h = 30 if self.footer_text else 10
+        self.inset_x = max(14, int(round(self.char_w * 2.0))) if inset_x is None else max(0, int(inset_x))
+        self.font_px = max(10.0, float(self.char_w) * 1.45) if font_px is None else max(8.0, float(font_px))
+        self.footer_h = max(22, int(round(self.font_px * 2.15))) if self.footer_text else 0
+        self.body_h = 126
         self.rects = []
         self._anim_tick = 0
         self._timer_id = None
@@ -203,11 +203,6 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         self.connect("unmap", self._stop_timer)
         self.connect("destroy", self._stop_timer)
 
-    def set_border_color(self, border_hex: str) -> None:
-        if border_hex and border_hex != self.border_hex:
-            self.border_hex = border_hex
-            self.da.queue_draw()
-
     def _on_map(self, *_args) -> None:
         self._stop_timer()
         if self.live_15fps and self._has_animated and os.environ.get("NC_UI_OFFSCREEN") != "1":
@@ -228,11 +223,13 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
 
     def _compute_layout(self, resize_widgets: bool = True) -> None:
         valid = {k: v for k, v in self.outputs.items() if v.get("logical")}
-        wall_margin = max(14, int(math.ceil(self.char_w * 2.0)) + self.padding)
+        inner_w = max(120, self.map_width - (2 * self.inset_x))
+        usable_w = max(80, inner_w - (2 * self.padding))
         if not valid:
+            self.body_h = 126
             if resize_widgets:
-                self.set_size_request(self.map_width, 120)
-                self.da.set_size_request(self.map_width, 120)
+                self.set_size_request(self.map_width, 126 + self.footer_h)
+                self.da.set_size_request(self.map_width, 126 + self.footer_h)
             return
 
         min_x = min(v["logical"]["x"] for v in valid.values())
@@ -242,8 +239,8 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         log_w = max(1, max_x - min_x)
         log_h = max(1, max_y - min_y)
 
-        scale_w = (self.map_width - 2 * wall_margin) / float(max(log_w, 3200))
-        scale_h = (self.max_map_height - 2 * self.padding) / float(log_h)
+        scale_w = usable_w / float(max(log_w, 2560))
+        scale_h = (self.max_map_height - (2 * self.padding)) / float(log_h)
         scale = min(scale_w, scale_h)
 
         rel_rects = []
@@ -260,9 +257,10 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         used_w = max(rx + rw for _n, rx, _ry, rw, _rh, _ld in rel_rects) - min_rx
         used_h = max(ry + rh for _n, _rx, ry, _rw, rh, _ld in rel_rects) - min_ry
         body_h = max(126, int(round(used_h)) + 2 * self.padding)
+        self.body_h = body_h
         map_h = body_h + self.footer_h
 
-        x_off = max(float(wall_margin), (self.map_width - used_w) / 2.0) - min_rx
+        x_off = self.inset_x + max(float(self.padding), (inner_w - used_w) / 2.0) - min_rx
         y_off = max(float(self.padding), (body_h - used_h) / 2.0) - min_ry
 
         if resize_widgets:
@@ -378,6 +376,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         cr.show_text(badge_txt)
 
         mode = st.get("mode", "none")
+        asc_on = bool((st.get("asciify") or {}).get("enabled"))
         raw_target = str(st.get("target") or st.get("image_path") or "").strip()
         if raw_target == "?":
             raw_target = ""
@@ -388,10 +387,11 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
                 base = yt_s["playlist_id"] if yt_s["is_playlist"] else yt_s["video_id"]
             else:
                 base = os.path.basename(raw_target.rstrip("/")) or raw_target
-            tag = f"{kind}: {base}"
+            tag = f"IMG·ASCII: {base}" if (asc_on and kind == "IMAGE") else f"{kind}: {base}"
             tag_rgb = (1.0, 0.92, 0.10) if is_staged else (0.0, 1.0, 0.45)
         elif mode == "slideshow" and raw_target:
-            tag = t("cc_personalization.desktop_mode_slide", p0=os.path.basename(raw_target.rstrip("/")) or "dir")
+            slide_base = os.path.basename(raw_target.rstrip("/")) or "dir"
+            tag = t("cc_personalization.desktop_mode_slide_ascii" if asc_on else "cc_personalization.desktop_mode_slide", p0=slide_base)
             tag_rgb = (0.0, 0.94, 1.0)
         elif mode in ("ncmatrix", "cmatrix"):
             cs = st.get("charset", "katakana").upper()[:4]
@@ -449,14 +449,30 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         if abs(int(round(alloc_w)) - self.map_width) > 2:
             self.map_width = int(round(alloc_w))
             self._compute_layout(resize_widgets=False)
-        x_l = self.char_w * 0.5
-        x_r = alloc_w - (self.char_w * 0.5)
-        y_b = alloc_h - 4.0
-        b_rad = 5.0 if THEME["ascii"].get("box_style", "rounded") == "rounded" else 0.0
 
+        pal = get_semantic_palette()
+        c_sbg = _hex_to_rgb_f(pal["structure_bg"], (0.10, 0.11, 0.14))
+        c_struct_rgb = _hex_to_rgb_f(pal["structure"], (0.26, 0.29, 0.36))
+        c_sch_rgb = _hex_to_rgb_f(pal["schema"], (0.55, 0.61, 0.73))
         c_vit = _hex_to_rgb_f(THEME["colors"].get("vitality", "#00ff73"), (0.0, 1.0, 0.45))
-        c_struct = _hex_to_rgb_f(THEME["colors"].get("structure", "#43495c"), (0.26, 0.29, 0.36))
         c_attn = _hex_to_rgb_f(THEME["colors"].get("attention", "#ffeb19"), (1.0, 0.92, 0.10))
+
+        bx = float(self.inset_x)
+        bw = max(60.0, float(alloc_w - (2 * self.inset_x)))
+        bh = float(alloc_h)
+        canvas_h = max(72.0, bh - float(self.footer_h))
+
+        # Recessed nested container matching Display Topology (zero dot-grid)
+        _rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, bh - 1.0, 6.0)
+        cr.set_source_rgba(c_sbg[0], c_sbg[1], c_sbg[2], 0.65)
+        cr.fill_preserve()
+        cr.set_source_rgba(c_struct_rgb[0], c_struct_rgb[1], c_struct_rgb[2], 0.85)
+        cr.set_line_width(1.0)
+        cr.stroke()
+
+        cr.save()
+        _rounded_rect(cr, bx + 1.0, 1.0, bw - 2.0, bh - 2.0, 5.5)
+        cr.clip()
 
         for out_name, rx, ry, rw, rh, ld in self.rects:
             st = self.preview_states.get(out_name, {"mode": "none"})
@@ -473,7 +489,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
                 frame_path = frames[(self._anim_tick // 4) % len(frames)] if (self.live_15fps and frames) else st.get("image_path")
                 cr.set_source_rgb(0.05, 0.06, 0.09)
                 cr.paint()
-                fitted = _get_fitted_pixbuf(frame_path, rw, rh, st.get("fit", "fill"))
+                fitted = _get_fitted_pixbuf(frame_path, rw, rh, st.get("fit", "fill"), st.get("align", "center"))
                 if fitted is not None:
                     pb, ox, oy = fitted
                     Gdk.cairo_set_source_pixbuf(cr, pb, rx + ox, ry + oy)
@@ -503,20 +519,39 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
                 cr.set_source_rgba(c_vit[0], c_vit[1], c_vit[2], 0.95)
                 cr.set_line_width(2.4)
             else:
-                cr.set_source_rgba(c_struct[0], c_struct[1], c_struct[2], 0.90)
+                cr.set_source_rgba(c_struct_rgb[0], c_struct_rgb[1], c_struct_rgb[2], 0.90)
                 cr.set_line_width(1.5)
             cr.stroke()
 
-        if self.footer_text:
-            c_sch = _hex_to_rgb_f(THEME["colors"].get("schema", "#8c9bba"), (0.55, 0.61, 0.73))
-            cr.select_font_face("monospace", 0, 0)
-            cr.set_font_size(11.0)
-            cr.set_source_rgb(*c_sch)
-            cr.move_to(x_l + self.char_w * 2.0, y_b - 10.0)
-            cr.show_text(self.footer_text)
+        if self.footer_text and self.footer_h > 0:
+            fh = bh - canvas_h
+            cr.set_source_rgba(12 / 255.0, 15 / 255.0, 22 / 255.0, 0.55)
+            cr.rectangle(bx + 1.0, canvas_h, bw - 2.0, fh)
+            cr.fill()
+            cr.set_source_rgba(c_struct_rgb[0], c_struct_rgb[1], c_struct_rgb[2], 0.72)
+            cr.set_line_width(1.0)
+            cr.move_to(bx + 1.0, canvas_h + 0.5)
+            cr.line_to(bx + bw - 1.0, canvas_h + 0.5)
+            cr.stroke()
 
-        # Left, bottom, and right box walls matching Box nc-box border
-        _draw_open_box_frame(cr, alloc_w, alloc_h, self.char_w, self.border_hex)
+            font_family = str((THEME.get("typography") or {}).get("font_family", "monospace") or "monospace")
+            sub_sz = int(round(max(8.5, self.font_px * 0.86) * Pango.SCALE))
+            fdesc = Pango.FontDescription()
+            fdesc.set_family(font_family)
+            fdesc.set_absolute_size(sub_sz)
+            fpad = max(10.0, round(self.font_px * 0.9))
+            fl = PangoCairo.create_layout(cr)
+            fl.set_font_description(fdesc)
+            fl.set_ellipsize(Pango.EllipsizeMode.END)
+            fl.set_width(int(max(40.0, bw - 2.0 * fpad) * Pango.SCALE))
+            fl.set_text(self.footer_text, -1)
+            _, fl_ext = fl.get_pixel_extents()
+            fty = canvas_h + max(2.0, (fh - fl_ext.height) / 2.0)
+            cr.set_source_rgba(c_sch_rgb[0], c_sch_rgb[1], c_sch_rgb[2], 0.88)
+            cr.move_to(bx + fpad, fty)
+            PangoCairo.show_layout(cr, fl)
+
+        cr.restore()
         return False
 
 
@@ -711,6 +746,118 @@ class EmbeddedYaziWidget(Gtk.EventBox):
         return False
 
 
+def _add_asciify_collapsible(cfg_box: Box, cc_panel) -> None:
+    if not is_pillow_available():
+        cfg_box.add_section(t("cc_personalization.wp_sec_asciify"))
+        cfg_box.add_row(" ")
+        cfg_box.add_kv(
+            t("cc_personalization.wp_style_row"),
+            Badge(t("cc_personalization.wp_ascii_missing_badge"), style="warn"),
+        )
+        cfg_box.add_row(" ")
+        return
+
+    asc = get_editor_asciify_cfg()
+    mode_lbl = t(f"cc_personalization.wp_ascii_mode_{asc['mode']}")
+    chars_lbl = t(f"cc_personalization.wp_ascii_chars_{asc['chars']}") if asc["chars"] in CHAR_SETS else t("cc_personalization.wp_color_custom")
+    dens_txt = f"{asc['density']:.2f}x"
+    tint_txt = f"{int(round(asc['tint'] * 100))}%"
+    scale_txt = f"{asc['scale']:.2f}x"
+    contrast_txt = f"{asc['contrast']:.1f}x"
+    bright_txt = f"{asc['brightness']:.1f}x"
+
+    summary = t(
+        "cc_personalization.wp_ascii_summary",
+        p0=mode_lbl,
+        p1=chars_lbl,
+        p2=dens_txt,
+        p3=tint_txt,
+        p4=scale_txt,
+    )
+
+    def _build_all(b: Box) -> None:
+        b.add_row(" ")
+        mode_pills = " ".join(
+            SelectPill(
+                t(f"cc_personalization.wp_ascii_mode_{cm}"),
+                f"cc_desk:ascii_mode:{cm}",
+                selected=(asc["mode"] == cm),
+                style="secondary",
+            )
+            for cm in COLOR_MODES
+        )
+        b.add_kv(t("cc_personalization.wp_ascii_mode_row"), mode_pills)
+
+        is_custom_chars = asc["chars"] not in CHAR_SETS
+        disp_custom = ""
+        if is_custom_chars:
+            raw_c = str(asc["chars"])
+            disp_custom = raw_c if len(raw_c) <= 24 else (raw_c[:22] + "..")
+        char_pills = " ".join(
+            SelectPill(
+                t(f"cc_personalization.wp_ascii_chars_{cs}"),
+                f"cc_desk:ascii_chars:{cs}",
+                selected=(asc["chars"] == cs),
+                style="secondary",
+            )
+            for cs in ("standard", "binary", "katakana", "kanjis")
+        )
+        b.add_kv(t("cc_personalization.wp_ascii_chars_row"), char_pills)
+
+        custom_field = InlineField(
+            "cc_desk_ascii_chars",
+            "cc_desk:inline_ascii_chars",
+            value=disp_custom,
+            empty_label=t("cc_personalization.wp_ascii_custom_chars"),
+            placeholder=" .:-=+*#%@",
+            width=22,
+            icon="\u270e",
+            tone="neutral",
+            selected=is_custom_chars,
+        )
+        b.add_kv(t("cc_personalization.wp_ascii_custom_row"), custom_field)
+
+        dens_slider = Slider(asc["density"], "cc_desk:ascii_density", min_val=0.25, max_val=2.5, width=12, show_pct=False, step=0.25)
+        b.add_kv(t("cc_personalization.wp_ascii_density_row"), f"{dens_slider} {Txt(dens_txt, role='val')}")
+
+        tint_slider = Slider(asc["tint"], "cc_desk:ascii_tint", min_val=0.0, max_val=1.0, width=12, show_pct=False, step=0.05)
+        b.add_kv(t("cc_personalization.wp_ascii_tint_row"), f"{tint_slider} {Txt(tint_txt, role='val')}")
+
+        sc_slider = Slider(asc["scale"], "cc_desk:ascii_scale", min_val=0.25, max_val=1.5, width=12, show_pct=False, step=0.25)
+        b.add_kv(t("cc_personalization.wp_ascii_scale_row"), f"{sc_slider} {Txt(scale_txt, role='val')}")
+
+        ct_slider = Slider(asc["contrast"], "cc_desk:ascii_contrast", min_val=0.5, max_val=2.0, width=12, show_pct=False, step=0.1)
+        b.add_kv(t("cc_personalization.wp_ascii_contrast_row"), f"{ct_slider} {Txt(contrast_txt, role='val')}")
+
+        br_slider = Slider(asc["brightness"], "cc_desk:ascii_brightness", min_val=0.5, max_val=2.0, width=12, show_pct=False, step=0.1)
+        b.add_kv(t("cc_personalization.wp_ascii_brightness_row"), f"{br_slider} {Txt(bright_txt, role='val')}")
+
+        inv_pills = " ".join([
+            SelectPill(t("cc_personalization.wp_ascii_normal"), "cc_desk:ascii_invert:0", selected=(not asc["invert"]), style="secondary"),
+            SelectPill(t("cc_personalization.wp_ascii_inverted"), "cc_desk:ascii_invert:1", selected=asc["invert"], style="secondary"),
+        ])
+        b.add_kv(t("cc_personalization.wp_ascii_invert_row"), inv_pills)
+
+        n_files, cache_bytes = get_ascii_cache_stats()
+        size_str = f"{cache_bytes / (1024 * 1024):.1f} MiB" if cache_bytes >= 1024 * 1024 else f"{max(0, cache_bytes // 1024)} KiB"
+        clear_cache_btn = ActionBtn(t("cc_personalization.wp_ascii_clear_cache"), "cc_desk:ascii_clear_cache", tone="danger_soft") if n_files > 0 else ""
+        b.add_kv(
+            t("cc_personalization.wp_ascii_cache_row"),
+            Txt(t("cc_personalization.wp_ascii_cache_info", p0=n_files, p1=size_str), role="schema"),
+            right_markup=clear_cache_btn,
+        )
+
+    cfg_box.add_collapsible(
+        cc_panel,
+        "wp_ascii_cfg",
+        t("cc_personalization.wp_sec_asciify"),
+        _build_all,
+        actions=[ActionBtn(t("cc_personalization.wp_ascii_defaults_btn"), "cc_desk:ascii_defaults", tone="warn")],
+        summary=summary,
+    )
+    cfg_box.add_row(" ")
+
+
 def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
     outputs_data = _get_niri_outputs()
     out_names = sorted(outputs_data.keys())
@@ -721,8 +868,9 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
     live_15fps = is_live_15fps_enabled()
 
     cards = _feedback_cards()
-    preview_states = get_desktop_preview_state(outputs_data)
+    preview_states = get_desktop_preview_state(outputs_data, cc_panel=cc_panel)
     has_staged = any(bool(st.get("staged")) for st in preview_states.values())
+    ascii_status = get_ascii_apply_status()
 
     # CARD 1: Unified Framed Monitor Map & Live 15 FPS Mini-Engine
     fps_lbl = t("cc_personalization.wp_live_15fps" if live_15fps else "cc_personalization.wp_static_preview")
@@ -730,9 +878,10 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         SelectPill(fps_lbl, "cc_desk:toggle_fps", selected=live_15fps, style="secondary"),
         Badge(t("cc_personalization.wp_badge_preview"), style="warn") if has_staged else StateBadge(True, t("cc_personalization.wp_badge_live")),
     ]
-    if has_staged:
-        hdr_acts.append(ActionBtn(t("cc_personalization.wp_reset"), "cc_desk:reset_staged", tone="warn"))
-    hdr_acts.append(ActionBtn(t("cc_personalization.wp_apply"), "cc_desk:apply_staged", tone="apply" if has_staged else "inactive"))
+    if not ascii_status:
+        if has_staged:
+            hdr_acts.append(ActionBtn(t("cc_personalization.wp_reset"), "cc_desk:reset_staged", tone="warn"))
+        hdr_acts.append(ActionBtn(t("cc_personalization.wp_apply"), "cc_desk:apply_staged", tone="apply" if has_staged else "inactive"))
 
     prev_box = Box(t("cc_personalization.desktop_preview_title"), icon="\uf108", actions=hdr_acts, highlighted=False)
     prev_box.add_row(" ")
@@ -758,11 +907,17 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
             on_toggle_monitor=_on_toggle_mon,
             map_width=int(round(canvas.total_px)),
             char_w=canvas.char_w,
-            border_hex=prev_box._resolve_palette()[0],
             live_15fps=live_15fps,
+            max_map_height=max(230, int(round(canvas.char_h * 13.5))),
+            padding=max(12, int(round(canvas.char_w * 1.5))),
             footer_text=summary_str,
+            inset_x=max(14, int(round(canvas.char_w * 2))),
+            font_px=max(10.0, float(canvas.char_w) * 1.45),
         )
-        cards.append(AsciiCard(prev_box, canvas, embedded_widget=map_w))
+        foot = Box("", highlighted=False)
+        foot.open_top = True
+        foot.add_row(" ")
+        cards.append(AsciiCard(prev_box, canvas, embedded_widget=map_w, footer_box_model=foot))
     else:
         cards.append(prev_box)
 
@@ -852,8 +1007,26 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
             SelectPill(t("cc_personalization.wp_fit_stretch"), "cc_desk:fit:stretch", selected=(scene_fit == "stretch"), style="secondary"),
         ])
         cfg_box.add_kv(t("cc_personalization.wp_scaling_fit"), fit_pills)
+        if should_show_scene_alignment(scene_path, scene_fit, sel_mons, outputs_data):
+            scene_align = str(STATE.get("desktop", "scene_align", "center") or "center")
+            align_pills = " ".join([
+                SelectPill(t("cc_personalization.wp_align_top"), "cc_desk:align:top", selected=(scene_align == "top"), style="secondary"),
+                SelectPill(t("cc_personalization.wp_align_center"), "cc_desk:align:center", selected=(scene_align == "center"), style="secondary"),
+                SelectPill(t("cc_personalization.wp_align_bottom"), "cc_desk:align:bottom", selected=(scene_align == "bottom"), style="secondary"),
+            ])
+            cfg_box.add_kv(t("cc_personalization.wp_align_row"), align_pills)
+        if not is_video_or_yt and kind != "GIF":
+            asc_on = bool(get_editor_asciify_cfg().get("enabled"))
+            style_pills = " ".join([
+                SelectPill(t("cc_personalization.wp_style_normal"), "cc_desk:ascii_toggle:0", selected=(not asc_on), style="secondary"),
+                SelectPill(t("cc_personalization.wp_style_asciified"), "cc_desk:ascii_toggle:1", selected=asc_on, style="secondary"),
+            ])
+            cfg_box.add_kv(t("cc_personalization.wp_style_row"), style_pills)
         cfg_box.add_kv(t("cc_personalization.wp_supported_formats"), Txt(t("cc_personalization.wp_supported_val"), role="inactive"))
         cfg_box.add_row(" ")
+
+        if not is_video_or_yt and kind != "GIF" and get_editor_asciify_cfg().get("enabled"):
+            _add_asciify_collapsible(cfg_box, cc_panel)
 
         # Gruppo C — Video & YouTube Playback Engine
         if is_video_or_yt:
@@ -962,7 +1135,16 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
             ActionBtn(t("cc_personalization.wp_next"), "cc_desk:next", tone="neutral"),
         ])
         cfg_box.add_kv(t("cc_personalization.wp_playback_ctrl"), ctrl_btns)
+        asc_on = bool(get_editor_asciify_cfg().get("enabled"))
+        style_pills = " ".join([
+            SelectPill(t("cc_personalization.wp_style_normal"), "cc_desk:ascii_toggle:0", selected=(not asc_on), style="secondary"),
+            SelectPill(t("cc_personalization.wp_style_asciified"), "cc_desk:ascii_toggle:1", selected=asc_on, style="secondary"),
+        ])
+        cfg_box.add_kv(t("cc_personalization.wp_style_row"), style_pills)
         cfg_box.add_row(" ")
+
+        if asc_on:
+            _add_asciify_collapsible(cfg_box, cc_panel)
 
     elif wp_mode == "solid":
         solid_hex = _resolve_solid_hex(STATE.get("desktop", "solid_hex", "#000000") or "#000000")
@@ -1079,7 +1261,10 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
     # Gruppo D — Barra Commit in Fondo al Box
     cfg_box.add_section(t("cc_personalization.wp_sec_commit"))
     cfg_box.add_row(" ")
-    if has_staged:
+    if ascii_status:
+        st_txt = Badge(canvas.truncate_plain(ascii_status, 52), style="warn")
+        st_btns = ActionBtn(t("cc_personalization.wp_ascii_cancel_btn"), "cc_desk:ascii_cancel", tone="danger_soft")
+    elif has_staged:
         st_txt = Txt(t("cc_personalization.wp_staged_footer_warn"), role="warn")
         st_btns = f"{ActionBtn(t('cc_personalization.wp_reset'), 'cc_desk:reset_staged', tone='warn')} {ActionBtn(t('cc_personalization.wp_apply_wallpaper'), 'cc_desk:apply_staged', tone='apply')}"
     else:

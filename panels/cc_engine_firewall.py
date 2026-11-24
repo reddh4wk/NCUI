@@ -255,6 +255,16 @@ def _verdict_style(v: str) -> str:
     return {"accept": "ok", "drop": "crit", "reject": "warn", "log": "info"}.get(v.lower(), "secondary")
 
 
+def _split_laddr_iface(laddr: str) -> tuple[str, str]:
+    m_v6 = re.match(r"^(\[[^%\]]+)%([^\]]+)(\]:.+)$", laddr)
+    if m_v6:
+        return f"{m_v6.group(1)}{m_v6.group(3)}", m_v6.group(2)
+    m_v4 = re.match(r"^([^%:]+)%([^:]+)(:.+)$", laddr)
+    if m_v4:
+        return f"{m_v4.group(1)}{m_v4.group(3)}", m_v4.group(2)
+    return laddr, ""
+
+
 def _read_active_flows() -> list[dict]:
     ok, out = probe.run_cmd(["ss", "-tunap"], timeout=1.5)
     if not ok or not out:
@@ -262,6 +272,7 @@ def _read_active_flows() -> list[dict]:
     if not ok or not out:
         return []
     flows = []
+    seen_keys: dict[str, int] = {}
     for line in out.splitlines()[1:]:
         parts = line.split()
         if len(parts) < 6:
@@ -273,11 +284,29 @@ def _read_active_flows() -> list[dict]:
         proc = parts[6] if len(parts) > 6 else "-"
         if 'users:(("' in proc:
             proc = proc.split('"', 2)[1]
+        laddr_clean, iface = _split_laddr_iface(laddr)
         l_port = laddr.rsplit(":", 1)[-1] if ":" in laddr else ""
-        r_ip = raddr.rsplit(":", 1)[0].strip("[]") if ":" in raddr else raddr
+        r_ip = raddr.rsplit(":", 1)[0].strip("[]").split("%", 1)[0] if ":" in raddr else raddr
         if r_ip in ("0.0.0.0", "*", "::", "[::]"):
             r_ip = "*"
-        flows.append({"proto": proto, "state": state, "laddr": laddr, "lport": l_port, "raddr": raddr, "rip": r_ip, "proc": proc[:14]})
+        raddr_clean = "*" if raddr in ("0.0.0.0:*", "[::]:*", "*:*") else raddr
+        base_key = f"{proto}|{laddr}|{raddr}"
+        cnt = seen_keys.get(base_key, 0) + 1
+        seen_keys[base_key] = cnt
+        flow_key = base_key if cnt == 1 else f"{base_key}|{cnt}"
+        flows.append({
+            "key": flow_key,
+            "proto": proto,
+            "state": state,
+            "laddr": laddr,
+            "laddr_clean": laddr_clean,
+            "iface": iface,
+            "lport": l_port,
+            "raddr": raddr,
+            "raddr_clean": raddr_clean,
+            "rip": r_ip,
+            "proc": proc,
+        })
     return flows
 
 
@@ -289,7 +318,7 @@ def _apply_ruleset(store: dict, persist_etc: bool = False) -> None:
     ok, _o, err = probe.run_cmd_full(["nft", "-c", "-f", tmp_path], timeout=3.0)
     if not ok:
         os.unlink(tmp_path)
-        _set_fw_fb(False, t("cc_firewall.nft_syntax_check_failed", p0=err or 'error'))
+        _set_fw_fb(False, t("cc_firewall.nft_syntax_check_failed", p0=err or "error"))
         return
     if persist_etc:
         cmd = f"cp {shlex.quote(tmp_path)} {SYS_NFT_CONF} && chmod 644 {SYS_NFT_CONF} && nft -f {SYS_NFT_CONF}"
@@ -301,9 +330,9 @@ def _apply_ruleset(store: dict, persist_etc: bool = False) -> None:
     except Exception:
         pass
     if ok_exec:
-        _set_fw_fb(True, "Saved & applied to /etc/nftables.conf" if persist_etc else "Ruleset applied live to nft kernel")
+        _set_fw_fb(True, t("cc_firewall.saved_applied_etc") if persist_etc else t("cc_firewall.applied_live_nft"))
     else:
-        _set_fw_fb(False, err2 or "Privilege elevation (pkexec) cancelled or failed")
+        _set_fw_fb(False, err2 or t("cc_firewall.pkexec_failed"))
 
 
 def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
@@ -370,12 +399,24 @@ def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
             on_commit=lambda txt, c=col: _set_draft(**{c: str(txt or "").strip()}),
         )
         return True
+    elif act == "composer_new":
+        STATE.set("firewall", "draft", {})
+        STATE.set("firewall", "composer_open", True)
     elif act == "draft_cancel":
         STATE.set("firewall", "draft", {})
+        STATE.set("firewall", "composer_open", False)
+    elif act.startswith("sel_rule:"):
+        idx = int(act.split(":", 1)[1])
+        if 0 <= idx < len(rules):
+            STATE.set("firewall", "sel_rule_idx", idx)
+    elif act.startswith("sel_flow:"):
+        STATE.set("firewall", "sel_flow_key", act.split(":", 1)[1])
     elif act.startswith("edit:"):
         idx = int(act.split(":", 1)[1])
         if 0 <= idx < len(rules):
             r = rules[idx]
+            STATE.set("firewall", "sel_rule_idx", idx)
+            STATE.set("firewall", "composer_open", True)
             STATE.set("firewall", "draft", {
                 "chain": r.get("chain", "input"),
                 "proto": r.get("proto", "tcp"),
@@ -406,12 +447,16 @@ def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
         if isinstance(edit_idx, int) and 0 <= edit_idx < len(rules):
             rules[edit_idx].update(payload)
             STATE.set("firewall", "draft", {})
+            STATE.set("firewall", "composer_open", False)
+            STATE.set("firewall", "sel_rule_idx", edit_idx)
             _save_fw_store(store)
             _set_fw_fb(True, t("cc_firewall.updated_rule", p0=edit_idx + 1, p1=payload['verdict'].upper(), p2=payload['chain'].upper()))
         else:
             new_r = {"id": f"usr_{int(time.time() * 1000)}", **payload, "enabled": True}
             rules.append(new_r)
             STATE.set("firewall", "draft", {})
+            STATE.set("firewall", "composer_open", False)
+            STATE.set("firewall", "sel_rule_idx", len(rules) - 1)
             _save_fw_store(store)
             _set_fw_fb(True, t("cc_firewall.added_rule_on", p0=draft['verdict'].upper(), p1=draft['chain'].upper(), p2=draft['proto'].upper(), p3=draft['dport'] or 'any'))
     elif act.startswith("toggle:"):
@@ -425,11 +470,27 @@ def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
         nxt = idx + delta
         if 0 <= idx < len(rules) and 0 <= nxt < len(rules):
             rules[idx], rules[nxt] = rules[nxt], rules[idx]
+            cur_sel = STATE.get("firewall", "sel_rule_idx", None)
+            if cur_sel == idx:
+                STATE.set("firewall", "sel_rule_idx", nxt)
+            elif cur_sel == nxt:
+                STATE.set("firewall", "sel_rule_idx", idx)
             _save_fw_store(store)
     elif act.startswith("del:"):
         idx = int(act.split(":", 1)[1])
         if 0 <= idx < len(rules):
             rules.pop(idx)
+            cur_sel = STATE.get("firewall", "sel_rule_idx", None)
+            if isinstance(cur_sel, int):
+                if not rules:
+                    STATE.set("firewall", "sel_rule_idx", None)
+                elif cur_sel >= len(rules):
+                    STATE.set("firewall", "sel_rule_idx", len(rules) - 1)
+                elif cur_sel > idx:
+                    STATE.set("firewall", "sel_rule_idx", cur_sel - 1)
+            if _get_draft().get("edit_idx") == idx:
+                STATE.set("firewall", "draft", {})
+                STATE.set("firewall", "composer_open", False)
             _save_fw_store(store)
     elif act.startswith("pol:"):
         _, ch, val = act.split(":", 2)
@@ -472,7 +533,7 @@ def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
             tp = tf.name
         ok, out, err = probe.run_cmd_full(["nft", "-c", "-f", tp], timeout=2.5)
         os.unlink(tp)
-        _set_fw_fb(ok, "Dry-run nft -c passed (0 syntax errors)" if ok else (err or out or "Syntax check failed"))
+        _set_fw_fb(ok, t("cc_firewall.dry_run_ok") if ok else (err or out or t("cc_firewall.dry_run_failed")))
     elif act == "apply_live":
         _apply_ruleset(store, persist_etc=False)
     elif act == "save_etc":
@@ -485,7 +546,7 @@ def handle_cc_firewall_link(cc_panel, uri: str) -> bool:
         _set_fw_fb(True, t("cc_firewall.synced_chain_policies_lan_network", p0=meta['lan_net'], p1=SYS_NFT_CONF))
     elif act == "svc_restart":
         ok, _o, err = probe.run_cmd_full(["pkexec", "systemctl", "restart", "nftables"], timeout=10.0)
-        _set_fw_fb(ok, "nftables.service restarted" if ok else (err or "Restart failed"))
+        _set_fw_fb(ok, t("cc_firewall.svc_restarted") if ok else (err or t("cc_firewall.svc_restart_failed")))
     elif act.startswith("cflt_cycle:"):
         col = act.split(":", 1)[1]
         cf = dict(STATE.get("firewall", "conn_flt", {}) or {})

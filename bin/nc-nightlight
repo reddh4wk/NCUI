@@ -1,0 +1,363 @@
+#!/usr/bin/env python3
+"""Persistent zero-flash Wayland gamma daemon (zwlr_gamma_control_manager_v1)."""
+
+import argparse
+import array
+from datetime import datetime, timezone
+import json
+import math
+import os
+import select
+import signal
+import socket
+import struct
+import tempfile
+import time
+
+CTL_SOCK_PATH = "/tmp/nc_ui_nightlight.sock"
+PID_FILE = "/tmp/nc_ui_nightlight.pid"
+
+
+def _wl_str(s: str) -> bytes:
+    b = s.encode("utf-8") + b"\x00"
+    pad = (-len(b)) & 3
+    return struct.pack("<I", len(b)) + b + (b"\x00" * pad)
+
+
+def _unpack_str(payload: bytes, offset: int) -> tuple[str, int]:
+    slen = struct.unpack_from("<I", payload, offset)[0]
+    raw = payload[offset + 4 : offset + 4 + max(0, slen - 1)]
+    pad = (slen + 3) & ~3
+    return raw.decode("utf-8", "ignore"), offset + 4 + pad
+
+
+def _kelvin_rgb(kelvin: float) -> tuple[float, float, float]:
+    k = max(1700.0, min(6500.0, float(kelvin)))
+    if k >= 6499.0:
+        return 1.0, 1.0, 1.0
+
+    def _raw(t_k: float) -> tuple[float, float]:
+        t = t_k / 100.0
+        g = max(0.0, min(1.0, (99.4708025861 * math.log(t) - 161.1195681661) / 255.0))
+        b = 0.0 if t <= 19.0 else max(0.0, min(1.0, (138.5177312231 * math.log(t - 10.0) - 305.0447927307) / 255.0))
+        return g, b
+
+    g65, b65 = _raw(6500.0)
+    g, b = _raw(k)
+    return 1.0, min(1.0, g / g65), min(1.0, b / b65)
+
+
+def _parse_hhmm_min(hhmm: str, default: int) -> int:
+    try:
+        hh, mm = map(int, str(hhmm).strip().split(":", 1))
+        if 0 <= hh <= 23 and 0 <= mm <= 59:
+            return hh * 60 + mm
+    except Exception:
+        pass
+    return default
+
+
+def _solar_altitude_deg(lat: float, lon: float) -> float:
+    now_utc = datetime.now(timezone.utc)
+    doy = now_utc.timetuple().tm_yday
+    utc_hours = now_utc.hour + now_utc.minute / 60.0 + now_utc.second / 3600.0
+    gamma = 2.0 * math.pi / 365.0 * (doy - 1 + (utc_hours - 12.0) / 24.0)
+    eqtime = 229.18 * (
+        0.000075
+        + 0.001868 * math.cos(gamma)
+        - 0.032077 * math.sin(gamma)
+        - 0.014615 * math.cos(2 * gamma)
+        - 0.040849 * math.sin(2 * gamma)
+    )
+    decl = (
+        0.006918
+        - 0.399912 * math.cos(gamma)
+        + 0.070257 * math.sin(gamma)
+        - 0.006758 * math.cos(2 * gamma)
+        + 0.000907 * math.sin(2 * gamma)
+        - 0.002697 * math.cos(3 * gamma)
+        + 0.00148 * math.sin(3 * gamma)
+    )
+    ha_deg = (utc_hours * 60.0 + eqtime + 4.0 * lon) / 4.0 - 180.0
+    lat_r = math.radians(lat)
+    cos_zenith = max(-1.0, min(1.0, math.sin(lat_r) * math.sin(decl) + math.cos(lat_r) * math.cos(decl) * math.cos(math.radians(ha_deg))))
+    return 90.0 - math.degrees(math.acos(cos_zenith))
+
+
+def _effective_kelvin(cfg: dict) -> int:
+    target = max(1700, min(6500, int(cfg.get("temp", 4200))))
+    sched = str(cfg.get("schedule", "always") or "always")
+    if sched == "always":
+        return target
+    if sched == "sunset" and cfg.get("lat") and cfg.get("lon"):
+        try:
+            alt = _solar_altitude_deg(float(cfg["lat"]), float(cfg["lon"]))
+            # Smooth transition across civil twilight (+6 deg -> 6500K, -3 deg -> target)
+            if alt <= -3.0:
+                return target
+            if alt >= 6.0:
+                return 6500
+            frac = (6.0 - alt) / 9.0
+            return int(round(6500.0 + (target - 6500.0) * frac))
+        except Exception:
+            pass
+    now = datetime.now()
+    now_m = now.hour * 60.0 + now.minute + now.second / 60.0
+    s_m = float(_parse_hhmm_min(cfg.get("sunset", "20:00"), 20 * 60))
+    r_m = float(_parse_hhmm_min(cfg.get("sunrise", "06:30"), 6 * 60 + 30))
+    trans = 20.0
+    if s_m > r_m:
+        in_night = now_m >= s_m or now_m < r_m
+    else:
+        in_night = s_m <= now_m < r_m
+    if not in_night:
+        return 6500
+    d_set = (now_m - s_m) % 1440.0
+    d_rise = (r_m - now_m) % 1440.0
+    frac = min(1.0, d_set / trans, d_rise / trans)
+    return int(round(6500.0 + (target - 6500.0) * frac))
+
+
+class NightLightDaemon:
+    def __init__(self, cfg: dict):
+        self.cfg = dict(cfg)
+        self.running = True
+        self.next_id = 4  # 1=wl_display, 2=wl_registry, 3=sync
+        self.wl_buf = b""
+        self.mgr_id = None
+        self.outputs: dict[int, int] = {}  # registry_name -> output_obj_id
+        self.controls: dict[int, dict] = {}  # gc_id -> {"out_name": int, "size": int}
+        self.last_kelvin: int | None = None
+
+        wl_disp = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+        xdg_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+        wl_path = wl_disp if os.path.isabs(wl_disp) else os.path.join(xdg_dir, wl_disp)
+        self.wl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.wl.connect(wl_path)
+
+        # Bind wl_registry (2) and initial sync (3)
+        self._wl_send(1, 1, struct.pack("<I", 2))
+        self._wl_send(1, 0, struct.pack("<I", 3))
+
+        if os.path.exists(CTL_SOCK_PATH):
+            try:
+                os.unlink(CTL_SOCK_PATH)
+            except OSError:
+                pass
+        self.ctl = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.ctl.bind(CTL_SOCK_PATH)
+        os.chmod(CTL_SOCK_PATH, 0o600)
+        self.ctl.listen(8)
+        self.ctl.setblocking(False)
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(f"{os.getpid()}\n")
+
+    def _alloc_id(self) -> int:
+        oid = self.next_id
+        self.next_id += 1
+        return oid
+
+    def _wl_send(self, oid: int, op: int, payload: bytes = b"", fds: list[int] | None = None) -> None:
+        hdr = struct.pack("<II", oid, ((8 + len(payload)) << 16) | op)
+        if fds:
+            self.wl.sendmsg([hdr + payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack(f"<{len(fds)}i", *fds))])
+        else:
+            self.wl.sendall(hdr + payload)
+
+    def _push_gamma(self, gc_id: int, size: int, kelvin: int) -> None:
+        if size <= 0:
+            return
+        r_m, g_m, b_m = _kelvin_rgb(kelvin)
+        denom = max(1, size - 1)
+        ramp = array.array("H")
+        for mult in (r_m, g_m, b_m):
+            for i in range(size):
+                ramp.append(min(65535, int(round((i / denom) * 65535.0 * mult))))
+        data = ramp.tobytes()
+        try:
+            fd = os.memfd_create("nc-gamma")
+        except Exception:
+            tf = tempfile.TemporaryFile()
+            fd = os.dup(tf.fileno())
+            tf.close()
+        try:
+            view = memoryview(data)
+            written = 0
+            while written < len(data):
+                written += os.write(fd, view[written:])
+            os.lseek(fd, 0, os.SEEK_SET)
+            self._wl_send(gc_id, 0, b"", fds=[fd])
+        finally:
+            os.close(fd)
+
+    def _apply_all(self, force: bool = False) -> None:
+        kelvin = _effective_kelvin(self.cfg)
+        if not force and self.last_kelvin is not None and abs(kelvin - self.last_kelvin) == 0:
+            return
+        self.last_kelvin = kelvin
+        for gc_id, info in list(self.controls.items()):
+            if info["size"] > 0:
+                self._push_gamma(gc_id, info["size"], kelvin)
+
+    def _bind_pending_outputs(self) -> None:
+        if self.mgr_id is None:
+            return
+        bound_names = {info["out_name"] for info in self.controls.values()}
+        for out_name, out_id in self.outputs.items():
+            if out_name not in bound_names:
+                gc_id = self._alloc_id()
+                self.controls[gc_id] = {"out_name": out_name, "size": 0}
+                self._wl_send(self.mgr_id, 0, struct.pack("<II", gc_id, out_id))
+
+    def _handle_wl_event(self, oid: int, op: int, payload: bytes) -> None:
+        if oid == 1:  # wl_display
+            if op == 0:
+                err_oid, code = struct.unpack_from("<II", payload, 0)
+                msg, _ = _unpack_str(payload, 8)
+                # Exit on fatal display error
+                if code != 0 and err_oid == self.mgr_id:
+                    self.running = False
+            return
+        if oid == 2:  # wl_registry
+            if op == 0 and len(payload) >= 12:
+                name = struct.unpack_from("<I", payload, 0)[0]
+                iface, pos = _unpack_str(payload, 4)
+                ver = struct.unpack_from("<I", payload, pos)[0]
+                if iface == "zwlr_gamma_control_manager_v1" and self.mgr_id is None:
+                    self.mgr_id = self._alloc_id()
+                    self._wl_send(2, 0, struct.pack("<I", name) + _wl_str(iface) + struct.pack("<II", 1, self.mgr_id))
+                    self._bind_pending_outputs()
+                elif iface == "wl_output":
+                    out_id = self._alloc_id()
+                    self.outputs[name] = out_id
+                    self._wl_send(2, 0, struct.pack("<I", name) + _wl_str(iface) + struct.pack("<II", min(ver, 1), out_id))
+                    self._bind_pending_outputs()
+            elif op == 1 and len(payload) >= 4:
+                name = struct.unpack_from("<I", payload, 0)[0]
+                self.outputs.pop(name, None)
+                for gc_id, info in list(self.controls.items()):
+                    if info["out_name"] == name:
+                        try:
+                            self._wl_send(gc_id, 1)  # destroy
+                        except Exception:
+                            pass
+                        self.controls.pop(gc_id, None)
+            return
+        if oid in self.controls:
+            if op == 0 and len(payload) >= 4:  # gamma_size
+                size = struct.unpack_from("<I", payload, 0)[0]
+                self.controls[oid]["size"] = size
+                if self.last_kelvin is None:
+                    self.last_kelvin = _effective_kelvin(self.cfg)
+                self._push_gamma(oid, size, self.last_kelvin)
+            elif op == 1:  # failed
+                self.controls.pop(oid, None)
+
+    def _drain_wl(self) -> None:
+        chunk = self.wl.recv(65536)
+        if not chunk:
+            self.running = False
+            return
+        self.wl_buf += chunk
+        while len(self.wl_buf) >= 8:
+            oid, sz_op = struct.unpack_from("<II", self.wl_buf, 0)
+            sz, op = sz_op >> 16, sz_op & 0xFFFF
+            if sz < 8 or len(self.wl_buf) < sz:
+                break
+            payload = self.wl_buf[8:sz]
+            self.wl_buf = self.wl_buf[sz:]
+            self._handle_wl_event(oid, op, payload)
+
+    def _handle_ctl(self, conn: socket.socket) -> None:
+        try:
+            data = conn.recv(4096).decode("utf-8", "ignore").strip()
+            if not data:
+                conn.sendall(b"err\n")
+                return
+            msg = json.loads(data.splitlines()[0])
+            cmd = msg.get("cmd", "")
+            if cmd == "stop":
+                conn.sendall(b"ok\n")
+                self.running = False
+                return
+            if cmd == "ping":
+                conn.sendall(b"ok\n")
+                return
+            for k in ("temp", "schedule", "sunrise", "sunset", "lat", "lon"):
+                if k in msg:
+                    self.cfg[k] = msg[k]
+            self._apply_all(force=True)
+            conn.sendall(b"ok\n")
+        except Exception:
+            try:
+                conn.sendall(b"err\n")
+            except Exception:
+                pass
+        finally:
+            conn.close()
+
+    def run(self) -> None:
+        # Initial handshake + sync pump so outputs and gamma controls bind immediately
+        t_end = time.monotonic() + 0.5
+        while self.running and time.monotonic() < t_end and not any(c["size"] > 0 for c in self.controls.values()):
+            r, _, _ = select.select([self.wl], [], [], 0.05)
+            if self.wl in r:
+                self._drain_wl()
+        while self.running:
+            r, _, _ = select.select([self.wl, self.ctl], [], [], 20.0)
+            if self.wl in r:
+                self._drain_wl()
+            if self.ctl in r:
+                try:
+                    conn, _ = self.ctl.accept()
+                    self._handle_ctl(conn)
+                except OSError:
+                    pass
+            if not r:
+                self._apply_all(force=False)
+
+    def cleanup(self) -> None:
+        for gc_id in list(self.controls.keys()):
+            try:
+                self._wl_send(gc_id, 1)
+            except Exception:
+                pass
+        for s in (self.ctl, self.wl):
+            try:
+                s.close()
+            except Exception:
+                pass
+        for p in (CTL_SOCK_PATH, PID_FILE):
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="NC-UI zero-flash Wayland Night Light daemon")
+    ap.add_argument("--temp", type=int, default=4200)
+    ap.add_argument("--schedule", default="always", choices=("always", "manual", "sunset"))
+    ap.add_argument("--sunrise", default="06:30")
+    ap.add_argument("--sunset", default="20:00")
+    ap.add_argument("--lat", default="")
+    ap.add_argument("--lon", default="")
+    args = ap.parse_args()
+
+    daemon = NightLightDaemon(vars(args))
+
+    def _stop(*_a):
+        daemon.running = False
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    try:
+        daemon.run()
+    finally:
+        daemon.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

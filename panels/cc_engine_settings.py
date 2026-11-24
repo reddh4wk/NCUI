@@ -2,18 +2,24 @@
 # -*- coding: utf-8 -*-
 """NC-UI Control Center — Interface Settings & Boot (`panels/cc_settings.py`) [Single Backend / Dual View]"""
 
+import datetime
 import glob
 import json
 import os
 import re
 import shlex
 import shutil
+import socket
+import sys
+import time
 from core import probe
 from core.config import (
     CONFIG,
     _update_toml_key_in_section,
     get_hide_unavailable_settings,
+    get_sys_notif_opacity,
     set_hide_unavailable_settings,
+    set_sys_notif_opacity_pct,
 )
 from core.i18n import get_active_language, set_language, t
 from core.state import STATE
@@ -38,6 +44,63 @@ _NOTIFY_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 _NTF_MSG = ""
 _NTF_ERR = ""
 _COMMON_APPS = ["discord", "slack", "firefox", "thunderbird", "spotify", "chromium", "steam"]
+_POPUP_POSITIONS = ("top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right")
+_POPUP_EFFECTS = ("slide", "fade", "slide_fade", "none")
+_POPUP_BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-notify-popup")
+
+
+def get_popup_socket_path() -> str:
+    return f"/tmp/nc_notify_popup_{os.getuid()}.sock"
+
+
+def is_in_quiet_hours(rules: dict, now: datetime.datetime = None) -> bool:
+    """Return True if quiet hours are enabled and current local time falls inside quiet_window."""
+    if not rules or not rules.get("quiet_enabled"):
+        return False
+    m = re.match(r"^\s*(\d{2}):(\d{2})-(\d{2}):(\d{2})\s*$", str(rules.get("quiet_window") or ""))
+    if not m:
+        return False
+    sh, sm, eh, em = (int(x) for x in m.groups())
+    if sh > 23 or eh > 23 or sm > 59 or em > 59:
+        return False
+    cur_dt = now or datetime.datetime.now()
+    cur_m = cur_dt.hour * 60 + cur_dt.minute
+    start_m = sh * 60 + sm
+    end_m = eh * 60 + em
+    if start_m == end_m:
+        return True
+    if start_m > end_m:
+        return cur_m >= start_m or cur_m < end_m
+    return start_m <= cur_m < end_m
+
+
+def spawn_notification_popup(notif: dict, force: bool = False) -> bool:
+    """Dispatch a notification popup to the live Layer-Shell host or spawn one detached."""
+    payload = {
+        "id": notif.get("id", int(time.time() * 1000)),
+        "app": str(notif.get("app_name") or notif.get("app") or "NC-UI").strip() or "NC-UI",
+        "title": str(notif.get("title") or notif.get("summary") or "").strip(),
+        "body": str(notif.get("body") or "").strip(),
+        "urgency": str(notif.get("urgency") or "normal").strip().lower(),
+        "time": str(notif.get("time") or time.strftime("%H:%M")).strip(),
+        "preview": bool(force),
+        "opacity": get_sys_notif_opacity(),
+    }
+    raw = json.dumps(payload, ensure_ascii=False)
+    sock_path = get_popup_socket_path()
+    if os.path.exists(sock_path):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.25)
+                s.connect(sock_path)
+                s.sendall((raw + "\n").encode("utf-8"))
+            return True
+        except Exception:
+            pass
+    if os.path.exists(_POPUP_BIN):
+        probe.spawn_bg([sys.executable, _POPUP_BIN, "--payload", raw])
+        return True
+    return False
 
 
 # =====================================================================
@@ -189,6 +252,10 @@ def _load_rules() -> dict:
         "muted_apps": [],
         "clickable_apps": {},
         "group_by_app": False,
+        "popup_enabled": False,
+        "popup_timeout": 5,
+        "popup_position": "top-right",
+        "popup_effect": "slide",
     }
     if os.path.exists(RULES_FILE):
         try:
@@ -199,6 +266,15 @@ def _load_rules() -> dict:
             pass
     if not isinstance(base.get("clickable_apps"), dict):
         base["clickable_apps"] = {}
+    base["popup_enabled"] = bool(base.get("popup_enabled", False))
+    try:
+        base["popup_timeout"] = max(0, min(120, int(base.get("popup_timeout", 5))))
+    except Exception:
+        base["popup_timeout"] = 5
+    if base.get("popup_position") not in _POPUP_POSITIONS:
+        base["popup_position"] = "top-right"
+    if base.get("popup_effect") not in _POPUP_EFFECTS:
+        base["popup_effect"] = "slide"
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
         ok, out, _ = probe.run_cmd_full(["swaync-client", "-D"], timeout=0.8)
         if ok and out.strip().lower() in ("true", "false"):
@@ -501,11 +577,15 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
         _save_rules(rules)
         if os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
             probe.run_cmd_full(["swaync-client", "-dn" if dnd else "-df"], timeout=1.0)
-        _NTF_MSG = t("cc_notifications.do_not_disturb_2", p0='enabled' if dnd else 'disabled')
+        _NTF_MSG = t("cc_notifications.do_not_disturb_2", p0=t("common.enabled").lower() if dnd else t("common.disabled").lower())
     elif cmd == "quiet_toggle":
         rules["quiet_enabled"] = not rules["quiet_enabled"]
         _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.quiet_hours_2", p0='enabled' if rules['quiet_enabled'] else 'disabled', p1=rules['quiet_window'])
+        _NTF_MSG = t(
+            "cc_notifications.quiet_hours_2",
+            p0=t("common.enabled").lower() if rules["quiet_enabled"] else t("common.disabled").lower(),
+            p1=rules["quiet_window"],
+        )
     elif cmd == "quiet_win" and arg:
         rules["quiet_window"] = arg
         rules["quiet_enabled"] = True
@@ -550,6 +630,62 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
         rules["group_by_app"] = val
         _save_rules(rules)
         _NTF_MSG = t("cc_notifications.fb_group_on") if val else t("cc_notifications.fb_group_off")
+    elif cmd == "popup_en" and arg in ("0", "1"):
+        val = (arg == "1")
+        rules["popup_enabled"] = val
+        _save_rules(rules)
+        _NTF_MSG = t("cc_notifications.fb_popup_en", p0=t("common.enabled").lower() if val else t("common.disabled").lower())
+    elif cmd == "popup_timeout" and arg.isdigit():
+        sec = max(0, min(120, int(arg)))
+        rules["popup_timeout"] = sec
+        _save_rules(rules)
+        _NTF_MSG = t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec)
+    elif cmd == "inline_popup_timeout" and cc_panel:
+        start_inline_input(
+            "cc_notif_popup_timeout",
+            shell=cc_panel.shell,
+            trigger_uri=uri,
+            initial_text=str(rules.get("popup_timeout", 5)),
+            max_len=4,
+            validator=lambda s: s.strip().isdigit() and 0 <= int(s.strip()) <= 120,
+            on_commit=lambda s: handle_cc_notifications_prompt(cc_panel, "cc_notif_popup_timeout", s),
+        )
+        return True
+    elif cmd == "popup_pos" and arg in _POPUP_POSITIONS:
+        rules["popup_position"] = arg
+        _save_rules(rules)
+        _NTF_MSG = t("cc_notifications.fb_popup_pos", p0=arg)
+    elif cmd == "popup_effect" and arg in _POPUP_EFFECTS:
+        rules["popup_effect"] = arg
+        _save_rules(rules)
+        _NTF_MSG = t("cc_notifications.fb_popup_effect", p0=arg.replace("_", "+"))
+    elif cmd == "popup_op":
+        try:
+            set_sys_notif_opacity_pct(int(round(float(arg))))
+        except Exception:
+            pass
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
+    elif cmd == "popup_preview":
+        ok_p = spawn_notification_popup(
+            {
+                "id": int(time.time() * 1000),
+                "app": "NC-UI",
+                "title": t("cc_notifications.preview_title"),
+                "body": t("cc_notifications.preview_body"),
+                "urgency": "normal",
+                "time": time.strftime("%H:%M"),
+            },
+            force=True,
+        )
+        if ok_p:
+            _NTF_MSG = t("cc_notifications.fb_popup_preview")
+        else:
+            _NTF_ERR = t("cc_notifications.neither_nc_util_notify_sh_nor_noti")
+    elif cmd == "del" and arg:
+        delete_notif(arg)
+        _NTF_MSG = t("cc_notifications.fb_notif_dismissed")
     elif cmd == "mute_app" and arg:
         STATE.set("settings", "notif_app_query", "")
         muted = set(a.lower() for a in rules.get("muted_apps", []))
@@ -625,6 +761,16 @@ def handle_cc_notifications_prompt(cc_panel, action_id: str, text: str) -> bool:
             _NTF_MSG = t("cc_notifications.quiet_window_updated_to", p0=win)
         else:
             _NTF_ERR = t("cc_notifications.invalid_format_use_hh_mm_hh_mm")
+    elif action_id == "cc_notif_popup_timeout":
+        raw = text.strip()
+        if raw.isdigit() and 0 <= int(raw) <= 120:
+            sec = int(raw)
+            rules = _load_rules()
+            rules["popup_timeout"] = sec
+            _save_rules(rules)
+            _NTF_MSG = t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec)
+        else:
+            _NTF_ERR = t("cc_notifications.fb_popup_timeout_err")
     elif action_id == "cc_notif_mute_app" and text.strip():
         app = text.strip().lower()
         rules = _load_rules()

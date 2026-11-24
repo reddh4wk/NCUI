@@ -40,10 +40,13 @@ def main():
     text = pill.get("text", "")
     _save_pill_cache(panel_id, text)
     default_cls = "module-nc-empty" if not text else "module-nc"
+    raw_cls = pill.get("class", default_cls)
+    if isinstance(raw_cls, str) and " " in raw_cls.strip():
+        raw_cls = raw_cls.split()
     print(json.dumps({
         "text": text,
         "tooltip": pill.get("tooltip", ""),
-        "class": pill.get("class", default_cls),
+        "class": raw_cls,
     }))
 
 

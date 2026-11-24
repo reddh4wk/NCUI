@@ -74,7 +74,7 @@ class Panel(BasePanel):
 
         hdr_title = u["model"] or u["ups_name"] or t("ups.title")
         box = Box(
-            canvas.truncate_plain(hdr_title, 26),
+            canvas.truncate_plain(hdr_title, 18),
             icon="\uf240",
             actions=[
                 st_badge,

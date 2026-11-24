@@ -2,20 +2,37 @@
 import html
 import math
 import re
-import cairo
-import gi
-
-gi.require_version("Gdk", "3.0")
-gi.require_version("Pango", "1.0")
-gi.require_version("PangoCairo", "1.0")
-from gi.repository import Gdk, Pango, PangoCairo
 from core.config import BOX_STYLES, THEME, get_row_gap
+
+_PANGO_SCALE = 1024
+cairo = None
+Gdk = None
+Pango = None
+PangoCairo = None
+
+
+def _ensure_pango() -> None:
+    global cairo, Gdk, Pango, PangoCairo
+    if Pango is not None:
+        return
+    import cairo as _cairo
+    import gi as _gi
+
+    _gi.require_version("Gdk", "3.0")
+    _gi.require_version("Pango", "1.0")
+    _gi.require_version("PangoCairo", "1.0")
+    from gi.repository import Gdk as _Gdk, Pango as _Pango, PangoCairo as _PangoCairo
+
+    cairo = _cairo
+    Gdk = _Gdk
+    Pango = _Pango
+    PangoCairo = _PangoCairo
 
 _TAG_OR_TOKEN_RE = re.compile(r"(<[^>]+>|&[a-zA-Z0-9#]+;|.)")
 _LINK_TAG_RE = re.compile(r"</?a\b[^>]*>", re.IGNORECASE)
 _BARE_AMP_RE = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)")
 _ATOMIC_WIDGET_RE = re.compile(r"(<a\b[^>]*>.*?</a>|<span\b[^>]*background=[^>]*>.*?</span>)", re.IGNORECASE | re.DOTALL)
-_FALLBACK_GLYPH_RE = re.compile(r"([\u21bb\u2300-\u23ff\u2580-\u259f\u25b0-\u25ff\u2600-\u27bf\ue000-\uf8ff\U0001f000-\U0001ffff\U000f0000-\U000ffffd])")
+_FALLBACK_GLYPH_RE = re.compile(r"([\u2139\u21b9\u21ba\u21bb\u229e\u229f\u2300-\u23ff\u2580-\u259f\u25b0-\u25ff\u2600-\u27bf\ue000-\uf8ff\U0001f000-\U0001ffff\U000f0000-\U000ffffd])")
 _ALLOWED_TAG_RE = re.compile(r"^</?\s*(span|a|b|i|u|s|small|big|sub|sup)\b", re.IGNORECASE)
 _ANY_ANGLE_TAG_RE = re.compile(r"<[^>]*>")
 _ANY_TAG_RE = re.compile(r"<[^>]+>")
@@ -45,6 +62,7 @@ def _safe_pair(seq, d_l: str, d_r: str) -> tuple[str, str]:
 
 class Canvas:
     def __init__(self, total_cols: int = None):
+        _ensure_pango()
         geom = THEME["geometry"]
         cols = total_cols if total_cols is not None else geom["compact_cols"]
 
@@ -159,7 +177,7 @@ class Canvas:
         if "&" in s_safe:
             s_safe = _BARE_AMP_RE.sub("&amp;", s_safe)
         if _FALLBACK_GLYPH_RE.search(s_safe):
-            pt = int(round(font_sz * Pango.SCALE * 0.62))
+            pt = int(round(font_sz * _PANGO_SCALE * 0.62))
             parts = _SPLIT_TAG_RE.split(s_safe)
             for idx in range(0, len(parts), 2):
                 if parts[idx] and _FALLBACK_GLYPH_RE.search(parts[idx]):

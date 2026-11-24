@@ -636,12 +636,51 @@ def ProgressBar(pct: float, width: int = 15, color_by_threshold: bool = True, in
     )
 
 
-_SLIDER_META: dict[str, tuple[str, str]] = {}
+_SLIDER_META: dict[str, dict] = {}
 _SCROLL_ZONE_META: dict[str, str] = {}
 
 
 def get_slider_step_uris(action_prefix: str) -> tuple[str, str] | None:
-    return _SLIDER_META.get(action_prefix)
+    meta = _SLIDER_META.get(action_prefix)
+    if not meta:
+        return None
+    return meta["dec_uri"], meta["inc_uri"]
+
+
+def is_slider_enabled(action_prefix: str) -> bool:
+    meta = _SLIDER_META.get(action_prefix)
+    return bool(meta.get("enabled", True)) if meta else True
+
+
+def set_slider_meta_value(action_prefix: str, val_str: str) -> None:
+    meta = _SLIDER_META.get(action_prefix)
+    if not meta or meta.get("scroll_prefix"):
+        return
+    try:
+        v = float(val_str)
+    except ValueError:
+        return
+    lo, hi, stp, is_flt = meta["min"], meta["max"], meta["step"], meta["is_float"]
+    clamped = max(lo, min(hi, v))
+    meta["cur"] = clamped
+    meta["dec_uri"] = f"{action_prefix}:{_fmt_slider_val(max(lo, clamped - stp), is_flt)}"
+    meta["inc_uri"] = f"{action_prefix}:{_fmt_slider_val(min(hi, clamped + stp), is_flt)}"
+
+
+def advance_slider_uri(action_prefix: str, direction: str) -> str | None:
+    """Compute the next slider URI from live in-memory state so rapid steps never drop ticks."""
+    meta = _SLIDER_META.get(action_prefix)
+    if not meta or not meta.get("enabled", True):
+        return None
+    if meta.get("scroll_prefix"):
+        return f"{meta['scroll_prefix']}:{'up' if direction == 'up' else 'down'}"
+    lo, hi, stp, is_flt = meta["min"], meta["max"], meta["step"], meta["is_float"]
+    delta = stp if direction == "up" else -stp
+    nxt = max(lo, min(hi, meta["cur"] + delta))
+    meta["cur"] = nxt
+    meta["dec_uri"] = f"{action_prefix}:{_fmt_slider_val(max(lo, nxt - stp), is_flt)}"
+    meta["inc_uri"] = f"{action_prefix}:{_fmt_slider_val(min(hi, nxt + stp), is_flt)}"
+    return f"{action_prefix}:{_fmt_slider_val(nxt, is_flt)}"
 
 
 def register_scroll_zone(uri: str, scroll_action_prefix: str) -> None:
@@ -704,11 +743,17 @@ def Slider(
 
     v_dec = _fmt_slider_val(max(lo, float(value) - float(step)), is_float)
     v_inc = _fmt_slider_val(min(hi, float(value) + float(step)), is_float)
-    _SLIDER_META[action_prefix] = (
-        (f"{scroll_prefix}:down", f"{scroll_prefix}:up")
-        if scroll_prefix
-        else (f"{action_prefix}:{v_dec}", f"{action_prefix}:{v_inc}")
-    )
+    _SLIDER_META[action_prefix] = {
+        "cur": max(lo, min(hi, float(value))),
+        "min": lo,
+        "max": hi,
+        "step": float(step),
+        "is_float": is_float,
+        "scroll_prefix": scroll_prefix,
+        "enabled": bool(enabled),
+        "dec_uri": f"{scroll_prefix}:down" if scroll_prefix else f"{action_prefix}:{v_dec}",
+        "inc_uri": f"{scroll_prefix}:up" if scroll_prefix else f"{action_prefix}:{v_inc}",
+    }
 
     bar_markup = f"<span color='{c_empty}'>{Canvas.escape(b_l)}</span>{''.join(segments)}<span color='{c_empty}'>{Canvas.escape(b_r)}</span>"
     if step_buttons or width >= 6:
@@ -2047,11 +2092,15 @@ class Box:
             )
             right_hdr = " ".join(border_acts) if border_acts else ""
 
-            max_title_cols = target_cols - (canvas.measure_cols(right_hdr) + 4 if right_hdr else 0) - 8
+            b_l, b_r = canvas.title_brackets
+            brk_cols = canvas.measure_cols(b_l) + canvas.measure_cols(b_r)
+            fixed_hdr_cols = (9 if right_hdr else 5) + brk_cols
+            max_title_cols = target_cols - (canvas.measure_cols(right_hdr) if right_hdr else 0) - fixed_hdr_cols
+            cur_plain_title = raw_title
             if not self.title_is_markup and canvas.measure_cols(full_title) > max_title_cols:
                 ic_len = (canvas.measure_cols(self.icon) + 2) if self.icon else 0
-                trunc_t = canvas.truncate_plain(raw_title, max(8, max_title_cols - ic_len))
-                full_title = f"{self.icon}  {Canvas.escape(trunc_t)}" if self.icon else Canvas.escape(trunc_t)
+                cur_plain_title = canvas.truncate_plain(raw_title, max(4, max_title_cols - ic_len))
+                full_title = f"{self.icon}  {Canvas.escape(cur_plain_title)}" if self.icon else Canvas.escape(cur_plain_title)
 
             out_lines = []
             self._render_total_px = float(canvas.total_px)
@@ -2059,6 +2108,13 @@ class Box:
             self._top_protrusion_bytes = []
             if not self.open_top:
                 top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk)
+                if not self.title_is_markup and raw_title and canvas.measure_markup(top_line) > canvas.total_px + 0.5:
+                    lim = min(len(raw_title), len(cur_plain_title)) - 1
+                    while lim >= 4 and canvas.measure_markup(top_line) > canvas.total_px + 0.5:
+                        cur_plain_title = canvas.truncate_plain(raw_title, lim)
+                        full_title = f"{self.icon}  {Canvas.escape(cur_plain_title)}" if self.icon else Canvas.escape(cur_plain_title)
+                        top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk)
+                        lim -= 1
                 out_lines.append(top_line)
                 ch = canvas.chars
                 top_plain = Canvas.strip_tags(top_line)
@@ -2379,6 +2435,7 @@ def FeedbackBox(title: str, ok: bool, msg: str) -> Box:
         actions=[StateBadge(True, t("common.ok")) if ok else Badge(t("common.err"), style="crit")],
         highlighted=False,
     )
+    b._toast_meta = {"title": str(title), "ok": bool(ok), "msg": str(msg)}
     b.add_kv(t("common.status"), Txt(str(msg), role="val" if ok else "fault"))
     return b
 

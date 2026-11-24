@@ -200,6 +200,12 @@ def main():
     win_ref = {"win": None}
 
     def _cleanup_and_quit(*_a):
+        tel_mod = sys.modules.get("panels.cc_engine_telemetry")
+        if tel_mod is not None and hasattr(tel_mod, "close_embedded_tuis"):
+            try:
+                tel_mod.close_embedded_tuis()
+            except Exception:
+                pass
         cur = _read_json(ACTIVE_POPUP_FILE)
         if int(cur.get("pid", 0)) == os.getpid():
             _remove_file(ACTIVE_POPUP_FILE)
@@ -224,6 +230,12 @@ def main():
         win.show_all()
         Gtk.main()
     finally:
+        tel_mod = sys.modules.get("panels.cc_engine_telemetry")
+        if tel_mod is not None and hasattr(tel_mod, "close_embedded_tuis"):
+            try:
+                tel_mod.close_embedded_tuis()
+            except Exception:
+                pass
         cur = _read_json(ACTIVE_POPUP_FILE)
         if int(cur.get("pid", 0)) == os.getpid():
             _remove_file(ACTIVE_POPUP_FILE)
