@@ -1,0 +1,200 @@
+# NC-UI Action Help Catalog (EN) — Date & Time, Calendar Engine & Waybar Calendar Popup
+
+# ==============================================================================
+# DATETIME -> TIME, TIMEZONE & LOCALE (`panels/cc_datetime_time.py`)
+# ==============================================================================
+["cc_dt:sync_now"]
+title = "Force NTP Resynchronization"
+short = "Opens a terminal running `sudo systemctl restart systemd-timesyncd && timedatectl status` to force an immediate NTP sync."
+verbose = "Restarts the `systemd-timesyncd` client so it polls the configured Arch/Cloudflare NTP servers right away and prints the resulting clock sync telemetry."
+
+["cc_dt:ntp:true"]
+title = "Enable Automatic NTP Sync"
+short = "Runs `timedatectl set-ntp true` to enable continuous network time synchronization via `systemd-timesyncd`."
+
+["cc_dt:ntp:false"]
+title = "Disable Automatic NTP Sync"
+short = "Runs `timedatectl set-ntp false` to switch the system clock to manual mode without `systemd-timesyncd` polling."
+
+["cc_dt:rtc:0"]
+title = "Set Hardware RTC to UTC"
+short = "Runs `timedatectl set-local-rtc 0` so the motherboard hardware clock stores UTC (standard Linux convention)."
+
+["cc_dt:rtc:1"]
+title = "Set Hardware RTC to Local Time"
+short = "Runs `timedatectl set-local-rtc 1` so the motherboard hardware clock stores local wall time (for Windows dual-boot)."
+
+["cc_dt:ntp_term"]
+title = "Edit NTP Server Configuration"
+short = "Opens `/etc/systemd/timesyncd.conf` inside `$EDITOR` in the terminal to customize NTP and fallback server pools."
+
+["cc_dt:tz_search_open"]
+title = "Search & Set IANA Timezone"
+short = "Activates the inline timezone picker (`cc_dt_tz_picker`) over system `zoneinfo` entries; Enter applies the top match via `timedatectl set-timezone`."
+verbose = "Type any city or region (e.g., `Rome`, `Tokyo`, `America/New_York`) to rank matching IANA timezones, click a result pill, or press `Enter` to update `/etc/localtime`."
+
+["cc_dt:tz_search_clear"]
+title = "Clear Timezone Search"
+short = "Clears the current timezone search filter inside `cc_dt_tz_picker`."
+
+["cc_dt:set_tz:*"]
+title = "Apply IANA Timezone"
+short = "Runs `timedatectl set-timezone <tz>` to switch `/etc/localtime` and the active system timezone immediately."
+
+["cc_dt:lang:en_US.UTF-8"]
+title = "Set System Locale: en_US.UTF-8"
+short = "Runs `localectl set-locale LANG=en_US.UTF-8` to set the system-wide default locale to US English UTF-8."
+
+["cc_dt:lang:it_IT.UTF-8"]
+title = "Set System Locale: it_IT.UTF-8"
+short = "Runs `localectl set-locale LANG=it_IT.UTF-8` to set the system-wide default locale to Italian UTF-8."
+
+["cc_dt:lctime:it_IT.UTF-8"]
+title = "Set LC_TIME: 24h (it_IT.UTF-8)"
+short = "Runs `localectl set-locale LC_TIME=it_IT.UTF-8` so system timestamps and calendars use 24-hour Italian formatting."
+
+["cc_dt:lctime:C.UTF-8"]
+title = "Set LC_TIME: POSIX/C (C.UTF-8)"
+short = "Runs `localectl set-locale LC_TIME=C.UTF-8` to use neutral POSIX/ISO 24-hour date and time formatting."
+
+["cc_dt:barfmt:*"]
+title = "Set Waybar Clock Format"
+short = "Updates `\"clock\".\"format\"` in `~/.config/waybar/config.jsonc` to this preset and sends `SIGUSR2` to reload Waybar."
+verbose = "Rewrites the Waybar clock format string (`{:%H:%M}`, `{:%a %d %b  %H:%M}`, `{:%Y-%m-%d %H:%M:%S}`, or `{:%I:%M %p}`) and refreshes the bar live without restarting the compositor."
+
+# ==============================================================================
+# DATETIME -> CALENDAR ENGINE & ICAL FEEDS (`panels/cc_datetime_calendar.py`)
+# ==============================================================================
+["cc_cal:mode:ical"]
+title = "Enable iCal + Local SQLite Mode"
+short = "Initializes/switches the calendar backend to `ical` mode, combining local `calendar.db` events with subscribed `.ics` feeds."
+verbose = "Stores remote feed definitions in `ical_feeds.json` and caches parsed `VEVENT`s alongside personal entries inside `~/.config/nc-ui/calendar.db`."
+
+["cc_cal:mode:local"]
+title = "Enable Local SQLite Mode Only"
+short = "Initializes/switches the calendar backend to `local` mode, storing events strictly in local `calendar.db` with no iCal network sync."
+
+["cc_cal:rem_set:*"]
+title = "Set Reminder Lead Time"
+short = "Sets how many minutes before an event start (`0` = Off, or `5m`–`60m`) the Waybar clock module triggers a desktop reminder."
+
+["cc_cal:rem_inline"]
+title = "Set Custom Reminder Minutes"
+short = "Opens inline numeric editing (`cc_cal_rem_inline`) to enter any custom reminder lead time from `0` to `10080` minutes."
+
+["cc_cal:rem_test"]
+title = "Send Test Reminder Notification"
+short = "Dispatches a live NC-UI desktop notification preview showing your currently configured reminder lead time."
+
+["cc_cal:clear_local"]
+title = "Clear All Local Events"
+short = "Deletes all locally created events from `calendar.db` while leaving subscribed iCal feed events untouched."
+verbose = "Executes `DELETE FROM events WHERE source = 'local'` on `~/.config/nc-ui/calendar.db`. Remote iCal events remain intact until their feed is removed."
+
+["cc_cal:ical_add"]
+title = "Add iCal (.ics) Subscription"
+short = "Prompts for an `http://`, `https://`, or `webcal://` `.ics` feed URL and label, saves it to `ical_feeds.json`, and syncs immediately."
+verbose = "Works with read-only secret iCal links from Google Calendar, Nextcloud/CalDAV, Proton Calendar, or Outlook without requiring OAuth tokens."
+
+["cc_cal:sync_now"]
+title = "Sync All iCal Feeds Now"
+short = "Runs a forced background fetch across all enabled `.ics` feeds and updates cached events in `calendar.db`."
+
+["cc_cal:ical_sync_interval:*"]
+title = "Set iCal Auto-Sync Interval"
+short = "Sets how often enabled `.ics` subscriptions poll in the background (`15m`, `30m`, `1h`, or `Manual` only)."
+
+["cc_cal:ical_toggle:*"]
+title = "Enable / Disable iCal Feed"
+short = "Toggles this `.ics` subscription on or off; enabling in `ical` mode triggers an immediate background sync."
+
+["cc_cal:ical_del:*"]
+title = "Remove iCal Subscription"
+short = "Deletes this feed from `ical_feeds.json` and purges its cached events from `calendar.db`."
+
+["cc_cal:export_ics"]
+title = "Export Calendar to RFC 5545 (.ics)"
+short = "Prompts for a file path and exports your `calendar.db` events as a standard RFC 5545 `.ics` file."
+
+["cc_cal:import_ics"]
+title = "Import Events from .ics File"
+short = "Prompts for a local `.ics` file (with `.ics` path completion) and imports its `VEVENT` entries into `calendar.db`."
+
+["cc_cal:export_db"]
+title = "Backup SQLite Database (.db)"
+short = "Prompts for a destination path and saves a binary SQLite snapshot of `calendar.db`."
+
+["cc_cal:import_db"]
+title = "Restore / Merge SQLite Backup (.db)"
+short = "Prompts for a `.db`/`.sqlite`/`.sqlite3` backup file and merges its stored events into `calendar.db`."
+
+# ==============================================================================
+# WAYBAR POPUP -> CALENDAR (`panels/wp_calendar.py`)
+# ==============================================================================
+["cal:prev"]
+title = "Previous Week / Month"
+short = "Steps one week backward in expanded Week view, or one month backward in Compact and expanded Month views."
+
+["cal:today"]
+title = "Jump to Today"
+short = "Resets the calendar month, selected date, and Week hour window back to today's date."
+
+["cal:next"]
+title = "Next Week / Month"
+short = "Steps one week forward in expanded Week view, or one month forward in Compact and expanded Month views."
+
+["cal:day:*"]
+title = "Select Calendar Day"
+short = "Selects this date (`YYYY-MM-DD`) in the day inspector and exits the all-month list view."
+
+["cal:add_start"]
+title = "Add Local Event"
+short = "Opens the 3-step prompt bar (`Title` → `Time` → `Description`) to create a new event on the selected date in `calendar.db`."
+
+["cal:toggle_all"]
+title = "Toggle Day / Upcoming Month List"
+short = "Switches the compact popup agenda between events on the selected day only and all upcoming events in the current month."
+
+["cal:event:*"]
+title = "Inspect Event Details"
+short = "Opens this event in the Event Detail card/inspector, showing full time span, source, location, and clickable description URLs."
+
+["cal:close_event"]
+title = "Close Event Detail Card"
+short = "Dismisses the compact Event Detail card while keeping the calendar popup open."
+
+["cal:del:*"]
+title = "Delete Local Event"
+short = "Deletes this local event from `calendar.db` immediately (read-only iCal feed events cannot be deleted here)."
+
+["cal:sync"]
+title = "Sync iCal Feeds"
+short = "Triggers an immediate background refresh (`force_sync=True`) of subscribed `.ics` feeds for the visible month."
+
+["cal:view:week"]
+title = "Switch to Week Grid View"
+short = "Switches the expanded Calendar view to the 7-day hourly timeline grid alongside the Day Inspector."
+
+["cal:view:month"]
+title = "Switch to Month Grid View"
+short = "Switches the expanded Calendar view to the full monthly calendar matrix alongside the Day Inspector."
+
+["cal:add_hour:*"]
+title = "Create Event at This Hour"
+short = "Starts a new local event on the selected date pre-filled with this 1-hour slot (e.g., `14:00-15:00`). Supports wheel scrolling."
+
+["cal:slot:*:*"]
+title = "Create Event in Empty Slot"
+short = "Selects this day and starts a new local event pre-filled for this exact hour slot. Supports wheel scrolling."
+
+["cal:wscroll"]
+title = "Scroll Week Timeline Hours"
+short = "Mouse-wheel scroll zone over the Week grid: scrolling up or down shifts the visible 13-hour window across `00:00–23:00`."
+
+["cal:wscroll:up"]
+title = "Scroll Week Grid Earlier"
+short = "Shifts the visible 13-hour Week timeline window 1 hour earlier toward `00:00`."
+
+["cal:wscroll:down"]
+title = "Scroll Week Grid Later"
+short = "Shifts the visible 13-hour Week timeline window 1 hour later toward `23:00`."

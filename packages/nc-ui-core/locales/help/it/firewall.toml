@@ -1,0 +1,209 @@
+# Catalogo Aiuto Azioni NC-UI — Firewall / nftables (Italiano)
+# Copre: cc_firewall_chains.py, cc_firewall_connections.py, cc_firewall_rules.py
+
+# ==============================================================================
+# FIREWALL -> REGOLE (`panels/cc_firewall_rules.py`)
+# ==============================================================================
+["cc_fw:apply_live"]
+title = "Applica Ruleset Live (`nft -f`)"
+short = "Valida la tabella `table inet filter` generata con `nft -c -f` e la carica subito nel kernel via `pkexec` senza sovrascrivere `/etc/nftables.conf`."
+verbose = "Compila lo script `nftables` completo (`define LAN_NETWORK`, chain base `input`/`forward`/`output` e regole attive), esegue il controllo sintassi `nft -c -f` e applica `nft -f` atomicamente."
+diagram = "firewall_nft"
+diagram_focus = "apply"
+
+["cc_fw:save_etc"]
+title = "Salva su `/etc/nftables.conf` e Applica"
+short = "Valida il ruleset, lo scrive in `/etc/nftables.conf` (`0644`) e lo carica nel kernel rendendolo persistente al riavvio."
+verbose = "Dopo l'esito positivo di `nft -c -f`, usa `pkexec` per copiare lo script generato su `/etc/nftables.conf` (`chmod 644`) ed eseguire subito `nft -f /etc/nftables.conf`."
+diagram = "firewall_nft"
+diagram_focus = "apply"
+
+["cc_fw:dry_run"]
+title = "Verifica Sintassi Dry-Run (`nft -c -f`)"
+short = "Compila la bozza di `table inet filter` e la controlla con `nft -c -f` senza alterare le regole attive nel kernel."
+verbose = "Passaggio di verifica sicuro prima dell'applicazione: rileva subito errori su porte, prefissi CIDR, `limit rate` o hook di chain."
+
+["cc_fw:sync_etc"]
+title = "Ricarica Regole da `/etc/nftables.conf`"
+short = "Scarta le modifiche non salvate in NC-UI reimportando `$LAN_NETWORK`, policy delle chain e regole da `/etc/nftables.conf`."
+
+["cc_fw:flt_clear"]
+title = "Azzera Filtri Regole"
+short = "Rimuove tutti i filtri attivi per direzione, protocollo, sorgente, porta, verdetto e testo dalla tabella delle regole."
+
+["cc_fw:composer_new"]
+title = "Nuova Regola Firewall.."
+short = "Apre il compositore con una bozza pulita per definire chain, protocollo, criteri di match e verdetto."
+
+["cc_fw:flt_cycle:dir"]
+title = "Filtra Regole per Direzione Chain"
+short = "Ruota il filtro direzione (`ALL` → `IN` → `OUT` → `FWD`) sulle chain `input`, `output` e `forward`."
+
+["cc_fw:flt_cycle:proto"]
+title = "Filtra Regole per Protocollo"
+short = "Ruota il filtro sulla colonna protocollo (`ALL` → `TCP` → `UDP` → `ICMP` → `ANY`)."
+
+["cc_fw:flt_cycle:verdict"]
+title = "Filtra Regole per Verdetto"
+short = "Ruota il filtro sulla colonna verdetto (`ALL` → `ACCEPT` → `DROP` → `REJECT` → `LOG`)."
+
+["cc_fw:flt_inline:src"]
+title = "Filtra Regole per Sorgente / Interfaccia.."
+short = "Apre il filtro inline sulla colonna sorgente confrontando `ip saddr`/`ip6 saddr` o interfaccia (`iifname`/`oifname`)."
+
+["cc_fw:flt_inline:port"]
+title = "Filtra Regole per Porta Destinazione.."
+short = "Apre il filtro inline sulla porta di destinazione (`dport`) di ogni regola."
+
+["cc_fw:flt_inline:text"]
+title = "Filtra Regole per Commento / Conntrack.."
+short = "Apre il filtro inline confrontando `ct state`, `limit rate` e commenti delle regole."
+
+["cc_fw:sel_rule:*"]
+title = "Ispeziona Regola Firewall"
+short = "Seleziona questa regola per visualizzarne i criteri completi, la riga `nftables` compilata e i comandi di riordino o modifica."
+
+["cc_fw:toggle:*"]
+title = "Abilita / Disabilita Regola"
+short = "Attiva o disattiva l'inclusione di questa regola nel ruleset `table inet filter` generato (`firewall_rules.json`)."
+verbose = "Le regole disabilitate restano salvate in `~/.config/nc-ui/firewall_rules.json` per poterle riattivare in seguito; premi Applica o Salva per aggiornare il kernel."
+
+["cc_fw:edit:*"]
+title = "Modifica Regola Selezionata"
+short = "Carica questa regola nel Compositore per modificarne chain, protocollo, campi di match o verdetto."
+
+["cc_fw:move:*:-1"]
+title = "Sposta Regola Su (Priorità Maggiore)"
+short = "Anticipa questa regola di una posizione; in `nftables` le regole precedenti nella stessa chain vengono valutate per prime."
+verbose = "La valutazione dei pacchetti in ogni hook (`input`, `forward`, `output`) procede dall'alto verso il basso fino al primo verdetto terminale (`accept`/`drop`/`reject`)."
+
+["cc_fw:move:*:1"]
+title = "Sposta Regola Giù (Priorità Minore)"
+short = "Posticipa questa regola di una posizione nell'ordine di valutazione prima della policy predefinita della chain."
+
+["cc_fw:del:*"]
+title = "Elimina Regola Firewall"
+short = "Rimuove questa regola dalla lista locale `firewall_rules.json`; usa Applica o Salva per aggiornare il kernel live."
+
+["cc_fw:add_rule"]
+title = "Salva Regola nella Tabella Bozza"
+short = "Salva la regola creata o modificata nella lista NC-UI mostrandone la sintassi `nftables` compilata."
+verbose = "Aggiunge o aggiorna la voce in `firewall_rules.json` formattando `iifname`/`oifname`, `ct state`, `saddr`, `dport`, `limit rate` e verdetto. Applica o Salva per caricarla nel kernel."
+
+["cc_fw:draft_cancel"]
+title = "Chiudi Compositore Regola"
+short = "Chiude il riquadro di composizione scartando le modifiche non confermate della bozza corrente."
+
+["cc_fw:draft_cycle:chain"]
+title = "Scegli Chain Target (`input` / `output` / `forward`)"
+short = "Ruota la chain hook di `table inet filter` (`IN`, `OUT` o `FWD`) in cui verrà inserita la regola."
+
+["cc_fw:draft_cycle:proto"]
+title = "Scegli Protocollo Regola"
+short = "Ruota il selettore di protocollo L3/L4 (`TCP`, `UDP`, `ICMP` o `ANY`) per la bozza."
+
+["cc_fw:draft_cycle:verdict"]
+title = "Scegli Verdetto Regola"
+short = "Ruota l'azione (`ACCEPT`, `DROP`, `REJECT` o `LOG`) applicata quando un pacchetto soddisfa i criteri."
+verbose = "`ACCEPT` consente il pacchetto, `DROP` lo scarta silenziosamente, `REJECT` risponde con errore ICMP/TCP reset e `LOG` registra un contatore dmesg proseguendo la valutazione."
+
+["cc_fw:draft_cycle:ct"]
+title = "Scegli Stato Conntrack (`ct state`)"
+short = "Ruota il match stateful `ct state` (`any`, `established,related`, `new`, `invalid`) nella regola in bozza."
+verbose = "Sfrutta il connection tracking Netfilter di Linux per accettare automaticamente il traffico di ritorno di sessioni già autorizzate prima della policy `drop`."
+
+["cc_fw:draft_inline:src"]
+title = "Modifica IP / CIDR Sorgente o `$LAN_NETWORK`.."
+short = "Apre l'input inline per filtrare `ip saddr` / `ip6 saddr` (CIDR IPv4/IPv6 o `$LAN_NETWORK`), oppure lascia vuoto per qualsiasi."
+
+["cc_fw:draft_inline:dport"]
+title = "Modifica Porte Destinazione.."
+short = "Apre l'input inline per indicare una o più porte TCP/UDP separate da virgola (es. `22`, `80,443`)."
+
+["cc_fw:draft_inline:iface"]
+title = "Modifica Interfaccia di Rete.."
+short = "Apre l'input inline con autocompletamento interfacce per vincolare la regola a `iifname` o `oifname` (es. `lo`, `eth0`, `wg0`)."
+
+["cc_fw:draft_inline:limit"]
+title = "Modifica Rate Limit.."
+short = "Apre l'input inline per aggiungere un limite di frequenza `nftables` `limit rate` (es. `10/minute` o `5/second`)."
+
+["cc_fw:draft_inline:comment"]
+title = "Modifica Commento / Prefisso Log.."
+short = "Apre l'input inline per inserire un commento descrittivo (oppure il prefisso `[LOG]` quando il verdetto è `LOG`)."
+
+# ==============================================================================
+# FIREWALL -> CHAIN & POLICY (`panels/cc_firewall_chains.py`)
+# ==============================================================================
+["cc_fw:svc_restart"]
+title = "Avvia / Riavvia `nftables.service`"
+short = "Riavvia l'unità systemd `nftables.service` tramite `pkexec` per ricaricare `/etc/nftables.conf`."
+
+["cc_fw:pol:*:drop"]
+title = "Imposta Policy Predefinita Chain: DROP"
+short = "Imposta la policy di fallback della chain base (`input`, `forward` o `output`) su `drop` quando nessuna regola corrisponde."
+verbose = "L'approccio default-deny (`policy drop`) blocca ogni pacchetto non espressamente autorizzato da una regola `ACCEPT` superiore; usa Applica o Salva per attivare nel kernel."
+diagram = "firewall_nft"
+diagram_focus = "policy"
+
+["cc_fw:pol:*:accept"]
+title = "Imposta Policy Predefinita Chain: ACCEPT"
+short = "Imposta la policy di fallback della chain base (`input`, `forward` o `output`) su `accept` quando nessuna regola corrisponde."
+verbose = "L'approccio default-allow (`policy accept`) lascia passare il traffico non intercettato (tipico su `output` salvo filtraggio restrittivo in uscita); premi Applica o Salva per attivare."
+
+["cc_fw:inline_lan"]
+title = "Modifica Subnet `$LAN_NETWORK`.."
+short = "Apre l'editor CIDR inline per la variabile `nftables` `$LAN_NETWORK` (predefinita `10.10.0.0/24`) usata dalle regole LAN."
+verbose = "Aggiorna `define LAN_NETWORK = <cidr>` in testa al file `nftables.conf` generato, propagando subito il nuovo prefisso a tutte le regole che usano `$LAN_NETWORK`."
+
+["cc_fw:preset:*"]
+title = "Attiva/Disattiva Preset Sicurezza / Servizio"
+short = "Abilita o disabilita questa regola predefinita `nftables` (loopback, scarto invalid, conntrack established, ICMP, SSH rate-limit, HTTP/S, Syncthing, LocalSend, log drop)."
+verbose = "Inserisce o attiva/disattiva la regola canonica in `firewall_rules.json`; verifica l'anteprima `/etc/nftables.conf` sottostante e premi Applica o Salva per attivare nel kernel."
+
+# ==============================================================================
+# FIREWALL -> CONNESSIONI LIVE (`panels/cc_firewall_connections.py`)
+# ==============================================================================
+["cc_fw:refresh"]
+title = "Aggiorna Connessioni Live (`ss -tunap`)"
+short = "Rilegge socket TCP/UDP attivi, porte in ascolto, peer remoti e processi proprietari tramite `ss -tunap`."
+
+["cc_fw:cflt_clear"]
+title = "Azzera Filtri Connessioni"
+short = "Ripristina tutti i filtri attivi per protocollo, stato socket, porta, peer remoto e processo."
+
+["cc_fw:cflt_cycle:proto"]
+title = "Filtra Connessioni per Protocollo"
+short = "Ruota il filtro protocollo (`ALL`, `TCP`, `UDP`) sulle voci lette da `ss -tunap`."
+
+["cc_fw:cflt_cycle:state"]
+title = "Filtra Connessioni per Stato Socket"
+short = "Ruota il filtro stato (`ALL`, `ESTAB`, `LISTEN`, `TIME-WAIT`, `SYN-SENT`) sui flussi live."
+
+["cc_fw:cflt_inline:port"]
+title = "Filtra Connessioni per Porta Locale.."
+short = "Apre il filtro inline su indirizzo/porta locale del socket (es. `22`, `443`, `53`)."
+
+["cc_fw:cflt_inline:peer"]
+title = "Filtra Connessioni per Peer Remoto.."
+short = "Apre il filtro inline su indirizzo IP o endpoint del peer remoto."
+
+["cc_fw:cflt_inline:proc"]
+title = "Filtra Connessioni per Processo.."
+short = "Apre il filtro inline sul nome del processo locale proprietario del socket."
+
+["cc_fw:sel_flow:*"]
+title = "Ispeziona Flusso Socket"
+short = "Seleziona questo flusso live per ispezionarne indirizzi locale/remoto, interfaccia, processo e azioni rapide di blocco."
+
+["cc_fw:quick_drop:port:*:*"]
+title = "Blocco Rapido Porta Locale (`input`)"
+short = "Crea una regola `DROP` prioritaria nella chain `input` per questo protocollo/porta locale e passa alle Regole."
+verbose = "Inserisce in cima a `firewall_rules.json` una regola `DROP` attiva per `proto` e `lport`; premi Applica Live nella scheda Regole per imporla subito in `nftables`."
+
+["cc_fw:quick_drop:ip:*:*"]
+title = "Blocco Rapido IP Peer Remoto (`input`)"
+short = "Crea una regola `DROP` prioritaria nella chain `input` per bloccare ogni pacchetto da questo IP remoto (`ip saddr` / `ip6 saddr`)."
+verbose = "Inserisce in cima a `firewall_rules.json` il blocco sull'host remoto selezionato; premi Applica Live nella scheda Regole per applicarlo subito al kernel."
+diagram = "firewall_nft"
+diagram_focus = "verdict"

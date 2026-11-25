@@ -1,0 +1,896 @@
+# NC-UI Action Help Catalog — Input Devices, Macros, Shortcuts & Controllers (English)
+# Covers: cc_input_mouse.py, cc_input_keyboard.py, cc_input_macros.py, cc_input_shortcuts.py, cc_input_controllers.py
+
+# ==============================================================================
+# INPUT -> MOUSE & CURSORS (`panels/cc_input_mouse.py`)
+# ==============================================================================
+["cc_mouse:flag:left-handed:1"]
+title = "Enable Left-Handed Mouse Buttons"
+short = "Swaps primary and secondary mouse buttons in `niri` (`left-handed`) and persists the flag in `config.kdl`."
+
+["cc_mouse:flag:left-handed:0"]
+title = "Disable Left-Handed Mouse Buttons"
+short = "Restores standard right-handed primary/secondary mouse button mapping in `config.kdl`."
+
+["cc_mouse:flag:natural-scroll:1"]
+title = "Enable Mouse Natural Scroll"
+short = "Reverses mouse wheel scroll direction in `niri` (`natural-scroll`) and saves it to `config.kdl`."
+
+["cc_mouse:flag:natural-scroll:0"]
+title = "Disable Mouse Natural Scroll"
+short = "Uses traditional wheel scroll direction (`natural-scroll` disabled) inside `niri`."
+
+["cc_mouse:flag:middle-emulation:1"]
+title = "Enable Middle-Click Emulation"
+short = "Emulates middle-button click when pressing left and right mouse buttons simultaneously (`middle-emulation` in `config.kdl`)."
+
+["cc_mouse:flag:middle-emulation:0"]
+title = "Disable Middle-Click Emulation"
+short = "Disables simultaneous left+right middle-click emulation in `niri`."
+
+["cc_mouse:inflag:focus-follows-mouse:1"]
+title = "Enable Focus Follows Mouse"
+short = "Automatically focuses whichever `niri` window sits under the pointer without clicking (`focus-follows-mouse`)."
+
+["cc_mouse:inflag:focus-follows-mouse:0"]
+title = "Disable Focus Follows Mouse"
+short = "Requires clicking a window or using keybinds to transfer keyboard focus in `niri`."
+
+["cc_mouse:sf:*"]
+title = "Set Mouse Scroll Factor"
+short = "Sets `scroll-factor` (`0.5x`–`2.0x`) inside the `mouse` block of `~/.config/niri/config.kdl`."
+
+["cc_mouse:accel*"]
+title = "Pointer Acceleration Speed (-1.0 to +1.0)"
+short = "Adjusts `libinput` `accel-speed` (`-1.00` slowest to `+1.00` fastest) in `niri`'s `mouse` configuration."
+verbose = "Writes `accel-speed <val>` into the `input { mouse { ... } }` section of `~/.config/niri/config.kdl` and triggers `niri` live reload."
+
+["cc_mouse:prof:adaptive"]
+title = "Acceleration Profile: Adaptive"
+short = "Enables `libinput` `accel-profile \"adaptive\"` so fast pointer flicks cover more screen distance."
+
+["cc_mouse:prof:flat"]
+title = "Acceleration Profile: Flat (Raw 1:1)"
+short = "Enables `libinput` `accel-profile \"flat\"` for linear 1:1 raw mouse tracking without velocity scaling."
+
+["cc_mouse:tp:tap:1"]
+title = "Enable Touchpad Tap-to-Click"
+short = "Enables `tap` inside `niri`'s `touchpad` configuration block."
+
+["cc_mouse:tp:tap:0"]
+title = "Disable Touchpad Tap-to-Click"
+short = "Requires physical button/clickpad press instead of light taps (`tap` removed from `config.kdl`)."
+
+["cc_mouse:tp:dwt:1"]
+title = "Enable Disable-While-Typing (DWT)"
+short = "Adds `dwt` to `niri`'s `touchpad` block to ignore accidental palm touches while typing."
+
+["cc_mouse:tp:dwt:0"]
+title = "Disable Disable-While-Typing"
+short = "Keeps the touchpad active while typing on the keyboard (`dwt` disabled)."
+
+["cc_mouse:tp:natural-scroll:1"]
+title = "Enable Touchpad Natural Scroll"
+short = "Enables two-finger natural content scrolling on the touchpad in `config.kdl`."
+
+["cc_mouse:tp:natural-scroll:0"]
+title = "Disable Touchpad Natural Scroll"
+short = "Uses classic scrollbar-direction scrolling on the touchpad."
+
+["cc_pers:cursor_size:*"]
+title = "Set Cursor Size (px)"
+short = "Sets XCursor / Wayland cursor size (`16px`–`48px`) in `niri`'s `cursor` block and GTK/XResources environment."
+
+["cc_pers:cursor_pick_open"]
+title = "Search Cursor Themes.."
+short = "Opens the inline searchable picker for installed XCursor themes across system and user icon directories."
+
+["cc_pers:cursor_pick_clear"]
+title = "Clear Cursor Search Filter"
+short = "Clears the search query in the cursor theme picker."
+
+["cc_pers:set_cursor:*"]
+title = "Activate Cursor Theme"
+short = "Applies this XCursor theme across `niri` (`xcursor-theme`), GTK settings, and live session environment."
+
+["cc_pers:pick_cursor_zip"]
+title = "Browse Cursor Archive (Yazi).."
+short = "Opens the embedded Yazi file browser to choose a `.zip` or `.tar.*` cursor pack for import."
+
+["cc_pers:prompt_cursor_zip"]
+title = "Import Cursor Archive Path.."
+short = "Prompts for a local archive path containing an XCursor/Windows `.cur`/`.ani` cursor bundle to install."
+
+["cc_pers:paste_cursor_zip"]
+title = "Paste Cursor Archive Path"
+short = "Reads a cursor archive file path from the Wayland clipboard and installs it into `~/.local/share/icons/`."
+
+["cc_pers:del_cursor:*"]
+title = "Delete User Cursor Theme"
+short = "Deletes this user-installed cursor theme folder from `~/.local/share/icons/` (and `~/.config/nc-ui/cursors/`)."
+
+# ==============================================================================
+# INPUT -> KEYBOARD & LAYOUTS (`panels/cc_input_keyboard.py`)
+# ==============================================================================
+["cc_kbd:rate*"]
+title = "Keyboard Repeat Rate (char/s)"
+short = "Sets `repeat-rate` (`10`–`100` chars/sec) in `niri`'s `keyboard` block in `config.kdl`."
+
+["cc_kbd:delay*"]
+title = "Keyboard Repeat Delay (ms)"
+short = "Sets `repeat-delay` (`150`–`1000` ms) before a held key starts auto-repeating in `niri`."
+
+["cc_kbd:numlock:on"]
+title = "Enable NumLock on Boot"
+short = "Adds `numlock` inside `niri`'s `keyboard` config block so NumLock activates automatically at session start."
+
+["cc_kbd:numlock:off"]
+title = "Disable NumLock on Boot"
+short = "Removes `numlock` from `niri`'s `keyboard` config block."
+
+["cc_kbd:track:global"]
+title = "Track Keyboard Layout: Global"
+short = "Shares one active XKB keyboard layout globally across every window (`track-layout \"global\"`)."
+
+["cc_kbd:track:window"]
+title = "Track Keyboard Layout: Per-Window"
+short = "Remembers each window's active XKB layout independently (`track-layout \"window\"`) in `niri`."
+
+["cc_kbd:test_inline"]
+title = "Typing Repeat Test Field.."
+short = "Opens an inline text box to feel the live key repeat delay and repeat speed immediately."
+
+["cc_kbd:preset:fast"]
+title = "Apply Gaming / Fast Repeat Preset"
+short = "Sets `repeat-rate 50` and `repeat-delay 200` ms in `niri`'s `config.kdl`."
+
+["cc_kbd:preset:std"]
+title = "Apply Standard Repeat Preset"
+short = "Restores balanced `repeat-rate 25` and `repeat-delay 600` ms in `niri`'s `config.kdl`."
+
+["cc_kbd:validate"]
+title = "Validate `niri` Config (`niri validate`)"
+short = "Runs `niri validate` against `~/.config/niri/config.kdl` to verify KDL syntax and keyboard/bind blocks."
+
+["cc_kbd:cap_start:inspector"]
+title = "Start In-GUI Key Inspector"
+short = "Captures your next keystroke inside NC-UI and displays its `niri` combo, XKB keysym/hex, Linux `evdev` keycode, and modifiers."
+
+["cc_kbd:cap_stop"]
+title = "Stop Key Capture"
+short = "Cancels the active modal key capture listener without changing any shortcut or macro draft."
+
+["cc_kbd:use_inspected"]
+title = "Send Captured Key to Shortcut Builder"
+short = "Copies the inspected key combination into the Shortcuts tab composer and switches directly to Shortcuts."
+
+["cc_kbd:launch_wev"]
+title = "Launch `wev` (Wayland Event Viewer)"
+short = "Opens a terminal running `wev` to inspect raw Wayland keyboard, pointer, and XKB keysym events."
+
+["cc_kbd:launch_libinput"]
+title = "Launch `libinput debug-events`"
+short = "Opens a terminal running `libinput debug-events` to trace low-level kernel/libinput device events."
+
+["cc_kbd:launch_xkbcli"]
+title = "Launch `xkbcli interactive-wayland`"
+short = "Opens a terminal running `xkbcli interactive-wayland` to inspect live XKB keymap state and compose rules."
+
+["cc_kbd:cycle_layout"]
+title = "Cycle Active XKB Layout"
+short = "Switches to the next configured keyboard layout via `niri msg action switch-layout next`."
+
+["cc_kbd:switch_layout:*"]
+title = "Activate Keyboard Layout Now"
+short = "Switches `niri` immediately to this XKB layout index (`niri msg action switch-layout <idx>`)."
+
+["cc_kbd:move_layout:*:-1"]
+title = "Move XKB Layout Earlier"
+short = "Moves this layout earlier in `xkb { layout \"...\"; }` inside `config.kdl`, promoting it toward the primary default slot."
+
+["cc_kbd:move_layout:*:1"]
+title = "Move XKB Layout Later"
+short = "Moves this layout one slot later in `xkb { layout \"...\"; }` inside `config.kdl`."
+
+["cc_kbd:rem_layout:*"]
+title = "Remove XKB Layout"
+short = "Removes this layout code from `niri`'s `xkb { layout \"...\"; }` list (disabled when only one layout remains)."
+
+["cc_kbd:layout_search_open"]
+title = "Search XKB Layouts.."
+short = "Opens inline search across system XKB layout codes and names (e.g., `us`, `it`, `de`, `fr`, `jp`)."
+
+["cc_kbd:layout_search_clear"]
+title = "Clear XKB Layout Search"
+short = "Clears the active XKB layout search query."
+
+["cc_kbd:add_layout:*"]
+title = "Add XKB Layout to `config.kdl`"
+short = "Appends this XKB layout code to `niri`'s `xkb { layout \"...\"; }` configuration and reloads Niri."
+
+["cc_kbd:variant:*"]
+title = "Set XKB Layout Variant"
+short = "Writes `variant \"<v>\"` (`Default`, `nodeadkeys`, `intl`, `dvorak`, or `colemak`) inside `niri`'s `xkb` block."
+
+["cc_kbd:ui_lang:en"]
+title = "Switch NC-UI Language: English"
+short = "Switches NC-UI interface text and hover help immediately to English."
+
+["cc_kbd:ui_lang:it"]
+title = "Switch NC-UI Language: Italiano"
+short = "Switches NC-UI interface text and hover help immediately to Italian."
+
+["cc_kbd:toggle_opt:*"]
+title = "Toggle XKB Option Flag"
+short = "Toggles this XKB option (`grp:alt_shift_toggle`, `grp:win_space_toggle`, `caps:escape`, `caps:swapescape`, `compose:ralt`) in `config.kdl`."
+
+# ==============================================================================
+# INPUT -> MACROS (`panels/cc_input_macros.py`)
+# ==============================================================================
+["cc_kbd:lib_flt:all"]
+title = "Show All Macros"
+short = "Lists every saved `/dev/uinput` macro in your macro library regardless of trigger binding."
+
+["cc_kbd:lib_flt:bound"]
+title = "Filter Bound Macros Only"
+short = "Shows only macros bound to a `niri` keyboard shortcut or mapped to a gamepad control."
+
+["cc_kbd:lib_search_open"]
+title = "Search Macro Library.."
+short = "Filters saved macros live by macro name or bound `niri` shortcut combo."
+
+["cc_kbd:lib_search_clear"]
+title = "Clear Macro Search"
+short = "Clears the macro library filter query."
+
+["cc_kbd:macro_new"]
+title = "Create New Macro"
+short = "Opens a blank macro draft in the Macro Studio with default timing and safety settings."
+
+["cc_kbd:macro_dup"]
+title = "Duplicate Selected Macro"
+short = "Clones the currently loaded macro draft into a new editable copy."
+
+["cc_kbd:macro_export"]
+title = "Export Macros JSON"
+short = "Exports your macro definitions to a shareable JSON file."
+
+["cc_kbd:macro_load:*"]
+title = "Load Macro into Studio"
+short = "Loads this macro into the Macro Studio timeline and step inspector for editing or testing."
+
+["cc_kbd:run_macro:*"]
+title = "Run Macro Now (`/dev/uinput`)"
+short = "Executes this macro immediately via the `/dev/uinput` virtual keyboard injector."
+
+["cc_kbd:bind_macro:*"]
+title = "Bind Macro to Niri Shortcut"
+short = "Loads this macro and jumps to trigger binding so a `niri` hotkey invokes it."
+
+["cc_kbd:del_macro:*"]
+title = "Delete Macro"
+short = "Deletes this macro from the local macro store (and unbinds any Niri trigger if requested)."
+
+["cc_kbd:unlock_uinput"]
+title = "Unlock `/dev/uinput` Access"
+short = "Configures udev/group permissions so NC-UI's macro and gamepad mapper engines can emit virtual events via `/dev/uinput`."
+verbose = "Without write permission on `/dev/uinput`, neither macro replay nor virtual gamepad-to-keyboard/mouse injection can create virtual kernel input devices."
+diagram = "input_pipeline"
+diagram_focus = "macro"
+
+["cc_kbd:macro_inline_name"]
+title = "Rename Macro.."
+short = "Opens inline input to edit the name of the current macro draft."
+
+["cc_kbd:cap_start:macro_trigger"]
+title = "Capture Macro Trigger Shortcut"
+short = "Arms modal key capture to record the hotkey combo that will trigger this macro in `niri`."
+
+["cc_kbd:macro_inline_combo"]
+title = "Type Trigger Combo.."
+short = "Opens inline input to type a `niri` trigger combo manually (e.g., `Mod+Shift+G`)."
+
+["cc_kbd:macro_bind_draft"]
+title = "Bind Draft Trigger in `config.kdl`"
+short = "Writes a `niri` `spawn` binding in `~/.config/niri/config.kdl` that runs this macro by ID and reloads `niri`."
+
+["cc_kbd:macro_unbind_draft"]
+title = "Unbind Draft Trigger from `config.kdl`"
+short = "Removes this macro's trigger keybinding from `~/.config/niri/config.kdl` while keeping the macro saved."
+
+["cc_ctrl:open_from_macro"]
+title = "Open Controller Mapper"
+short = "Switches to the Controllers tab (`Mapping` workbench) to inspect or edit gamepad buttons bound to this macro."
+
+["cc_kbd:macro_rec_start"]
+title = "Record New Macro Sequence"
+short = "Starts live keystroke & timing capture (replacing current draft steps) until you press the configured Panic Key (`F12` or `Pause`)."
+
+["cc_kbd:macro_rec_append"]
+title = "Record & Append Steps"
+short = "Records additional live keystrokes and appends them after the existing steps in the timeline."
+
+["cc_kbd:macro_rec_stop"]
+title = "Stop Macro Recording"
+short = "Stops live macro key recording immediately and populates the visual Cairo timeline."
+
+["cc_kbd:macro_test_sandbox"]
+title = "Test Macro in Safe Sandbox Pad"
+short = "Replays the current draft steps into the local Sandbox Pad field without sending real `/dev/uinput` events to other apps."
+
+["cc_kbd:macro_run_engine"]
+title = "Run Draft Live (`/dev/uinput`)"
+short = "Executes the current macro draft through the `/dev/uinput` engine using the configured countdown, speed, and repeat mode."
+
+["cc_kbd:macro_panic_stop"]
+title = "PANIC STOP Macro Engine"
+short = "Aborts any running macro loop immediately and releases all held virtual keys on `/dev/uinput`."
+
+["cc_kbd:sandbox_inline"]
+title = "Focus Macro Sandbox Pad.."
+short = "Opens the inline Sandbox Pad input field so you can test typed macro output safely inside NC-UI."
+
+["cc_kbd:sandbox_clear"]
+title = "Clear Sandbox Output"
+short = "Clears the captured test output text from the Macro Sandbox Pad."
+
+["cc_kbd:step_inline_add"]
+title = "Add Manual Key Step.."
+short = "Opens inline input to insert a step as `KEY, delay_ms, hold_ms` (for example `W, 50, 80`)."
+
+["cc_kbd:macro_inline_text"]
+title = "Insert Text Sequence.."
+short = "Converts a typed text string into sequential `/dev/uinput` key-press steps."
+
+["cc_kbd:macro_norm"]
+title = "Normalize Step Timings (35 ms)"
+short = "Normalizes wait delays and hold durations across all steps to a clean 35 ms rhythm."
+
+["cc_kbd:macro_clear_steps"]
+title = "Clear All Macro Steps"
+short = "Deletes every step from the current macro draft timeline."
+
+["cc_kbd:step_select:*"]
+title = "Select Timeline Step"
+short = "Selects this key step in the Cairo timeline and loads its `evdev` keycode and wait/hold timings into the Step Inspector."
+
+["cc_kbd:step_set_timing:*:*:*"]
+title = "Commit Dragged Step Timing"
+short = "Saves updated `delay_ms` and `hold_ms` values committed directly from dragging handles on the Cairo visual timeline."
+
+["cc_kbd:step_move:*:-1"]
+title = "Move Macro Step Earlier"
+short = "Swaps the selected key step one position earlier in the playback sequence."
+
+["cc_kbd:step_move:*:1"]
+title = "Move Macro Step Later"
+short = "Swaps the selected key step one position later in the playback sequence."
+
+["cc_kbd:step_dup:*"]
+title = "Duplicate Macro Step"
+short = "Inserts a copy of the selected step immediately after it in the macro sequence."
+
+["cc_kbd:step_del:*"]
+title = "Delete Macro Step"
+short = "Removes the selected step from the macro timeline."
+
+["cc_kbd:step_nudge:*:delay_ms:-10"]
+title = "Decrease Pre-Step Wait (-10 ms)"
+short = "Reduces the pause before this key press by 10 ms."
+
+["cc_kbd:step_nudge:*:delay_ms:10"]
+title = "Increase Pre-Step Wait (+10 ms)"
+short = "Increases the pause before this key press by 10 ms."
+
+["cc_kbd:step_nudge:*:hold_ms:-10"]
+title = "Decrease Key Hold (-10 ms)"
+short = "Shortens how long this key stays held down by 10 ms."
+
+["cc_kbd:step_nudge:*:hold_ms:10"]
+title = "Increase Key Hold (+10 ms)"
+short = "Extends how long this key stays held down by 10 ms."
+
+["cc_kbd:step_inline_edit:*"]
+title = "Edit Step Exact Timings.."
+short = "Opens inline input to enter exact `delay_ms, hold_ms` integers for this step."
+
+["cc_kbd:macro_tmode:*"]
+title = "Set Macro Timing Mode"
+short = "Selects how inter-step delays are replayed: `Recorded` (original cadence), `Fixed` (uniform ms), or `Zero` (0 ms instant burst)."
+
+["cc_kbd:macro_fixedms:*"]
+title = "Set Fixed Step Delay (ms)"
+short = "Sets the uniform inter-step delay (`15ms`–`200ms`) used when Timing Mode is `Fixed`."
+
+["cc_kbd:macro_speed:*"]
+title = "Set Playback Speed Multiplier"
+short = "Scales all macro step timings by `0.5x`, `1.0x`, `2.0x`, or `5.0x`."
+
+["cc_kbd:macro_rep:once:1"]
+title = "Repeat Mode: Run Once (1x)"
+short = "Executes the macro sequence a single time per trigger."
+
+["cc_kbd:macro_rep:count:3"]
+title = "Repeat Mode: 3x Burst"
+short = "Repeats the macro sequence 3 times per trigger."
+
+["cc_kbd:macro_rep:count:10"]
+title = "Repeat Mode: 10x Burst"
+short = "Repeats the macro sequence 10 times per trigger."
+
+["cc_kbd:macro_inline_rep"]
+title = "Custom Repeat Count.."
+short = "Opens inline input to set an arbitrary integer repeat count `N`."
+
+["cc_kbd:macro_rep:toggle_loop:1"]
+title = "Repeat Mode: Toggle Loop (∞)"
+short = "Loops the macro continuously until triggered again or halted by the Panic Key."
+
+["cc_kbd:macro_panic_key:*"]
+title = "Set Macro Panic Abort Key"
+short = "Selects the emergency hardware abort key (`F12` or `Pause`) monitored during recording and live macro loops."
+
+["cc_kbd:macro_countdown:*"]
+title = "Set Pre-Run Countdown"
+short = "Sets a delay (`0s`, `2s`, `3s`, `5s`) before live playback starts so you can focus the target window."
+
+["cc_kbd:macro_reset_draft"]
+title = "Discard Macro Draft Changes"
+short = "Reverts unsaved macro timeline, timing, and trigger edits back to the last saved version."
+
+["cc_kbd:macro_save_draft"]
+title = "Save Macro Draft"
+short = "Persists the current macro steps, timing mode, repeat rules, and metadata to disk."
+
+# ==============================================================================
+# INPUT -> SHORTCUTS (`panels/cc_input_shortcuts.py`)
+# ==============================================================================
+["cc_kbd:bind_new"]
+title = "New Niri Keybinding.."
+short = "Clears the Shortcut Composer draft to create a brand-new `niri` keybinding in `config.kdl`."
+
+["cc_kbd:restore_defaults:*"]
+title = "Restore Default Niri Shortcuts"
+short = "Checks default `niri` bindings for this scope (`window`, `system`, or `apps`) and launches the Conflict Wizard if any user binds overlap."
+verbose = "Compares canonical Nightcity/Niri shortcuts against your active `config.kdl` `binds` block; overlapping keys open the Conflict Resolution Wizard rather than silently overwriting custom bindings."
+
+["cc_kbd:reload_niri"]
+title = "Reload Niri Configuration"
+short = "Invokes `niri msg action load-config-file` so manual or saved edits in `config.kdl` take effect immediately."
+
+["cc_kbd:bind_flt:*"]
+title = "Filter Keybindings by Category"
+short = "Filters the active keybindings table by `ALL`, `Window`, `System`, `Apps`, `Custom`, or `Orphans / Unbound`."
+
+["cc_kbd:bind_page:*"]
+title = "Switch Keybindings Page"
+short = "Navigates to the previous or next page of active `niri` keybindings."
+
+["cc_kbd:bind_flt_open"]
+title = "Search Shortcuts.."
+short = "Filters `niri` shortcuts live by key combo, category, action name, or shell command."
+
+["cc_kbd:bind_flt_clear"]
+title = "Clear Shortcut Search"
+short = "Clears the active shortcut filter string."
+
+["cc_kbd:bind_edit:*"]
+title = "Edit Keybinding in Composer"
+short = "Loads this active `niri` keybinding into the Shortcut Composer and Cairo Keycap Stage below."
+
+["cc_kbd:unbind:*"]
+title = "Unbind Shortcut (Save to Orphans)"
+short = "Removes this key combo from `config.kdl` while preserving its action/command in the Orphans list for easy rebinding later."
+
+["cc_kbd:del_bind:*"]
+title = "Delete Keybinding Permanently"
+short = "Deletes this keybinding directly from `~/.config/niri/config.kdl` and reloads `niri`."
+
+["cc_kbd:bind_orphan:*"]
+title = "Rebind Orphaned Action"
+short = "Loads this unbound action into the Shortcut Composer and starts key capture so you can assign a new shortcut."
+
+["cc_kbd:del_orphan:*"]
+title = "Remove Orphaned Action"
+short = "Deletes this saved orphaned action from the local unbound-actions store."
+
+["cc_kbd:bind_std_default:*"]
+title = "Restore Standard Default Combo"
+short = "Restores this missing standard `niri` action using its original default key combination."
+
+["cc_kbd:bind_std_pick:*"]
+title = "Bind Standard Action to Custom Combo"
+short = "Loads this unbound standard `niri` action into the Shortcut Composer so you can pick a custom shortcut."
+
+["cc_kbd:cap_start:shortcut_combo"]
+title = "Capture Shortcut Keys"
+short = "Listens for your next modifier + key chord (`Mod+Shift+E`, etc.) and populates the Shortcut Composer and Cairo Keycap Stage."
+
+["cc_kbd:bind_inline_combo"]
+title = "Type Shortcut Combo.."
+short = "Opens inline input to type a `niri` key combination manually (e.g., `Mod+Shift+G`)."
+
+["cc_kbd:bind_clear"]
+title = "Clear Shortcut Draft"
+short = "Resets the Shortcut Composer draft (key combo, action, and edit target)."
+
+["cc_kbd:bind_mode:standard"]
+title = "Action Source: Standard Niri Action"
+short = "Selects a built-in `niri` compositor action (`close-window`, `focus-column-left`, `power-off-monitors`, etc.)."
+
+["cc_kbd:bind_mode:spawn"]
+title = "Action Source: Custom Shell Command"
+short = "Binds the key chord to a `spawn` shell command or executable."
+
+["cc_kbd:bind_mode:ncui"]
+title = "Action Source: NC-UI Panel / Popup"
+short = "Binds the key chord directly to an `nc-ctl` popup or Control Center section launcher."
+
+["cc_kbd:bind_std_cat:*"]
+title = "Select Standard Action Category"
+short = "Switches the standard `niri` action grid between `Window`, `System`, and `Apps` presets."
+
+["cc_kbd:bind_std_act:*"]
+title = "Select Standard Niri Action"
+short = "Assigns this built-in `niri` compositor action to the Shortcut Composer draft."
+
+["cc_kbd:bind_prompt_cmd"]
+title = "Set Custom `spawn` Command.."
+short = "Prompts for the executable and arguments to run via `niri`'s `spawn` action."
+
+["cc_kbd:bind_nc:*"]
+title = "Select Target NC-UI Panel"
+short = "Configures the shortcut draft to open this NC-UI Waybar popup or Control Center tab via `nc-ctl`."
+
+["cc_kbd:bind_save"]
+title = "Save Keybinding & Reload Niri"
+short = "Writes `<combo> { <action>; }` into `~/.config/niri/config.kdl` (checking conflicts) and reloads `niri` live."
+verbose = "Validates the generated KDL line; if the target key combo is already assigned to another action, offers conflict resolution instead of silently dropping your existing binding."
+diagram = "input_pipeline"
+diagram_focus = "bind"
+
+["cc_kbd:conflict_overwrite"]
+title = "Overwrite Conflicts (Save Displaced to Orphans)"
+short = "Installs the default shortcuts, saves every displaced user action into Orphans, and reloads `niri`."
+
+["cc_kbd:conflict_guided"]
+title = "Start Guided Rebind Wizard"
+short = "Steps through each conflicting shortcut one by one so you can press a replacement combo, orphan the old action, or skip the default."
+
+["cc_kbd:conflict_cancel"]
+title = "Cancel Conflict Wizard"
+short = "Aborts restoring defaults and leaves your existing `config.kdl` bindings untouched."
+
+["cc_kbd:conflict_step_orphan"]
+title = "Orphan Displaced Action & Continue"
+short = "Moves the displaced user binding to Orphans, restores this default shortcut, and advances the Conflict Wizard."
+
+["cc_kbd:conflict_step_skip"]
+title = "Skip Default & Keep User Binding"
+short = "Keeps your existing custom binding untouched for this conflict and advances to the next step."
+
+# ==============================================================================
+# INPUT -> CONTROLLERS & GAMEPAD MAPPER (`panels/cc_input_controllers.py`)
+# ==============================================================================
+["cc_ctrl:rescan"]
+title = "Rescan Controllers (`evdev` / `hidraw` / BT)"
+short = "Re-scans `/dev/input/event*`, `/sys/class/power_supply`, LEDs, and paired Bluetooth controllers."
+
+["cc_ctrl:open_bt"]
+title = "Open Bluetooth Pairing (Network Tab)"
+short = "Jumps to the Wi-Fi & Bluetooth section to pair or trust a wireless controller."
+
+["cc_ctrl:select:*"]
+title = "Select Controller Device"
+short = "Switches the live Blueprint test deck, calibration profile, and hardware readout to this controller."
+
+["cc_ctrl:bt_conn:*"]
+title = "Connect Bluetooth Controller"
+short = "Connects this paired controller via `bluetoothctl connect <mac>`."
+
+["cc_ctrl:bt_disc:*"]
+title = "Disconnect Bluetooth Controller"
+short = "Disconnects this wireless controller cleanly via `bluetoothctl disconnect <mac>`."
+
+["cc_ctrl:mp_view*"]
+title = "Switch Controller Workbench"
+short = "Toggles between `Hardware & Calibration` (live `evdev` blueprint, rumble, deadzones, Elite paddles) and `Input Mapping` (controller-to-keyboard/mouse `/dev/uinput` mapper)."
+
+["cc_ctrl:layout_next"]
+title = "Cycle Controller Blueprint Layout"
+short = "Cycles the visual blueprint & capability model (`Xbox`, `Xbox Elite`, `DualSense`, `DualShock 4`, `Switch Pro`, `Steam Deck`, `Generic`)."
+
+["cc_ctrl:layout:*"]
+title = "Select Controller Blueprint Model"
+short = "Sets the controller hardware model layout from the catalog table (unlocking Xbox Elite paddle/slot controls when `xbox_elite` is chosen)."
+
+["cc_ctrl:zero_center"]
+title = "Zero-Center Analog Sticks"
+short = "Samples current resting stick offsets as the software zero-center baseline to counter mild stick drift."
+
+["cc_ctrl:rumble_pct*"]
+title = "Rumble Intensity (0%–100%)"
+short = "Adjusts haptic force-feedback gain (`0%`–`100%`) used for rumble tests and saved in the controller profile."
+
+["cc_ctrl:rumble_test:left"]
+title = "Test Strong Left Motor"
+short = "Triggers a short low-frequency rumble pulse on the controller's left eccentric motor via `evdev` FF."
+
+["cc_ctrl:rumble_test:right"]
+title = "Test High-Frequency Right Motor"
+short = "Triggers a short high-frequency rumble pulse on the controller's right haptic motor."
+
+["cc_ctrl:rumble_test:dual"]
+title = "Test Dual-Motor Rumble"
+short = "Fires both left and right force-feedback motors together at the configured rumble percentage."
+
+["cc_ctrl:reset_elite"]
+title = "Reset Xbox Elite Hardware Settings"
+short = "Reverts unsaved Xbox Elite slot, P1–P4 paddle, trigger-lock, and stick-calculation edits to the saved profile."
+
+["cc_ctrl:elite_slot:*"]
+title = "Select Xbox Elite Profile Slot"
+short = "Selects the target onboard Xbox Elite profile slot (`Slot 0`–`Slot 3`) for paddle and trigger tuning."
+
+["cc_ctrl:paddle:*"]
+title = "Cycle Xbox Elite Paddle (`P1`–`P4`)"
+short = "Cycles the remapped button assigned to this rear Elite paddle (`None`, `A`, `B`, `X`, `Y`, `LB`, `RB`, `L3`, `R3`)."
+
+["cc_ctrl:trigger_lock:*"]
+title = "Set Hair-Trigger Lock Mode"
+short = "Configures physical/software trigger throw limits (`Full`, `Medium`, `Hair Trigger`) matching Elite rear lock switches."
+
+["cc_ctrl:stick_calc:*"]
+title = "Set Stick Calculation Curve"
+short = "Selects hardware stick response calculation (`Radial`, `Axial`, or `True Diagonal`) for Elite tuning."
+
+["cc_ctrl:reset_profile"]
+title = "Reset Controller Calibration Draft"
+short = "Discards unsaved response-curve, deadzone, threshold, trigger-cut, LED, and axis edits."
+
+["cc_ctrl:save_profile"]
+title = "Save Controller Calibration Profile"
+short = "Persists the controller's curve, deadzones, trigger cut, rumble gain, LED mode, and axis inversions to disk."
+
+["cc_ctrl:curve:*"]
+title = "Set Analog Response Curve"
+short = "Selects stick sensitivity shaping (`Linear`, `Aggressive`, `Smooth`, `Precision`, or `S-Curve`) plotted in the live Cairo curve graph."
+
+["cc_ctrl:inner_dz*"]
+title = "Inner Stick Deadzone (0%–40%)"
+short = "Ignores resting micro-deflections within this inner radial deadzone percentage to eliminate stick drift."
+
+["cc_ctrl:outer_th*"]
+title = "Outer Saturation Threshold (60%–100%)"
+short = "Caps 100% full deflection at this outer stick radius so worn sticks still reach maximum output."
+
+["cc_ctrl:trigger_cut*"]
+title = "Analog Trigger Cutoff (10%–100%)"
+short = "Sets the pull percentage (`10%`–`100%`) at which LT/RT analog triggers register 100% activation."
+
+["cc_ctrl:led:*"]
+title = "Set Controller LED Mode"
+short = "Sets controller LED behavior (`Auto`, `Solid`, `Pulse`, `Battery`, or `Off`) and applies via sysfs LEDs when supported."
+
+["cc_ctrl:toggle:inv_ly"]
+title = "Invert Left Stick Y-Axis"
+short = "Inverts vertical up/down output on the left analog stick in this controller profile."
+
+["cc_ctrl:toggle:inv_ry"]
+title = "Invert Right Stick Y-Axis"
+short = "Inverts vertical up/down output on the right analog stick (camera/aim Y-inversion)."
+
+["cc_ctrl:toggle:swap_sticks"]
+title = "Swap Left & Right Analog Sticks"
+short = "Swaps left and right stick X/Y axes in this controller profile."
+
+["cc_ctrl:gyro:*"]
+title = "Set Gyroscope Mode"
+short = "Selects IMU gyro handling (`Off`, `Always`, `Left Trigger Aim`, or `Right Trigger Aim`) for supported controllers."
+
+["cc_ctrl:export_json"]
+title = "Export Controller Profile JSON"
+short = "Exports the active controller calibration and hardware metadata as JSON."
+
+["cc_ctrl:mp_start"]
+title = "Start Gamepad Mapper Daemon"
+short = "Launches the background `/dev/uinput` gamepad-to-keyboard/mouse mapper engine for the active profile."
+verbose = "Reads the physical `evdev` gamepad, injects virtual keyboard/mouse/scroll/macro events at 125 Hz through `/dev/uinput`, and watches `niri` focused windows if Auto-Switch is enabled."
+diagram = "input_pipeline"
+diagram_focus = "mapper"
+
+["cc_ctrl:mp_stop"]
+title = "Stop Gamepad Mapper Daemon"
+short = "Stops the running `/dev/uinput` gamepad mapper daemon and releases any exclusive `EVIOCGRAB` device lock."
+
+["cc_ctrl:unlock_uinput"]
+title = "Unlock `/dev/uinput` for Mapper"
+short = "Grants write permission on `/dev/uinput` so the gamepad mapper can create virtual keyboard and mouse devices."
+
+["cc_ctrl:mp_next"]
+title = "Cycle Active Mapper Profile"
+short = "Switches the active gamepad-mapper profile in your saved profile library."
+
+["cc_ctrl:mp_new"]
+title = "Create Blank Mapper Profile"
+short = "Adds a new empty gamepad-mapping profile to edit and bind."
+
+["cc_ctrl:mp_dup"]
+title = "Duplicate Mapper Profile"
+short = "Clones the active mapper profile including its base/shift layers, stick modes, and window rules."
+
+["cc_ctrl:mp_ren"]
+title = "Rename Mapper Profile.."
+short = "Prompts for a new display name for the active gamepad-mapping profile."
+
+["cc_ctrl:mp_del"]
+title = "Delete Mapper Profile"
+short = "Deletes the active mapper profile (available whenever more than one profile exists)."
+
+["cc_ctrl:mp_tpl:*"]
+title = "Load Mapper Profile Template"
+short = "Populates the active profile with a curated layout preset (`FPS`, `Platformer`, `Twin-Stick`, or `Desktop`)."
+
+["cc_ctrl:mp_tpl:blank"]
+title = "Clear Profile to Blank Template"
+short = "Wipes all button and stick bindings on the active mapper profile back to an empty slate."
+
+["cc_ctrl:mp_select_prof:*"]
+title = "Select Mapper Profile from Catalog"
+short = "Switches the Blueprint Binding Editor and Matrix below to this saved mapper profile."
+
+["cc_ctrl:mp_set_actmode:auto"]
+title = "Activation Mode: Niri Auto-Switch"
+short = "Activates this profile automatically whenever the focused `niri` window matches its `app_id` or title rule."
+
+["cc_ctrl:mp_set_actmode:always"]
+title = "Activation Mode: Always Active"
+short = "Keeps the mapper running with the active profile globally regardless of which `niri` window has focus."
+
+["cc_ctrl:mp_set_actmode:fallback"]
+title = "Activation Mode: Fallback Profile"
+short = "Uses this profile automatically whenever no window-specific `app_id`/title rule matches the focused window."
+
+["cc_ctrl:mp_inline_app"]
+title = "Edit Window Match Rule (`app_id` / Title).."
+short = "Opens inline input to set a substring/regex matching the target `niri` window `app_id` (e.g., `steam_app_...`) or title."
+
+["cc_ctrl:mp_pick_win"]
+title = "Pick Active Niri Window"
+short = "Queries `niri msg -j windows` so you can select an open window's `app_id` without typing it manually."
+
+["cc_ctrl:mp_set_grab:1"]
+title = "Device Access: Exclusive Grab (`EVIOCGRAB`)"
+short = "Grabs the physical gamepad exclusively so games only see your remapped virtual keyboard/mouse instead of double inputs."
+
+["cc_ctrl:mp_set_grab:0"]
+title = "Device Access: Passthrough (Shared)"
+short = "Leaves the physical gamepad readable by games while also injecting mapped `/dev/uinput` events."
+
+["cc_ctrl:mp_sens*"]
+title = "Mapper Mouse Look Sensitivity (2–60)"
+short = "Adjusts virtual mouse pointer speed (`125 Hz` relative motion) when a stick is mapped to Mouse Look."
+
+["cc_ctrl:mp_turbo_next"]
+title = "Cycle Turbo Repeat Rate (Hz)"
+short = "Cycles the rapid-fire frequency (`Hz`) used by buttons configured with `Turbo` behavior."
+
+["cc_ctrl:mp_sel:*"]
+title = "Select Gamepad Control on Blueprint"
+short = "Selects this physical button, trigger, D-pad, stick, or Elite paddle for editing in the Binding Composer."
+
+["cc_ctrl:mp_unbind:*"]
+title = "Unbind Selected Control"
+short = "Clears the binding on the current layer (or resets a stick to `Off`) for this gamepad control."
+
+["cc_ctrl:mp_stick_mode:*"]
+title = "Set Analog Stick Mapping Mode"
+short = "Maps the selected analog stick to `Off`, `WASD (8-Way)`, `Arrow Keys`, `Mouse Look (125Hz)`, or `Scroll Wheel`."
+
+["cc_ctrl:mp_stick_thresh*"]
+title = "Stick-to-Key Activation Threshold (15%–80%)"
+short = "Sets how far the stick must be pushed before emitting digital `WASD` or `Arrow` key presses."
+
+["cc_ctrl:mp_stick_invy"]
+title = "Toggle Right-Stick Mouse Y-Inversion"
+short = "Inverts vertical cursor/camera movement when the right stick is mapped to `Mouse Look`."
+
+["cc_ctrl:mp_scroll_sens*"]
+title = "Stick Scroll Sensitivity (1–20)"
+short = "Adjusts virtual scroll-wheel tick rate when an analog stick is mapped to `Scroll` mode."
+
+["cc_ctrl:mp_layer:base"]
+title = "Edit Base Layer"
+short = "Edits the primary binding assigned to this control when no Dual-Layer Shift modifier button is held."
+
+["cc_ctrl:mp_layer:shift"]
+title = "Edit Shift Layer (Dual-Layer Chord)"
+short = "Edits the secondary action fired when holding your designated `Shift Modifier` button plus this control."
+
+["cc_ctrl:open_macros"]
+title = "Open Macro Studio"
+short = "Jumps to the Macros subtab to create or edit `/dev/uinput` key sequences usable as gamepad bindings."
+
+["cc_ctrl:mp_kind:key"]
+title = "Bind Type: Keyboard Key"
+short = "Maps this gamepad control to emit a virtual `/dev/uinput` keyboard key (`Hold`, `Tap`, `Toggle`, or `Turbo`)."
+
+["cc_ctrl:mp_kind:mouse"]
+title = "Bind Type: Mouse Button / Wheel"
+short = "Maps this gamepad control to a virtual mouse click (`LMB`, `RMB`, `MMB`, `M4`, `M5`) or scroll wheel notch."
+
+["cc_ctrl:mp_kind:macro"]
+title = "Bind Type: Macro Sequence"
+short = "Maps this gamepad control to trigger a saved Macro Studio sequence on `/dev/uinput`."
+
+["cc_ctrl:mp_kind:shift"]
+title = "Bind Type: Dual-Layer Shift Modifier"
+short = "Assigns this button as the hold-to-shift chord key that activates all `Shift` layer bindings on the controller."
+
+["cc_ctrl:mp_cap_key"]
+title = "Capture Keyboard Target Key"
+short = "Waits for your next keyboard press and binds that key to the selected gamepad control on the active layer."
+
+["cc_ctrl:mp_cap_stop"]
+title = "Cancel Key Capture"
+short = "Stops waiting for a keyboard target key without changing the current binding."
+
+["cc_ctrl:mp_quick_key:*"]
+title = "Quick-Assign Common Key"
+short = "Immediately binds this common key (`Space`, `Enter`, `Esc`, `Tab`, `Shift`, `Ctrl`) to the selected gamepad control."
+
+["cc_ctrl:mp_mode:*"]
+title = "Set Key/Mouse Hold Behavior"
+short = "Chooses how the virtual button behaves: `Hold` (mirrors press), `Tap` (single pulse), `Toggle` (latch on/off), or `Turbo` (rapid repeat)."
+
+["cc_ctrl:mp_bind_mouse:*"]
+title = "Assign Mouse Target"
+short = "Binds the selected gamepad control to `LMB`, `RMB`, `MMB`, `Mouse4`, `Mouse5`, `WheelUp`, or `WheelDown`."
+
+["cc_ctrl:mp_bind_macro:*"]
+title = "Assign Macro to Control"
+short = "Binds this saved Macro Studio sequence to the selected gamepad control on the active layer."
+
+["cc_ctrl:mp_cycle_macro"]
+title = "Cycle More Saved Macros"
+short = "Rotates through additional saved macros when more than 3 macros exist in your library."
+
+["cc_ctrl:mp_macro_mode:*"]
+title = "Set Macro Pad Trigger Mode"
+short = "Chooses whether pressing the bound gamepad button runs the macro `Once`, `While Held`, or `Toggle Loop`."
+
+["cc_ctrl:mp_bind_shift"]
+title = "Apply Dual-Layer Shift Modifier"
+short = "Commits this control as the profile's Dual-Layer `Shift` hold modifier button."
+
+["cc_ctrl:mp_flt:all"]
+title = "Show All Mapped Controls"
+short = "Displays all sticks, triggers, face buttons, D-pad, bumpers, and paddles in the Bindings Matrix."
+
+["cc_ctrl:mp_flt:sticks_triggers"]
+title = "Filter: Sticks & Triggers"
+short = "Filters the Bindings Matrix to `L-Stick`, `R-Stick`, `LT`, `RT`, `L3`, and `R3`."
+
+["cc_ctrl:mp_flt:face_dpad"]
+title = "Filter: Face Buttons & D-Pad"
+short = "Filters the Bindings Matrix to `A/B/X/Y` (or Cross/Circle/Square/Triangle), D-Pad, `Start`, `Select`, and `Guide`."
+
+["cc_ctrl:mp_flt:shoulders_paddles"]
+title = "Filter: Bumpers & Elite Paddles"
+short = "Filters the Bindings Matrix to `LB`, `RB`, and rear paddles `P1`–`P4`."
+
+["cc_ctrl:mp_page:*"]
+title = "Switch Matrix Page"
+short = "Moves to the previous or next page of controls in the Profile Bindings Matrix."
+
+["cc_ctrl:mp_row_bind:*"]
+title = "Focus Control in Binding Composer"
+short = "Selects this matrix row's control in the Binding Composer and Blueprint above for immediate editing."
+
+["cc_ctrl:mp_reset"]
+title = "Discard Unsaved Mapper Edits"
+short = "Reverts unsaved mapper profile edits back to the last saved configuration on disk."
+
+["cc_ctrl:mp_save"]
+title = "Save & Hot-Reload Mapper"
+short = "Saves the active mapper profile to disk and signals the running `/dev/uinput` mapper daemon to reload immediately."

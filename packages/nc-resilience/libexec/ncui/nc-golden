@@ -1,0 +1,2359 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-golden
+# Generalized Golden Image — Save, Restore, Re-Keying & Catalog Inspection
+# ==============================================================================
+
+CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+CFG_VAULT_MP="/nas"
+CFG_BACKUP_SUBDIR="ncui-vault"
+CFG_GOLDEN_SUBDIR="images"
+CFG_VG_NAME="vg0"
+CFG_UKI_PREFIX="nightcity"
+CFG_RECOVERY_UKI="nc-rescue.efi"
+
+load_golden_resilience_config() {
+    if [[ -r "$CONF_FILE" ]]; then
+        local sec="" line k v
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ -n "$line" ]] || continue
+            if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\]$ ]]; then
+                sec="${BASH_REMATCH[1]}"
+                continue
+            fi
+            if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*\"([^\"]*)\"$ ]]; then
+                k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+                case "${sec}.${k}" in
+                    vault.mountpoint)         [[ -n "$v" ]] && CFG_VAULT_MP="${v%/}" ;;
+                    vault.backup_root_subdir) [[ -n "$v" ]] && CFG_BACKUP_SUBDIR="${v#/}" && CFG_BACKUP_SUBDIR="${CFG_BACKUP_SUBDIR%/}" ;;
+                    snapshots.vg_name)        [[ -n "$v" ]] && CFG_VG_NAME="$v" ;;
+                    snapshots.uki_prefix)     [[ -n "$v" ]] && CFG_UKI_PREFIX="$v" ;;
+                    recovery.uki_name)        [[ -n "$v" ]] && CFG_RECOVERY_UKI="$v" ;;
+                    recovery.golden_subdir)   [[ -n "$v" ]] && CFG_GOLDEN_SUBDIR="${v#/}" && CFG_GOLDEN_SUBDIR="${CFG_GOLDEN_SUBDIR%/}" ;;
+                esac
+            fi
+        done < "$CONF_FILE"
+    fi
+    return 0
+}
+load_golden_resilience_config
+
+if [[ -n "${NC_GOLDEN_CATALOG_DIR:-}" ]]; then
+    DEFAULT_DIR="${NC_GOLDEN_CATALOG_DIR%/}"
+else
+    _sub="${CFG_BACKUP_SUBDIR:+${CFG_BACKUP_SUBDIR}/}${CFG_GOLDEN_SUBDIR}"
+    _sub="${_sub#/}"; _sub="${_sub%/}"
+    DEFAULT_DIR="${CFG_VAULT_MP%/}/${_sub}"
+fi
+NAS_MOUNT_SCRIPT="/usr/lib/ncui/sbin/nc-vault"
+CHROOT_SCRIPT="/usr/lib/ncui/sbin/nc-chroot"
+VG_NAME="${NC_VG_NAME:-${CFG_VG_NAME:-vg0}}"
+MNT_BASE="/run/golden-image-mnt"
+CRYPT_NAME="golden_crypt_target"
+
+SOURCE_DISK=""
+PART_EFI=""
+PART_LUKS=""
+CLI_LUKS_DEV=""
+MODE_ACTION=""
+
+AUTO_UNLOCKED=0
+SOURCE_UNLOCKED_VG=""
+RESTORE_IN_PROGRESS=0
+RESTORE_CRITICAL_PHASE=0
+UDEV_QUEUE_PAUSED=0
+ACTIVE_TARGET_VG=""
+TARGET_DISK_GLOBAL=""
+PROTECTED_PID=0
+READ_VAL=""
+INT_COUNT=0
+LAST_INT_TIME=0
+PAUSE_UI_UNTIL=0
+
+STAGING_BACKUP_DIR=""
+SAVE_COMPLETED=0
+RESOLVED_NAS_DIR=""
+LIVE_SNAP_VG=""
+declare -a LIVE_SNAP_LVS=()
+
+MAIN_UKI_NAME=""
+FALLBACK_UKI_NAME=""
+RECOVERY_UKI_NAME=""
+MAIN_VMLINUZ_NAME=""
+declare -a SECONDARY_UKI_NAMES=()
+declare -a EXCLUDED_EFI_PATTERNS=()
+
+DATA_LVS=("root" "var" "home")
+EMPTY_LVS=("log" "audit" "tmp" "vartmp" "pacmancache")
+TAR_SILENT_FLAGS=(--warning=no-file-ignored --warning=no-file-changed)
+CRYPT_STRICT_FLAGS=(--disable-external-tokens --disable-keyring)
+
+REQUIRED_CMDS=(
+    sgdisk cryptsetup dmsetup lvs vgs pvs lvcreate vgcreate pvcreate blkid
+    tar zstd sha256sum findmnt awk sed nproc cp dd pv wipefs partprobe
+    udevadm efibootmgr wc stat du df numfmt realpath sort tac cat pkill swapoff
+)
+
+C_RESET="\033[0m" C_BOLD="\033[1m" C_SLATE="\033[38;5;110m" C_MINT="\033[38;5;114m"
+C_PEACH="\033[38;5;216m" C_ROSE="\033[38;5;203m" C_LAVENDER="\033[38;5;146m" C_MUTED="\033[38;5;245m"
+
+ui_header()  { printf "\n%b==============================================================================%b\n%b %s%b\n%b==============================================================================%b\n" "$C_SLATE" "$C_RESET" "${C_BOLD}${C_SLATE}" "$1" "$C_RESET" "$C_SLATE" "$C_RESET"; }
+ui_section() { printf "\n%b------------------------------------------------------------------------------%b\n%b %s%b\n%b------------------------------------------------------------------------------%b\n" "$C_MUTED" "$C_RESET" "${C_BOLD}${C_LAVENDER}" "$1" "$C_RESET" "$C_MUTED" "$C_RESET"; }
+log_step()   { printf "\n%b[%s]%b %b%s%b\n" "${C_BOLD}${C_SLATE}" "$1" "$C_RESET" "$C_BOLD" "$2" "$C_RESET"; }
+log_sub()    { echo -e "  ${C_MINT}->${C_RESET} $1"; }
+log_ok()     { echo -e "  ${C_MINT}[+]${C_RESET} $1"; }
+log_warn()   { echo -e "  ${C_PEACH}[!] $1${C_RESET}"; }
+log_err()    { echo -e "${C_ROSE}[ERRORE] $1${C_RESET}" >&2; }
+
+show_help() {
+    local bin_name="${0##*/}"
+    cat <<EOF
+${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
+  sudo ${bin_name} [OPZIONI]
+
+${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
+  Motore unificato di salvataggio, ripristino e re-keying per Golden Image di
+  Nightcity / Duskcity Arch Linux. Include discovery dinamico dei volumi LUKS,
+  filtro intelligente di Main Kernel, Recovery e pulizia di limine.conf,
+  auto-mount del NAS, catalogo interattivo, verifica e smontaggio preventivo
+  dei dischi target, sblocco TPM2 (PCR 0+7), delega chroot a nc-chroot,
+  doppia barra di progresso reale (Lettura RAM -> Scrittura Disco), navigazione
+  con Backspace e protezione contro interruzioni (3x Ctrl+C).
+
+${C_BOLD}${C_SLATE}OPZIONI:${C_RESET}
+  ${C_MINT}-h, --help${C_RESET}               Mostra questo messaggio di aiuto ed esce.
+  ${C_MINT}-s, --save${C_RESET}               Cattura una nuova Golden Image con salvataggio atomico.
+  ${C_MINT}-r, --restore${C_RESET}            Scansiona il catalogo in ${DEFAULT_DIR} e avvia il ripristino.
+  ${C_MINT}-d, --device <dev>${C_RESET}       Specifica esplicitamente la partizione LUKS sorgente.
+
+${C_BOLD}${C_SLATE}NAVIGAZIONE DIMENSIONAMENTO (FASE RESTORE):${C_RESET}
+  Durante la definizione della geometria di EFI, LUKS e dei Logical Volumes:
+  - Digita il valore in GB (es. ${C_BOLD}16${C_RESET} o ${C_BOLD}16G${C_RESET}), oppure ${C_BOLD}min${C_RESET}, ${C_BOLD}max${C_RESET} / ${C_BOLD}100%${C_RESET}.
+  - Premi ${C_BOLD}BACKSPACE${C_RESET} a campo vuoto per tornare allo step precedente.
+
+${C_BOLD}${C_SLATE}VARIABILI D'AMBIENTE (OVERRIDE):${C_RESET}
+  ${C_PEACH}NC_LUKS_DEV${C_RESET}              Dispositivo LUKS esplicito
+  ${C_PEACH}NC_ESP_DEV${C_RESET}               Partizione EFI/ESP esplicita
+  ${C_PEACH}NC_VG_NAME${C_RESET}               Nome Volume Group LVM sorgente (default: vg0)
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# Segnali, Protezione 3x Ctrl+C e Cleanup Sicuro (Mai rm -rf su mountpoint)
+# ------------------------------------------------------------------------------
+terminate_protected_child() {
+    if (( PROTECTED_PID > 0 )) && kill -0 "$PROTECTED_PID" 2>/dev/null; then
+        pkill -TERM -P "$PROTECTED_PID" 2>/dev/null || true
+        kill -TERM "$PROTECTED_PID" 2>/dev/null || true
+        sleep 0.4
+        pkill -KILL -P "$PROTECTED_PID" 2>/dev/null || true
+        kill -KILL "$PROTECTED_PID" 2>/dev/null || true
+    fi
+}
+
+on_sigterm() {
+    echo ""
+    log_err "Segnale SIGTERM/SIGHUP ricevuto. Chiusura forzata e messa in sicurezza..."
+    terminate_protected_child
+    exit 143
+}
+
+on_sigint() {
+    if (( RESTORE_CRITICAL_PHASE != 1 )); then
+        echo ""
+        log_err "Interruzione da tastiera rilevata (SIGINT). Messa in sicurezza..."
+        terminate_protected_child
+        exit 130
+    fi
+    local now
+    now=$(date +%s)
+    if (( now - LAST_INT_TIME > 5 )); then INT_COUNT=1; else (( INT_COUNT++ )) || true; fi
+    LAST_INT_TIME=$now
+    PAUSE_UI_UNTIL=$(( now + 5 ))
+
+    if (( INT_COUNT == 1 )); then
+        printf "\n\n  %b==========================================================================%b\n" "$C_ROSE" "$C_RESET"
+        printf "  %b[!] INTERRUZIONE DA TASTIERA RILEVATA (1/3) — PROCESSO IN CORSO%b\n" "${C_BOLD}${C_PEACH}" "$C_RESET"
+        printf "  %bAlla 3ª interruzione consecutiva (entro 5s) il ripristino verrà interrotto.%b\n" "$C_LAVENDER" "$C_RESET"
+        printf "  %bATTENZIONE: %s rimarrà incompleto e NON utilizzabile.%b\n" "$C_ROSE" "${TARGET_DISK_GLOBAL:-target}" "$C_RESET"
+        printf "  %b==========================================================================%b\n" "$C_ROSE" "$C_RESET"
+    elif (( INT_COUNT == 2 )); then
+        printf "\n  %b[!] SECONDA INTERRUZIONE (2/3): premi Ctrl+C ancora 1 volta entro 5s per annullare.%b\n" "${C_BOLD}${C_PEACH}" "$C_RESET"
+    else
+        echo ""
+        log_err "TERZA INTERRUZIONE (3/3). Arresto forzato!"
+        terminate_protected_child
+        exit 130
+    fi
+}
+
+is_live_host_vg() {
+    local check_vg="${1:-}" mp src lv_vg
+    [[ -n "$check_vg" ]] || return 1
+    for mp in / /usr /var /home; do
+        src=$(findmnt -n -o SOURCE "$mp" 2>/dev/null || true)
+        [[ -b "$src" ]] || continue
+        lv_vg=$(lvs --noheadings -o vg_name "$src" 2>/dev/null | tr -d ' ' || true)
+        [[ -n "$lv_vg" && "$lv_vg" == "$check_vg" ]] && return 0
+    done
+    return 1
+}
+
+safe_unmount_tree() {
+    local base="$1"
+    [[ -d "$base" ]] || return 0
+    local submounts=() _id _pid _majmin _root _mp _rest
+    while read -r _id _pid _majmin _root _mp _rest; do
+        [[ -n "$_mp" ]] || continue
+        _mp="${_mp//\\040/ }"
+        _mp="${_mp//\\011/$'\t'}"
+        _mp="${_mp//\\134/\\}"
+        if [[ "$_mp" == "$base" || "$_mp" == "${base}/"* ]]; then
+            submounts+=("$_mp")
+        fi
+    done < /proc/self/mountinfo
+    if (( ${#submounts[@]} > 0 )); then
+        local rev_mnts=() mnt
+        mapfile -t rev_mnts < <(printf '%s\n' "${submounts[@]}" | tac)
+        for mnt in "${rev_mnts[@]}"; do
+            [[ -n "$mnt" ]] || continue
+            umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
+        done
+    fi
+    if mountpoint -q "$base" 2>/dev/null; then
+        log_warn "${base} ancora montato: directory non rimossa."
+    else
+        find "$base" -depth -type d -empty -exec rmdir {} + 2>/dev/null || true
+        rmdir "$base" 2>/dev/null || true
+    fi
+}
+
+cleanup() {
+    local exit_code=$?
+    trap - EXIT INT TERM HUP
+    set +e
+
+    terminate_protected_child
+
+    if (( UDEV_QUEUE_PAUSED == 1 )); then
+        udevadm control --start-exec-queue 2>/dev/null || true
+        UDEV_QUEUE_PAUSED=0
+    fi
+
+    rm -f "${MNT_BASE}/.tpm_unlock.key" 2>/dev/null || true
+    safe_unmount_tree "$MNT_BASE"
+
+    if (( ${#LIVE_SNAP_LVS[@]} > 0 )) && [[ -n "$LIVE_SNAP_VG" ]]; then
+        local slv
+        for slv in "${LIVE_SNAP_LVS[@]}"; do
+            lvremove -f "${LIVE_SNAP_VG}/${slv}" >/dev/null 2>&1 || true
+        done
+    fi
+
+    if (( SAVE_COMPLETED == 0 )) && [[ -n "${STAGING_BACKUP_DIR:-}" && "$STAGING_BACKUP_DIR" == *.tmp.* && -d "$STAGING_BACKUP_DIR" ]]; then
+        log_warn "Pulizia directory di staging incompleta: ${STAGING_BACKUP_DIR}"
+        rm -rf "$STAGING_BACKUP_DIR" 2>/dev/null || true
+    fi
+
+    if (( exit_code != 0 && RESTORE_IN_PROGRESS == 1 )); then
+        log_warn "Messa in sicurezza: smontaggio e chiusura mapper LVM/LUKS temporanei..."
+        if [[ -x "$CHROOT_SCRIPT" ]] && mountpoint -q "/run/nightcity-chroot" 2>/dev/null; then
+            "$CHROOT_SCRIPT" -u >/dev/null 2>&1 || true
+        fi
+        if [[ -n "$ACTIVE_TARGET_VG" ]] && ! is_live_host_vg "$ACTIVE_TARGET_VG"; then
+            vgchange -an "$ACTIVE_TARGET_VG" 2>/dev/null || true
+        fi
+        cryptsetup close "$CRYPT_NAME" 2>/dev/null || true
+    fi
+
+    if (( AUTO_UNLOCKED == 1 )); then
+        [[ -n "$SOURCE_UNLOCKED_VG" ]] && ! is_live_host_vg "$SOURCE_UNLOCKED_VG" && vgchange -an "$SOURCE_UNLOCKED_VG" 2>/dev/null || true
+        cryptsetup close golden_crypt_source 2>/dev/null || true
+    fi
+}
+
+wait_protected_pid() {
+    local pid="$1" rc=0
+    PROTECTED_PID="$pid"
+    while kill -0 "$pid" 2>/dev/null; do
+        wait "$pid" 2>/dev/null && rc=0 || rc=$?
+    done
+    wait "$pid" 2>/dev/null || rc=$?
+    PROTECTED_PID=0
+    return "$rc"
+}
+
+run_protected() {
+    ( trap '' INT; "$@" ) &
+    wait_protected_pid $!
+}
+
+run_cryptsetup_with_pass() {
+    local pass="$1"; shift
+    (
+        trap '' INT
+        printf '%s' "$pass" | cryptsetup "$@" --key-file=-
+    ) &
+    wait_protected_pid $!
+}
+
+# ------------------------------------------------------------------------------
+# Utilità, Parsing Sicuro Manifest & Input
+# ------------------------------------------------------------------------------
+check_dependencies() {
+    local missing=() cmd
+    for cmd in "${REQUIRED_CMDS[@]}"; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    if (( ${#missing[@]} > 0 )); then
+        log_err "Mancano i seguenti comandi richiesti: ${missing[*]}"
+        echo -e "         Installali con: ${C_BOLD}sudo pacman -S --needed ${missing[*]}${C_RESET}" >&2
+        exit 1
+    fi
+}
+
+trim() {
+    local var="$*"
+    var="${var#"${var%%[![:space:]]*}"}"
+    var="${var%"${var##*[![:space:]]}"}"
+    printf '%s' "$var"
+}
+
+sanitize_desc() {
+    local s="$1"
+    s="${s//\"/\'}" s="${s//\$/}" s="${s//\`/}" s="${s//\\/}"
+    printf '%s' "$s"
+}
+
+extract_manifest_field() {
+    local file="$1" key="$2"
+    awk -F'=' -v k="^${key}=" '$0 ~ k {
+        sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit
+    }' "$file" 2>/dev/null || true
+}
+
+extract_manifest_date() {
+    local file="$1" m_date line
+    m_date=$(extract_manifest_field "$file" "IMAGE_CREATED")
+    if [[ -z "$m_date" ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" == "# Golden Image Manifest"* && "$line" =~ ([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
+                m_date="${BASH_REMATCH[1]}"
+                break
+            fi
+        done < "$file"
+    fi
+    [[ -z "$m_date" || "$m_date" == "-" ]] && m_date="Data N/D"
+    printf '%s' "$m_date"
+}
+
+load_manifest_env() {
+    local file="$1"
+    IMAGE_TITLE="" IMAGE_DESCRIPTION="" IMAGE_CREATED=""
+    DISK_GUID="" P1_PARTUUID="" P1_FS_UUID="" P1_DEFAULT_SIZE="1G"
+    P2_PARTUUID="" P2_PARTNAME="root" P2_LUKS_UUID="" PV_UUID=""
+    ORIG_CAPTURED_VG="vg0"
+    EFI_ORIG_SIZE="" ROOT_ORIG_SIZE="" VAR_ORIG_SIZE="" HOME_ORIG_SIZE=""
+    LV_SPECS=()
+
+    local in_arr=0 line k v
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line=$(trim "$line")
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        if (( in_arr == 1 )); then
+            if [[ "$line" == ")" ]]; then
+                in_arr=0
+                continue
+            fi
+            v="${line#\"}"
+            v="${v%\"}"
+            [[ -n "$v" && "$v" == *"|"* ]] && LV_SPECS+=("$v")
+            continue
+        fi
+        if [[ "$line" == "LV_SPECS=(" ]]; then
+            in_arr=1
+            continue
+        fi
+        [[ "$line" =~ ^([A-Z0-9_]+)=(.*)$ ]] || continue
+        k="${BASH_REMATCH[1]}"
+        v="${BASH_REMATCH[2]}"
+        v="${v#\"}"; v="${v%\"}"
+        case "$k" in
+            IMAGE_TITLE)       IMAGE_TITLE="$v" ;;
+            IMAGE_DESCRIPTION) IMAGE_DESCRIPTION="$v" ;;
+            IMAGE_CREATED)     IMAGE_CREATED="$v" ;;
+            DISK_GUID)         DISK_GUID="$v" ;;
+            P1_PARTUUID)       P1_PARTUUID="$v" ;;
+            P1_FS_UUID)        P1_FS_UUID="$v" ;;
+            P1_DEFAULT_SIZE)   P1_DEFAULT_SIZE="$v" ;;
+            P2_PARTUUID)       P2_PARTUUID="$v" ;;
+            P2_PARTNAME)       P2_PARTNAME="$v" ;;
+            P2_LUKS_UUID)      P2_LUKS_UUID="$v" ;;
+            PV_UUID)           PV_UUID="$v" ;;
+            VG_NAME)           ORIG_CAPTURED_VG="$v" ;;
+            EFI_ORIG_SIZE)     EFI_ORIG_SIZE="$v" ;;
+            ROOT_ORIG_SIZE)    ROOT_ORIG_SIZE="$v" ;;
+            VAR_ORIG_SIZE)     VAR_ORIG_SIZE="$v" ;;
+            HOME_ORIG_SIZE)    HOME_ORIG_SIZE="$v" ;;
+        esac
+    done < "$file"
+}
+
+parse_gb() {
+    local val
+    val=$(trim "${1^^}")
+    if [[ "$val" =~ ^([0-9]+)(G|GB|GIB)?$ ]]; then echo "${BASH_REMATCH[1]}"; else echo "0"; fi
+}
+
+prompt_yes_no() {
+    local prompt_msg="$1" default_ans="${2:-n}" hint="[y/N]" ans
+    [[ "${default_ans,,}" == "y" ]] && hint="[Y/n]"
+    while true; do
+        read -r -p "$(echo -e "${prompt_msg} ${hint}: ")" ans </dev/tty || return 1
+        ans=$(trim "${ans,,}")
+        [[ -z "$ans" ]] && ans="${default_ans,,}"
+        case "$ans" in
+            y|yes|s|si) return 0 ;;
+            n|no)       return 1 ;;
+            *)          log_warn "Risposta non valida. Digita 'y' oppure 'n'." ;;
+        esac
+    done
+}
+
+read_step_input() {
+    local prompt_str="$1" buf="" char=""
+    READ_VAL=""
+    printf "%b" "$prompt_str" >/dev/tty
+    while true; do
+        IFS= read -r -s -n 1 char </dev/tty || return 1
+        if [[ -z "$char" ]]; then
+            printf "\n" >/dev/tty
+            READ_VAL="$buf"
+            return 0
+        fi
+        if [[ "$char" == $'\x7f' || "$char" == $'\x08' ]]; then
+            if [[ -z "$buf" ]]; then
+                printf "\n" >/dev/tty
+                return 2
+            fi
+            buf="${buf%?}"
+            printf "\b \b" >/dev/tty
+            continue
+        fi
+        if [[ "$char" == $'\x1b' ]]; then
+            local seq=""
+            IFS= read -r -s -n 2 -t 0.05 seq </dev/tty || true
+            continue
+        fi
+        if [[ "$char" =~ [a-zA-Z0-9%.[:space:]_-] ]]; then
+            buf+="$char"
+            printf "%s" "$char" >/dev/tty
+        fi
+    done
+}
+
+# ------------------------------------------------------------------------------
+# Barre Progresso RAM -> Disco (Zero SIGSTOP su pipeline CIFS)
+# ------------------------------------------------------------------------------
+get_pending_kb() { awk '/^(Dirty|Writeback):/ {sum += $2} END {print sum+0}' /proc/meminfo; }
+format_eta()     { local s="$1"; (( s < 0 )) && s=0; printf "%d:%02d:%02d" $((s/3600)) $(((s%3600)/60)) $((s%60)); }
+
+draw_flush_bar() {
+    local label="$1" pct="$2" rem_kb="$3" init_kb="$4" speed_kb_s="$5" eta_str="$6"
+    local width=30 filled=$(( pct * 30 / 100 )) empty bar="" pad=""
+    (( filled > width )) && filled=$width
+    empty=$(( width - filled ))
+    if (( filled > 0 )); then
+        printf -v bar "%*s" "$filled" ""
+        bar="${bar// /=}>"
+        (( filled == width )) && bar="${bar/>/=}"
+    fi
+    (( empty > 0 )) && printf -v pad "%*s" "$empty" ""
+
+    local r_h i_h s_h
+    r_h=$(numfmt --to=iec-i --suffix=B --from-unit=1024 "$rem_kb" 2>/dev/null || echo "${rem_kb}K")
+    i_h=$(numfmt --to=iec-i --suffix=B --from-unit=1024 "$init_kb" 2>/dev/null || echo "${init_kb}K")
+    s_h=$(numfmt --to=iec-i --suffix=B/s --from-unit=1024 "$speed_kb_s" 2>/dev/null || echo "${speed_kb_s}K/s")
+
+    printf "\r     ${C_LAVENDER}%-18s:${C_RESET} [%s%s] %3d%% | In RAM da scrivere: %s / %s | Vel: [%s] | ETA: %s   " \
+        "$label" "$bar" "$pad" "$pct" "$r_h" "$i_h" "$s_h" "$eta_str"
+}
+
+wait_and_sync() {
+    local label="${1:-Scrittura disco}" init_kb
+    init_kb=$(get_pending_kb)
+    if (( init_kb < 4096 )); then
+        run_protected sync
+        printf "     %b%-18s:%b [%b100%%%b] Completata istantaneamente.\n" "$C_LAVENDER" "$label" "$C_RESET" "$C_MINT" "$C_RESET"
+        return
+    fi
+
+    ( trap '' INT; sync ) &
+    local sync_pid=$! start_ts max_pct=0 curr_kb written_kb pct elapsed speed_kb eta_s
+    PROTECTED_PID="$sync_pid"
+    start_ts=$(date +%s)
+
+    while kill -0 "$sync_pid" 2>/dev/null; do
+        (( $(date +%s) < PAUSE_UI_UNTIL )) && { sleep 0.2; continue; }
+        curr_kb=$(get_pending_kb)
+        (( curr_kb > init_kb )) && init_kb=$curr_kb
+        written_kb=$(( init_kb - curr_kb )); (( written_kb < 0 )) && written_kb=0
+        pct=$(( written_kb * 100 / init_kb ))
+        (( pct < max_pct )) && pct=$max_pct; (( pct > 99 )) && pct=99; max_pct=$pct
+        elapsed=$(( $(date +%s) - start_ts )); (( elapsed < 1 )) && elapsed=1
+        speed_kb=$(( written_kb / elapsed ))
+        eta_s=0; (( speed_kb > 0 )) && eta_s=$(( curr_kb / speed_kb ))
+        draw_flush_bar "$label" "$pct" "$curr_kb" "$init_kb" "$speed_kb" "$(format_eta "$eta_s")"
+        sleep 0.3
+    done
+
+    wait "$sync_pid" 2>/dev/null || true
+    PROTECTED_PID=0
+    elapsed=$(( $(date +%s) - start_ts )); (( elapsed < 1 )) && elapsed=1
+    draw_flush_bar "$label" 100 0 "$init_kb" "$(( init_kb / elapsed ))" "0:00:00"
+    printf "\n"
+}
+
+monitor_io_pipeline() {
+    local pipe_pid="$1" pv_done_flag="$2" stream_done_flag="$3" flush_label="${4:-Scrittura disco}"
+    PROTECTED_PID="$pipe_pid"
+    local peak_kb=0 curr_kb=0 shown_ram_msg=0
+
+    while kill -0 "$pipe_pid" 2>/dev/null && [[ ! -f "$pv_done_flag" ]]; do
+        curr_kb=$(get_pending_kb)
+        (( curr_kb > peak_kb )) && peak_kb=$curr_kb
+        sleep 0.2
+    done
+
+    while kill -0 "$pipe_pid" 2>/dev/null && [[ ! -f "$stream_done_flag" ]]; do
+        curr_kb=$(get_pending_kb)
+        (( curr_kb > peak_kb )) && peak_kb=$curr_kb
+        if (( $(date +%s) >= PAUSE_UI_UNTIL && shown_ram_msg == 0 )); then
+            printf "\r     ${C_LAVENDER}%-18s:${C_RESET} ${C_PEACH}[Finalizzazione blocchi compressi in RAM...]${C_RESET}                     " "$flush_label"
+            shown_ram_msg=1
+        fi
+        sleep 0.2
+    done
+
+    local init_kb start_ts max_pct=0
+    init_kb=$(get_pending_kb)
+    (( init_kb == 0 && peak_kb > 0 )) && init_kb=$peak_kb
+    start_ts=$(date +%s)
+
+    if (( init_kb < 4096 )) && ! kill -0 "$pipe_pid" 2>/dev/null; then
+        printf "\r     %b%-18s:%b [%b100%%%b] Completata istantaneamente.                                                  \n" "$C_LAVENDER" "$flush_label" "$C_RESET" "$C_MINT" "$C_RESET"
+    else
+        (( init_kb < 1024 )) && init_kb=1024
+        while kill -0 "$pipe_pid" 2>/dev/null; do
+            (( $(date +%s) < PAUSE_UI_UNTIL )) && { sleep 0.2; continue; }
+            curr_kb=$(get_pending_kb)
+            (( curr_kb > init_kb )) && init_kb=$curr_kb
+            local written_kb=$(( init_kb - curr_kb )) pct elapsed speed_kb eta_s=0
+            (( written_kb < 0 )) && written_kb=0
+            pct=$(( written_kb * 100 / init_kb ))
+            (( pct < max_pct )) && pct=$max_pct; (( pct > 99 )) && pct=99; max_pct=$pct
+            elapsed=$(( $(date +%s) - start_ts )); (( elapsed < 1 )) && elapsed=1
+            speed_kb=$(( written_kb / elapsed ))
+            (( speed_kb > 0 )) && eta_s=$(( curr_kb / speed_kb ))
+            draw_flush_bar "$flush_label" "$pct" "$curr_kb" "$init_kb" "$speed_kb" "$(format_eta "$eta_s")"
+            sleep 0.3
+        done
+        local elapsed=$(( $(date +%s) - start_ts )); (( elapsed < 1 )) && elapsed=1
+        draw_flush_bar "$flush_label" 100 0 "$init_kb" "$(( init_kb / elapsed ))" "0:00:00"
+        printf "\n"
+    fi
+
+    local pipe_rc=0
+    wait "$pipe_pid" 2>/dev/null || pipe_rc=$?
+    PROTECTED_PID=0
+    rm -f "$pv_done_flag" "$stream_done_flag" 2>/dev/null || true
+    (( pipe_rc == 0 )) || { log_err "La pipeline di trasferimento ha restituito errore (codice ${pipe_rc})."; return "$pipe_rc"; }
+}
+
+# ------------------------------------------------------------------------------
+# NAS Auto-Mount Sicuro (Mai rm -rf /nas), Dischi & Discovery
+# ------------------------------------------------------------------------------
+resolve_vault_catalog_dir() {
+    local target_path="${1:-$DEFAULT_DIR}"
+    RESOLVED_NAS_DIR="$target_path"
+    if [[ -d "$target_path" ]] && [[ -n "$(ls -A "$target_path" 2>/dev/null || true)" ]]; then
+        return 0
+    fi
+    local base_run="/run/nas"
+    if [[ "$target_path" == "${CFG_VAULT_MP}"/* && -d "${base_run}/${target_path#${CFG_VAULT_MP}/}" ]]; then
+        RESOLVED_NAS_DIR="${base_run}/${target_path#${CFG_VAULT_MP}/}"
+        return 0
+    fi
+    return 1
+}
+
+ensure_nas_mounted() {
+    local target_path="${1:-$DEFAULT_DIR}"
+    RESOLVED_NAS_DIR="$target_path"
+
+    if [[ -x "/usr/lib/ncui/sbin/nc-vault" ]]; then
+        local st_env="" mnt_flag="0" act_base=""
+        st_env="$(/usr/lib/ncui/sbin/nc-vault status-env 2>/dev/null || true)"
+        mnt_flag="$(printf '%s\n' "$st_env" | awk -F'=' '/^MOUNTED=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^ACTIVE_BASE=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        if [[ "$mnt_flag" == "1" ]]; then
+            if [[ -n "$act_base" && "$act_base" != "$CFG_VAULT_MP" && "$target_path" == "${CFG_VAULT_MP}"/* ]]; then
+                RESOLVED_NAS_DIR="${act_base}/${target_path#${CFG_VAULT_MP}/}"
+            fi
+            return 0
+        fi
+        if [[ "$target_path" != "${CFG_VAULT_MP}"* && "$target_path" != /nas* && "$target_path" != /run/nas* ]]; then
+            return 0
+        fi
+        log_warn "Vault storage non attivo. Montaggio tramite nc-vault..."
+        /usr/lib/ncui/sbin/nc-vault mount || { log_err "nc-vault mount fallito."; return 1; }
+        st_env="$(/usr/lib/ncui/sbin/nc-vault status-env 2>/dev/null || true)"
+        mnt_flag="$(printf '%s\n' "$st_env" | awk -F'=' '/^MOUNTED=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^ACTIVE_BASE=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        if [[ "$mnt_flag" == "1" ]]; then
+            if [[ -n "$act_base" && "$act_base" != "$CFG_VAULT_MP" && "$target_path" == "${CFG_VAULT_MP}"/* ]]; then
+                RESOLVED_NAS_DIR="${act_base}/${target_path#${CFG_VAULT_MP}/}"
+            fi
+            log_ok "Vault pronto (target: ${RESOLVED_NAS_DIR})."
+            return 0
+        fi
+        log_err "Il Vault non risulta ancora montato."
+        return 1
+    fi
+
+    if [[ "$target_path" != /nas/* && "$target_path" != "/nas" && "$target_path" != /run/nas/* && "$target_path" != /home/*/NAS/* ]]; then
+        return 0
+    fi
+
+    resolve_existing_nas_path() {
+        local cand_root="$1"
+        if mountpoint -q "${cand_root}/personal_folder" 2>/dev/null; then
+            if [[ "$target_path" == /nas/* && "$cand_root" != "/nas" ]]; then
+                RESOLVED_NAS_DIR="${cand_root}/${target_path#/nas/}"
+            elif [[ "$target_path" == "/nas" && "$cand_root" != "/nas" ]]; then
+                RESOLVED_NAS_DIR="${cand_root}"
+            fi
+            return 0
+        fi
+        return 1
+    }
+
+    local p
+    for p in "/nas" "/run/nas" /home/*/NAS; do
+        [[ -d "$p" ]] || continue
+        resolve_existing_nas_path "$p" && return 0
+    done
+
+    log_warn "Condivisione NAS non rilevata. Avvio script di mount..."
+    local mount_bin="" candidate
+    for candidate in "$NAS_MOUNT_SCRIPT" "/usr/lib/ncui/sbin/nc-vault"; do
+        if [[ -x "$candidate" ]]; then
+            mount_bin="$candidate"
+            break
+        fi
+    done
+
+    if [[ -z "$mount_bin" ]]; then
+        log_err "Script di mount NAS (${NAS_MOUNT_SCRIPT}) non trovato o non eseguibile."
+        return 1
+    fi
+    "$mount_bin" || { log_err "Esecuzione di ${mount_bin} fallita."; return 1; }
+
+    for p in "/nas" "/run/nas" /home/*/NAS; do
+        [[ -d "$p" ]] || continue
+        if resolve_existing_nas_path "$p"; then
+            log_ok "NAS montato correttamente su ${p} (target: ${RESOLVED_NAS_DIR})."
+            return 0
+        fi
+    done
+
+    log_err "Il NAS non risulta ancora montato."
+    return 1
+}
+
+is_critical_running_disk() {
+    local disk="$1" mnt live_src
+    while read -r mnt; do
+        [[ -n "$mnt" ]] || continue
+        case "$mnt" in
+            /|/usr|/var|/home|/run/recovery-ram/*|/run/archiso/*) return 0 ;;
+        esac
+    done < <(lsblk -rnpo MOUNTPOINT "$disk" 2>/dev/null || true)
+
+    live_src=$(findmnt -n -o SOURCE /run/recovery-ram/sqfs 2>/dev/null || findmnt -n -o SOURCE / 2>/dev/null || true)
+    if [[ -n "$live_src" && -b "$live_src" ]] && lsblk -rnpo NAME "$disk" 2>/dev/null | grep -Fxq "$live_src"; then
+        return 0
+    fi
+    return 1
+}
+
+is_disk_in_use() {
+    local disk="$1" mnt dtype kname
+    while read -r mnt; do [[ -n "$mnt" ]] && return 0; done < <(lsblk -rnpo MOUNTPOINT "$disk" 2>/dev/null || true)
+    while read -r dtype; do [[ "$dtype" == "crypt" || "$dtype" == "lvm" || "$dtype" == "raid"* ]] && return 0; done < <(lsblk -rnpo TYPE "$disk" 2>/dev/null || true)
+    while read -r kname; do
+        [[ -n "$kname" && -d "/sys/class/block/${kname}/holders" && -n "$(ls -A "/sys/class/block/${kname}/holders" 2>/dev/null)" ]] && return 0
+    done < <(lsblk -rno KNAME "$disk" 2>/dev/null || true)
+    return 1
+}
+
+get_disk_usage_badge() {
+    local disk="$1"
+    if is_critical_running_disk "$disk"; then
+        echo -e "${C_ROSE}SISTEMA ATTIVO (Protetto)${C_RESET}"
+    elif is_disk_in_use "$disk"; then
+        echo -e "${C_PEACH}IN USO (Montato / LVM / LUKS)${C_RESET}"
+    else
+        echo -e "${C_MINT}LIBERO${C_RESET}"
+    fi
+}
+
+release_disk_holders() {
+    local disk="$1" dev mp mnts=()
+    udevadm settle 2>/dev/null || true
+
+    while read -r dev; do [[ -b "$dev" ]] && swapoff "$dev" 2>/dev/null || true; done < <(lsblk -rnpo NAME "$disk" 2>/dev/null | tac)
+
+    while read -r dev; do
+        [[ -n "$dev" ]] || continue
+        while read -r mp; do
+            [[ -n "$mp" && "$mp" != "/" && "$mp" != "/run/recovery-ram/sqfs" ]] && mnts+=("$mp")
+        done < <(findmnt -rn -S "$dev" -o TARGET 2>/dev/null || true)
+    done < <(lsblk -rnpo NAME "$disk" 2>/dev/null)
+
+    if (( ${#mnts[@]} > 0 )); then
+        local ordered=()
+        mapfile -t ordered < <(printf "%s\n" "${mnts[@]}" | awk '{print length, $0}' | sort -rn | cut -d' ' -f2-)
+        for mp in "${ordered[@]}"; do
+            [[ -n "$mp" ]] || continue
+            umount "$mp" 2>/dev/null || umount -lf "$mp" 2>/dev/null || true
+        done
+    fi
+
+    while read -r dev; do
+        [[ -b "$dev" ]] || continue
+        local vg_on_dev
+        vg_on_dev=$(pvs --noheadings -o vg_name "$dev" 2>/dev/null | tr -d ' ' || true)
+        [[ -n "$vg_on_dev" ]] && vgchange -an "$vg_on_dev" >/dev/null 2>&1 || true
+    done < <(lsblk -rnpo NAME "$disk" 2>/dev/null | tac)
+
+    udevadm settle 2>/dev/null || true
+
+    local dtype dm_name
+    while read -r dev dtype; do
+        [[ -n "$dev" ]] || continue
+        if [[ "$dtype" == "lvm" ]]; then
+            dmsetup remove --force "$dev" >/dev/null 2>&1 || true
+        elif [[ "$dtype" == "crypt" ]]; then
+            dm_name=$(basename "$dev")
+            cryptsetup close "$dm_name" >/dev/null 2>&1 || dmsetup remove --force "$dm_name" >/dev/null 2>&1 || dmsetup remove --force "$dev" >/dev/null 2>&1 || true
+        fi
+    done < <(lsblk -rnpo NAME,TYPE "$disk" 2>/dev/null | tac)
+
+    local kname holder
+    while read -r kname; do
+        [[ -n "$kname" && -d "/sys/class/block/${kname}/holders" ]] || continue
+        for holder in "/sys/class/block/${kname}/holders"/*; do
+            [[ -e "$holder" ]] || continue
+            dmsetup remove --force "/dev/$(basename "$holder")" >/dev/null 2>&1 || true
+        done
+    done < <(lsblk -rno KNAME "$disk" 2>/dev/null | tac)
+
+    udevadm settle 2>/dev/null || true
+    ! is_disk_in_use "$disk"
+}
+
+inspect_and_prepare_target_disk() {
+    local disk="$1"
+    if is_critical_running_disk "$disk"; then
+        log_err "Il disco ${disk} ospita il sistema operativo attualmente in esecuzione!"
+        return 1
+    fi
+    is_disk_in_use "$disk" || return 0
+
+    echo ""
+    log_warn "Il disco ${C_BOLD}${disk}${C_RESET}${C_PEACH} presenta partizioni montate o mapper LVM/LUKS attivi:${C_RESET}"
+    lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$disk" | sed 's/^/    /'
+    echo ""
+    prompt_yes_no "Vuoi smontare tutte le partizioni e chiudere i mapper LVM/LUKS su ${disk} adesso?" "y" || return 1
+
+    log_sub "Smontaggio partizioni e chiusura Volume Group / LUKS su ${disk}..."
+    if release_disk_holders "$disk"; then
+        log_ok "Disco ${disk} liberato con successo."
+        return 0
+    fi
+    log_err "Impossibile liberare completamente ${disk}:"
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$disk" | sed 's/^/    /' >&2
+    return 1
+}
+
+get_device_desc() {
+    local dev="$1" size parent model=""
+    size="$(lsblk -dno SIZE "$dev" 2>/dev/null | tr -d ' ' || echo "N/A")"
+    parent="$(lsblk -dno PKNAME "$dev" 2>/dev/null | tr -d ' ' || true)"
+    [[ -n "$parent" ]] && model="$(lsblk -dno MODEL "/dev/$parent" 2>/dev/null | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' || true)"
+    [[ -z "$model" ]] && model="$(lsblk -dno MODEL "$dev" 2>/dev/null | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' || true)"
+    echo "${size} - ${model:-Block Device}"
+}
+
+find_luks_candidates() {
+    local candidates=() part fstype
+    while read -r part; do
+        [[ -b "$part" ]] || continue
+        fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+        if [[ "$fstype" == "crypto_LUKS" ]] || cryptsetup isLuks "$part" 2>/dev/null; then
+            candidates+=("$part")
+        fi
+    done < <(lsblk -pnro PATH,TYPE 2>/dev/null | awk '$2=="part" {print $1}')
+    (( ${#candidates[@]} > 0 )) && printf "%s\n" "${candidates[@]}" | sort -u
+}
+
+resolve_esp_device() {
+    local luks_target="$1" parent
+    parent="$(lsblk -dno PKNAME "$luks_target" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -z "$parent" ]]; then
+        parent="${luks_target%p[0-9]*}"
+        [[ "$parent" == "$luks_target" ]] && parent="${luks_target%[0-9]*}"
+    else
+        parent="/dev/$parent"
+    fi
+
+    local part fstype parttype esp_gpt="" vfat_fallback=""
+    while read -r part; do
+        [[ -b "$part" ]] || continue
+        parttype="$(lsblk -dno PARTTYPE "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d ' ' || true)"
+        if [[ "$parttype" == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]]; then
+            esp_gpt="$part"
+            break
+        fi
+        if [[ -z "$vfat_fallback" ]]; then
+            fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+            [[ "$fstype" == "vfat" ]] && vfat_fallback="$part"
+        fi
+    done < <(lsblk -pnro PATH,TYPE "$parent" 2>/dev/null | awk '$2=="part" {print $1}')
+
+    if [[ -n "$esp_gpt" ]]; then echo "$esp_gpt"
+    elif [[ -n "$vfat_fallback" ]]; then echo "$vfat_fallback"
+    elif [[ "$parent" =~ [0-9]$ ]]; then echo "${parent}p1"
+    else echo "${parent}1"; fi
+}
+
+discover_source_system() {
+    ui_section "INDIVIDUAZIONE DISPOSITIVO SORGENTE (LUKS & ESP)"
+    local selected_luks=""
+
+    if [[ -n "$CLI_LUKS_DEV" ]]; then
+        [[ -b "$CLI_LUKS_DEV" ]] || { log_err "Dispositivo passato da CLI non valido: ${CLI_LUKS_DEV}"; exit 1; }
+        selected_luks="$CLI_LUKS_DEV"
+        log_sub "Dispositivo LUKS da CLI: ${C_BOLD}${selected_luks}${C_RESET}"
+    elif [[ -n "${NC_LUKS_DEV:-}" && -b "${NC_LUKS_DEV}" ]]; then
+        selected_luks="$NC_LUKS_DEV"
+        log_sub "Dispositivo LUKS da NC_LUKS_DEV: ${C_BOLD}${selected_luks}${C_RESET}"
+    fi
+
+    if [[ -z "$selected_luks" ]]; then
+        log_sub "Scansione partizioni LUKS presenti nel sistema..."
+        mapfile -t CANDIDATES < <(find_luks_candidates)
+        local total=${#CANDIDATES[@]}
+        if (( total > 1 )); then
+            log_warn "Rilevati molteplici candidati LUKS:"
+            for i in "${!CANDIDATES[@]}"; do
+                printf "    ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}\n" "$((i + 1))" "${CANDIDATES[$i]}" "$(get_device_desc "${CANDIDATES[$i]}")"
+            done
+            echo ""
+            local uc
+            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Seleziona un indice (1-${total}) o inserisci il percorso del dispositivo: ")" uc </dev/tty || true
+            uc=$(trim "$uc")
+            if [[ -z "$uc" ]]; then log_err "Nessuna selezione."; exit 1
+            elif [[ "$uc" =~ ^[0-9]+$ ]] && (( uc >= 1 && uc <= total )); then selected_luks="${CANDIDATES[$((uc - 1))]}"
+            elif [[ -b "$uc" ]]; then selected_luks="$uc"
+            else log_err "Selezione non valida: '$uc'."; exit 1; fi
+        elif (( total == 1 )); then
+            local sd="${CANDIDATES[0]}" uc
+            log_ok "Candidato LUKS individuato: ${C_BOLD}${sd}${C_RESET} ($(get_device_desc "$sd"))"
+            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Premi INVIO per confermare o digita un dispositivo alternativo: ")" uc </dev/tty || true
+            uc=$(trim "$uc")
+            if [[ -z "$uc" ]]; then selected_luks="$sd"
+            elif [[ -b "$uc" ]]; then selected_luks="$uc"
+            else log_err "Dispositivo non valido: '$uc'."; exit 1; fi
+        else
+            local ud
+            log_warn "Nessun dispositivo LUKS rilevato automaticamente."
+            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Inserisci percorso dispositivo LUKS [INVIO per annullare]: ")" ud </dev/tty || true
+            ud=$(trim "$ud")
+            [[ -n "$ud" ]] || exit 0
+            [[ -b "$ud" ]] || { log_err "Dispositivo non valido: '$ud'."; exit 1; }
+            selected_luks="$ud"
+        fi
+    fi
+
+    PART_LUKS="$selected_luks"
+    local pkname
+    pkname="$(lsblk -dno PKNAME "$PART_LUKS" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -n "$pkname" ]]; then
+        SOURCE_DISK="/dev/${pkname}"
+    else
+        SOURCE_DISK="${PART_LUKS%p[0-9]*}"
+        [[ "$SOURCE_DISK" == "$PART_LUKS" ]] && SOURCE_DISK="${PART_LUKS%[0-9]*}"
+    fi
+
+    if [[ -n "${NC_ESP_DEV:-}" && -b "${NC_ESP_DEV}" ]]; then
+        PART_EFI="$NC_ESP_DEV"
+    else
+        PART_EFI="$(resolve_esp_device "$PART_LUKS")"
+    fi
+    if [[ ! -b "$PART_EFI" ]]; then
+        log_warn "Impossibile dedurre la ESP (${PART_EFI})."
+        read -r -p "  Inserisci partizione EFI (es. /dev/nvme0n1p1): " PART_EFI </dev/tty
+        PART_EFI=$(trim "$PART_EFI")
+        [[ -b "$PART_EFI" ]] || { log_err "Partizione EFI non valida: ${PART_EFI}"; exit 1; }
+    fi
+
+    local crypt_child
+    crypt_child="$(lsblk -lnpo NAME,TYPE "$PART_LUKS" 2>/dev/null | awk '$2=="crypt" {print $1; exit}' || true)"
+    if [[ -z "$crypt_child" ]]; then
+        log_warn "La partizione ${PART_LUKS} è chiusa."
+        prompt_yes_no "Vuoi sbloccare ${PART_LUKS} ora (modalità sicura no-keyring)?" "y" || exit 1
+        cryptsetup open "${CRYPT_STRICT_FLAGS[@]}" "$PART_LUKS" golden_crypt_source || { log_err "Sblocco fallito."; exit 1; }
+        crypt_child="/dev/mapper/golden_crypt_source"
+        AUTO_UNLOCKED=1
+    fi
+
+    local detected_vg
+    detected_vg="$(pvs --noheadings -o vg_name "$crypt_child" 2>/dev/null | tr -d ' ' | head -n1 || true)"
+    [[ -n "$detected_vg" ]] && VG_NAME="$detected_vg"
+    (( AUTO_UNLOCKED == 1 )) && SOURCE_UNLOCKED_VG="$VG_NAME"
+
+    vgchange -ay "$VG_NAME" >/dev/null 2>&1 || true
+    udevadm settle
+    [[ -b "/dev/${VG_NAME}/root" ]] || { log_err "LV '/dev/${VG_NAME}/root' assente."; exit 1; }
+
+    log_ok "Disco sorgente : ${C_BOLD}${SOURCE_DISK}${C_RESET} ($(get_device_desc "$SOURCE_DISK"))"
+    log_ok "Partizione EFI : ${C_BOLD}${PART_EFI}${C_RESET} ($(get_device_desc "$PART_EFI"))"
+    log_ok "Partizione LUKS: ${C_BOLD}${PART_LUKS}${C_RESET} -> VG attivo: ${C_BOLD}${VG_NAME}${C_RESET}"
+}
+
+# ==============================================================================
+# ANALISI KERNEL & SANITIZZAZIONE LIMINE.CONF (Indentation-Aware)
+# ==============================================================================
+analyze_esp_and_limine() {
+    local efi_mnt="$1" root_mnt="$2"
+    local limine_file="${efi_mnt}/limine.conf"
+
+    MAIN_UKI_NAME="" FALLBACK_UKI_NAME="" RECOVERY_UKI_NAME="" MAIN_VMLINUZ_NAME=""
+    SECONDARY_UKI_NAMES=() EXCLUDED_EFI_PATTERNS=()
+    declare -A SNAPSHOT_UKIS=()
+
+    if [[ -f "$limine_file" ]]; then
+        local role fname
+        while IFS='|' read -r role fname; do
+            [[ -n "$fname" ]] || continue
+            case "$role" in
+                MAIN)     [[ -z "$MAIN_UKI_NAME" ]] && MAIN_UKI_NAME="$fname" ;;
+                RECOVERY) [[ -z "$RECOVERY_UKI_NAME" ]] && RECOVERY_UKI_NAME="$fname" ;;
+                FALLBACK) [[ -z "$FALLBACK_UKI_NAME" ]] && FALLBACK_UKI_NAME="$fname" ;;
+                SNAPSHOT) SNAPSHOT_UKIS["$fname"]=1 ;;
+            esac
+        done < <(awk '
+            /^[[:space:]]*\/\+?[^\/]/ {
+                match($0, /^[[:space:]]*/)
+                ind = RLENGTH
+                sec = substr($0, ind + 1)
+                sub(/^\/\+?/, "", sec)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", sec)
+                if (ind == 0) { top_sec = sec; sub_sec = "" } else { sub_sec = sec }
+                next
+            }
+            /^[[:space:]]*path:[[:space:]]*boot\(\):\/EFI\/Linux\// {
+                p = $0
+                sub(/.*\/EFI\/Linux\//, "", p)
+                sub(/[[:space:]#].*$/, "", p)
+                if (sub_sec ~ /^Snapshots/ || top_sec ~ /^Snapshots/) {
+                    print "SNAPSHOT|" p
+                } else if (top_sec ~ /^Arch Linux/) {
+                    if (sub_sec == "") {
+                        if (!main_found) { print "MAIN|" p; main_found=1 }
+                    } else if (tolower(p) ~ /-fallback\.efi$/) {
+                        print "FALLBACK|" p
+                    } else {
+                        if (!main_found) { print "MAIN|" p; main_found=1 }
+                    }
+                } else if (top_sec ~ /^Disaster Recovery/) {
+                    if (tolower(p) ~ /recovery/) print "RECOVERY|" p
+                    else print "FALLBACK|" p
+                }
+            }
+        ' "$limine_file")
+    fi
+
+    [[ -z "$MAIN_UKI_NAME" ]] && MAIN_UKI_NAME="cachyos-linux-hardened.efi"
+    if [[ -z "$RECOVERY_UKI_NAME" ]]; then
+        if [[ -n "$CFG_RECOVERY_UKI" && -f "${efi_mnt}/EFI/Linux/${CFG_RECOVERY_UKI}" ]]; then
+            RECOVERY_UKI_NAME="$CFG_RECOVERY_UKI"
+        elif [[ -f "${efi_mnt}/EFI/Linux/nightcity-recovery.efi" ]]; then
+            RECOVERY_UKI_NAME="nightcity-recovery.efi"
+        else
+            RECOVERY_UKI_NAME="${CFG_RECOVERY_UKI:-nc-rescue.efi}"
+        fi
+    fi
+    if [[ -z "$FALLBACK_UKI_NAME" && -f "${efi_mnt}/EFI/Linux/${MAIN_UKI_NAME%.efi}-fallback.efi" ]]; then
+        FALLBACK_UKI_NAME="${MAIN_UKI_NAME%.efi}-fallback.efi"
+    fi
+
+    if [[ -d "${root_mnt}/etc/mkinitcpio.d" ]]; then
+        local preset kver_path
+        for preset in "${root_mnt}/etc/mkinitcpio.d"/*.preset; do
+            [[ -f "$preset" ]] || continue
+            if grep -Fq "$MAIN_UKI_NAME" "$preset" 2>/dev/null; then
+                kver_path=$(awk -F'=' '/^[[:space:]]*ALL_kver=/ {gsub(/["'\''[:space:]]/, "", $2); print $2; exit}' "$preset")
+                [[ -n "$kver_path" ]] && MAIN_VMLINUZ_NAME="$(basename "$kver_path")"
+                break
+            fi
+        done
+    fi
+    [[ -z "$MAIN_VMLINUZ_NAME" ]] && MAIN_VMLINUZ_NAME="vmlinuz-linux-cachyos-hardened"
+
+    SNAPSHOT_UKIS["nightcity-auto.efi"]=1
+    SNAPSHOT_UKIS["nightcity-stable.efi"]=1
+    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-auto.efi"]=1
+    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-stable.efi"]=1
+
+    EXCLUDED_EFI_PATTERNS+=(
+        "./recovery.squashfs" "./recovery.squashfs.old"
+        "./EFI/Linux/*.old" "./EFI/Linux/*.meta" "./EFI/Linux/*.pkgs"
+        "./EFI/Linux/*_pre_merge.vg" "./EFI/Linux/*.pre-rollback"
+    )
+    local snap_f
+    for snap_f in "${!SNAPSHOT_UKIS[@]}"; do
+        EXCLUDED_EFI_PATTERNS+=("./EFI/Linux/${snap_f}")
+    done
+
+    if [[ -d "${efi_mnt}/EFI/Linux" ]]; then
+        local efi_path bname
+        for efi_path in "${efi_mnt}/EFI/Linux"/*.efi; do
+            [[ -f "$efi_path" ]] || continue
+            bname="$(basename "$efi_path")"
+            [[ "$bname" == "$MAIN_UKI_NAME" || "$bname" == "$FALLBACK_UKI_NAME" || "$bname" == "$RECOVERY_UKI_NAME" ]] && continue
+            [[ -n "${SNAPSHOT_UKIS[$bname]:-}" ]] && continue
+            SECONDARY_UKI_NAMES+=("$bname")
+        done
+    fi
+}
+
+generate_clean_limine_conf() {
+    local src_limine="$1" dst_limine="$2"
+    shift 2
+    local dropped_ukis=("$@") drop_regex="" esc_list=() u
+
+    if (( ${#dropped_ukis[@]} > 0 )); then
+        for u in "${dropped_ukis[@]}"; do
+            u="${u//./[.]}"
+            esc_list+=("$u")
+        done
+        local IFS='|'
+        drop_regex="^(${esc_list[*]})$"
+    fi
+
+    awk -v drop_re="$drop_regex" '
+        function flush_ancestors(d) {
+            for (d = 1; d <= stack_top; d++) {
+                if (!grp_emitted[d]) {
+                    printf "%s", grp_buf[d]
+                    grp_buf[d] = ""
+                    grp_emitted[d] = 1
+                }
+            }
+        }
+        function flush_entry() {
+            if (!in_entry) return
+            if (!entry_drop) {
+                flush_ancestors()
+                printf "%s", entry_buf
+            }
+            entry_buf = ""; in_entry = 0; entry_drop = 0
+        }
+        function pop_to_indent(target_ind) {
+            while (stack_top > 0 && grp_ind[stack_top] >= target_ind) {
+                delete grp_ind[stack_top]
+                delete grp_buf[stack_top]
+                delete grp_emitted[stack_top]
+                stack_top--
+            }
+        }
+
+        # Top-level or indented group header (/Group or /+Group), NOT //Entry
+        /^[[:space:]]*\/\+?[^\/]/ {
+            flush_entry()
+            match($0, /^[[:space:]]*/)
+            ind = RLENGTH
+            if (in_snap) {
+                if (ind <= snap_ind) in_snap = 0
+                else next
+            }
+            name = substr($0, ind + 1)
+            sub(/^\/\+?/, "", name)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (name ~ /^Snapshots/) {
+                in_snap = 1
+                snap_ind = ind
+                next
+            }
+            pop_to_indent(ind)
+            stack_top++
+            grp_ind[stack_top] = ind
+            grp_buf[stack_top] = $0 "\n"
+            grp_emitted[stack_top] = 0
+            next
+        }
+
+        in_snap { next }
+
+        # Entry header (//Title)
+        /^[[:space:]]*\/\// {
+            flush_entry()
+            in_entry = 1
+            entry_buf = $0 "\n"
+            entry_drop = 0
+            next
+        }
+
+        in_entry {
+            entry_buf = entry_buf $0 "\n"
+            if ($0 ~ /^[[:space:]]*path:[[:space:]]*boot\(\):\/EFI\/Linux\//) {
+                p = $0
+                sub(/.*\/EFI\/Linux\//, "", p)
+                sub(/[[:space:]#].*$/, "", p)
+                if (p == "nightcity-auto.efi" || p == "nightcity-stable.efi") {
+                    entry_drop = 1
+                } else if (drop_re != "" && p ~ drop_re) {
+                    entry_drop = 1
+                }
+            }
+            next
+        }
+
+        # Group-level metadata lines (before first //entry of that group) or global preamble
+        {
+            if (stack_top > 0 && !grp_emitted[stack_top]) {
+                grp_buf[stack_top] = grp_buf[stack_top] $0 "\n"
+            } else {
+                print $0
+            }
+        }
+
+        END { flush_entry() }
+    ' "$src_limine" > "$dst_limine"
+
+    chmod --reference="$src_limine" "$dst_limine" 2>/dev/null || chmod 0755 "$dst_limine"
+    chown --reference="$src_limine" "$dst_limine" 2>/dev/null || chown root:root "$dst_limine"
+}
+
+# ==============================================================================
+# FSTAB CHIRURGICO & NVRAM UEFI UNIFICATA
+# ==============================================================================
+rewrite_target_fstab() {
+    local fstab_path="$1" new_vg="$2" new_efi_uuid="$3"
+    local -n _uuids="$4"
+
+    if [[ -f "$fstab_path" ]]; then
+        awk -v root_u="${_uuids[root]}" -v boot_u="$new_efi_uuid" -v var_u="${_uuids[var]}" \
+            -v log_u="${_uuids[log]}" -v audit_u="${_uuids[audit]}" -v vartmp_u="${_uuids[vartmp]}" \
+            -v pac_u="${_uuids[pacmancache]}" -v home_u="${_uuids[home]}" -v tmp_u="${_uuids[tmp]}" '
+            BEGIN {
+                map["/"] = "UUID=" root_u
+                map["/boot"] = "UUID=" boot_u
+                map["/var"] = "UUID=" var_u
+                map["/var/log"] = "UUID=" log_u
+                map["/var/log/audit"] = "UUID=" audit_u
+                map["/var/tmp"] = "UUID=" vartmp_u
+                map["/var/cache/pacman"] = "UUID=" pac_u
+                map["/home"] = "UUID=" home_u
+                map["/tmp"] = "UUID=" tmp_u
+            }
+            /^[[:space:]]*#/ || /^[[:space:]]*$/ || NF < 6 { print $0; next }
+            ($2 in map) {
+                $1 = map[$2]
+                printf "%-44s %-19s %-7s %-64s %s %s\n", $1, $2, $3, $4, $5, $6
+                next
+            }
+            { print $0 }
+        ' "$fstab_path" > "${fstab_path}.tmp.$$"
+        mv -f "${fstab_path}.tmp.$$" "$fstab_path"
+    else
+        cat <<FSTAB > "$fstab_path"
+# Static file system information for Arch Linux (Newborn: ${new_vg})
+UUID=${_uuids[root]}    /                   ext4    defaults,noatime,errors=remount-ro                          0       1
+UUID=${new_efi_uuid}     /boot               vfat    defaults,noatime,nodev,nosuid,noexec,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro 0 2
+UUID=${_uuids[var]}     /var                ext4    defaults,noatime,nodev,nosuid                               0       2
+UUID=${_uuids[log]}     /var/log            ext4    defaults,noatime,nodev,nosuid,noexec                        0       2
+UUID=${_uuids[audit]}   /var/log/audit      ext4    defaults,noatime,nodev,nosuid,noexec                        0       2
+UUID=${_uuids[vartmp]}  /var/tmp            ext4    defaults,noatime,nodev,nosuid,noexec                        0       2
+UUID=${_uuids[pacmancache]} /var/cache/pacman ext4  defaults,noatime,nodev,nosuid                               0       2
+UUID=${_uuids[home]}    /home               ext4    defaults,noatime,nodev,nosuid                               0       2
+UUID=${_uuids[tmp]}     /tmp                ext4    defaults,noatime,nodev,nosuid,noexec                        0       2
+tmpfs /dev/shm tmpfs defaults,noatime,nodev,nosuid 0 0
+FSTAB
+    fi
+    chmod 0644 "$fstab_path"
+    chown root:root "$fstab_path" 2>/dev/null || true
+}
+
+register_limine_nvram() {
+    local esp_part="$1" loader_path="$2" new_label="$3"
+    if [[ ! -d /sys/firmware/efi/efivars ]]; then
+        log_warn "Variabili efivars non disponibili: salto registrazione NVRAM."
+        return 0
+    fi
+    local parent_disk part_num bootnum
+    parent_disk="/dev/$(lsblk -dno PKNAME "$esp_part" | head -n1)"
+    part_num=$(cat "/sys/class/block/$(basename "$esp_part")/partition" 2>/dev/null || echo "1")
+
+    while read -r bootnum; do
+        [[ -n "$bootnum" ]] && efibootmgr -b "$bootnum" -B >/dev/null 2>&1 || true
+    done < <(efibootmgr | awk -v lbl="$new_label" '
+        /^Boot[0-9A-Fa-f]{4}/ {
+            b=$1; sub(/^Boot/, "", b); sub(/\*$/, "", b)
+            rest=$0; sub(/^Boot[0-9A-Fa-f]{4}\*? /, "", rest); sub(/\t.*$/, "", rest)
+            if (rest == lbl) print b
+        }')
+
+    log_sub "Registrazione voce UEFI in NVRAM: '${C_BOLD}${new_label}${C_RESET}' (${loader_path})"
+    run_protected efibootmgr --create --disk "$parent_disk" --part "$part_num" --label "$new_label" --loader "$loader_path" --unicode >/dev/null
+}
+
+# ==============================================================================
+# MOTORE RE-KEYING & CHROOT
+# ==============================================================================
+run_rekey_engine() {
+    local orig_vg="$1" new_vg="$2" new_luks_part="$3" new_esp_part="$4" register_nvram="$5"
+    log_step "7/7" "Riconfigurazione Identità Sistema Newborn (VG: ${orig_vg} -> ${new_vg})"
+    [[ -x "$CHROOT_SCRIPT" ]] || { log_err "Script ${CHROOT_SCRIPT} non trovato o non eseguibile."; exit 1; }
+
+    udevadm settle
+    local new_luks_uuid new_efi_uuid
+    new_luks_uuid=$(blkid -s UUID -o value "$new_luks_part" || true)
+    new_efi_uuid=$(blkid -s UUID -o value "$new_esp_part" || true)
+    [[ -n "$new_luks_uuid" && -n "$new_efi_uuid" ]] || { log_err "Impossibile rilevare nuovi UUID per LUKS/ESP."; exit 1; }
+
+    declare -A n_lv_uuids
+    local lv lv_dev
+    for lv in "${DATA_LVS[@]}" "${EMPTY_LVS[@]}"; do
+        lv_dev="/dev/${new_vg}/${lv}"
+        [[ -b "$lv_dev" ]] || { log_err "LV non trovato: ${lv_dev}"; exit 1; }
+        n_lv_uuids["$lv"]=$(blkid -s UUID -o value "$lv_dev" || true)
+        [[ -n "${n_lv_uuids[$lv]}" ]] || { log_err "UUID non rilevato per ${lv_dev}"; exit 1; }
+    done
+
+    local dm_vg_escaped="${new_vg//-/--}" chroot_mnt="/run/nightcity-chroot"
+    log_sub "Nuovo LUKS UUID : ${C_BOLD}${new_luks_uuid}${C_RESET}"
+    log_sub "Nuovo EFI UUID  : ${C_BOLD}${new_efi_uuid}${C_RESET}"
+
+    NC_ESP_DEV="$new_esp_part" "$CHROOT_SCRIPT" --onlymount -d "$new_luks_part" -g "$new_vg"
+
+    log_sub "Aggiornamento chirurgico /etc/fstab (mantenendo mount custom)..."
+    rewrite_target_fstab "${chroot_mnt}/etc/fstab" "$new_vg" "$new_efi_uuid" n_lv_uuids
+
+    local expected_uuid
+    for expected_uuid in "$new_efi_uuid" "${n_lv_uuids[@]}"; do
+        grep -Fq "UUID=${expected_uuid}" "${chroot_mnt}/etc/fstab" || { log_err "Verifica /etc/fstab fallita (manca ${expected_uuid})."; exit 1; }
+    done
+
+    log_sub "Allineamento /etc/kernel/cmdline..."
+    [[ -s "${chroot_mnt}/etc/kernel/cmdline" ]] || { log_err "Manca ${chroot_mnt}/etc/kernel/cmdline"; exit 1; }
+    local cmd_file
+    for cmd_file in "${chroot_mnt}/etc/kernel/cmdline" "${chroot_mnt}/etc/kernel/cmdline-fallback"; do
+        [[ -f "$cmd_file" ]] || continue
+        sed -i -E \
+            -e "s/(rd\.)?luks\.uuid=[0-9a-fA-F-]+/\1luks.uuid=${new_luks_uuid}/g" \
+            -e "s/(rd\.)?luks\.name=[0-9a-fA-F-]+=/\1luks.name=${new_luks_uuid}=/g" \
+            -e "s/cryptdevice=UUID=[0-9a-fA-F-]+/cryptdevice=UUID=${new_luks_uuid}/g" \
+            -e "s|root=/dev/mapper/[^[:space:]]+|root=/dev/mapper/${dm_vg_escaped}-root|g" \
+            -e "s|root=/dev/[^/[:space:]]+/root|root=/dev/${new_vg}/root|g" \
+            -e "s|(rd\.)?lvm\.lv=[^/[:space:]]+/|\1lvm.lv=${new_vg}/|g" \
+            -e "s|(rd\.)?lvm\.vg=[^[:space:]]+|\1lvm.vg=${new_vg}|g" \
+            "$cmd_file"
+        chmod 0644 "$cmd_file"
+    done
+    if [[ ! -s "${chroot_mnt}/etc/kernel/cmdline-fallback" ]]; then
+        sed -E 's/\bquiet\b//g; s/[[:space:]]+$//; s/$/ rd.systemd.debug_shell=1/' \
+            "${chroot_mnt}/etc/kernel/cmdline" > "${chroot_mnt}/etc/kernel/cmdline-fallback"
+        chmod 0644 "${chroot_mnt}/etc/kernel/cmdline-fallback"
+    fi
+
+    for cmd_file in "${chroot_mnt}/etc/kernel/cmdline" "${chroot_mnt}/etc/kernel/cmdline-fallback"; do
+        grep -Fq "$new_luks_uuid" "$cmd_file" || { log_err "Verifica cmdline fallita: manca ${new_luks_uuid}"; exit 1; }
+        grep -Eq "root=/dev/(mapper/${dm_vg_escaped}-root|${new_vg}/root)" "$cmd_file" || { log_err "Verifica cmdline fallita: manca root= su ${new_vg}"; exit 1; }
+    done
+
+    local ctab
+    for ctab in "${chroot_mnt}/etc/crypttab" "${chroot_mnt}/etc/crypttab.initramfs"; do
+        [[ -f "$ctab" ]] || continue
+        sed -i -E -e "s/UUID=[0-9a-fA-F-]+/UUID=${new_luks_uuid}/g" -e "s|/dev/disk/by-uuid/[0-9a-fA-F-]+|/dev/disk/by-uuid/${new_luks_uuid}|g" "$ctab"
+    done
+
+    local lvm_svc="${chroot_mnt}/etc/systemd/system/lvm-activate.service"
+    if [[ -f "$lvm_svc" ]]; then
+        local orig_vg_escaped="${orig_vg//-/--}"
+        sed -i -E \
+            -e "s/lvm-activate-[a-zA-Z0-9_-]+\.service/lvm-activate-${new_vg}.service/g" \
+            -e "s/dev-mapper-${orig_vg_escaped}/dev-mapper-${dm_vg_escaped}/g" \
+            -e "s/(vgchange -ay )[a-zA-Z0-9_-]+/\1${new_vg}/g" \
+            -e "s/\b${orig_vg}\b/${new_vg}/g" \
+            "$lvm_svc"
+    fi
+
+    rm -f "${chroot_mnt}/etc/lvm/devices/system.devices" 2>/dev/null || true
+    rm -rf "${chroot_mnt}/var/lib/nightcity/snapshots"/* 2>/dev/null || true
+
+    systemd-machine-id-setup --root="$chroot_mnt" >/dev/null 2>&1 || true
+    local new_machine_id=""
+    [[ -s "${chroot_mnt}/etc/machine-id" ]] && new_machine_id=$(tr -d '[:space:]' < "${chroot_mnt}/etc/machine-id")
+    [[ "$new_machine_id" =~ ^[0-9a-f]{32}$ ]] || { log_err "Rigenerazione /etc/machine-id fallita."; exit 1; }
+
+    local limine_conf="${chroot_mnt}/boot/limine.conf"
+    if [[ -f "$limine_conf" ]]; then
+        sed -i -E \
+            -e "s|^interface_branding:.*|interface_branding: Nightcity Newborn [VG: ${new_vg}]|" \
+            -e "s|^/\+Arch Linux.*|/+Arch Linux [${new_vg}]|" \
+            -e "s/machine-id=[0-9a-fA-F]+/machine-id=${new_machine_id}/g" \
+            "$limine_conf"
+    fi
+
+    local loader_path='\EFI\BOOT\BOOTX64.EFI'
+    [[ -f "${chroot_mnt}/boot/EFI/limine/limine_x64.efi" ]] && loader_path='\EFI\limine\limine_x64.efi'
+    [[ -f "${chroot_mnt}/boot/EFI/limine/BOOTX64.EFI" ]] && loader_path='\EFI\limine\BOOTX64.EFI'
+
+    log_sub "Esecuzione in $(basename "$CHROOT_SCRIPT"): policy USBGuard, compilazione UKI multi-kernel e sbctl..."
+    run_protected env NC_ESP_DEV="$new_esp_part" "$CHROOT_SCRIPT" -d "$new_luks_part" -g "$new_vg" -- /usr/bin/env bash -c '
+set -euo pipefail
+if command -v usbguard &>/dev/null && [[ -d /etc/usbguard ]]; then
+    if usbguard generate-policy > /etc/usbguard/rules.conf.new 2>/dev/null && [[ -s /etc/usbguard/rules.conf.new ]]; then
+        mv -f /etc/usbguard/rules.conf.new /etc/usbguard/rules.conf
+        chmod 0600 /etc/usbguard/rules.conf
+        chown root:root /etc/usbguard/rules.conf
+    else
+        rm -f /etc/usbguard/rules.conf.new 2>/dev/null || true
+    fi
+fi
+
+mkdir -p /boot/EFI/Linux
+built_any=0
+for preset_file in /etc/mkinitcpio.d/*.preset; do
+    [[ -f "$preset_file" ]] || continue
+    pname=$(basename "$preset_file" .preset)
+    kver_img=$(awk -F"=" "/^[[:space:]]*ALL_kver=/ {gsub(/[\"\x27[:space:]]/, \"\", \$2); print \$2; exit}" "$preset_file")
+    if [[ -n "$kver_img" && ! -f "$kver_img" ]]; then
+        matched_vm=""
+        for pb in /usr/lib/modules/*/pkgbase; do
+            [[ -f "$pb" ]] || continue
+            if [[ "$(<"$pb")" == "$pname" && -f "${pb%/pkgbase}/vmlinuz" ]]; then
+                matched_vm="${pb%/pkgbase}/vmlinuz"; break
+            fi
+        done
+        [[ -z "$matched_vm" ]] && matched_vm=$(find /usr/lib/modules -maxdepth 2 -name "vmlinuz" | sort | tail -n 1 || true)
+        [[ -n "$matched_vm" ]] && cp -f "$matched_vm" "$kver_img"
+    fi
+    if [[ -n "$kver_img" && -f "$kver_img" ]]; then
+        mkinitcpio -p "$pname" >/dev/null
+        built_any=1
+    fi
+done
+(( built_any == 0 )) && mkinitcpio -P >/dev/null
+
+rm -f /boot/EFI/Linux/nightcity-auto.efi /boot/EFI/Linux/nightcity-stable.efi \
+      /boot/EFI/Linux/nightcity-*.meta /boot/EFI/Linux/nightcity-*.pkgs \
+      /boot/EFI/Linux/*_pre_merge.vg /boot/EFI/Linux/*.pre-rollback
+
+if command -v sbctl &>/dev/null && [[ -d /var/lib/sbctl/keys ]]; then
+    for tracked in $(sbctl list-files 2>/dev/null | awk "/^\// {print \$1}" || true); do
+        [[ ! -f "$tracked" ]] && sbctl remove-file "$tracked" >/dev/null 2>&1 || true
+    done
+    while IFS= read -r -d "" efi_bin; do
+        sbctl sign -s "$efi_bin" >/dev/null 2>&1 || sbctl sign "$efi_bin" >/dev/null 2>&1 || true
+    done < <(find /boot/EFI -type f -iname "*.efi" -print0)
+fi
+'
+    wait_and_sync "Scrittura UKI"
+
+    if [[ "${register_nvram,,}" == "y" ]]; then
+        register_limine_nvram "$new_esp_part" "$loader_path" "Archlinux-Limine (${new_vg})"
+    else
+        log_sub "Registrazione NVRAM saltata su scelta utente."
+    fi
+    log_ok "Riconfigurazione Newborn (${new_vg}) completata."
+}
+
+# ==============================================================================
+# ROUTINE DI SALVATAGGIO (--save)
+# ==============================================================================
+do_save() {
+    check_dependencies
+    ui_header "CREAZIONE GOLDEN IMAGE ARCH LINUX"
+    discover_source_system
+
+    mkdir -p "$MNT_BASE"
+    RESTORE_IN_PROGRESS=1
+    mkdir -p "${MNT_BASE}/efi"
+    mount -o ro "$PART_EFI" "${MNT_BASE}/efi" 2>/dev/null || mount "$PART_EFI" "${MNT_BASE}/efi"
+
+    local live_root_src src_is_live=0 use_snaps=0 lv
+    live_root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+    for lv in "${DATA_LVS[@]}"; do
+        if [[ -n "$live_root_src" && "$(readlink -f "$live_root_src" 2>/dev/null || true)" == "$(readlink -f "/dev/${VG_NAME}/${lv}" 2>/dev/null || true)" ]]; then
+            src_is_live=1
+        fi
+    done
+
+    if (( src_is_live == 1 )); then
+        log_warn "Stai catturando i volumi montati in lettura/scrittura del sistema attivo!"
+        local vg_free_g
+        vg_free_g=$(vgs --noheadings --units g --nosuffix -o vg_free "$VG_NAME" 2>/dev/null | awk '{printf "%d", $1+0}' || echo 0)
+        if (( vg_free_g >= 18 )) && prompt_yes_no "Vuoi creare snapshot LVM temporanei (root/var/home) per coerenza atomica?" "y"; then
+            sync
+            LIVE_SNAP_VG="$VG_NAME"
+            for lv in "${DATA_LVS[@]}"; do
+                lvcreate -s -L 6G -n "golden_snap_${lv}" "${VG_NAME}/${lv}" >/dev/null
+                LIVE_SNAP_LVS+=("golden_snap_${lv}")
+            done
+            use_snaps=1
+            log_ok "Snapshot temporanei LVM creati (${LIVE_SNAP_LVS[*]})."
+        fi
+    fi
+
+    for lv in "${DATA_LVS[@]}"; do
+        mkdir -p "${MNT_BASE}/${lv}"
+        local src_lv="/dev/${VG_NAME}/${lv}"
+        (( use_snaps == 1 )) && src_lv="/dev/${VG_NAME}/golden_snap_${lv}"
+        mount -o ro,noload "$src_lv" "${MNT_BASE}/${lv}" 2>/dev/null || mount -o ro "$src_lv" "${MNT_BASE}/${lv}" 2>/dev/null || mount "$src_lv" "${MNT_BASE}/${lv}"
+    done
+
+    analyze_esp_and_limine "${MNT_BASE}/efi" "${MNT_BASE}/root"
+
+    ui_section "SELEZIONE KERNEL E PULIZIA LIMINE.CONF"
+    log_ok "Main Kernel rilevato da limine.conf : ${C_BOLD}${MAIN_UKI_NAME}${C_RESET}${FALLBACK_UKI_NAME:+ (+ fallback: ${FALLBACK_UKI_NAME})}"
+    if [[ -f "${MNT_BASE}/efi/EFI/Linux/${RECOVERY_UKI_NAME}" || -f "${MNT_BASE}/efi/recovery.squashfs" ]]; then
+        log_ok "Immagine Recovery rilevata          : ${C_BOLD}${RECOVERY_UKI_NAME}${C_RESET} + ${C_BOLD}recovery.squashfs${C_RESET}"
+    fi
+    log_sub "Gli snapshot UKI (nightcity-auto/stable) e la sezione /Snapshots verranno esclusi."
+
+    local dropped_secondary_ukis=()
+    if (( ${#SECONDARY_UKI_NAMES[@]} > 0 )); then
+        echo ""
+        log_warn "Rilevati kernel secondari nella partizione ESP:"
+        local sec_uki
+        for sec_uki in "${SECONDARY_UKI_NAMES[@]}"; do echo -e "     ${C_LAVENDER}•${C_RESET} ${sec_uki}"; done
+        if prompt_yes_no "  Vuoi includere questi kernel secondari nella Golden Image?" "n"; then
+            log_ok "Kernel secondari inclusi nel salvataggio."
+        else
+            log_sub "Kernel secondari esclusi e rimossi da limine.conf dell'immagine."
+            for sec_uki in "${SECONDARY_UKI_NAMES[@]}"; do
+                dropped_secondary_ukis+=("$sec_uki")
+                EXCLUDED_EFI_PATTERNS+=("./EFI/Linux/${sec_uki}")
+            done
+            local vml vml_base
+            for vml in "${MNT_BASE}/efi"/vmlinuz-*; do
+                [[ -f "$vml" ]] || continue
+                vml_base="$(basename "$vml")"
+                [[ "$vml_base" != "$MAIN_VMLINUZ_NAME" ]] && EXCLUDED_EFI_PATTERNS+=("./${vml_base}")
+            done
+        fi
+    fi
+
+    mkdir -p "${MNT_BASE}/efi_clean"
+    [[ -f "${MNT_BASE}/efi/limine.conf" ]] && generate_clean_limine_conf "${MNT_BASE}/efi/limine.conf" "${MNT_BASE}/efi_clean/limine.conf" "${dropped_secondary_ukis[@]}"
+
+    ui_section "METADATI E DESTINAZIONE GOLDEN IMAGE"
+    local input_base_dir BASE_SAVE_DIR
+    read -r -p "Cartella base di destinazione [INVIO per default: ${DEFAULT_DIR}]: " input_base_dir </dev/tty
+    input_base_dir=$(trim "$input_base_dir")
+    BASE_SAVE_DIR=$(realpath -m "${input_base_dir:-$DEFAULT_DIR}")
+
+    ensure_nas_mounted "$BASE_SAVE_DIR"
+    BASE_SAVE_DIR="$RESOLVED_NAS_DIR"
+
+    local raw_desc IMAGE_DESCRIPTION=""
+    while true; do
+        read -r -p "Fornisci una descrizione breve per questa Golden Image: " raw_desc </dev/tty
+        raw_desc=$(trim "$raw_desc")
+        [[ -n "$raw_desc" ]] || { log_warn "La descrizione non può essere vuota."; continue; }
+        IMAGE_DESCRIPTION=$(sanitize_desc "$raw_desc")
+        break
+    done
+
+    local raw_title IMAGE_TITLE BACKUP_DIR overwrite_existing=0
+    while true; do
+        read -r -p "Inserisci un titolo senza spazi per la Golden Image (es. hardened-no-gui): " raw_title </dev/tty
+        raw_title=$(trim "$raw_title")
+        [[ -n "$raw_title" ]] || { log_warn "Il titolo non può essere vuoto."; continue; }
+        [[ "$raw_title" =~ [[:space:]] ]] && { log_warn "Il titolo non può contenere spazi."; continue; }
+        [[ "$raw_title" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { log_warn "Usa solo [a-zA-Z0-9._-]."; continue; }
+
+        IMAGE_TITLE="$raw_title"
+        BACKUP_DIR="${BASE_SAVE_DIR}/${IMAGE_TITLE}"
+        if [[ -f "${BACKUP_DIR}/manifest.env" ]]; then
+            log_warn "Esiste già una Golden Image con titolo '${IMAGE_TITLE}' in: ${BACKUP_DIR}"
+            if prompt_yes_no "Vuoi sovrascriverla integralmente (scrittura atomica sicura)?" "n"; then
+                overwrite_existing=1
+                break
+            fi
+            continue
+        fi
+        break
+    done
+
+    STAGING_BACKUP_DIR="${BACKUP_DIR}.tmp.$$"
+    log_sub "Percorso finale  : ${C_BOLD}${BACKUP_DIR}${C_RESET}"
+    log_sub "Titolo immagine  : ${C_BOLD}${IMAGE_TITLE}${C_RESET}"
+    log_sub "Descrizione      : ${C_LAVENDER}${IMAGE_DESCRIPTION}${C_RESET}"
+
+    local mem_total_kb mem_avail_kb mem_total_gib mem_avail_gib cpu_threads
+    mem_total_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+    mem_avail_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+    mem_total_gib=$(( mem_total_kb / 1024 / 1024 ))
+    mem_avail_gib=$(( mem_avail_kb / 1024 / 1024 ))
+    cpu_threads=$(nproc)
+
+    local rec_profile="4" rec_opts="-6 -T2" rec_desc="Low-RAM (-6, 2 thread per prevenire OOM)"
+    if (( mem_avail_gib >= 24 )); then
+        rec_profile="1"; rec_opts="--ultra -22 -T0 --long"; rec_desc="Estremo (Ultra -22, finestra lunga, ${cpu_threads} thread)"
+    elif (( mem_avail_gib >= 8 )); then
+        rec_profile="2"; rec_opts="-19 -T0"; rec_desc="Alto (-19, ${cpu_threads} thread, RAM moderata)"
+    elif (( mem_avail_gib >= 4 )); then
+        rec_profile="3"; rec_opts="-12 -T0"; rec_desc="Standard (-12, bilanciato)"
+    fi
+
+    ui_section "CONFIGURAZIONE COMPRESSIONE ZSTD"
+    echo -e " Hardware rilevato : ${C_BOLD}${mem_total_gib} GiB RAM${C_RESET} (${mem_avail_gib} GiB liberi) | ${C_BOLD}${cpu_threads} Thread CPU${C_RESET}"
+    echo -e " Profilo suggerito : ${C_MINT}[${rec_profile}] ${rec_desc}${C_RESET}"
+    local chosen_prof zstd_opts
+    read -r -p "Seleziona profilo [1-4] o premi INVIO per [${rec_profile}]: " chosen_prof </dev/tty
+    chosen_prof=$(trim "${chosen_prof:-$rec_profile}")
+    case "$chosen_prof" in
+        1) zstd_opts="--ultra -22 -T0 --long" ;;
+        2) zstd_opts="-19 -T0" ;;
+        3) zstd_opts="-12 -T0" ;;
+        4) zstd_opts="-6 -T2" ;;
+        *) zstd_opts="$rec_opts" ;;
+    esac
+    local -a zstd_args=()
+    read -ra zstd_args <<< "$zstd_opts"
+
+    sync
+    log_step "1/5" "Raccolta metadati geometrici, LUKS e LVM..."
+    local disk_guid p1_partuuid p1_fs_uuid p1_size_bytes p1_size_g p2_partuuid p2_luks_uuid pv_uuid
+    disk_guid=$(sgdisk -p "$SOURCE_DISK" | awk '/Disk identifier \(GUID\):/ {print $4}')
+    p1_partuuid=$(blkid -s PARTUUID -o value "$PART_EFI")
+    p1_fs_uuid=$(blkid -s UUID -o value "$PART_EFI")
+    p1_size_bytes=$(lsblk -b -n -d -o SIZE "$PART_EFI")
+    p1_size_g="$(( p1_size_bytes / 1024 / 1024 / 1024 ))G"
+    [[ "$p1_size_g" == "0G" ]] && p1_size_g="1G"
+
+    p2_partuuid=$(blkid -s PARTUUID -o value "$PART_LUKS")
+    p2_luks_uuid=$(blkid -s UUID -o value "$PART_LUKS")
+    pv_uuid=$(pvs --noheadings -o pv_uuid -S "vg_name=${VG_NAME}" | awk '{print $1}')
+
+    local lv_specs=() size_b size_g fs_uuid perm
+    for lv in "${DATA_LVS[@]}"; do
+        size_b=$(lsblk -b -n -d -o SIZE "/dev/${VG_NAME}/${lv}")
+        size_g="$(( size_b / 1024 / 1024 / 1024 ))G"
+        fs_uuid=$(blkid -s UUID -o value "/dev/${VG_NAME}/${lv}")
+        lv_specs+=("${lv}|${size_g}|${fs_uuid}|DATA|0755")
+    done
+    for lv in "${EMPTY_LVS[@]}"; do
+        size_b=$(lsblk -b -n -d -o SIZE "/dev/${VG_NAME}/${lv}")
+        size_g="$(( size_b / 1024 / 1024 / 1024 ))G"
+        fs_uuid=$(blkid -s UUID -o value "/dev/${VG_NAME}/${lv}")
+        perm="0755"
+        [[ "$lv" == "tmp" || "$lv" == "vartmp" ]] && perm="1777"
+        [[ "$lv" == "audit" ]] && perm="0700"
+        lv_specs+=("${lv}|${size_g}|${fs_uuid}|EMPTY|${perm}")
+    done
+
+    log_step "2/5" "Calcolo dimensioni effettive dei volumi e verifica spazio..."
+    local du_efi_excludes=() tar_efi_excludes=() pat
+    for pat in "${EXCLUDED_EFI_PATTERNS[@]}"; do
+        du_efi_excludes+=("--exclude=${pat#./}")
+        tar_efi_excludes+=("--exclude=${pat}")
+    done
+
+    local EFI_ORIG_SIZE ROOT_ORIG_SIZE VAR_ORIG_SIZE HOME_ORIG_SIZE
+    EFI_ORIG_SIZE=$(du -sb "${du_efi_excludes[@]}" "${MNT_BASE}/efi" | awk '{print $1}')
+    ROOT_ORIG_SIZE=$(du -sb "${MNT_BASE}/root" | awk '{print $1}')
+    VAR_ORIG_SIZE=$(du -sb "${MNT_BASE}/var" | awk '{print $1}')
+    HOME_ORIG_SIZE=$(du -sb "${MNT_BASE}/home" | awk '{print $1}')
+
+    local check_space_dir="$BASE_SAVE_DIR"
+    while [[ ! -d "$check_space_dir" && "$check_space_dir" != "/" ]]; do check_space_dir="$(dirname "$check_space_dir")"; done
+    local dest_free_bytes est_needed_bytes=$(( (EFI_ORIG_SIZE + ROOT_ORIG_SIZE + VAR_ORIG_SIZE + HOME_ORIG_SIZE) / 2 ))
+    dest_free_bytes=$(df -B1 --output=avail "$check_space_dir" | tail -n1 | tr -d ' ')
+    [[ -f "${MNT_BASE}/efi/recovery.squashfs" ]] && est_needed_bytes=$(( est_needed_bytes + $(stat -c%s "${MNT_BASE}/efi/recovery.squashfs") ))
+    if (( dest_free_bytes < est_needed_bytes )); then
+        log_warn "Spazio libero stimato in ${check_space_dir} potenzialmente insufficiente."
+        prompt_yes_no "Procedere comunque con il salvataggio?" "n" || exit 1
+    fi
+
+    log_step "3/5" "Creazione staging atomico e backup Header LUKS di ${PART_LUKS}..."
+    rm -rf "$STAGING_BACKUP_DIR"
+    mkdir -p "$STAGING_BACKUP_DIR"
+    cryptsetup luksHeaderBackup "$PART_LUKS" --header-backup-file "${STAGING_BACKUP_DIR}/luks_header.img"
+
+    cat <<MANIFEST > "${STAGING_BACKUP_DIR}/manifest.env"
+# Golden Image Manifest - $(date -Iseconds)
+IMAGE_TITLE="${IMAGE_TITLE}"
+IMAGE_DESCRIPTION="${IMAGE_DESCRIPTION}"
+IMAGE_CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
+DISK_GUID="${disk_guid}"
+P1_PARTUUID="${p1_partuuid}"
+P1_FS_UUID="${p1_fs_uuid}"
+P1_DEFAULT_SIZE="${p1_size_g}"
+P2_PARTUUID="${p2_partuuid}"
+P2_PARTNAME="root"
+P2_LUKS_UUID="${p2_luks_uuid}"
+PV_UUID="${pv_uuid}"
+VG_NAME="${VG_NAME}"
+EFI_ORIG_SIZE="${EFI_ORIG_SIZE}"
+ROOT_ORIG_SIZE="${ROOT_ORIG_SIZE}"
+VAR_ORIG_SIZE="${VAR_ORIG_SIZE}"
+HOME_ORIG_SIZE="${HOME_ORIG_SIZE}"
+LV_SPECS=(
+$(for item in "${lv_specs[@]}"; do echo "    \"${item}\""; done)
+)
+MANIFEST
+
+    local pv_flag="${MNT_BASE}/.pv_done" stream_flag="${MNT_BASE}/.stream_done"
+    log_step "4/5" "Lettura volumi in RAM, compressione Zstd e scrittura in staging..."
+
+    log_sub "Salvataggio efi.tar.zst (con limine.conf sanitizzato)..."
+    local efi_h; efi_h=$(numfmt --to=iec-i --suffix=B "$EFI_ORIG_SIZE" 2>/dev/null || echo "${EFI_ORIG_SIZE}B")
+    rm -f "$pv_flag" "$stream_flag"
+    (
+        set -o pipefail
+        exec 3> "${STAGING_BACKUP_DIR}/efi.tar.zst"
+        if [[ -f "${MNT_BASE}/efi_clean/limine.conf" ]]; then
+            tar "${TAR_SILENT_FLAGS[@]}" --one-file-system --sparse --numeric-owner \
+                "${tar_efi_excludes[@]}" --exclude="./limine.conf" \
+                -cpf - -C "${MNT_BASE}/efi" . -C "${MNT_BASE}/efi_clean" ./limine.conf \
+                | { pv -s "$EFI_ORIG_SIZE" -F "     Lettura in RAM    : %p | Letti: %b / ${efi_h} | Vel: %r | ETA: %e"; rc=$?; touch "$pv_flag"; exit $rc; } \
+                | zstd "${zstd_args[@]}" -c >&3 2>/dev/null
+        else
+            tar "${TAR_SILENT_FLAGS[@]}" --one-file-system --sparse --numeric-owner "${tar_efi_excludes[@]}" \
+                -cpf - -C "${MNT_BASE}/efi" . \
+                | { pv -s "$EFI_ORIG_SIZE" -F "     Lettura in RAM    : %p | Letti: %b / ${efi_h} | Vel: %r | ETA: %e"; rc=$?; touch "$pv_flag"; exit $rc; } \
+                | zstd "${zstd_args[@]}" -c >&3 2>/dev/null
+        fi
+        touch "$stream_flag"; exec 3>&-; sync
+    ) &
+    monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura immagine"
+
+    if [[ -f "${MNT_BASE}/efi/recovery.squashfs" ]]; then
+        log_sub "Copia diretta raw: recovery.squashfs..."
+        local sq_sz sq_h
+        sq_sz=$(stat -c%s "${MNT_BASE}/efi/recovery.squashfs")
+        sq_h=$(numfmt --to=iec-i --suffix=B "$sq_sz" 2>/dev/null || echo "${sq_sz}B")
+        rm -f "$pv_flag" "$stream_flag"
+        (
+            set -o pipefail
+            exec 3> "${STAGING_BACKUP_DIR}/recovery.squashfs"
+            { pv -s "$sq_sz" -F "     Lettura in RAM    : %p | Letti: %b / ${sq_h} | Vel: %r | ETA: %e" "${MNT_BASE}/efi/recovery.squashfs"; rc=$?; touch "$pv_flag"; exit $rc; } >&3
+            touch "$stream_flag"; exec 3>&-; sync
+        ) &
+        monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura immagine"
+    fi
+
+    for lv in "${DATA_LVS[@]}"; do
+        log_sub "Salvataggio ${lv}.tar.zst..."
+        local var_name="${lv^^}_ORIG_SIZE" est_sz="${!var_name}" est_h
+        est_h=$(numfmt --to=iec-i --suffix=B "$est_sz" 2>/dev/null || echo "${est_sz}B")
+        rm -f "$pv_flag" "$stream_flag"
+        (
+            set -o pipefail
+            exec 3> "${STAGING_BACKUP_DIR}/${lv}.tar.zst"
+            tar "${TAR_SILENT_FLAGS[@]}" --one-file-system --acls --xattrs --sparse --numeric-owner -cpf - -C "${MNT_BASE}/${lv}" . \
+                | { pv -s "$est_sz" -F "     Lettura in RAM    : %p | Letti: %b / ${est_h} | Vel: %r | ETA: %e"; rc=$?; touch "$pv_flag"; exit $rc; } \
+                | zstd "${zstd_args[@]}" -c >&3 2>/dev/null
+            touch "$stream_flag"; exec 3>&-; sync
+        ) &
+        monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura immagine"
+    done
+
+    log_step "5/5" "Generazione impronte SHA256 e promozione atomica..."
+    (
+        cd "$STAGING_BACKUP_DIR"
+        rm -f sha256sums.txt
+        local f lbl_f
+        for f in manifest.env luks_header.img efi.tar.zst root.tar.zst var.tar.zst home.tar.zst recovery.squashfs; do
+            if [[ -f "$f" ]]; then
+                printf -v lbl_f "%-18s" "$f"
+                pv -F "     Hashing ${lbl_f}: %p | %b | Vel: %r" "$f" | sha256sum | awk -v file="$f" '{print $1"  "file}' >> sha256sums.txt
+            fi
+        done
+        sync
+    )
+
+    if (( overwrite_existing == 1 )) && [[ -d "$BACKUP_DIR" ]]; then
+        local old_bak="${BACKUP_DIR}.old.$$"
+        mv -f "$BACKUP_DIR" "$old_bak"
+        mv -f "$STAGING_BACKUP_DIR" "$BACKUP_DIR"
+        rm -rf "$old_bak"
+    else
+        mv -f "$STAGING_BACKUP_DIR" "$BACKUP_DIR"
+    fi
+    SAVE_COMPLETED=1
+    STAGING_BACKUP_DIR=""
+    RESTORE_IN_PROGRESS=0
+
+    ui_header "SALVATAGGIO GOLDEN IMAGE COMPLETATO: ${IMAGE_TITLE}"
+    echo -e "  ${C_LAVENDER}Cartella    :${C_RESET} ${BACKUP_DIR}"
+    echo -e "  ${C_LAVENDER}Descrizione :${C_RESET} ${IMAGE_DESCRIPTION}\n"
+    ls -lh "$BACKUP_DIR"
+}
+
+# ==============================================================================
+# ROUTINE DI RIPRISTINO (--restore)
+# ==============================================================================
+do_restore() {
+    check_dependencies
+    ui_header "RIPRISTINO GOLDEN IMAGE ARCH LINUX"
+
+    ensure_nas_mounted "$DEFAULT_DIR" || true
+    local catalog_dir="${RESOLVED_NAS_DIR:-$DEFAULT_DIR}"
+
+    local available_dirs=() mfile candidate_sub
+    if [[ -d "$catalog_dir" ]]; then
+        while IFS= read -r -d '' mfile; do
+            candidate_sub="$(dirname "$mfile")"
+            [[ -f "${candidate_sub}/luks_header.img" ]] && available_dirs+=("$candidate_sub")
+        done < <(find "$catalog_dir" -mindepth 2 -maxdepth 2 -type f -name "manifest.env" -print0 2>/dev/null | sort -z)
+    fi
+
+    local num_images=${#available_dirs[@]}
+    ui_section "CATALOGO GOLDEN IMAGES RILEVATE (${catalog_dir})"
+
+    if (( num_images > 0 )); then
+        for i in "${!available_dirs[@]}"; do
+            local img_dir="${available_dirs[$i]}" m_file="${img_dir}/manifest.env" m_title m_desc m_date m_vg
+            m_title=$(extract_manifest_field "$m_file" "IMAGE_TITLE"); [[ -z "$m_title" ]] && m_title="$(basename "$img_dir")"
+            m_desc=$(extract_manifest_field "$m_file" "IMAGE_DESCRIPTION"); [[ -z "$m_desc" ]] && m_desc="Nessuna descrizione."
+            m_date=$(extract_manifest_date "$m_file")
+            m_vg=$(extract_manifest_field "$m_file" "VG_NAME"); [[ -z "$m_vg" ]] && m_vg="vg0"
+
+            printf "  ${C_BOLD}${C_MINT}[%d]${C_RESET} ${C_BOLD}%-26s${C_RESET} ${C_MUTED}(Catturata: %s | VG: %s)${C_RESET}\n" "$((i + 1))" "$m_title" "$m_date" "$m_vg"
+            printf "      ${C_LAVENDER}Descrizione :${C_RESET} %s\n      ${C_MUTED}Percorso    : %s${C_RESET}\n\n" "$m_desc" "$img_dir"
+        done
+        echo -e "${C_MUTED}------------------------------------------------------------------------------${C_RESET}"
+    else
+        log_warn "Nessuna Golden Image trovata in: ${catalog_dir}"
+    fi
+
+    local user_sel BACKUP_DIR=""
+    while true; do
+        if (( num_images > 0 )); then
+            read -r -p "Seleziona numero [1-${num_images}] o inserisci percorso custom: " user_sel </dev/tty
+        else
+            read -r -p "Inserisci percorso cartella Golden Image da ripristinare: " user_sel </dev/tty
+        fi
+        user_sel=$(trim "$user_sel")
+        [[ -n "$user_sel" ]] || continue
+
+        if (( num_images > 0 )) && [[ "$user_sel" =~ ^[0-9]+$ ]]; then
+            (( user_sel >= 1 && user_sel <= num_images )) && { BACKUP_DIR="${available_dirs[$((user_sel - 1))]}"; break; }
+            log_warn "Indice fuori intervallo (1-${num_images})."
+        else
+            local c_dir; c_dir=$(realpath -m "$user_sel" 2>/dev/null || echo "$user_sel")
+            ensure_nas_mounted "$c_dir" || true
+            c_dir="${RESOLVED_NAS_DIR:-$c_dir}"
+            [[ -d "$c_dir" && -f "${c_dir}/manifest.env" && -f "${c_dir}/luks_header.img" ]] || { log_warn "Immagine non valida in: ${c_dir}"; continue; }
+            BACKUP_DIR="$c_dir"; break
+        fi
+    done
+
+    load_manifest_env "${BACKUP_DIR}/manifest.env"
+    [[ -z "$IMAGE_TITLE" ]] && IMAGE_TITLE="$(basename "$BACKUP_DIR")"
+    [[ -z "$IMAGE_DESCRIPTION" ]] && IMAGE_DESCRIPTION="Nessuna descrizione."
+    IMAGE_CREATED=$(extract_manifest_date "${BACKUP_DIR}/manifest.env")
+
+    local archive
+    for archive in efi root var home; do
+        [[ -f "${BACKUP_DIR}/${archive}.tar.zst" ]] || { log_err "Archivio mancante: ${BACKUP_DIR}/${archive}.tar.zst"; exit 1; }
+    done
+
+    echo ""
+    if [[ -f "${BACKUP_DIR}/sha256sums.txt" ]] && prompt_yes_no "Vuoi validare l'integrità SHA256 dei file prima di procedere?" "n"; then
+        log_step "*" "Verifica checksum SHA256 in corso..."
+        (
+            cd "$BACKUP_DIR"
+            while read -r expected_hash filename; do
+                [[ -f "$filename" ]] || { log_err "Manca $filename"; exit 1; }
+                local actual_hash lbl_f; printf -v lbl_f "%-18s" "$filename"
+                actual_hash=$(pv -F "     Verifica ${lbl_f}: %p | %b | Vel: %r" "$filename" | sha256sum | awk '{print $1}')
+                [[ "$expected_hash" == "$actual_hash" ]] || { log_err "HASH CORROTTO per $filename!"; exit 1; }
+            done < sha256sums.txt
+        ) || exit 1
+        log_ok "Tutti gli archivi hanno superato il controllo SHA256."
+    fi
+
+    log_step "*" "Calcolo requisiti minimi di spazio dell'immagine..."
+    declare -A MIN_LV_GIB
+    local total_min_data_gib=0 efi_bytes min_efi_gib lv
+    if [[ -n "$EFI_ORIG_SIZE" && -n "$ROOT_ORIG_SIZE" && -n "$VAR_ORIG_SIZE" && -n "$HOME_ORIG_SIZE" ]]; then
+        log_sub "Dimensioni lette da manifest.env."
+        efi_bytes="$EFI_ORIG_SIZE"
+        [[ -f "${BACKUP_DIR}/recovery.squashfs" ]] && efi_bytes=$(( efi_bytes + $(stat -c%s "${BACKUP_DIR}/recovery.squashfs") ))
+        min_efi_gib=$(( (efi_bytes + 1073741823) / 1073741824 )); (( min_efi_gib < 1 )) && min_efi_gib=1
+        for lv in "${DATA_LVS[@]}"; do
+            local vn="${lv^^}_ORIG_SIZE" b="${!vn}" g
+            g=$(( (b + 1073741823) / 1073741824 )); (( g < 1 )) && g=1
+            MIN_LV_GIB["$lv"]=$g; total_min_data_gib=$(( total_min_data_gib + g ))
+        done
+    else
+        log_warn "Manifest privo di metadati taglia: avvio Dry-Run..."
+        local f_sz bytes gib
+        f_sz=$(stat -c%s "${BACKUP_DIR}/efi.tar.zst")
+        efi_bytes=$(pv -s "$f_sz" -p -t -r -e "${BACKUP_DIR}/efi.tar.zst" | zstd -dc 2>/dev/null | wc -c)
+        [[ -f "${BACKUP_DIR}/recovery.squashfs" ]] && efi_bytes=$(( efi_bytes + $(stat -c%s "${BACKUP_DIR}/recovery.squashfs") ))
+        min_efi_gib=$(( (efi_bytes + 1073741823) / 1073741824 )); (( min_efi_gib < 1 )) && min_efi_gib=1
+        for lv in "${DATA_LVS[@]}"; do
+            f_sz=$(stat -c%s "${BACKUP_DIR}/${lv}.tar.zst")
+            bytes=$(pv -s "$f_sz" -p -t -r -e "${BACKUP_DIR}/${lv}.tar.zst" | zstd -dc 2>/dev/null | wc -c)
+            gib=$(( (bytes + 1073741823) / 1073741824 )); (( gib < 1 )) && gib=1
+            MIN_LV_GIB["$lv"]=$gib; total_min_data_gib=$(( total_min_data_gib + gib ))
+        done
+    fi
+
+    local min_req_gib=$(( min_efi_gib + total_min_data_gib + ${#EMPTY_LVS[@]} + 3 ))
+
+    ui_section "SELEZIONE DISCO DI DESTINAZIONE"
+    local candidate_disks=() d_name d_bytes
+    while read -r d_name d_bytes; do
+        [[ -n "$d_name" && d_bytes -gt 0 ]] && candidate_disks+=("/dev/${d_name}")
+    done < <(lsblk -b -d -n -o TYPE,NAME,SIZE 2>/dev/null | awk '$1=="disk" {print $2, $3}')
+
+    printf "  ${C_BOLD}%-6s %-14s %-9s %-7s %-26s %s${C_RESET}\n" "ID" "DEVICE" "TAGLIA" "BUS" "MODELLO" "STATO ATTUALE"
+    echo -e "${C_MUTED}  ----------------------------------------------------------------------------${C_RESET}"
+    for i in "${!candidate_disks[@]}"; do
+        local c_disk="${candidate_disks[$i]}" c_sz c_bus c_model c_badge
+        c_sz=$(lsblk -d -n -o SIZE "$c_disk" 2>/dev/null | tr -d ' ' || echo "N/A")
+        c_bus=$(lsblk -d -n -o TRAN "$c_disk" 2>/dev/null | tr -d ' ' || echo "-"); [[ -z "$c_bus" ]] && c_bus="-"
+        c_model=$(lsblk -d -n -o MODEL "$c_disk" 2>/dev/null | xargs || echo "Generic Disk"); [[ -z "$c_model" ]] && c_model="Generic Disk"
+        c_badge=$(get_disk_usage_badge "$c_disk")
+        printf "  ${C_BOLD}${C_MINT}[%d]${C_RESET}    %-14s %-9s %-7s %-26s %b\n" "$((i + 1))" "$c_disk" "$c_sz" "$c_bus" "${c_model:0:25}" "$c_badge"
+    done
+    echo -e "${C_MUTED}------------------------------------------------------------------------------${C_RESET}"
+
+    local backup_src_dev TARGET_DISK="" num_disks=${#candidate_disks[@]}
+    backup_src_dev=$(df --output=source "$BACKUP_DIR" 2>/dev/null | tail -n1 || true)
+    while true; do
+        local disk_sel=""
+        read -r -p "Seleziona disco [1-${num_disks}] o percorso (es. /dev/sdf): " disk_sel </dev/tty
+        disk_sel=$(trim "$disk_sel")
+        [[ -n "$disk_sel" ]] || continue
+        if (( num_disks > 0 )) && [[ "$disk_sel" =~ ^[0-9]+$ ]]; then
+            (( disk_sel >= 1 && disk_sel <= num_disks )) && TARGET_DISK="${candidate_disks[$((disk_sel - 1))]}" || { log_warn "Indice fuori intervallo."; continue; }
+        else
+            [[ "$disk_sel" != /dev/* ]] && disk_sel="/dev/${disk_sel}"
+            TARGET_DISK="$disk_sel"
+        fi
+        [[ -b "$TARGET_DISK" ]] || { log_warn "${TARGET_DISK} non valido."; continue; }
+        [[ "$(lsblk -n -d -o TYPE "$TARGET_DISK" 2>/dev/null || true)" == "disk" ]] || { log_warn "Seleziona un disco fisico intero."; continue; }
+        [[ "$backup_src_dev" == /dev/* ]] && lsblk -rnpo NAME "$TARGET_DISK" | grep -Fxq "$backup_src_dev" && { log_err "Contiene la sorgente del backup!"; continue; }
+        local dcb; dcb=$(lsblk -b -n -d -o SIZE "$TARGET_DISK")
+        (( dcb / 1024 / 1024 / 1024 >= min_req_gib )) || { log_err "Disco troppo piccolo (minimo ${min_req_gib} GiB)."; continue; }
+        inspect_and_prepare_target_disk "$TARGET_DISK" && break
+    done
+    TARGET_DISK_GLOBAL="$TARGET_DISK"
+
+    local disk_bytes disk_gib disk_model
+    disk_bytes=$(lsblk -b -n -d -o SIZE "$TARGET_DISK")
+    disk_gib=$(( disk_bytes / 1024 / 1024 / 1024 ))
+    disk_model=$(lsblk -n -d -o MODEL "$TARGET_DISK" | xargs || echo "Generic Disk")
+
+    ui_section "MODALITÀ DI RIPRISTINO"
+    echo -e "  ${C_MINT}1) Nuova Identità / Re-Keying${C_RESET}"
+    echo -e "  ${C_PEACH}2) Clonazione 1:1 Esatta${C_RESET}"
+    local mode_choice RESTORE_MODE="rekey" TARGET_VG="$ORIG_CAPTURED_VG" CONFLICT_DISK="" CLOAK_CONFLICT="n"
+    while true; do
+        read -r -p "Seleziona modalità [1-2]: " mode_choice </dev/tty
+        mode_choice=$(trim "$mode_choice")
+        [[ "$mode_choice" == "1" || "$mode_choice" == "2" ]] && break
+        log_warn "Inserisci 1 o 2."
+    done
+
+    ui_section "OVERVIEW GOLDEN IMAGE SELEZIONATA"
+    printf "  Titolo : %s (%s) | VG alla cattura: %s\n" "$IMAGE_TITLE" "$IMAGE_CREATED" "$ORIG_CAPTURED_VG"
+    printf "  EFI    : %s (min %dG)\n" "$P1_DEFAULT_SIZE" "$min_efi_gib"
+    local entry
+    for entry in "${LV_SPECS[@]}"; do
+        IFS='|' read -r lv_name lv_orig_sz _ lv_mode _ <<< "$entry"
+        local min_req=1; [[ "$lv_mode" == "DATA" ]] && min_req="${MIN_LV_GIB[$lv_name]}"
+        printf "  LV %-14s %-6s cat=%-6s min=%dG\n" "$lv_name" "$lv_mode" "$lv_orig_sz" "$min_req"
+    done
+
+    if [[ "$mode_choice" == "1" ]]; then
+        RESTORE_MODE="rekey"
+        while true; do
+            local input_vg
+            read -r -p "Inserisci nome nuovo Volume Group LVM (es. vg1): " input_vg </dev/tty
+            TARGET_VG=$(trim "$input_vg")
+            [[ -n "$TARGET_VG" && "$TARGET_VG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ && ! "$TARGET_VG" =~ -$ ]] || { log_warn "Nome non valido."; continue; }
+            [[ ! "${TARGET_VG,,}" =~ ^(root|dev|proc|sys|run|mapper|dm|lvm|snapshot|mirror)$ ]] || { log_warn "Nome riservato."; continue; }
+            if [[ "$TARGET_VG" == "$ORIG_CAPTURED_VG" ]] || vgs "$TARGET_VG" &>/dev/null; then
+                log_warn "Il VG '${TARGET_VG}' confligge con un VG esistente."; continue
+            fi
+            break
+        done
+    else
+        RESTORE_MODE="clone"
+        TARGET_VG="$ORIG_CAPTURED_VG"
+        local existing_luks_part
+        existing_luks_part=$(blkid -U "$P2_LUKS_UUID" 2>/dev/null || blkid -t UUID="$P1_FS_UUID" -o device 2>/dev/null | head -n1 || true)
+        if [[ -n "$existing_luks_part" ]]; then
+            local parent_kname
+            parent_kname=$(lsblk -dno PKNAME "$existing_luks_part" 2>/dev/null | head -n1 || true)
+            if [[ -n "$parent_kname" && "/dev/${parent_kname}" != "$TARGET_DISK" ]]; then
+                CONFLICT_DISK="/dev/${parent_kname}"
+            elif [[ -z "$parent_kname" ]]; then
+                local cand="${existing_luks_part%p[0-9]*}"
+                [[ "$cand" == "$existing_luks_part" ]] && cand="${existing_luks_part%[0-9]*}"
+                [[ "$cand" != "$TARGET_DISK" ]] && CONFLICT_DISK="$cand"
+            fi
+            if [[ -n "$CONFLICT_DISK" ]]; then
+                echo -e "\n${C_ROSE} [!] CONFLITTO UUID: Disco sorgente attivo su ${CONFLICT_DISK}${C_RESET}"
+                prompt_yes_no " Vuoi salvare la sua GPT sul NAS e occultarlo?" "y" && CLOAK_CONFLICT="y"
+            fi
+        fi
+    fi
+
+    # Macchina a Stati Dimensionamento con BACKSPACE
+    ui_section "DEFINIZIONE GEOMETRIA — Target: ${TARGET_DISK} (${disk_model} - ${disk_gib} GiB)"
+    echo -e "  ${C_MUTED}Digita GB (es. 16), 'min', 'max' ('100%'), oppure BACKSPACE per tornare indietro.${C_RESET}\n"
+
+    local min_luks_gross_gib=$(( total_min_data_gib + ${#EMPTY_LVS[@]} + 2 ))
+    local max_efi_gib=$(( disk_gib - min_luks_gross_gib ))
+    local num_lvs=${#LV_SPECS[@]} total_steps=$(( 2 + num_lvs )) step_idx=0
+    local EFI_GIB=0 EFI_SIZE="" LUKS_GIB=0 LUKS_SGDISK_END="" LUKS_DESC="" usable_luks_gib=0
+    declare -a ALLOC_LV_GIB=(); declare -A NEW_LV_SIZES=()
+
+    while (( step_idx < total_steps )); do
+        if (( step_idx == 0 )); then
+            local rc=0; read_step_input "  Partizione 1 (EFI)        [Disponibile: ${disk_gib}G | min: ${min_efi_gib}G, max: ${max_efi_gib}G]: " || rc=$?
+            (( rc == 2 )) && { log_warn "Sei già al primo step."; continue; }
+            (( rc != 0 )) && exit 1
+            local in_val; in_val=$(trim "${READ_VAL^^}")
+            if [[ "$in_val" == "MIN" ]]; then EFI_GIB=$min_efi_gib
+            elif [[ "$in_val" == "MAX" || "$in_val" == "100%" ]]; then EFI_GIB=$max_efi_gib
+            else EFI_GIB=$(parse_gb "$in_val"); fi
+            if (( EFI_GIB >= min_efi_gib && EFI_GIB <= max_efi_gib )); then EFI_SIZE="${EFI_GIB}G"; (( step_idx++ )) || true
+            else log_warn "Valore tra ${min_efi_gib}G e ${max_efi_gib}G."; fi
+        elif (( step_idx == 1 )); then
+            local rem=$(( disk_gib - EFI_GIB )) rc=0
+            read_step_input "  Partizione 2 (LUKS)       [Disponibile: ${rem}G | min: ${min_luks_gross_gib}G, max: ${rem}G]: " || rc=$?
+            (( rc == 2 )) && { step_idx=0; continue; }
+            (( rc != 0 )) && exit 1
+            local in_val; in_val=$(trim "${READ_VAL^^}")
+            local valid_luks=0
+            if [[ "$in_val" == "100%" || "$in_val" == "MAX" ]]; then
+                LUKS_SGDISK_END="0"; LUKS_GIB=$rem; LUKS_DESC="${rem}G (100%)"; valid_luks=1
+            elif [[ "$in_val" == "MIN" ]]; then
+                LUKS_GIB=$min_luks_gross_gib; LUKS_SGDISK_END="+${LUKS_GIB}G"; LUKS_DESC="${LUKS_GIB}G"; valid_luks=1
+            elif [[ "$in_val" =~ ^([0-9]{1,2})%$ ]]; then
+                local calc_g=$(( rem * BASH_REMATCH[1] / 100 ))
+                (( calc_g >= min_luks_gross_gib && calc_g <= rem )) && { LUKS_GIB=$calc_g; LUKS_SGDISK_END="+${LUKS_GIB}G"; LUKS_DESC="${LUKS_GIB}G (${BASH_REMATCH[1]}%)"; valid_luks=1; }
+            else
+                local req_g; req_g=$(parse_gb "$in_val")
+                if (( req_g >= min_luks_gross_gib && req_g <= rem )); then
+                    LUKS_GIB=$req_g; (( LUKS_GIB == rem )) && LUKS_SGDISK_END="0" || LUKS_SGDISK_END="+${LUKS_GIB}G"
+                    LUKS_DESC="${LUKS_GIB}G"; valid_luks=1
+                fi
+            fi
+            if (( valid_luks == 1 )); then
+                usable_luks_gib=$(( LUKS_GIB - 2 ))
+                local tmin=$(( total_min_data_gib + ${#EMPTY_LVS[@]} ))
+                (( usable_luks_gib < tmin )) && usable_luks_gib=$tmin
+                echo -e "\n  ${C_BOLD}${C_LAVENDER}Volumi Logici LVM (VG: ${TARGET_VG} — Pool netto: ${usable_luks_gib}G)${C_RESET}"
+                (( step_idx++ )) || true
+            else
+                log_warn "Valore tra ${min_luks_gross_gib}G e ${rem}G."
+            fi
+        else
+            local lv_idx=$(( step_idx - 2 ))
+            IFS='|' read -r lv_name _ _ lv_mode _ <<< "${LV_SPECS[$lv_idx]}"
+            local min_allowed=1; [[ "$lv_mode" == "DATA" ]] && min_allowed="${MIN_LV_GIB[$lv_name]}"
+            local alloc=0 fut=0 k j
+            for (( k=0; k<lv_idx; k++ )); do alloc=$(( alloc + ${ALLOC_LV_GIB[$k]:-0} )); done
+            for (( j=lv_idx+1; j<num_lvs; j++ )); do
+                IFS='|' read -r fn _ _ fm _ <<< "${LV_SPECS[$j]}"
+                [[ "$fm" == "DATA" ]] && fut=$(( fut + MIN_LV_GIB[$fn] )) || fut=$(( fut + 1 ))
+            done
+            local pool_rem=$(( usable_luks_gib - alloc )) max_this=$(( pool_rem - fut )) label_pad p_str rc=0
+            printf -v label_pad "LV '%s' (%s)" "$lv_name" "$lv_mode"
+            printf -v p_str "  %-25s [Disponibile: %dG | min: %dG, max: %dG]: " "$label_pad" "$pool_rem" "$min_allowed" "$max_this"
+            read_step_input "$p_str" || rc=$?
+            (( rc == 2 )) && { (( step_idx-- )) || true; continue; }
+            (( rc != 0 )) && exit 1
+            local in_val lv_gib=0; in_val=$(trim "${READ_VAL^^}")
+            if [[ "$in_val" == "MAX" || "$in_val" == "100%" ]]; then lv_gib=$max_this
+            elif [[ "$in_val" == "MIN" ]]; then lv_gib=$min_allowed
+            else lv_gib=$(parse_gb "$in_val"); fi
+            (( lv_gib < min_allowed )) && { log_warn "Minimo ${min_allowed}G."; continue; }
+            if (( lv_gib > max_this )); then
+                log_warn "Massimo sicuro: ${max_this}G."
+                prompt_yes_no "        Assegnare ${max_this}G a '${lv_name}'?" "y" && lv_gib=$max_this || continue
+            fi
+            ALLOC_LV_GIB[$lv_idx]=$lv_gib; NEW_LV_SIZES["$lv_name"]="${lv_gib}G"; (( step_idx++ )) || true
+        fi
+    done
+
+    local total_lv_gib=0 k
+    for (( k=0; k<num_lvs; k++ )); do total_lv_gib=$(( total_lv_gib + ALLOC_LV_GIB[k] )); done
+
+    echo ""
+    local ENROLL_TPM2="n" UPDATE_NVRAM="n"
+    if [[ "$RESTORE_MODE" == "rekey" ]] && command -v systemd-cryptenroll &>/dev/null && [[ -c /dev/tpmrm0 || -c /dev/tpm0 ]]; then
+        if prompt_yes_no "Vuoi abilitare sblocco automatico LUKS2 via TPM2 (PCR 0+7)?" "y"; then
+            ENROLL_TPM2="y"
+            log_sub "Nota TPM2: l'enrollment da Live misura PCR 0+7 correnti; al 1° boot potrebbe richiedere passphrase manuale una volta se lo stato Secure Boot varia."
+        fi
+    fi
+    prompt_yes_no "Vuoi registrare nella NVRAM UEFI la voce Limine per il nuovo disco?" "y" && UPDATE_NVRAM="y"
+
+    ui_header "RIEPILOGO OPERAZIONE DI RESTORE"
+    echo -e "  Golden Image: ${C_BOLD}${IMAGE_TITLE}${C_RESET} | Modalità: ${C_BOLD}${RESTORE_MODE^^}${C_RESET} | Target: ${C_BOLD}${TARGET_DISK}${C_RESET}"
+    echo -e "  EFI: ${EFI_SIZE} | LUKS: ${LUKS_DESC} | VG: ${C_BOLD}${TARGET_VG}${C_RESET} (${total_lv_gib}G / ${usable_luks_gib}G)"
+    echo -e "${C_ROSE}ATTENZIONE: TUTTI I DATI SU ${TARGET_DISK} VERRANNO DISTRUTTI.${C_RESET}"
+    local confirm; read -r -p "Digita 'DESTROY' per confermare: " confirm </dev/tty
+    [[ "$(trim "$confirm")" == "DESTROY" ]] || { echo "Operazione annullata."; exit 0; }
+
+    RESTORE_IN_PROGRESS=1
+    RESTORE_CRITICAL_PHASE=1
+    ACTIVE_TARGET_VG="$TARGET_VG"
+
+    log_step "1/7" "Isolamento volumi e chiusura mapper preesistenti..."
+    release_disk_holders "$TARGET_DISK" || true
+    local dm_target_escaped="${TARGET_VG//-/--}" mnt
+    for mnt in $(findmnt -n -r -o TARGET,SOURCE | awk -v vg="/dev/mapper/${dm_target_escaped}-" '$2 ~ "^"vg {print $1}'); do
+        umount -lf "$mnt" 2>/dev/null || true
+    done
+    is_live_host_vg "$TARGET_VG" || vgchange -an "$TARGET_VG" 2>/dev/null || true
+    cryptsetup close "$CRYPT_NAME" 2>/dev/null || true
+
+    if [[ "$RESTORE_MODE" == "clone" && -n "$CONFLICT_DISK" ]]; then
+        release_disk_holders "$CONFLICT_DISK" || true
+        if [[ "${CLOAK_CONFLICT,,}" == "y" ]]; then
+            local gpt_bak="${BACKUP_DIR}/gpt_backup_$(basename "$CONFLICT_DISK").bak"
+            local uncloak_script="${BACKUP_DIR}/uncloak-$(basename "$CONFLICT_DISK").sh"
+            run_protected sgdisk --backup="$gpt_bak" "$CONFLICT_DISK" >/dev/null
+            run_protected sgdisk -o "$CONFLICT_DISK" >/dev/null
+            run_protected partprobe "$CONFLICT_DISK"
+            udevadm settle
+            cat <<UNCLOAK > "$uncloak_script"
+#!/usr/bin/env bash
+set -euo pipefail
+sgdisk --load-backup="${gpt_bak}" "${CONFLICT_DISK}"
+partprobe "${CONFLICT_DISK}"
+udevadm settle
+lsblk "${CONFLICT_DISK}"
+UNCLOAK
+            chmod +x "$uncloak_script"
+        fi
+    fi
+
+    local PART1 PART2
+    if [[ "$TARGET_DISK" =~ [0-9]$ ]]; then PART1="${TARGET_DISK}p1"; PART2="${TARGET_DISK}p2"
+    else PART1="${TARGET_DISK}1"; PART2="${TARGET_DISK}2"; fi
+
+    log_step "2/7" "Scrittura tabella partizioni GPT su ${TARGET_DISK}..."
+    udevadm control --stop-exec-queue 2>/dev/null || true
+    UDEV_QUEUE_PAUSED=1
+    local part
+    for part in $(lsblk -n -r -o NAME "$TARGET_DISK" | grep -v "^$(basename "$TARGET_DISK")$"); do
+        [[ -b "/dev/$part" ]] || continue
+        run_protected wipefs -a -f "/dev/$part" >/dev/null 2>&1 || true
+        run_protected dd if=/dev/zero of="/dev/$part" bs=1M count=16 conv=notrunc status=none 2>/dev/null || true
+    done
+    run_protected wipefs -a -f "$TARGET_DISK" >/dev/null 2>&1 || true
+    run_protected sgdisk --zap-all "$TARGET_DISK" >/dev/null
+
+    if [[ "$RESTORE_MODE" == "clone" ]]; then
+        run_protected sgdisk --disk-guid="${DISK_GUID}" \
+            -n 1:4096:+${EFI_SIZE} -t 1:EF00 -u 1:${P1_PARTUUID} \
+            -n 2:0:${LUKS_SGDISK_END} -t 2:8300 -c 2:"${P2_PARTNAME}" -u 2:${P2_PARTUUID} \
+            "$TARGET_DISK" >/dev/null
+    else
+        run_protected sgdisk -n 1:4096:+${EFI_SIZE} -t 1:EF00 -n 2:0:${LUKS_SGDISK_END} -t 2:8300 -c 2:"root" "$TARGET_DISK" >/dev/null
+    fi
+
+    run_protected partprobe "$TARGET_DISK"; sleep 1
+    local new_p
+    for new_p in "$PART1" "$PART2"; do
+        [[ -b "$new_p" ]] || continue
+        run_protected dd if=/dev/zero of="$new_p" bs=1M count=16 conv=notrunc status=none 2>/dev/null || true
+        run_protected wipefs -a -f "$new_p" >/dev/null 2>&1 || true
+    done
+    udevadm control --start-exec-queue 2>/dev/null || true
+    UDEV_QUEUE_PAUSED=0
+    udevadm settle; sleep 1
+
+    log_step "3/7" "Formattazione ESP (${PART1})..."
+    release_disk_holders "$TARGET_DISK" || true
+    run_protected wipefs -a -f "$PART1" >/dev/null
+    if [[ "$RESTORE_MODE" == "clone" ]]; then
+        run_protected mkfs.fat -F 32 -i "${P1_FS_UUID//-/}" "$PART1" >/dev/null
+    else
+        run_protected mkfs.fat -F 32 "$PART1" >/dev/null
+    fi
+
+    log_step "4/7" "Configurazione container crittografico LUKS2 su ${PART2}..."
+    release_disk_holders "$TARGET_DISK" || true
+    run_protected wipefs -a -f "$PART2" >/dev/null
+
+    if [[ "$RESTORE_MODE" == "clone" ]]; then
+        log_sub "[4.1] Ripristino Header LUKS originale..."
+        run_protected cryptsetup luksHeaderRestore "$PART2" --header-backup-file "${BACKUP_DIR}/luks_header.img" --batch-mode
+        udevadm settle
+        local unlocked=0 attempt orig_pass=""
+        for attempt in 1 2 3; do
+            read -s -r -p "        Passphrase originale (${attempt}/3): " orig_pass </dev/tty || true
+            echo
+            if [[ -n "$orig_pass" ]] && run_cryptsetup_with_pass "$orig_pass" open "${CRYPT_STRICT_FLAGS[@]}" "$PART2" "$CRYPT_NAME"; then
+                unlocked=1
+                run_cryptsetup_with_pass "$orig_pass" resize "${CRYPT_STRICT_FLAGS[@]}" "$CRYPT_NAME" || true
+                orig_pass=""
+                break
+            fi
+            orig_pass=""
+            log_warn "Passphrase non valida (${attempt}/3)."
+        done
+        (( unlocked == 1 )) || { log_err "Sblocco LUKS fallito."; exit 1; }
+    else
+        local NEW_PASSPHRASE="" NEW_PASSPHRASE_CONF=""
+        while true; do
+            read -s -r -p "        Inserisci nuova passphrase: " NEW_PASSPHRASE </dev/tty || true; echo
+            read -s -r -p "        Conferma nuova passphrase: " NEW_PASSPHRASE_CONF </dev/tty || true; echo
+            [[ -n "$NEW_PASSPHRASE" && "$NEW_PASSPHRASE" == "$NEW_PASSPHRASE_CONF" ]] && break
+            echo -e "        ${C_ROSE}[ERRORE] Passphrase vuote o non coincidenti.${C_RESET}"
+        done
+        run_cryptsetup_with_pass "$NEW_PASSPHRASE" luksFormat --type luks2 --batch-mode "$PART2"
+        run_cryptsetup_with_pass "$NEW_PASSPHRASE" open "${CRYPT_STRICT_FLAGS[@]}" "$PART2" "$CRYPT_NAME"
+        if [[ "${ENROLL_TPM2,,}" == "y" ]]; then
+            mkdir -p "$MNT_BASE"
+            local tmp_tpm_key="${MNT_BASE}/.tpm_unlock.key"
+            ( umask 0077; printf '%s' "$NEW_PASSPHRASE" > "$tmp_tpm_key" )
+            if run_protected systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=0+7 --unlock-key-file="$tmp_tpm_key" "$PART2" >/dev/null 2>&1; then
+                log_ok "Token TPM2 (PCR 0+7) registrato."
+            else
+                log_warn "Registrazione TPM2 non riuscita."
+            fi
+            rm -f "$tmp_tpm_key" 2>/dev/null || true
+        fi
+        NEW_PASSPHRASE=""; NEW_PASSPHRASE_CONF=""
+    fi
+    udevadm settle
+
+    log_step "5/7" "Creazione struttura LVM (VG: ${TARGET_VG})..."
+    run_protected wipefs -a -f "/dev/mapper/${CRYPT_NAME}" >/dev/null
+    if [[ "$RESTORE_MODE" == "clone" ]]; then
+        run_protected pvcreate --uuid "$PV_UUID" --norestorefile -ff -y "/dev/mapper/${CRYPT_NAME}" >/dev/null
+    else
+        run_protected pvcreate -ff -y "/dev/mapper/${CRYPT_NAME}" >/dev/null
+    fi
+    run_protected vgcreate "$TARGET_VG" "/dev/mapper/${CRYPT_NAME}" >/dev/null
+    udevadm settle
+
+    for entry in "${LV_SPECS[@]}"; do
+        IFS='|' read -r lv_name _ lv_uuid _ _ <<< "$entry"
+        local new_sz="${NEW_LV_SIZES[$lv_name]}"
+        log_sub "Creazione LV '${lv_name}' (${new_sz})..."
+        run_protected lvcreate -L "$new_sz" -n "$lv_name" -y "$TARGET_VG" >/dev/null 2>&1 \
+            || run_protected lvcreate -l 100%FREE -n "$lv_name" -y "$TARGET_VG" >/dev/null
+        udevadm settle
+        if [[ "$RESTORE_MODE" == "clone" ]]; then
+            run_protected mkfs.ext4 -F -q -U "$lv_uuid" "/dev/${TARGET_VG}/${lv_name}"
+        else
+            run_protected mkfs.ext4 -F -q "/dev/${TARGET_VG}/${lv_name}"
+        fi
+    done
+
+    local pv_flag="${MNT_BASE}/.pv_done" stream_flag="${MNT_BASE}/.stream_done" f_size f_human
+    log_step "6/7" "Estrazione archivi e scrittura su disco..."
+    mkdir -p "${MNT_BASE}/efi"
+    mount "$PART1" "${MNT_BASE}/efi"
+    f_size=$(stat -c%s "${BACKUP_DIR}/efi.tar.zst")
+    f_human=$(numfmt --to=iec-i --suffix=B "$f_size" 2>/dev/null || echo "N/A")
+    rm -f "$pv_flag" "$stream_flag"
+    (
+        trap '' INT; set -o pipefail
+        { pv -s "$f_size" -F "     Lettura in RAM    : %p | Letti: %b / ${f_human} | Vel: %r | ETA: %e" "${BACKUP_DIR}/efi.tar.zst"; rc=$?; touch "$pv_flag"; exit $rc; } \
+            | zstd -dc 2>/dev/null | tar "${TAR_SILENT_FLAGS[@]}" --numeric-owner --sparse -xpf - -C "${MNT_BASE}/efi"
+        touch "$stream_flag"; sync
+    ) &
+    monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura disco"
+
+    if [[ -f "${BACKUP_DIR}/recovery.squashfs" ]]; then
+        f_size=$(stat -c%s "${BACKUP_DIR}/recovery.squashfs")
+        f_human=$(numfmt --to=iec-i --suffix=B "$f_size" 2>/dev/null || echo "N/A")
+        rm -f "$pv_flag" "$stream_flag"
+        (
+            trap '' INT; set -o pipefail
+            exec 3> "${MNT_BASE}/efi/recovery.squashfs"
+            { pv -s "$f_size" -F "     Lettura in RAM    : %p | Letti: %b / ${f_human} | Vel: %r | ETA: %e" "${BACKUP_DIR}/recovery.squashfs"; rc=$?; touch "$pv_flag"; exit $rc; } >&3
+            touch "$stream_flag"; exec 3>&-; sync
+        ) &
+        monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura disco"
+    fi
+
+    local clone_loader='\EFI\BOOT\BOOTX64.EFI'
+    [[ -f "${MNT_BASE}/efi/EFI/limine/limine_x64.efi" ]] && clone_loader='\EFI\limine\limine_x64.efi'
+    [[ -f "${MNT_BASE}/efi/EFI/limine/BOOTX64.EFI" ]] && clone_loader='\EFI\limine\BOOTX64.EFI'
+    umount "${MNT_BASE}/efi"
+
+    for entry in "${LV_SPECS[@]}"; do
+        IFS='|' read -r lv_name _ _ lv_mode lv_perm <<< "$entry"
+        mkdir -p "${MNT_BASE}/${lv_name}"
+        mount "/dev/${TARGET_VG}/${lv_name}" "${MNT_BASE}/${lv_name}"
+        if [[ "$lv_mode" == "DATA" ]]; then
+            f_size=$(stat -c%s "${BACKUP_DIR}/${lv_name}.tar.zst")
+            f_human=$(numfmt --to=iec-i --suffix=B "$f_size" 2>/dev/null || echo "N/A")
+            rm -f "$pv_flag" "$stream_flag"
+            (
+                trap '' INT; set -o pipefail
+                { pv -s "$f_size" -F "     Lettura in RAM    : %p | Letti: %b / ${f_human} | Vel: %r | ETA: %e" "${BACKUP_DIR}/${lv_name}.tar.zst"; rc=$?; touch "$pv_flag"; exit $rc; } \
+                    | zstd -dc 2>/dev/null | tar "${TAR_SILENT_FLAGS[@]}" --numeric-owner --acls --xattrs --sparse -xpf - -C "${MNT_BASE}/${lv_name}"
+                touch "$stream_flag"; sync
+            ) &
+            monitor_io_pipeline $! "$pv_flag" "$stream_flag" "Scrittura disco"
+        else
+            chmod "$lv_perm" "${MNT_BASE}/${lv_name}"
+            [[ "$lv_name" == "log" ]] && mkdir -p -m 0700 "${MNT_BASE}/${lv_name}/audit"
+            [[ "$lv_name" == "pacmancache" ]] && mkdir -p -m 0755 "${MNT_BASE}/${lv_name}/pkg"
+        fi
+        umount "${MNT_BASE}/${lv_name}"
+    done
+
+    if [[ "$RESTORE_MODE" == "rekey" ]]; then
+        run_rekey_engine "$ORIG_CAPTURED_VG" "$TARGET_VG" "$PART2" "$PART1" "$UPDATE_NVRAM"
+    elif [[ "${UPDATE_NVRAM,,}" == "y" ]]; then
+        log_step "7/7" "Registrazione voce UEFI Limine in NVRAM..."
+        register_limine_nvram "$PART1" "$clone_loader" "Archlinux-Limine"
+    else
+        log_step "7/7" "Registrazione NVRAM saltata."
+    fi
+
+    RESTORE_CRITICAL_PHASE=0
+    RESTORE_IN_PROGRESS=0
+    ui_header "RIPRISTINO COMPLETATO CON SUCCESSO (${IMAGE_TITLE})"
+    lsblk -o NAME,SIZE,FSTYPE,UUID,PARTUUID "$TARGET_DISK"
+    echo ""
+
+    if cryptsetup status "$CRYPT_NAME" &>/dev/null || lvs "$TARGET_VG" &>/dev/null; then
+        if prompt_yes_no "Vuoi disattivare VG '${TARGET_VG}' e chiudere LUKS per sicurezza?" "y"; then
+            is_live_host_vg "$TARGET_VG" || vgchange -an "$TARGET_VG" >/dev/null 2>&1 || true
+            cryptsetup close "$CRYPT_NAME" >/dev/null 2>&1 || true
+            udevadm settle
+            log_ok "Dispositivo ${TARGET_DISK} chiuso in sicurezza."
+        fi
+    else
+        log_ok "Dispositivo ${TARGET_DISK} già chiuso in sicurezza."
+    fi
+}
+
+do_list_tsv() {
+    resolve_vault_catalog_dir "$DEFAULT_DIR" || true
+    local catalog_dir="${RESOLVED_NAS_DIR:-$DEFAULT_DIR}"
+    [[ -d "$catalog_dir" ]] || return 0
+    local mfile img_dir dir_name m_title m_desc m_date m_vg sz_h has_sq has_sha
+    while IFS= read -r -d '' mfile; do
+        img_dir="$(dirname "$mfile")"
+        dir_name="$(basename "$img_dir")"
+        m_title="$(extract_manifest_field "$mfile" "IMAGE_TITLE")"
+        [[ -n "$m_title" ]] || m_title="$dir_name"
+        m_desc="$(extract_manifest_field "$mfile" "IMAGE_DESCRIPTION")"
+        m_desc="${m_desc//$'\t'/ }"
+        [[ -n "$m_desc" ]] || m_desc="-"
+        m_date="$(extract_manifest_date "$mfile")"
+        m_vg="$(extract_manifest_field "$mfile" "VG_NAME")"
+        [[ -n "$m_vg" ]] || m_vg="vg0"
+        sz_h="$(du -sh "$img_dir" 2>/dev/null | awk '{print $1}' || echo "-")"
+        has_sq=0; [[ -f "${img_dir}/recovery.squashfs" ]] && has_sq=1
+        has_sha=0; [[ -f "${img_dir}/sha256sums.txt" ]] && has_sha=1
+        printf 'IMG\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$dir_name" "${m_title//$'\t'/ }" "${m_date:0:10}" "$m_vg" "$sz_h" "$has_sq" "$has_sha" "$m_desc"
+    done < <(find "$catalog_dir" -mindepth 2 -maxdepth 2 -type f -name "manifest.env" -print0 2>/dev/null | sort -z)
+    return 0
+}
+
+do_verify_stdin() {
+    local img_name
+    read -r img_name || true
+    img_name="$(trim "${img_name:-}")"
+    if [[ -z "$img_name" || "$img_name" == *".."* || ! "$img_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]; then
+        log_err "Invalid image identifier."
+        exit 1
+    fi
+    resolve_vault_catalog_dir "$DEFAULT_DIR" || true
+    local catalog_dir="${RESOLVED_NAS_DIR:-$DEFAULT_DIR}"
+    local img_dir="${catalog_dir}/${img_name}"
+    if [[ ! -d "$img_dir" || ! -f "${img_dir}/sha256sums.txt" ]]; then
+        printf 'VERIFY_ERR|%s|missing sha256sums.txt\n' "$img_name"
+        exit 1
+    fi
+    local cnt
+    cnt="$(wc -l < "${img_dir}/sha256sums.txt" | tr -d ' ')"
+    if ( cd "$img_dir" && sha256sum -c --quiet sha256sums.txt >/dev/null 2>&1 ); then
+        printf 'VERIFY_OK|%s|%s\n' "$img_name" "$cnt"
+        return 0
+    fi
+    printf 'VERIFY_ERR|%s|checksum mismatch\n' "$img_name"
+    exit 1
+}
+
+main() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)    show_help; exit 0 ;;
+            list-tsv|--list-tsv)       MODE_ACTION="list_tsv"; shift ;;
+            verify-stdin|--verify-stdin) MODE_ACTION="verify_stdin"; shift ;;
+            -s|--save)    MODE_ACTION="save"; shift ;;
+            -r|--restore) MODE_ACTION="restore"; shift ;;
+            -d|--device)
+                [[ -n "${2:-}" ]] || { log_err "L'opzione $1 richiede un dispositivo."; exit 1; }
+                CLI_LUKS_DEV="$2"; shift 2 ;;
+            *)
+                log_err "Opzione sconosciuta: $1. Usa -h o --help."
+                exit 1 ;;
+        esac
+    done
+
+    if [[ -z "$MODE_ACTION" ]]; then
+        echo -e "${C_BOLD}Uso:${C_RESET} sudo ${0##*/} {-s|--save | -r|--restore | list-tsv | verify-stdin | -h|--help} [-d <luks_dev>]" >&2
+        exit 1
+    fi
+    if [[ "$MODE_ACTION" == "list_tsv" ]]; then
+        do_list_tsv
+        exit 0
+    fi
+    if [[ "$MODE_ACTION" == "verify_stdin" ]]; then
+        do_verify_stdin
+        exit 0
+    fi
+    if [[ $EUID -ne 0 ]]; then
+        log_err "Eseguire lo script come root (sudo)."
+        exit 1
+    fi
+
+    trap on_sigint INT
+    trap on_sigterm TERM HUP
+    trap cleanup EXIT
+
+    case "$MODE_ACTION" in
+        save)    do_save ;;
+        restore) do_restore ;;
+    esac
+}
+
+if [[ "${DC_GOLDEN_LIB_ONLY:-0}" != "1" ]]; then
+    main "$@"
+fi

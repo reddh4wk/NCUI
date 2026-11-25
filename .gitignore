@@ -9,3 +9,8 @@ cyberdeck
 .aider*
 config/ncui/calendar.db*
 config/ncui/ical_feeds.json
+.media/
+*.pkg.tar*
+packages/nc-wallpapers/nc-matrix/nc-matrix
+packages/nc-ui-core/config/ncui/calendar.db*
+packages/nc-ui-core/config/ncui/ical_feeds.json

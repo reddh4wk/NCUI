@@ -1,0 +1,275 @@
+# NC-UI Catalogo Aiuto Azioni — Telemetria, Boot Limine & Recovery (Italiano)
+# Copre: cc_telemetry_boot.py, cc_telemetry_recovery.py, cc_telemetry_resources.py, cc_engine_telemetry.py
+
+# ==============================================================================
+# TELEMETRIA -> STUDIO BOOTLOADER LIMINE (`panels/cc_telemetry_boot.py`)
+# ==============================================================================
+["cc_boot:apply"]
+title = "Applica Configurazione Limine su ESP"
+short = "Genera `limine.conf` dalla bozza staged e la scrive sulla ESP tramite `nc-rescue limine-apply-stdin`."
+verbose = "Salva in sicurezza timeout, risoluzione, sfondo, palette colori e albero voci tramite l'helper privilegiato `nc-rescue`, creando prima un backup del file esistente."
+diagram = "boot_recovery"
+diagram_focus = "limine"
+
+["cc_boot:reset"]
+title = "Scarta Modifiche Bozza Limine"
+short = "Annulla tutte le modifiche non salvate nell'anteprima e ricarica `limine.conf` dal disco."
+
+["cc_boot:to:*"]
+title = "Imposta Timeout Menu Limine"
+short = "Prepara il conto alla rovescia `timeout:` (`0s`, `3s`, `5s`, `10s` o `no` manuale) nella bozza `limine.conf`."
+verbose = "Stabilisce quanti secondi attende Limine prima di avviare la voce predefinita. Selezionando `no`, resta in attesa finché non premi Invio."
+
+["cc_boot:toggle_remember"]
+title = "Ricorda Ultima Voce Avviata"
+short = "Attiva o disattiva `remember_last_entry: yes/no` per pre-selezionare l'ultimo kernel o UKI avviato."
+
+["cc_boot:toggle_verbose"]
+title = "Attiva Log Verboso Limine"
+short = "Attiva o disattiva `verbose: yes/no` per mostrare i dettagli di caricamento moduli durante il boot."
+
+["cc_boot:res:*"]
+title = "Imposta Risoluzione Menu Limine"
+short = "Prepara `interface_resolution:` (`auto`, `1920x1080`, `2560x1440` o `3840x2160`) per la grafica di boot."
+
+["cc_boot:margin*"]
+title = "Regola Margine Terminale Limine"
+short = "Scorri con la rotella o usa `[-]`/`[+]` per impostare `term_margin:` (0–160 px) attorno al menu di boot."
+verbose = "Aggiorna l'anteprima Cairo dal vivo e prepara `term_margin:` nella bozza `limine.conf` a passi di `8 px`."
+
+["cc_boot:preset:*"]
+title = "Applica Preset Tema Limine"
+short = "Applica una palette pronta (`Fallout`, `Nightcity`, `Amber CRT` o `Arch Blue`) alla bozza Limine."
+verbose = "Aggiorna testo, evidenziazione, sfondo terminale RGB, colore branding, backdrop e gli 8 colori ANSI nell'anteprima senza scrivere su disco finché non premi Applica."
+
+["cc_boot:wp_import"]
+title = "Importa Sfondo Limine su ESP"
+short = "Chiede il percorso di un'immagine PNG/JPEG/BMP locale da usare come `wallpaper: boot():/...` al boot."
+
+["cc_boot:wp_clear"]
+title = "Rimuovi Sfondo Limine"
+short = "Elimina `wallpaper:` dalla bozza `limine.conf` lasciando lo sfondo a tinta unita `backdrop`."
+
+["cc_boot:wp_cycle_style"]
+title = "Cicla Adattamento Sfondo Limine"
+short = "Alterna `wallpaper_style:` tra `stretched`, `centered` e `tiled` nell'anteprima live di Limine."
+
+["cc_boot:wp_esp:*"]
+title = "Seleziona Sfondo Già su ESP"
+short = "Seleziona un file immagine già presente nella partizione EFI (`boot():/...`)."
+
+["cc_boot:opacity*"]
+title = "Regola Opacità Sfondo Menu Limine"
+short = "Scorri con la rotella o usa `[-]`/`[+]` per impostare la trasparenza alfa `term_background:` (0–100%)."
+verbose = "Regola quanto il riquadro del menu Limine copre l'immagine di sfondo in `limine.conf` (a passi del `10%`)."
+
+["cc_boot:branding_open"]
+title = "Modifica Testo Branding Limine"
+short = "Apre l'editing inline della stringa `interface_branding:` mostrata nell'intestazione del menu Limine."
+
+["cc_boot:inline_col:pal_*"]
+title = "Modifica Colore ANSI Limine"
+short = "Modifica uno degli 8 colori esadecimali (`#RRGGBB`) della `term_palette` del terminale Limine."
+
+["cc_boot:inline_col:*"]
+title = "Modifica Colore Esadecimale Limine"
+short = "Modifica il codice `#RRGGBB` di testo, testo brillante, sfondo box, branding o backdrop."
+
+["cc_boot:set_col:*"]
+title = "Imposta Colore Hex Limine"
+short = "Inserisce il valore `#RRGGBB` specificato nella bozza attiva del tema Limine."
+
+["cc_boot:add_entry"]
+title = "Aggiungi Voce di Boot Limine"
+short = "Chiede titolo, percorso UKI/kernel `path:` e `cmdline:` opzionale per aggiungere una voce al menu."
+
+["cc_boot:preview_sel:*"]
+title = "Seleziona / Apri Voce nell'Anteprima"
+short = "Clicca una voce direttamente nel monitor di anteprima Limine per ispezionarla o aprire/chiudere una cartella."
+
+["cc_boot:sel_node:*"]
+title = "Ispeziona Nodo Menu Limine"
+short = "Seleziona questa voce o cartella per modificarne titolo, commento, percorso o parametri kernel sotto la tabella."
+
+["cc_boot:toggle_dir:*"]
+title = "Espandi / Comprimi Sezione"
+short = "Mostra o nasconde il contenuto di questa sezione senza modificare alcuna impostazione di sistema."
+
+["cc_boot:set_default:*"]
+title = "Imposta Voce Predefinita di Boot"
+short = "Imposta `default_entry:` su questa voce principale di Limine per l'avvio automatico allo scadere del timeout."
+
+["cc_boot:move_up:*"]
+title = "Sposta Voce Boot in Alto"
+short = "Sposta questa voce o cartella una posizione più in alto nell'ordine di `limine.conf`."
+
+["cc_boot:move_dn:*"]
+title = "Sposta Voce Boot in Basso"
+short = "Sposta questa voce o cartella una posizione più in basso nell'ordine di `limine.conf`."
+
+["cc_boot:del_node:*"]
+title = "Elimina Voce Boot"
+short = "Rimuove questa voce dalla bozza `limine.conf` (deve rimanere almeno una voce)."
+
+["cc_boot:edit_node:title:*"]
+title = "Modifica Titolo Voce Boot"
+short = "Modifica il titolo visualizzato (`/Titolo`) della voce o cartella Limine selezionata."
+
+["cc_boot:edit_node:comment:*"]
+title = "Modifica Commento Voce Boot"
+short = "Modifica il sottotitolo opzionale `comment:` mostrato per la voce Limine selezionata."
+
+["cc_boot:edit_node:path:*"]
+title = "Modifica Percorso Immagine Boot"
+short = "Modifica `path:` (`boot():/EFI/Linux/...efi` o percorso kernel) avviato da questa voce Limine."
+
+["cc_boot:edit_node:cmdline:*"]
+title = "Modifica Riga Comando Kernel"
+short = "Modifica i parametri `cmdline:` passati al kernel quando avvii questa voce Limine."
+
+["cc_set:limine_edit"]
+title = "Apri `limine.conf` in Editor Terminale"
+short = "Apre `/boot/limine.conf` con `sudo $EDITOR` in una finestra terminale per modifiche testuali dirette."
+
+["cc_set:limine_*"]
+title = "Regola Parametro Limine"
+short = "Aggiorna `timeout` o `default_entry` nella bozza `limine.conf`."
+
+# ==============================================================================
+# TELEMETRIA -> RECOVERY, DUSKCITY LIVE & IMMAGINI GOLDEN (`cc_telemetry_recovery.py`)
+# ==============================================================================
+["cc_sys:rescue_refresh"]
+title = "Verifica Stato Recovery e Chroot"
+short = "Esegue `nc-rescue check-health` e `nc-chroot candidates-tsv` per aggiornare stato ESP, UKI, SquashFS e dischi."
+verbose = "Rileva spazio libero ESP, presenza e firma di `recovery.squashfs` e `nc-rescue.efi`, voce in Limine e candidati LUKS/LVM senza modificare file."
+
+["cc_sys:rescue_build_full_term"]
+title = "Compila Rescue SquashFS + UKI Completo"
+short = "Apre un terminale root con `nc-rescue --build-recovery` per generare `recovery.squashfs` e UKI sulla ESP."
+verbose = "Impacchetta un'immagine live in RAM avviabile dell'ambiente Nightcity con initramfs/UKI su ESP per ripristinare il sistema anche con root cifrato danneggiato."
+diagram = "boot_recovery"
+diagram_focus = "rescue"
+
+["cc_sys:rescue_sync_ncui_term"]
+title = "Sincronizza NC-UI nell'Immagine Rescue"
+short = "Esegue `sudo nc-rescue --sync-ncui` in terminale per aggiornare NC-UI dentro `recovery.squashfs` senza ricompilare tutto."
+
+["cc_sys:rescue_build_ask"]
+title = "Ricompila e Firma Rescue UKI"
+short = "Chiede conferma prima di rigenerare il file Duskcity Rescue UKI (`nc-rescue.efi`) sulla ESP."
+
+["cc_sys:rescue_build_do"]
+title = "Conferma Compilazione Rescue UKI"
+short = "Esegue `nc-rescue build-uki` in background creando il Rescue UKI e firmandolo se `sbctl` è attivo."
+
+["cc_sys:rescue_build_cancel"]
+title = "Annulla Compilazione Rescue UKI"
+short = "Chiude la richiesta di conferma per la ricompilazione del Rescue UKI."
+
+["cc_sys:rescue_reg_limine"]
+title = "Registra Voce Rescue in Limine"
+short = "Esegue `nc-rescue register-limine` per assicurare la presenza della voce di emergenza in `limine.conf`."
+
+["cc_sys:rescue_uki_open"]
+title = "Imposta Nome File Rescue UKI"
+short = "Modifica `uki_name` (es. `nc-rescue.efi`) salvato tramite `nc-rescue config-stdin` per le build su ESP."
+
+["cc_sys:rescue_cfg:sign_sbctl:true"]
+title = "Abilita Firma `sbctl` sul Rescue UKI"
+short = "Configura `nc-rescue` (`sign_sbctl=true`) per firmare i nuovi Rescue UKI con le chiavi Secure Boot."
+
+["cc_sys:rescue_cfg:sign_sbctl:false"]
+title = "Disabilita Firma `sbctl` sul Rescue UKI"
+short = "Configura `nc-rescue` (`sign_sbctl=false`) per saltare la firma Secure Boot sui Rescue UKI."
+
+["cc_sys:dc_commit"]
+title = "Commit Modifiche Live RAM su Disco"
+short = "Avvia `sudo nc-rescue commit` in terminale per scrivere su LV root le modifiche della sessione live RAM."
+verbose = "Pensato per le sessioni Duskcity live: riversa file `/etc`, pacchetti o riparazioni dalla RAM alla partizione root cifrata su disco."
+diagram = "boot_recovery"
+diagram_focus = "commit"
+
+["cc_sys:dc_commit_rebuild"]
+title = "Commit Live e Ricompila Rescue"
+short = "Esegue `sudo nc-rescue commit-rebuild` in terminale per salvare su root e rigenerare `recovery.squashfs` + UKI."
+
+["cc_sys:rescue_rb_ask"]
+title = "Ripristina File Rescue `.old` su ESP"
+short = "Chiede conferma prima di ripristinare la coppia precedente `.old` di `recovery.squashfs` e UKI sulla ESP."
+
+["cc_sys:rescue_rb_do"]
+title = "Conferma Rollback Rescue su ESP"
+short = "Esegue `nc-rescue rollback-esp` rimettendo al loro posto gli archivi `.old` se l'ultima build non si avvia."
+
+["cc_sys:rescue_rb_cancel"]
+title = "Annulla Rollback ESP"
+short = "Annulla il ripristino della versione precedente `.old` di Recovery sulla ESP."
+
+["cc_sys:chroot_scan"]
+title = "Scansiona Dischi per Chroot"
+short = "Esegue `nc-chroot candidates-tsv` per elencare dischi host ed esterni con partizioni LUKS2/LVM/ESP."
+
+["cc_sys:dc_chroot"]
+title = "Apri Terminale Chroot Cifrato"
+short = "Avvia `sudo nc-chroot` in terminale per sbloccare LUKS2, attivare LVM, montare `/run/nightcity-chroot` ed entrare in shell."
+verbose = "Collega automaticamente `/dev`, `/proc`, `/sys`, `/run` e la ESP target così puoi riparare kernel, `mkinitcpio`, `sbctl` o `limine.conf` offline."
+diagram = "boot_recovery"
+diagram_focus = "chroot"
+
+["cc_sys:chroot_umount"]
+title = "Smonta e Chiudi Chroot"
+short = "Esegue `nc-chroot -u` per smontare in sicurezza `/run/nightcity-chroot` e chiudere i mapper LVM/LUKS."
+
+["cc_sys:dc_golden_save"]
+title = "Salva Golden Image su Vault"
+short = "Avvia `sudo nc-golden --save` in terminale per acquisire un'immagine completa verificata sul NAS Vault."
+verbose = "Crea una directory Golden Image datata sul percorso Vault configurato con manifest completi di verifica SHA256."
+diagram = "boot_recovery"
+diagram_focus = "golden"
+
+["cc_sys:dc_golden_restore"]
+title = "Ripristina Sistema da Golden Image"
+short = "Avvia `sudo nc-golden --restore` in terminale interattivo per ripristinare un'immagine Golden su disco."
+
+["cc_sys:rescue_gdir_open"]
+title = "Imposta Sottocartella Golden su Vault"
+short = "Modifica `golden_subdir` (es. `images`) salvata via `nc-rescue config-stdin` sotto il mount NAS Vault."
+
+["cc_sys:golden_verify:*"]
+title = "Verifica Checksum SHA256 Golden Image"
+short = "Esegue `nc-golden verify-stdin` in background per controllare l'integrità SHA256 dell'immagine archiviata."
+
+# ==============================================================================
+# TELEMETRIA -> RISORSE, HANOI EXTRA & TUI INTEGRATE (`cc_telemetry_resources.py`)
+# ==============================================================================
+["cc_sys:hanoi_list"]
+title = "Carica File Tracciati su Vault"
+short = "Recupera l'inventario dei file indicizzati e lo stato di drift dall'archivio Hanoi sul Vault."
+
+["cc_sys:hanoi_load_hist"]
+title = "Carica Storico Rotazione Hanoi"
+short = "Interroga il registro delle generazioni Torre di Hanoi e la cronologia slot sul NAS Vault."
+
+["cc_sys:tui_restart:*"]
+title = "Riavvia Sessione TUI Integrata"
+short = "Termina e riavvia la sessione PTY integrata (`btop` o `nvtop`) all'interno di questa scheda."
+
+["cc_sys:sync_disks"]
+title = "Sincronizza Buffer su Disco (`sync`)"
+short = "Forza la scrittura immediata su NVMe/storage di tutte le pagine dirty in cache kernel."
+
+["cc_sys:goto_power_profiles"]
+title = "Apri Profili Energetici e CPU"
+short = "Salta a `Energia -> Profili` per commutare tra modalità Gaming/Performance e Hardened/Bilanciata."
+
+["cc_sys:btop"]
+title = "Apri `btop` in Finestra Terminale"
+short = "Avvia `btop` in un terminale separato a schermo intero fuori dal riquadro integrato."
+
+["cc_sys:nvtop"]
+title = "Apri `nvtop` in Finestra Terminale"
+short = "Avvia `nvtop` in un terminale dedicato per monitorare carico GPU, VRAM e processi CUDA/grafici."
+
+["cc_sys:*"]
+title = "Esegui Azione Telemetria / Sistema"
+short = "Esegue questa azione di monitoraggio o ripristino di sistema."

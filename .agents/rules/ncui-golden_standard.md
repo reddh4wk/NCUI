@@ -254,6 +254,10 @@ Tutti gli inserimenti di testo in NC-UI sono ricondotti a **5 archetipi determin
    - `Shift + ↑/↓` (`PgUp`/`PgDn`): cambia sezione nella Sidebar del Control Center, oppure espande/comprime un popup Waybar che lo supporta.
    - `Ctrl + F`: apre e focalizza la Ricerca Globale del Control Center.
    - `Esc`: annulla nell'ordine un input inline/prompt attivo, chiude l'overlay di ricerca globale, oppure chiude la finestra NC-UI.
+4. **Legge di Reattività e Geometria degli Slider:**
+   - **Invariante di granularità visiva (`>= 1 #/tick`):** Su tutti gli `Slider` del Control Center deve valere `(step / (max_val - min_val)) * width >= 1.0`, così ogni singolo scatto di rotella o freccia sposta di almeno `1` carattere `#` la barra senza mai dare percezione di "tick a vuoto" *(fanno eccezione i soli popup compatti `<= 54` colonne quando lo spazio orizzontale di riga non lo consente)*.
+   - **Mappatura completa e drag con clamping (`0%..100%`):** La barra `[0..width-1]` mappa dall'estremo esatto `min_val` all'estremo esatto `max_val` (snappando i segmenti intermedi alla griglia di `step`); durante il trascinamento continuo col mouse (`_active_drag_slider`), lo slider resta agganciato e clampa fluidamente a `min_val` / `max_val` anche oltre le parentesi `[` `]`.
+   - **Contratto *Zero-Block* per i handler:** Ogni tick aggiorna subito la sola memoria (`STATE.set(..., immediate=False)` + `set_slider_meta_value()`), richiede un refresh via `request_throttled_refresh()`, delega eventuali CLI/salvataggi lenti a `probe.enqueue_latest(..., debounce_ms=120–150)`, e preserva le `AsciiCard` in-place per singola riga in `ShellWindow._sync_listbox_specs()`.
 
 ---
 

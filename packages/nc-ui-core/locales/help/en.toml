@@ -1,0 +1,792 @@
+# NC-UI Action Help Catalog — English (Fase 1: Global Chrome + Pilot Panels)
+# Keys support exact URI matches or fnmatch wildcards (`*`).
+
+# ==============================================================================
+# GLOBAL CHROME, SIDEBAR & NAVIGATION
+# ==============================================================================
+["cc:section:sysinfo"]
+title = "System Overview"
+short = "Opens the Nightcity workstation overview with OS, kernel, hardware inventory, and power-tool shortcuts."
+verbose = "Displays live host identity, active kernel (`linux-cachyos` / `linux-cachyos-hardened`), dual-kernel readiness, Limine/Wayland stack summary, CPU/RAM/GPU thermals, and direct launchers for helper scripts in `/usr/lib/ncui/sbin/`."
+
+["cc:section:display"]
+title = "Display & Monitors"
+short = "Opens monitor layout, resolution, refresh rate, scale, VRR, and Wayland output configuration."
+verbose = "Configures `niri` outputs visually on the spatial map, edits `output` blocks in `config.kdl`, and switches transform, HDR/color, and adaptive sync settings."
+
+["cc:section:personalization"]
+title = "Theme & Wallpaper"
+short = "Opens NC-UI semantic color themes, typography, opacity layers, cursor theme, and live wallpaper engine."
+verbose = "Lets you customize `theme.toml` palette axes, window/box/toast transparency, font family/size, Waybar synchronization, and Niri workspace wallpapers or shader/matrix backgrounds."
+
+["cc:section:waybar"]
+title = "Waybar Layout & Modules"
+short = "Opens Waybar bar module placement, ordering, separators, and popup behavior settings."
+verbose = "Manages left/center/right Waybar module layout, visibility toggles, formatting options, and live reload of the Waybar bar configuration."
+
+["cc:section:apps"]
+title = "Applications & Autostart"
+short = "Opens Niri floating window rules, default MIME type associations, and login autostart entries."
+verbose = "Inspects and edits application launch behavior: floating window match rules in `config.kdl`, `xdg-mime` handlers, and XDG/systemd user autostart services."
+
+["cc:section:input"]
+title = "Input Devices & Keybinds"
+short = "Opens mouse sensitivity, keyboard/XKB layouts, hardware macros, Niri shortcuts, and controller tuning."
+verbose = "Combines 5 subtabs covering libinput pointer acceleration, keymap/repeat tuning, virtual `/dev/uinput` macros, searchable `config.kdl` bindings, and gamepad deadzone/curve calibration."
+
+["cc:section:printers"]
+title = "Printers & CUPS"
+short = "Opens local/network printers, print job queue, autodiscovery, and CUPS server policy settings."
+verbose = "Inspects CUPS queues and PPD drivers, manages active jobs, discovers AirPrint/IPP/USB printers on the LAN, and edits `cupsd.conf` permissions."
+
+["cc:section:sound"]
+title = "Sound & PipeWire"
+short = "Opens PipeWire audio outputs, inputs, per-application stream mixer, and hardware card profiles."
+verbose = "Directly controls WirePlumber default sink/source routing, stream volumes beyond/up to configured max gain, mute toggles, and physical codec profiles."
+
+["cc:section:network"]
+title = "Network, Wi-Fi & VPN"
+short = "Opens network interfaces, Wi-Fi/Bluetooth connections, WireGuard/Proxy rules, and WAN failover routing."
+verbose = "Inspects link states, IP/MTU/congestion parameters, scans Wi-Fi/BT peers, toggles WireGuard/socks/HTTP proxies, and monitors primary vs failover WAN health."
+
+["cc:section:firewall"]
+title = "Firewall (nftables)"
+short = "Opens live nftables rules, chain policies, and real-time active network connection telemetry."
+verbose = "Builds, audits, and applies least-privilege `nftables` rulesets (`ACCEPT`/`DROP`/`REJECT`), inspects input/forward/output chains, and tracks live sockets."
+
+["cc:section:power"]
+title = "Power, CPU & Thermals"
+short = "Opens CPU governor/EPP/boost profiles, fan curves, UPS/NUT telemetry, and idle/DPMS timers."
+verbose = "Coordinates high-level power presets (`Performance`/`Balanced`/`Power Saver`) with manual CPU register overrides, NCT6775 PWM curves, kernel VM posture, and EcoFlow NUT monitoring."
+
+["cc:section:datetime"]
+title = "Date, Time & Calendar"
+short = "Opens NTP/timezone synchronization, hardware clock readout, and monthly calendar/iCal schedule."
+verbose = "Configures `systemd-timesyncd`, timezone selection, and offline/remote calendar feeds used by both the Control Center and the Waybar calendar popup."
+
+["cc:section:updates"]
+title = "Package Updates & Maintenance"
+short = "Opens official `pacman` updates, AUR packages, Flatpak runtimes, and orphan cleanup tools."
+verbose = "Reads local/sync databases cleanly without locking pacman DB, estimates download size, and launches audited terminal upgrades or safe orphan pruning."
+
+["cc:section:auth"]
+title = "Authorization & Security"
+short = "Opens TPM2/LUKS2 enrollment, SSH/GPG keys, Polkit/PAM, USBGuard device policy, and sudoers registry."
+verbose = "Manages Secure Boot (`sbctl`), TPM2 PCR auto-unlock bindings, keyrings, USBGuard allow/block rules, and granular passwordless `ncui-*` `/etc/sudoers.d` helpers."
+
+["cc:section:telemetry"]
+title = "Telemetry, Boot & Recovery"
+short = "Opens live system monitors, Limine bootloader editor, Golden Image recovery, LVM snapshots, Vault backups, and disk inspector."
+verbose = "Centralizes Nightcity's engineering stack: `btop`/`nvtop` monitoring, `limine.conf` UKI management, `nc-rescue`/`nc-golden`, `nc-snap`, `nc-hanoi`, and `nc-disks`."
+
+["cc:section:settings"]
+title = "Interface & Notification Settings"
+short = "Opens global NC-UI behavior, hover descriptions, runtime logs, UI backup, and notification history/rules."
+verbose = "Controls window anchoring, missing-tool badges, active language (`EN`/`IT`), action description tooltips and delay, runtime logging, and desktop notification filtering."
+
+["cc:section:*"]
+title = "Switch Section"
+short = "Switches the Control Center view to the selected system category."
+
+["cc:subtab:*"]
+title = "Switch Subtab"
+short = "Switches between sub-pages inside the active Control Center section."
+
+["cc:lang:en"]
+title = "Switch Language (English)"
+short = "Switches all NC-UI labels, status messages, and hover descriptions to English immediately."
+verbose = "Persists `language = \"en\"` in `~/.config/nc-ui/config.toml` and reloads localized dictionaries from `locales/en.toml`, `locales/help/en.toml`, and `locales/help/en/*.toml` without restarting."
+
+["cc:lang:it"]
+title = "Switch Language (Italiano)"
+short = "Switches all NC-UI labels, status messages, and hover descriptions to Italian immediately."
+verbose = "Persists `language = \"it\"` in `~/.config/nc-ui/config.toml` and reloads localized dictionaries from `locales/it.toml`, `locales/help/it.toml`, and `locales/help/it/*.toml` without restarting."
+
+["cc:global_search_open"]
+title = "Global Search (Ctrl+F)"
+short = "Opens the live search bar to jump directly to any setting or control across all Control Center sections."
+verbose = "Indexes localized section/tab names and setting labels in real time. Navigate matches with `↑`/`↓` or `Tab`, press `Enter` to jump straight to that subtab, or `Esc` to dismiss."
+
+["cc:global_search_close"]
+title = "Close Global Search"
+short = "Closes the active search query and hides the floating results overlay."
+
+["cc:search_jump:*"]
+title = "Jump to Matching Setting"
+short = "Navigates directly to the Control Center section and subtab containing this setting."
+
+["cc:trans:*"]
+title = "Window Transparency"
+short = "Adjusts global NC-UI surface opacity live."
+
+["cc:trans_apply"]
+title = "Apply Transparency to Waybar"
+short = "Writes the active NC-UI transparency setting to Waybar CSS and reloads the bar."
+
+["cc:trans_scroll:*"]
+title = "Scroll Transparency"
+short = "Scroll to adjust NC-UI surface opacity incrementally."
+
+["ui:close"]
+title = "Close Panel"
+short = "Closes this floating NC-UI window or Waybar popup without stopping background system services."
+
+["ui:refresh"]
+title = "Refresh View"
+short = "Re-reads live system state and redraws the current panel."
+
+["ui:tab:*"]
+title = "Switch Tab"
+short = "Selects this tab view within the current panel."
+
+["ui:state*"]
+title = "Expand / Collapse Section"
+short = "Shows or hides the contents of this section without changing any system setting."
+
+["ui:toggle_expand"]
+title = "Expand / Compact Popup"
+short = "Toggles this Waybar popup between compact width and wide Control Center column layout."
+
+["ui:open_settings*"]
+title = "Open Full Control Center"
+short = "Opens the corresponding Control Center section for deeper configuration."
+
+["priv:request:*"]
+title = "Authorize Privileged Helper"
+short = "Reviews and installs the dedicated least-privilege `/etc/sudoers.d/ncui-*` rule for this helper."
+verbose = "NC-UI never uses blanket root access. Clicking this opens an explicit review card showing the exact `NOPASSWD` helper commands before validating with `visudo -cf` and installing mode `0440 root:root`."
+
+["cmd:*"]
+title = "Run Command"
+short = "Executes the configured helper shell command asynchronously."
+
+# ==============================================================================
+# SETTINGS -> INTERFACE (`panels/cc_settings_interface.py`)
+# ==============================================================================
+["cc_set:hide_unavail:1"]
+title = "Hide Unavailable Controls"
+short = "Hides controls whose required CLI tool or hardware subsystem is absent on this machine."
+verbose = "Useful once your setup is settled and you want a minimal UI free of `MISSING:` warnings for hardware or daemons you intentionally omitted."
+
+["cc_set:hide_unavail:0"]
+title = "Show MISSING Badges"
+short = "Keeps optional controls visible with an explicit `MISSING: <binary>` alert badge when a dependency is absent."
+verbose = "Recommended while configuring a workstation: you immediately see which optional utilities (e.g., `usbguard`, `smartctl`, `sbctl`) are missing and which features they would unlock."
+
+["cc_set:side:left"]
+title = "Anchor Window Left"
+short = "Docks the Control Center layer-shell window to the left edge of the active monitor."
+verbose = "Updates `[general].side = \"left\"` in `config.toml` and moves the `GtkLayerShell` anchor edge so the sidebar and main viewport align to the left screen margin."
+
+["cc_set:side:right"]
+title = "Anchor Window Right"
+short = "Docks the Control Center layer-shell window to the right edge of the active monitor."
+verbose = "Updates `[general].side = \"right\"` in `config.toml` and anchors the `GtkLayerShell` window against the right margin of the target display."
+
+["cc_set:lang:en"]
+title = "Interface Language: English"
+short = "Switches the entire NC-UI interface and help catalog to English (`locales/en.toml`)."
+
+["cc_set:lang:it"]
+title = "Interface Language: Italiano"
+short = "Switches the entire NC-UI interface and help catalog to Italian (`locales/it.toml`)."
+
+["cc_set:loglevel:*"]
+title = "Set Log Verbosity (0..4)"
+short = "Sets how much runtime diagnostic detail NC-UI writes to `/tmp/nc-ui.log` (0 = silent/errors, 4 = full debug)."
+verbose = "Lower levels (`0–2`) reduce I/O noise; level `3` logs info and command summaries; level `4` records granular UI events and probe timings shown in the Runtime Log Tail below."
+
+["cc_set:clear_log"]
+title = "Clear Runtime Log"
+short = "Truncates `/tmp/nc-ui.log` cleanly to 0 bytes without restarting NC-UI."
+verbose = "Empties the log file immediately and resets the Runtime Log Tail scroll offset to the bottom so you can observe fresh events clearly."
+
+["cc_set:hover_help:1"]
+title = "Enable Hover Action Descriptions"
+short = "Shows helpful floating descriptions when hovering over any button, pill, slider, or sidebar icon."
+verbose = "When enabled, pausing the pointer over an interactive control opens a floating NC-UI card explaining its role. Complex actions also include a `[+ Details]` button to expand verbose notes and Cairo architectural diagrams."
+diagram = "ui_overlay_flow"
+diagram_focus = "hover"
+
+["cc_set:hover_help:0"]
+title = "Disable Hover Action Descriptions"
+short = "Turns off automatic floating hover cards while keeping all interface controls unchanged."
+verbose = "Disables pointer-hover timers immediately and dismisses any open description card. Power users already familiar with every button can disable tooltips for an uncluttered workspace."
+
+["cc_set:hover_delay*"]
+title = "Hover Description Delay (0.2s–3.0s)"
+short = "Sets how many seconds the pointer must remain over a control before its description appears."
+verbose = "Scroll or click `[-]`/`[+]` to tune sensitivity (`0.2s` = near-instant assistance, `0.7s` = balanced default, `1.5s–3.0s` = intentional pause only so fast mouse sweeps never spawn tooltips). Persisted immediately in `config.toml`."
+diagram = "ui_overlay_flow"
+diagram_focus = "delay"
+
+["cc_set:backup_ui"]
+title = "UI Settings Backup"
+short = "Triggers the placeholder UI configuration snapshot exporter (skeleton pending full bundle export)."
+
+["cc_set:build_distro_pkg"]
+title = "Build Distro Package (Skeleton)"
+short = "Triggers the placeholder distro package builder to bundle NC-UI with all current settings for fast deployment on another system."
+
+["cc_set:log_scroll:top"]
+title = "Jump to Top of Log"
+short = "Scrolls the Runtime Log Tail viewer to the oldest captured lines."
+
+["cc_set:log_scroll:up"]
+title = "Scroll Log Up"
+short = "Moves the Runtime Log Tail viewport backward by 5 lines."
+
+["cc_set:log_scroll:down"]
+title = "Scroll Log Down"
+short = "Moves the Runtime Log Tail viewport forward by 5 lines toward the latest entries."
+
+["cc_set:log_scroll:bottom"]
+title = "Follow Latest Log Tail"
+short = "Snaps the Runtime Log Tail viewer back to the most recent lines."
+
+["cc_set:log_scroll*"]
+title = "Scroll Log Window"
+short = "Mouse wheel scrolls through lines in `/tmp/nc-ui.log`."
+
+# ==============================================================================
+# POWER -> PROFILES (`panels/cc_power_profiles.py`)
+# ==============================================================================
+["cc_pwr:preset:*"]
+title = "Apply Coordinated Power Preset"
+short = "Applies a unified CPU profile that sets Scaling Governor, Energy Performance Preference (EPP), and Turbo Boost together."
+verbose = "Unlike toggling individual registers below, a Power Preset (`Power Saver`, `Balanced`, `Performance`) atomically coordinates `scaling_governor`, `energy_performance_preference`, and `boost` via `cpupower` and `/sys/devices/system/cpu/` so CPU frequency policy and thermal efficiency stay consistent."
+diagram = "cpu_power_stack"
+diagram_focus = "preset"
+
+["cc_pwr:ppd:*"]
+title = "Set Power Profiles Daemon Mode"
+short = "Switches the active `power-profiles-daemon` platform profile (`power-saver`, `balanced`, or `performance`)."
+verbose = "Talks directly to `powerprofilesctl` to adjust firmware/ACPI power budgets alongside kernel CPU hints."
+
+["cc_pwr:gov:*"]
+title = "Override CPU Scaling Governor"
+short = "Forces the kernel `cpufreq` scaling governor across all CPU cores independently of the top preset."
+verbose = "`performance` locks frequency preference near max clocks (requiring `epp=performance` on `amd_pstate`/`intel_pstate`), whereas `powersave` / `schedutil` lets the scheduler scale clocks down dynamically when idle. Changing registers independently marks the top preset as `Custom Register Override`."
+diagram = "cpu_power_stack"
+diagram_focus = "gov"
+
+["cc_pwr:epp:*"]
+title = "Override Energy Performance Preference (EPP)"
+short = "Sets the hardware EPP hint (`performance`, `balance_performance`, `balance_power`, `power`) balancing latency vs watt draw."
+verbose = "On modern P-State CPUs (`amd_pstate_epp` / `intel_pstate`), EPP guides how aggressively autonomous clock selection boosts on burst loads. If `governor` is `performance`, choosing a non-performance EPP automatically unlocks `governor = powersave` so the kernel accepts the hint."
+diagram = "cpu_power_stack"
+diagram_focus = "epp"
+
+["cc_pwr:boost:1"]
+title = "Enable CPU Turbo / Precision Boost"
+short = "Allows CPU cores to boost above base clock frequency when thermal and power headroom permits."
+verbose = "Sets `/sys/devices/system/cpu/cpufreq/boost` (or Intel `no_turbo=0`). Maximizes single-thread responsiveness and burst throughput at the cost of higher peak package wattage and fan activity."
+
+["cc_pwr:boost:0"]
+title = "Disable CPU Turbo / Precision Boost"
+short = "Caps CPU frequencies at base clock to dramatically cut peak temperatures, fan noise, and power draw."
+verbose = "Sets `/sys/devices/system/cpu/cpufreq/boost` to `0`. Very effective for silent nocturnal workloads, sustained compilation without thermal throttling, or extending UPS runtime."
+
+["cc_pwr:auth_cpu"]
+title = "Authorize CPU Power Helper"
+short = "Installs the `power_cpu_tune` (`/etc/sudoers.d/ncui-cpu-power`) rule for `cpupower` and sysfs CPU register tuning."
+
+["cc_pwr:auth_fan"]
+title = "Authorize Fan Curve Helper"
+short = "Installs sudoers privilege for `nc-fan-profile` so hwmon PWM curves can be edited and applied."
+
+["cc_pwr:posture:on"]
+title = "Enable Gaming / Low-Latency Posture"
+short = "Engages high-performance kernel/GPU posture (`nc-posture on`: `performance` governor, NVIDIA persistence, relaxed ptrace/VM)."
+verbose = "Runs `nc-posture` to optimize system latency for gaming or heavy compute: switches CPU/EPP to peak responsiveness, enables `nvidia-persistenced` / `ntsync`, and tunes VM dirty writeback ratios. Can be cleanly reverted back at any time."
+diagram = "cpu_power_stack"
+diagram_focus = "posture"
+
+["cc_pwr:posture:off"]
+title = "Disable Gaming Posture"
+short = "Restores standard desktop sysctl, VM, and CPU power posture."
+verbose = "Reverts temporary low-latency gaming tweaks back to the workstation defaults saved in `resilience.toml` unless another session lock prevents it."
+
+["cc_pwr:posture:off-force"]
+title = "Force Disable Gaming Posture"
+short = "Forcibly resets Gaming Posture even if an active game wrapper still holds a reference."
+
+["cc_pwr:posture_knob:*"]
+title = "Toggle Runtime Posture Knob"
+short = "Enables or disables an individual `nc-posture` kernel optimization toggle (`ntsync`, `hidepid`, `ptrace`, `vm_tuning`, `nvidia_persistence`)."
+verbose = "Fine-grained switches inside the collapsible Posture section let you opt individual security or performance sysctls in or out without editing `/etc/sysctl.d/` manually."
+
+["cc_pwr:sysctl:vm.swappiness:*"]
+title = "Kernel `vm.swappiness` Slider"
+short = "Tunes how aggressively the Linux kernel swaps anonymous memory pages to ZRAM/swap vs dropping file cache (`0..100`)."
+verbose = "Lower values (`10–30`) keep application memory resident longer and prefer reclaiming filesystem page cache; higher values (`60–100`) utilize compressed ZRAM swap more readily."
+
+["cc_pwr:sysctl:vm.dirty_ratio:*"]
+title = "Kernel `vm.dirty_ratio` Slider"
+short = "Sets the maximum percentage of system RAM that can hold dirty buffered writes before processes block to flush to disk."
+verbose = "Moderate values (`10–20%`) smooth NVMe write bursts without causing long I/O stalls during heavy saves or backups."
+
+["cc_pwr:fan_prof:*"]
+title = "Select Fan Curve Profile"
+short = "Stages this thermal fan curve profile (`Quiet`, `Balanced`, `Performance`, or custom) into the editor below."
+verbose = "Selecting a profile loads its temperature→PWM% control points (`AUTO` hardware BIOS mode vs manual software curve) for inspection or tuning. Press `[✓ Apply]` to write the staged curve to hardware."
+
+["cc_pwr:fan_pt_p:*"]
+title = "Adjust Fan Point PWM Duty (%)"
+short = "Modulates the target fan PWM duty cycle (%) at this temperature breakpoint."
+verbose = "Drag, scroll, or step `[-]`/`[+]` to shape the acoustic/cooling slope. The live Cairo fan curve graph updates immediately in `PREVIEW *` mode until you click `[✓ Apply]`."
+
+["cc_pwr:fan_pt_t:*"]
+title = "Step Fan Breakpoint Temperature"
+short = "Lowers or raises the °C threshold for this fan curve control point."
+
+["cc_pwr:fan_t_in:*"]
+title = "Edit Fan Breakpoint Temperature"
+short = "Opens inline numeric entry to type an exact °C temperature for this fan curve breakpoint."
+
+["cc_pwr:fan_apply"]
+title = "Apply Staged Fan Curve"
+short = "Writes the edited fan curve profile to `nc-fan-profile` and activates PWM control on hardware."
+verbose = "Validates monotonic points, persists the custom profile, and instructs `nc-fan-profile` to apply the PWM duty table immediately to detected `hwmon` channels."
+diagram = "cpu_power_stack"
+diagram_focus = "fan"
+
+["cc_pwr:fan_discard"]
+title = "Discard Staged Fan Edits"
+short = "Reverts unsaved modifications in the fan curve editor back to the active hardware curve."
+
+["cc_pwr:fan_reset_preset"]
+title = "Reset Fan Profile to Default"
+short = "Restores factory curve breakpoints for the currently selected fan preset."
+
+["cc_pwr:fan_new_in"]
+title = "Create Custom Fan Profile.."
+short = "Opens inline input to clone the active curve under a new custom profile name."
+
+["cc_pwr:fan_del:*"]
+title = "Delete Custom Fan Profile"
+short = "Removes a user-created fan curve profile (built-in presets remain protected)."
+
+["cc_pwr:therm_all"]
+title = "Show All Thermal Sensors"
+short = "Displays every detected `hwmon` temperature channel in the live 1 Hz Thermal Graph."
+
+["cc_pwr:therm_core"]
+title = "Show Core Thermal Sensors Only"
+short = "Filters the live 1 Hz Thermal Graph down to key CPU/GPU/NVMe/PSU sensors."
+
+["cc_pwr:therm_tog:*"]
+title = "Toggle Sensor Trace"
+short = "Shows or hides this individual hardware temperature sensor trace on the live Cairo Thermal Graph."
+
+["cc_pwr:bat_thr:*:80"]
+title = "Cap Battery Charge at 80%"
+short = "Limits battery charging to 80% maximum capacity to reduce lithium cell wear while plugged in."
+
+["cc_pwr:bat_thr:*:100"]
+title = "Allow 100% Full Charge"
+short = "Removes the 80% longevity limit so the battery charges to full 100% capacity."
+
+["cc_pwr:refresh"]
+title = "Refresh Power Telemetry"
+short = "Polls CPU frequency, GPU/PSU sensors, and active sysctl/governor registers immediately."
+
+["cc_pwr:noop_fan"]
+title = "No-Op Control"
+short = "Informational indicator for hardware fan telemetry without editable duty control."
+
+# ==============================================================================
+# TELEMETRY -> BACKUPS / VAULT / HANOI (`panels/cc_telemetry_backups.py`)
+# ==============================================================================
+["cc_sys:mount_nas"]
+title = "Mount Encrypted Vault Storage"
+short = "Mounts the configured Vault backend (SMB, NFS, SSH/Rsync, or Local) and links shares into `~/NAS`."
+verbose = "Uses `nc-vault mount` with hardware attestation (`product_uuid` policy in `resilience.toml`): trusted hosts mount to `/nas` using saved `/etc/samba/nas-cred`; recovery/untrusted hosts prompt ephemerally or mount in `/run/nas` RAM."
+diagram = "hanoi_sync"
+diagram_focus = "mount"
+
+["cc_sys:nas_remount"]
+title = "Remount Vault Storage"
+short = "Cleanly unmounts active Vault shares and mounts them again to clear stale network handles or switch credentials."
+
+["cc_sys:nas_umount"]
+title = "Unmount Vault Storage"
+short = "Unmounts Vault shares safely (flushing SSH staging first if active) and cleans up managed symlinks."
+
+["cc_sys:vault_cfg:protocol:*"]
+title = "Select Vault Transport Protocol"
+short = "Sets whether NC-UI reaches your backup Vault over `SMB`, `NFS`, `SSH`, or a `LOCAL` path."
+verbose = "Persists `[vault].protocol` in `/etc/ncui/resilience.toml`. Changing protocol adjusts which connection fields (shares vs remote path vs SSH user) appear below."
+
+["cc_sys:vault_host_open"]
+title = "Edit Vault Host / IP.."
+short = "Opens inline editing for the NAS/server hostname or IP address (`[vault].host`)."
+
+["cc_sys:vault_mp_open"]
+title = "Edit Local Mountpoint.."
+short = "Opens inline editing for the local mount directory path (e.g., `/nas`)."
+
+["cc_sys:vault_shares_open"]
+title = "Edit SMB / NFS Shares.."
+short = "Opens inline editing for comma-separated SMB share names or NFS exports to mount."
+
+["cc_sys:vault_rpath_open"]
+title = "Edit Remote Vault Path.."
+short = "Opens inline editing for the remote filesystem path used by SSH/NFS backends."
+
+["cc_sys:vault_user_open"]
+title = "Edit SSH Username.."
+short = "Opens inline editing for the SSH login username used for SSHFS/Rsync vault staging."
+
+["cc_sys:vault_subdir_open"]
+title = "Edit Backup Root Subdir.."
+short = "Opens inline editing for the relative folder inside the Vault storing system deltas and Hanoi archives."
+
+["cc_sys:vault_pkgdir_open"]
+title = "Edit Package Lists Subdir.."
+short = "Opens inline editing for the subdirectory where exported `pacman` package lists are saved."
+
+["cc_sys:vault_alias_open"]
+title = "Edit Host System Alias.."
+short = "Opens inline editing for the short node alias (e.g., `nc`, `dc`, `wsl`) identifying this machine in shared Vault deltas."
+
+["cc_sys:vault_folder_open"]
+title = "Edit Host Vault Folder.."
+short = "Opens inline editing for this machine's dedicated folder name inside the Vault backup root."
+
+["cc_sys:hanoi_check"]
+title = "Scan Drift (Sync Check)"
+short = "Compares every tracked local config file against the Vault and refreshes both drift counters and the catalog table."
+verbose = "Runs `nc-hanoi --list-tsv` read-only: computes SHA-256 hashes, timestamps, permissions, and `.shared` peer ownership, updating `status.env`, `Vault Catalog`, and pkglist counts without modifying any file."
+diagram = "hanoi_sync"
+diagram_focus = "drift"
+
+["cc_sys:hanoi_push"]
+title = "Push Clean Changes to Vault"
+short = "Uploads all non-conflicting locally modified files to the Vault and preserves previous versions in Hanoi history."
+verbose = "Runs `nc-hanoi --sync-auto`: pushes every `PUSH` item (`DA SALVARE` / `PERM`) to the active delta, rotates superseded copies into `.hist/*.bak` Tower of Hanoi rings (`1d`, `2d`, `4d`, `8d+`), skips any conflict for manual review, and refreshes the catalog."
+diagram = "hanoi_sync"
+diagram_focus = "push"
+
+["cc_sys:hanoi_pull"]
+title = "Pull Safe Updates from Vault"
+short = "Downloads non-conflicting updates or `.shared` peer files from the Vault onto the local filesystem."
+verbose = "Runs `nc-hanoi --pull-auto`: installs missing shared files and applies newer non-conflicting Vault copies locally with original UID/GID, permissions, and timestamps. Encrypted `.enc` files and conflicts are skipped safely."
+diagram = "hanoi_sync"
+diagram_focus = "pull"
+
+["cc_sys:hanoi_add_prompt"]
+title = "Track New Local Path in Vault.."
+short = "Opens the path prompt (with Tab filesystem completion) to add a new file or directory to Hanoi config tracking."
+verbose = "Copies the chosen file/folder into this host's Vault delta with `.origin.txt` metadata (`owner`, `mode`, `sha256`, `mtime`) so future edits are tracked automatically."
+
+["cc_sys:hanoi_timer:on"]
+title = "Enable Automatic Drift Timer"
+short = "Enables the `nc-nas-conf.timer` systemd unit and login shell hook for periodic background drift checks."
+verbose = "Schedules `nc-hanoi --check` 2 minutes after boot and every 30 minutes thereafter, updating `/var/lib/nc-nas-conf/status.env` so interactive terminals and NC-UI show pending sync counts immediately."
+
+["cc_sys:hanoi_timer:off"]
+title = "Disable Automatic Drift Timer"
+short = "Stops `nc-nas-conf.timer` and removes the shell drift notification hook."
+
+["cc_sys:hanoi_prune_ask"]
+title = "Prune Tower of Hanoi History"
+short = "Applies exponential Tower of Hanoi retention decay to archived `.bak` versions on the Vault (asks confirmation first)."
+verbose = "Removes redundant intermediate backups inside `backups/*.hist` according to exponential ring intervals (`T#0` < 1d, `T#1` 2d, `T#2` 4d, `T#3` 8d+...) plus SHA-256 deduplication so storage never grows unbounded."
+diagram = "hanoi_sync"
+diagram_focus = "prune"
+
+["cc_sys:hanoi_prune_do"]
+title = "Confirm Prune Hanoi History"
+short = "Executes `nc-hanoi --prune-auto` right now to trim expired and duplicate `.bak` generations."
+
+["cc_sys:hanoi_prune_cancel"]
+title = "Cancel History Prune"
+short = "Cancels pruning and leaves all archived Tower of Hanoi versions untouched."
+
+["cc_sys:pkglist_prompt"]
+title = "Export Package List to Vault.."
+short = "Prompts for a snapshot label and exports `pacman -Qqe` (explicit) and `pacman -Qqm` (AUR) lists to the Vault."
+verbose = "Creates `<N>_<label>_pkglist.txt` and `<N>_<label>_aur.txt` inside the Vault pkglists directory via `nc-vault pkglist-stdin` using atomic write + `sync -f`, ideal before major system upgrades."
+
+["cc_sys:hanoi_view:*"]
+title = "Switch Catalog Filter View"
+short = "Switches the Vault Catalog table between `Tracked`, `Drift Only`, `Hanoi History`, and `Pkglists`."
+
+["cc_sys:hanoi_filter_open"]
+title = "Filter Catalog Rows.."
+short = "Opens inline search to filter tracked paths, owners, roles, or package list names in real time."
+
+["cc_sys:hanoi_filter_clear"]
+title = "Clear Catalog Filter"
+short = "Clears the active text filter so all catalog rows are visible again."
+
+["cc_sys:hanoi_select:*"]
+title = "Inspect File & Hanoi Versions"
+short = "Selects this file in the Master-Detail inspector below and loads its Tower of Hanoi backup generations."
+
+["cc_sys:hanoi_toggle_all"]
+title = "Show All / Paginate Catalog"
+short = "Toggles between the compact 12-row catalog preview and the complete unfiltered list."
+
+["cc_sys:hanoi_push_one"]
+title = "Push This File Only"
+short = "Uploads only the currently inspected file to the Vault, archiving its previous Vault copy in Hanoi history."
+
+["cc_sys:hanoi_restore_ask"]
+title = "Restore Latest Vault Copy"
+short = "Prepares to overwrite the local file with the latest copy stored in the Vault (asks confirmation first)."
+
+["cc_sys:hanoi_restore_do"]
+title = "Confirm Restore from Vault"
+short = "Overwrites the local file with the active Vault copy and restores original permissions/ownership."
+
+["cc_sys:hanoi_restore_cancel"]
+title = "Cancel Restore"
+short = "Cancels restoring from the Vault and keeps the local file unchanged."
+
+["cc_sys:hanoi_diff_term"]
+title = "Open Color Diff in Terminal"
+short = "Opens an interactive terminal showing the full line-by-line diff between the local file and the Vault copy."
+
+["cc_sys:hanoi_share_open"]
+title = "Configure Shared Peers.."
+short = "Opens inline input to share this source file with other host aliases (e.g. `dc,wsl`, `all`, or `local` to unshare)."
+verbose = "Sharing creates `.shared` placeholders in peer deltas on the Vault pointing back to this host as authoritative source. Entering `local` removes peer placeholders while keeping your own copy."
+diagram = "hanoi_sync"
+diagram_focus = "share"
+
+["cc_sys:hanoi_load_versions"]
+title = "Reload Hanoi Snapshot Versions"
+short = "Re-queries `.hist/*.bak` generations and live `+added/-removed` line diffs vs the local file."
+
+["cc_sys:hanoi_ver_diff:*"]
+title = "Diff Historical Version in Terminal"
+short = "Opens a terminal comparing this specific `.bak` Hanoi generation against the live file on disk."
+
+["cc_sys:hanoi_ver_restore_ask:*"]
+title = "Stage Version Rollback"
+short = "Arms confirmation before rolling back the local file (and Vault head) to this historical Hanoi slot."
+
+["cc_sys:hanoi_ver_restore_do:*"]
+title = "Confirm Rollback to This Version"
+short = "Restores this historical `.bak` generation to disk and syncs it as the updated Vault head (archiving the replaced copy)."
+
+["cc_sys:hanoi_ver_restore_cancel"]
+title = "Cancel Version Rollback"
+short = "Disarms the pending historical rollback confirmation without changing any files."
+
+# ==============================================================================
+# TELEMETRY -> SNAPSHOTS (`panels/cc_telemetry_snapshots.py`)
+# ==============================================================================
+["cc_sys:snap_auth"]
+title = "Authorize Snapshot Helper (`nc-snap`)"
+short = "Installs the least-privilege `/etc/sudoers.d/ncui-nc-snap` rule required to manage LVM snapshots and UKIs."
+
+["cc_sys:snap_health"]
+title = "Run Snapshot Health Check"
+short = "Runs `nc-snap check-health` to verify VG free space, active CoW usage, ESP space, and Limine entries."
+
+["cc_sys:snap_hook:on"]
+title = "Enable Pacman Pre-Upgrade Snapshot Hook"
+short = "Activates the `/etc/pacman.d/hooks/00-nc-snapshot.hook` pacman hook to capture `AUTO` snapshots before upgrades."
+verbose = "Whenever `pacman` modifies kernels or system packages, the pre-transaction hook snapshots root/var into the `AUTO` slot and refreshes the fallback UKI so a broken update stays 100% boot-reversible."
+diagram = "lvm_snap"
+diagram_focus = "hook"
+
+["cc_sys:snap_hook:off"]
+title = "Disable Pacman Snapshot Hook"
+short = "Disables automatic pre-upgrade LVM snapshot creation when running `pacman`."
+
+["cc_sys:snap_select:*"]
+title = "Inspect Snapshot Slot"
+short = "Selects the `AUTO` or `STABLE` snapshot slot in the Master-Detail card below."
+
+["cc_sys:snap_note_open"]
+title = "Edit Snapshot Note.."
+short = "Opens inline entry for a short descriptive tag attached to the next snapshot capture."
+
+["cc_sys:snap_note_clear"]
+title = "Clear Snapshot Note"
+short = "Clears the pending snapshot note draft."
+
+["cc_sys:snap_capture:*"]
+title = "Capture Snapshot Slot"
+short = "Creates (or refreshes) the `AUTO` or `STABLE` LVM CoW snapshot and updates its bootable UKI entry."
+verbose = "Snapshots root/var LVs instantaneously via LVM thin/CoW (`nc-snap create-stdin`) and rebuilds/signs the corresponding slot UKI on the ESP so you can boot straight into it from Limine if needed."
+diagram = "lvm_snap"
+diagram_focus = "capture"
+
+["cc_sys:snap_extend:*"]
+title = "Extend Snapshot CoW Space (+5G)"
+short = "Grows the fullest snapshot CoW volume in this slot by `+5G` (`lvextend`) to prevent CoW exhaustion."
+verbose = "An LVM Copy-on-Write snapshot invalidates permanently if it hits `100%` CoW usage while the live system diverges. Extending adds `5 GiB` from VG free space cleanly online without rebooting."
+diagram = "lvm_snap"
+diagram_focus = "extend"
+
+["cc_sys:snap_del_ask:*"]
+title = "Request Snapshot Slot Deletion"
+short = "Arms two-step confirmation before deleting this LVM snapshot slot and freeing its extents."
+
+["cc_sys:snap_del_do:*"]
+title = "Confirm Delete Snapshot Slot"
+short = "Deletes the selected `AUTO` or `STABLE` LVM snapshots and removes the slot's boot entry."
+
+["cc_sys:snap_del_cancel"]
+title = "Cancel Snapshot Deletion"
+short = "Cancels slot deletion and preserves the snapshots intact."
+
+["cc_sys:snap_promote_ask"]
+title = "Promote Booted Snapshot (`--merge`)"
+short = "Arms confirmation before merging the currently booted snapshot back into the primary logical volumes."
+verbose = "Only active when you are currently booted into an `AUTO` or `STABLE` recovery UKI. Promoting schedules `lvconvert --merge` and restores primary UKIs so the snapshot state becomes your permanent live OS."
+diagram = "lvm_snap"
+diagram_focus = "promote"
+
+["cc_sys:snap_promote_do"]
+title = "Confirm Snapshot Promote"
+short = "Executes `nc-snap promote-confirm` to roll the live system back to the booted snapshot permanently."
+
+["cc_sys:snap_promote_cancel"]
+title = "Cancel Snapshot Promote"
+short = "Aborts the promote/rollback operation cleanly."
+
+["cc_sys:snap_purge_ask:*"]
+title = "Purge Orphan/Invalid Snapshot LV"
+short = "Arms confirmation before removing a broken (`*_broken_*` / invalid CoW) logical volume."
+
+["cc_sys:snap_purge_do:*"]
+title = "Confirm Purge Broken LV"
+short = "Removes the invalidated snapshot LV to reclaim Volume Group extents."
+
+["cc_sys:snap_purge_cancel"]
+title = "Cancel Broken LV Purge"
+short = "Keeps the broken LV untouched and cancels removal."
+
+["cc_sys:snap_cfg:backend:*"]
+title = "Select Snapshot Backend"
+short = "Switches snapshot engine configuration between `lvm_uki` (LVM CoW + Limine UKI) and `btrfs`."
+
+["cc_sys:snap_cfg:esp_mount:*"]
+title = "Select EFI System Partition Mount"
+short = "Configures whether UKI images are written under `/boot` or `/efi`."
+
+["cc_sys:snap_cfg:var_lv:*"]
+title = "Toggle `var` LV Snapshotting"
+short = "Includes or excludes `/var` alongside `root` when `nc-snap` captures a consistent snapshot pair."
+
+["cc_sys:snap_cfg:home_lv:*"]
+title = "Toggle `home` LV Snapshotting"
+short = "Includes or excludes `/home` when capturing system snapshots."
+
+["cc_sys:snap_cfg:snap_root_size:*"]
+title = "Set Root CoW Size Allocation"
+short = "Sets the initial LVM CoW size allocated for `root` snapshots (e.g., `10G`, `15G`, `25G`)."
+
+["cc_sys:snap_cfg:snap_var_size:*"]
+title = "Set Var CoW Size Allocation"
+short = "Sets the initial LVM CoW size allocated for `var` snapshots (e.g., `3G`, `5G`, `10G`)."
+
+["cc_sys:snap_cfg:btrfs_subvol:*"]
+title = "Select Btrfs Subvolume Preset"
+short = "Quick-selects the target Btrfs subvolume (`@` vs `root`)."
+
+["cc_sys:snap_prefix_open"]
+title = "Edit UKI Image Prefix.."
+short = "Opens inline editing for the UKI filename prefix used when generating slot EFI images."
+
+["cc_sys:snap_vg_open"]
+title = "Edit LVM Volume Group.."
+short = "Opens inline editing for the target LVM Volume Group name (default `vg0`)."
+
+["cc_sys:snap_subvol_open"]
+title = "Edit Btrfs Subvolume Name.."
+short = "Opens inline editing for a custom Btrfs subvolume name."
+
+# ==============================================================================
+# TELEMETRY -> DISKS (`panels/cc_telemetry_disks.py`)
+# ==============================================================================
+["cc_sys:disks_probe"]
+title = "Probe Disks & SMART Health"
+short = "Runs `nc-disks probe` asynchronously to refresh partition layouts, LVM CoW percentages, temperatures, and `smartctl` counters."
+verbose = "Queries physical block devices via `lsblk`/`lvs` and reads NVMe/SATA SMART attributes (`Temperature`, `Wear %`, `Power On Hours`, `Spare %`, `Reallocated/Pending/Uncorr` sectors) cleanly into `/var/lib/ncui/disks-smart.json`."
+diagram = "disk_luks_lvm"
+diagram_focus = "smart"
+
+["cc_sys:disk_sel:*"]
+title = "Select Physical Disk"
+short = "Switches the vector Disk Inspector map and SMART telemetry card to this physical drive."
+
+["cc_sys:disk_smart_term:*"]
+title = "Inspect Full `smartctl -a` Output"
+short = "Opens a terminal running `sudo smartctl -a` on the selected drive to view complete vendor SMART tables."
+
+["cc_sys:disks_scope:disk"]
+title = "Filter Volumes to Selected Disk"
+short = "Shows only partitions, LUKS containers, and LVM volumes belonging to the currently selected physical drive."
+
+["cc_sys:disks_scope:all"]
+title = "Show Volumes Across All Disks"
+short = "Displays partitions and logical volumes across every detected drive on the system."
+
+["cc_sys:vol_sel:*"]
+title = "Inspect Partition / LVM Volume"
+short = "Highlights this partition or LVM logical volume in the vector Disk Inspector map and locks its HUD details."
+verbose = "Click a row in the table—or click directly on any block inside the GParted-style vector map—to highlight the slice, view device path, filesystem, CoW/usage %, mountpoint, and partition/LUKS flags."
+diagram = "disk_luks_lvm"
+diagram_focus = "vol"
+
+# ==============================================================================
+# WAYBAR POPUP -> AUDIO (`panels/wp_audio.py`)
+# ==============================================================================
+["aud:*:vol:*"]
+title = "Adjust Volume Level"
+short = "Scroll or click `[-]`/`[+]` to change the volume of this PipeWire output, input, or application stream."
+verbose = "Applies live gain changes through PipeWire (`pactl` `set-sink-volume` / `set-source-volume` / `set-sink-input-volume`) up to the configured maximum limit."
+
+["aud:*:scroll:*"]
+title = "Scroll Volume Step"
+short = "Adjusts volume incrementally via mouse wheel over this slider."
+
+["aud:out:mute:*"]
+title = "Mute / Unmute Output Device"
+short = "Toggles audio output mute state on this PipeWire playback sink."
+
+["aud:in:mute:*"]
+title = "Mute / Unmute Microphone Input"
+short = "Toggles capture mute state on this PipeWire microphone or line-in source."
+
+["aud:app:mute:*"]
+title = "Mute / Unmute Playback App"
+short = "Mutes or unmutes this individual application playback stream without silencing other apps."
+
+["aud:rec:mute:*"]
+title = "Mute / Unmute Recording Stream"
+short = "Mutes or unmutes this application's active microphone/capture stream."
+
+["aud:*:mute:*"]
+title = "Toggle Mute"
+short = "Toggles audio mute state on this PipeWire node."
+
+["cc_pers:help_style:*"]
+title = "Info Popup Style"
+short = "Selects the floating style for info hover popups: Tactical, Classic, Clean, or Cyberpunk."
+verbose = "Combines cleanly with Box Border Style (for example Double or Heavy borders) and updates theme.toml live. Hover this row after switching to preview."
+
+["cc_pers:sys_notif_style:*"]
+title = "System Notification Style"
+short = "Selects the floating banner style for desktop notifications (Tactical, Classic, Clean, or Cyberpunk) with live preview."
+verbose = "Applied immediately to nc-notify-popup alongside your Box Border Style and urgency color rules."
+
+["cc_pers:toast_style:*"]
+title = "Control Center Toast Style"
+short = "Selects the style for internal Control Center feedback toasts: Tactical, Classic, Clean, or Cyberpunk."
+verbose = "Severity accents adapt automatically (green OK, yellow WARN, red ERR) and preserve your active Box Border Style."
+
+["cc_pers:hover_help_op*"]
+title = "Info Popup Opacity"
+short = "Adjusts the background fill opacity (0–100%) of floating hover description cards."
+
+["cc_pers:test_sys_notif"]
+title = "Test System Notification"
+short = "Spawns a live desktop notification popup using the currently selected style and opacity."

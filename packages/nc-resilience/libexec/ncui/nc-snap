@@ -1,0 +1,1405 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-snap
+# Generalized Boot Environment Manager (LVM+UKI & Btrfs Snapshots, Promote, Hook)
+# ==============================================================================
+set -euo pipefail
+
+CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+LEGACY_CONF="${NC_SNAP_CONF:-/etc/nightcity-snap.conf}"
+RUN_DIR="${NC_SNAP_RUN_DIR:-/run/nc-snapshot}"
+STATE_DIR="${NC_SNAP_STATE_DIR:-/var/lib/ncui}"
+LEGACY_STATE_DIR="/var/lib/nightcity"
+ALERT_MSG="${NC_SNAP_ALERT_MSG:-/run/nightcity/snap-alert.msg}"
+ALERT_PROFILE="${NC_SNAP_ALERT_PROFILE:-/etc/profile.d/99-snap-alert.sh}"
+PROC_CMDLINE="${NC_SNAP_PROC_CMDLINE:-/proc/cmdline}"
+FSTAB_PATH="${NC_SNAP_FSTAB:-/etc/fstab}"
+PACMAN_HOOK_PATH="${NC_SNAP_PACMAN_HOOK:-/etc/pacman.d/hooks/00-nc-snapshot.hook}"
+
+WARN_USAGE_PCT=75
+CRIT_USAGE_PCT=85
+
+if [[ -t 1 ]]; then
+    C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_GREEN=$'\033[1;32m'
+    C_BLUE=$'\033[1;34m' C_CYAN=$'\033[1;36m' C_YELLOW=$'\033[1;33m' C_RED=$'\033[1;31m'
+else
+    C_RESET='' C_BOLD='' C_GREEN='' C_BLUE='' C_CYAN='' C_YELLOW='' C_RED=''
+fi
+
+log_info() { printf "%s[NC-SNAP]%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
+log_warn() { printf "%s[NC-WARN]%s %s\n" "$C_YELLOW" "$C_RESET" "$*" >&2; }
+log_err()  { printf "%s[NC-ERR]%s %s\n"  "$C_RED"   "$C_RESET" "$*" >&2; }
+
+show_help() {
+    local prog="${0##*/}"
+    cat <<EOF
+${C_BOLD}${prog}${C_RESET} — NC-UI Boot Environment Manager (LVM+UKI & Btrfs)
+
+Usage:
+  sudo ${prog} <ACTION>
+
+Actions:
+  status, -s, --status, -l    Show human-readable snapshot status & storage pool
+  status-env                  Print machine-readable KEY=VALUE snapshot status
+  check-health, --check-health Refresh DR state cache and health alerts
+  --new, -n                   Capture/update manual 'stable' snapshot
+  --auto                      Capture/update pre-update 'auto' snapshot
+  create-stdin                Read 'slot|note' on stdin and capture snapshot
+  delete-auto                 Remove 'auto' snapshot cleanly (non-interactive)
+  delete-stable               Remove 'stable' snapshot cleanly (non-interactive)
+  -d, --delete [auto|stable]  Remove snapshot (interactive confirm if tty)
+  -e, --extend <LV> [SIZE]    Extend LVM CoW volume (e.g. snap_auto_root +5G)
+  extend-stdin                Read 'lv|+SIZE' on stdin and extend CoW volume
+  -p, --promote               Promote currently booted snapshot to main root
+  promote-confirm             Non-interactive promote when booted inside snapshot
+  purge-broken-stdin          Remove validated unmounted '*_broken_*' LV
+  hook-on                     Install pacman pre-transaction hook for nc-snap
+  hook-off                    Remove pacman pre-transaction hook
+  config-stdin                Update [snapshots] keys in ${CONF_FILE}
+  -h, --help                  Show this help
+EOF
+    exit 0
+}
+
+ACTIVE_MNT=""
+TMP_PATHS=()
+cleanup_trap() {
+    local rc=$?
+    set +e
+    if [[ -n "$ACTIVE_MNT" ]]; then
+        umount "$ACTIVE_MNT" 2>/dev/null || umount -l "$ACTIVE_MNT" 2>/dev/null
+        rmdir "$ACTIVE_MNT" 2>/dev/null
+    fi
+    local p
+    for p in "${TMP_PATHS[@]}"; do
+        [[ -n "$p" ]] && rm -f "$p" 2>/dev/null
+    done
+    exit "$rc"
+}
+trap cleanup_trap EXIT
+trap 'exit 130' INT TERM HUP
+
+CFG_HOSTNAME=""
+CFG_BACKEND="lvm_uki"
+CFG_VG_NAME="vg0"
+CFG_ROOT_LV="root"
+CFG_VAR_LV=""
+CFG_HOME_LV=""
+CFG_ESP_MOUNT="/boot"
+CFG_UKI_PREFIX=""
+CFG_PRIMARY_UKI=""
+CFG_SNAP_ROOT_SIZE="15G"
+CFG_SNAP_VAR_SIZE="5G"
+CFG_SNAP_HOME_SIZE="15G"
+CFG_BTRFS_SUBVOL="@"
+CFG_PACMAN_HOOK_AUTO="true"
+
+expand_uki_vars() {
+    local val="$1" esp="$2" uki_dir="${2}/EFI/Linux"
+    val="${val//\$\{UKI_DIR\}/$uki_dir}"
+    val="${val//\$\{ESP_MOUNT\}/$esp}"
+    printf '%s' "$val"
+}
+
+load_snap_config() {
+    local host_def
+    host_def="$(uname -n 2>/dev/null | cut -d. -f1)"
+    CFG_HOSTNAME="${host_def:-linux}"
+
+    if [[ -r "$CONF_FILE" ]]; then
+        local sec="" line k v
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ -n "$line" ]] || continue
+            if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\]$ ]]; then
+                sec="${BASH_REMATCH[1]}"
+                continue
+            fi
+            if [[ "$sec" == "identity" && "$line" =~ ^hostname[[:space:]]*=[[:space:]]*\"([^\"]*)\"$ ]]; then
+                CFG_HOSTNAME="${BASH_REMATCH[1]}"
+                continue
+            fi
+            [[ "$sec" == "snapshots" ]] || continue
+            if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*(true|false|\"[^\"]*\")$ ]]; then
+                k="${BASH_REMATCH[1]}"
+                v="${BASH_REMATCH[2]}"
+                if [[ "$v" == \"*\" ]]; then
+                    v="${v#\"}"
+                    v="${v%\"}"
+                fi
+                case "$k" in
+                    backend)          CFG_BACKEND="$v" ;;
+                    vg_name)          CFG_VG_NAME="$v" ;;
+                    root_lv)          CFG_ROOT_LV="$v" ;;
+                    var_lv)           CFG_VAR_LV="$v" ;;
+                    home_lv)          CFG_HOME_LV="$v" ;;
+                    esp_mount)        CFG_ESP_MOUNT="$v" ;;
+                    uki_prefix)       CFG_UKI_PREFIX="$v" ;;
+                    primary_uki)      CFG_PRIMARY_UKI="$v" ;;
+                    snap_root_size)   CFG_SNAP_ROOT_SIZE="$v" ;;
+                    snap_var_size)    CFG_SNAP_VAR_SIZE="$v" ;;
+                    snap_home_size)   CFG_SNAP_HOME_SIZE="$v" ;;
+                    btrfs_subvol)     CFG_BTRFS_SUBVOL="$v" ;;
+                    pacman_hook_auto) CFG_PACMAN_HOOK_AUTO="$v" ;;
+                esac
+            fi
+        done < "$CONF_FILE"
+    elif [[ -r "$LEGACY_CONF" ]]; then
+        local k v
+        while IFS='=' read -r k v || [[ -n "$k" ]]; do
+            k="$(printf '%s' "$k" | tr -d '[:space:]')"
+            [[ -z "$k" || "$k" == \#* ]] && continue
+            v="${v%%#*}"
+            v="$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            v="${v#\"}" ; v="${v%\"}"
+            case "$k" in
+                VG_NAME)        CFG_VG_NAME="$v" ;;
+                ESP_MOUNT)      CFG_ESP_MOUNT="$v" ;;
+                PRIMARY_UKI)    CFG_PRIMARY_UKI="$v" ;;
+                SNAP_ROOT_SIZE) CFG_SNAP_ROOT_SIZE="$v" ;;
+                SNAP_VAR_SIZE)  CFG_SNAP_VAR_SIZE="$v" ;;
+                SNAP_HOME_SIZE) CFG_SNAP_HOME_SIZE="$v" ;;
+                AUTO_UKI)
+                    local b="${v##*/}"
+                    [[ "$b" == *-auto.efi ]] && CFG_UKI_PREFIX="${b%-auto.efi}"
+                    ;;
+            esac
+        done < "$LEGACY_CONF"
+        if command -v lvs >/dev/null 2>&1 && lvs "${CFG_VG_NAME}/var" >/dev/null 2>&1; then
+            CFG_VAR_LV="var"
+        fi
+    fi
+
+    [[ "$CFG_BACKEND" == "btrfs" ]] || CFG_BACKEND="lvm_uki"
+    CFG_ESP_MOUNT="$(realpath -m "${CFG_ESP_MOUNT:-/boot}")"
+    UKI_DIR="${CFG_ESP_MOUNT}/EFI/Linux"
+    CFG_PRIMARY_UKI="$(expand_uki_vars "$CFG_PRIMARY_UKI" "$CFG_ESP_MOUNT")"
+    if [[ -z "$CFG_PRIMARY_UKI" ]]; then
+        if [[ -f "${UKI_DIR}/cachyos-linux-hardened.efi" ]]; then
+            CFG_PRIMARY_UKI="${UKI_DIR}/cachyos-linux-hardened.efi"
+        elif [[ -f "${UKI_DIR}/arch-linux-cachyos.efi" ]]; then
+            CFG_PRIMARY_UKI="${UKI_DIR}/arch-linux-cachyos.efi"
+        fi
+    fi
+    if [[ -z "$CFG_UKI_PREFIX" ]]; then
+        CFG_UKI_PREFIX="$(printf '%s' "${CFG_HOSTNAME:-linux}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    fi
+    [[ -n "$CFG_UKI_PREFIX" ]] || CFG_UKI_PREFIX="linux"
+    [[ -n "$CFG_ROOT_LV" ]] || CFG_ROOT_LV="root"
+    [[ -n "$CFG_BTRFS_SUBVOL" ]] || CFG_BTRFS_SUBVOL="@"
+
+    AUTO_UKI="${UKI_DIR}/${CFG_UKI_PREFIX}-auto.efi"
+    STABLE_UKI="${UKI_DIR}/${CFG_UKI_PREFIX}-stable.efi"
+    AUTO_META="${AUTO_UKI%.efi}.meta"
+    STABLE_META="${STABLE_UKI%.efi}.meta"
+}
+
+acquire_lock() {
+    mkdir -p "$RUN_DIR"
+    chmod 700 "$RUN_DIR" 2>/dev/null || true
+    exec 200>"${RUN_DIR}/nc-snapshot.lock"
+    if ! flock -n 200; then
+        log_err "Another ${0##*/} instance is already running."
+        exit 1
+    fi
+}
+
+slot_paths() {
+    local slot="$1"
+    if [[ "$slot" == "auto" ]]; then
+        SLOT_UKI="$AUTO_UKI"
+        SLOT_META="$AUTO_META"
+    else
+        SLOT_UKI="$STABLE_UKI"
+        SLOT_META="$STABLE_META"
+    fi
+    SLOT_PKGS="${SLOT_META%.meta}.pkgs"
+}
+
+btrfs_subvol_path() {
+    local slot="$1"
+    printf '/.snapshots/ncui-%s' "$slot"
+}
+
+get_booted_slot() {
+    local cmdline="" vg_dm="${CFG_VG_NAME//-/--}"
+    [[ -r "$PROC_CMDLINE" ]] && read -r cmdline < "$PROC_CMDLINE" || true
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        if [[ "$cmdline" =~ subvol=/?\.snapshots/ncui-(auto|stable)([[:space:],]|$) ]]; then
+            printf '%s\n' "${BASH_REMATCH[1]}"
+            return
+        fi
+        local fsroot=""
+        if command -v findmnt >/dev/null 2>&1; then
+            fsroot=$(findmnt -no FSROOT / 2>/dev/null || true)
+            if [[ "$fsroot" =~ ^/?\.snapshots/ncui-(auto|stable)$ ]]; then
+                printf '%s\n' "${BASH_REMATCH[1]}"
+                return
+            fi
+        fi
+        printf 'main\n'
+        return
+    fi
+
+    if [[ "$cmdline" =~ (^|[[:space:]])root=/dev/(${CFG_VG_NAME}/|mapper/${vg_dm}-)snap_auto_${CFG_ROOT_LV}([[:space:]]|$) ]]; then
+        printf 'auto\n'
+    elif [[ "$cmdline" =~ (^|[[:space:]])root=/dev/(${CFG_VG_NAME}/|mapper/${vg_dm}-)snap_stable_${CFG_ROOT_LV}([[:space:]]|$) ]]; then
+        printf 'stable\n'
+    else
+        printf 'main\n'
+    fi
+}
+
+is_in_snapshot() {
+    [[ "$(get_booted_slot)" != "main" ]]
+}
+
+declare -gA LV_STATE=() LV_SIZE_B=() LV_PCT=()
+BROKEN_LVS=()
+VG_FREE_B=0
+VG_FREE_H="N/A"
+
+human_bytes() {
+    local b="${1:-0}"
+    b="${b%%.*}"
+    [[ "$b" =~ ^[0-9]+$ ]] || { printf '%s' "$b"; return; }
+    numfmt --to=iec-i --suffix=B "$b" 2>/dev/null || printf '%sB' "$b"
+}
+
+refresh_storage_cache() {
+    LV_STATE=()
+    LV_SIZE_B=()
+    LV_PCT=()
+    BROKEN_LVS=()
+    VG_FREE_B=0
+    VG_FREE_H="N/A"
+
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        if command -v df >/dev/null 2>&1; then
+            local av
+            av=$(df -PB1 / 2>/dev/null | awk 'NR==2 {print $4}' || true)
+            if [[ "$av" =~ ^[0-9]+$ ]]; then
+                VG_FREE_B="$av"
+                VG_FREE_H="$(human_bytes "$av")"
+            fi
+        fi
+        return 0
+    fi
+
+    command -v vgs >/dev/null 2>&1 || return 0
+    local vgf
+    vgf=$(vgs --noheadings --units b --nosuffix -o vg_free "$CFG_VG_NAME" 2>/dev/null | tr -d ' ' || true)
+    vgf="${vgf%%.*}"
+    if [[ "$vgf" =~ ^[0-9]+$ ]]; then
+        VG_FREE_B="$vgf"
+        VG_FREE_H="$(human_bytes "$vgf")"
+    fi
+
+    local raw_lvs name attr sz_b pct st
+    raw_lvs=$(lvs --noheadings --units b --nosuffix --separator '|' -o lv_name,lv_attr,lv_size,data_percent "$CFG_VG_NAME" 2>/dev/null || true)
+    while IFS='|' read -r name attr sz_b pct; do
+        name="${name// /}"
+        [[ -n "$name" ]] && true || continue
+        attr="${attr// /}"
+        sz_b="${sz_b// /}"
+        sz_b="${sz_b%%.*}"
+        pct="${pct// /}"
+        pct="${pct:-0}"
+        if [[ "${attr:4:1}" == "a" ]]; then
+            st="ACTIVE"
+        else
+            st="INACTIVE"
+        fi
+        LV_STATE["$name"]="$st"
+        LV_SIZE_B["$name"]="${sz_b:-0}"
+        LV_PCT["$name"]="$pct"
+        if [[ "$name" == *_broken_* ]]; then
+            BROKEN_LVS+=("$name")
+        fi
+    done <<< "$raw_lvs"
+}
+
+get_lv_cached_info() {
+    local lv="$1"
+    if [[ -z "${LV_STATE[$lv]+_}" ]]; then
+        printf 'MISSING|-|0|0\n'
+        return
+    fi
+    printf '%s|%s|%s|%s\n' "${LV_STATE[$lv]}" "$(human_bytes "${LV_SIZE_B[$lv]}")" "${LV_PCT[$lv]}" "${LV_SIZE_B[$lv]}"
+}
+
+lv_slot_roles() {
+    local roles=("root:${CFG_ROOT_LV}")
+    [[ -n "$CFG_VAR_LV" ]] && roles+=("var:${CFG_VAR_LV}")
+    [[ -n "$CFG_HOME_LV" ]] && roles+=("home:${CFG_HOME_LV}")
+    printf '%s\n' "${roles[@]}"
+}
+
+read_uki_section() {
+    local sec="$1" uki="$2" out_f="${RUN_DIR}/sec.$$"
+    mkdir -p "$RUN_DIR" 2>/dev/null || true
+    TMP_PATHS+=("$out_f")
+    if objcopy -O binary -j "$sec" "$uki" "$out_f" 2>/dev/null && [[ -s "$out_f" ]]; then
+        tr -d '\0\r\n' < "$out_f"
+    fi
+    rm -f "$out_f"
+}
+
+is_main_uki() {
+    local base="${1##*/}"
+    [[ "$base" == *.efi ]] || return 1
+    [[ "$base" == "${AUTO_UKI##*/}" ]] && return 1
+    [[ "$base" == "${STABLE_UKI##*/}" ]] && return 1
+    [[ "$base" == *-auto.efi || "$base" == *-stable.efi ]] && return 1
+    [[ "$base" == *-fallback.efi || "$base" == *recovery*.efi || "$base" == *rescue*.efi || "$base" == *duskcity*.efi || "$base" == *.tmp.* ]] && return 1
+    return 0
+}
+
+resolve_source_uki() {
+    local k_rel u u_uname
+    k_rel="$(uname -r)"
+    if [[ -d "$UKI_DIR" ]]; then
+        shopt -s nullglob
+        for u in "${UKI_DIR}"/*.efi; do
+            is_main_uki "$u" || continue
+            u_uname=$(read_uki_section .uname "$u" || true)
+            if [[ -n "$u_uname" && "$u_uname" == "$k_rel" ]]; then
+                shopt -u nullglob
+                printf '%s\n' "$u"
+                return 0
+            fi
+        done
+        shopt -u nullglob
+    fi
+    if [[ -n "$CFG_PRIMARY_UKI" && -f "$CFG_PRIMARY_UKI" ]]; then
+        printf '%s\n' "$CFG_PRIMARY_UKI"
+        return 0
+    fi
+    if [[ -d "$UKI_DIR" ]]; then
+        shopt -s nullglob
+        for u in "${UKI_DIR}"/*.efi; do
+            is_main_uki "$u" || continue
+            shopt -u nullglob
+            printf '%s\n' "$u"
+            return 0
+        done
+        shopt -u nullglob
+    fi
+    printf '%s\n' "${CFG_PRIMARY_UKI:-}"
+}
+
+resolve_promote_target_uki() {
+    local booted_uki="$1" meta_file="$2"
+    load_meta_file "$meta_file"
+    if [[ -n "${META_SOURCE_UKI:-}" && -f "${UKI_DIR}/${META_SOURCE_UKI}" ]]; then
+        printf '%s\n' "${UKI_DIR}/${META_SOURCE_UKI}"
+        return 0
+    fi
+    local b_uname u u_uname
+    b_uname=$(read_uki_section .uname "$booted_uki" || true)
+    if [[ -n "$b_uname" && -d "$UKI_DIR" ]]; then
+        shopt -s nullglob
+        for u in "${UKI_DIR}"/*.efi; do
+            is_main_uki "$u" || continue
+            u_uname=$(read_uki_section .uname "$u" || true)
+            if [[ "$u_uname" == "$b_uname" ]]; then
+                shopt -u nullglob
+                printf '%s\n' "$u"
+                return 0
+            fi
+        done
+        shopt -u nullglob
+    fi
+    printf '%s\n' "${CFG_PRIMARY_UKI:-}"
+}
+
+patch_uki_cmdline_lvm() {
+    local src_uki="$1" dest_uki="$2" target_lv="$3"
+    local tmp_cmd="${RUN_DIR}/cmdline.$$"
+    local tmp_uki="${dest_uki}.tmp.$$"
+    TMP_PATHS+=("$tmp_cmd" "$tmp_uki")
+
+    if ! objcopy -O binary -j .cmdline "$src_uki" "$tmp_cmd" 2>/dev/null || [[ ! -s "$tmp_cmd" ]]; then
+        log_err "Failed to extract .cmdline from $src_uki"
+        return 1
+    fi
+
+    local raw_cmd patched_cmd
+    raw_cmd=$(tr -d '\0\r\n' < "$tmp_cmd")
+    if [[ -z "$raw_cmd" || ! "$raw_cmd" =~ (^|[[:space:]])root=[^[:space:]]+ ]]; then
+        log_err "Missing root= parameter in .cmdline of $src_uki"
+        return 1
+    fi
+    patched_cmd=$(printf '%s' "$raw_cmd" | sed -E "s#(^|[[:space:]])root=[^[:space:]]+#\1root=/dev/${CFG_VG_NAME}/${target_lv}#g")
+    printf '%s' "$patched_cmd" > "$tmp_cmd"
+
+    cp -f "$src_uki" "$tmp_uki"
+    if ! objcopy --update-section .cmdline="$tmp_cmd" "$tmp_uki" 2>/dev/null; then
+        log_err "Failed updating .cmdline in $tmp_uki"
+        return 1
+    fi
+
+    if command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        sbctl sign -s "$tmp_uki" >/dev/null 2>&1 || true
+    fi
+
+    sync -f "$tmp_uki" 2>/dev/null || true
+    mv -f "$tmp_uki" "$dest_uki"
+    sync -f "$dest_uki" 2>/dev/null || true
+    rm -f "$tmp_cmd"
+}
+
+patch_uki_cmdline_btrfs() {
+    local src_uki="$1" dest_uki="$2" target_subvol="$3"
+    local tmp_cmd="${RUN_DIR}/cmdline.$$"
+    local tmp_uki="${dest_uki}.tmp.$$"
+    TMP_PATHS+=("$tmp_cmd" "$tmp_uki")
+
+    if ! objcopy -O binary -j .cmdline "$src_uki" "$tmp_cmd" 2>/dev/null || [[ ! -s "$tmp_cmd" ]]; then
+        log_err "Failed to extract .cmdline from $src_uki"
+        return 1
+    fi
+
+    local raw_cmd patched_cmd
+    raw_cmd=$(tr -d '\0\r\n' < "$tmp_cmd")
+    if [[ "$raw_cmd" =~ subvol= ]]; then
+        patched_cmd=$(printf '%s' "$raw_cmd" | sed -E "s#subvol=[^[:space:],]+#subvol=${target_subvol}#g")
+    elif [[ "$raw_cmd" =~ (^|[[:space:]])rootflags=[^[:space:]]+ ]]; then
+        patched_cmd=$(printf '%s' "$raw_cmd" | sed -E "s#((^|[[:space:]])rootflags=[^[:space:]]+)#\1,subvol=${target_subvol}#")
+    else
+        patched_cmd="${raw_cmd} rootflags=subvol=${target_subvol}"
+    fi
+    printf '%s' "$patched_cmd" > "$tmp_cmd"
+
+    cp -f "$src_uki" "$tmp_uki"
+    if ! objcopy --update-section .cmdline="$tmp_cmd" "$tmp_uki" 2>/dev/null; then
+        log_err "Failed updating .cmdline in $tmp_uki"
+        return 1
+    fi
+    if command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        sbctl sign -s "$tmp_uki" >/dev/null 2>&1 || true
+    fi
+    sync -f "$tmp_uki" 2>/dev/null || true
+    mv -f "$tmp_uki" "$dest_uki"
+    sync -f "$dest_uki" 2>/dev/null || true
+    rm -f "$tmp_cmd"
+}
+
+patch_fstab_in_lvm_snapshot() {
+    local snap_root_lv="$1" snap_suffix="$2" has_var="$3" has_home="$4"
+    local mnt_tmp="${RUN_DIR}/mnt_$$"
+    mkdir -p "$mnt_tmp"
+    mount "/dev/${CFG_VG_NAME}/${snap_root_lv}" "$mnt_tmp"
+    ACTIVE_MNT="$mnt_tmp"
+
+    local fstab="${mnt_tmp}/etc/fstab"
+    if [[ -f "$fstab" ]]; then
+        awk -v vg="${CFG_VG_NAME}" -v suf="${snap_suffix}" -v hv="${has_var}" -v hh="${has_home}" -v varlv="${CFG_VAR_LV:-var}" -v homelv="${CFG_HOME_LV:-home}" '
+            $0 ~ /^[[:space:]]*#/ || NF < 6 { print $0; next }
+            hv == 1 && $2 == "/var" {
+                printf "/dev/%s/snap_%s_%s  /var  %s  %s  %s  %s\n", vg, suf, varlv, $3, $4, $5, $6
+                next
+            }
+            hh == 1 && $2 == "/home" {
+                printf "/dev/%s/snap_%s_%s  /home  %s  %s  %s  %s\n", vg, suf, homelv, $3, $4, $5, $6
+                next
+            }
+            { print $0 }
+        ' "$fstab" > "${fstab}.tmp"
+        mv -f "${fstab}.tmp" "$fstab"
+        chmod 644 "$fstab"
+    fi
+
+    umount "$mnt_tmp"
+    rmdir "$mnt_tmp"
+    ACTIVE_MNT=""
+}
+
+load_meta_file() {
+    local path="$1" k v
+    META_SLOT="N/A" META_CREATED_AT="N/A" META_KERNEL="N/A"
+    META_SYSTEM_STATE="N/A" META_VOLUMES="" META_SOURCE_UKI="" META_NOTE="N/A"
+    [[ -r "$path" ]] || return 0
+    while IFS='=' read -r k v || [[ -n "$k" ]]; do
+        [[ -z "$k" || "$k" == \#* ]] && continue
+        v="${v#\"}"
+        v="${v%\"}"
+        v="${v//\\\"/\"}"
+        v="${v//\\\\/\\}"
+        case "$k" in
+            SLOT)         META_SLOT="$v" ;;
+            CREATED_AT)   META_CREATED_AT="$v" ;;
+            KERNEL)       META_KERNEL="$v" ;;
+            SYSTEM_STATE) META_SYSTEM_STATE="$v" ;;
+            VOLUMES)      META_VOLUMES="$v" ;;
+            SOURCE_UKI)   META_SOURCE_UKI="$v" ;;
+            NOTE)         META_NOTE="$v" ;;
+        esac
+    done < "$path"
+}
+
+write_slot_meta_and_pkgs() {
+    local slot="$1" volumes="$2" src_uki_base="$3" sys_state="$4" desc="$5"
+    local desc_esc="${desc//\\/\\\\}"
+    desc_esc="${desc_esc//\"/\\\"}"
+
+    local meta_dir="${SLOT_META%/*}"
+    mkdir -p "$meta_dir" 2>/dev/null || true
+    TMP_PATHS+=("${SLOT_PKGS}.tmp.$$" "${SLOT_META}.tmp.$$")
+    if command -v pacman >/dev/null 2>&1; then
+        pacman -Q > "${SLOT_PKGS}.tmp.$$" 2>/dev/null || : > "${SLOT_PKGS}.tmp.$$"
+    else
+        : > "${SLOT_PKGS}.tmp.$$"
+    fi
+    cat > "${SLOT_META}.tmp.$$" <<EOF
+SLOT="${slot}"
+CREATED_AT="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+KERNEL="$(uname -r)"
+SYSTEM_STATE="${sys_state:-unknown}"
+VOLUMES="${volumes}"
+SOURCE_UKI="${src_uki_base}"
+NOTE="${desc_esc}"
+EOF
+    mv -f "${SLOT_PKGS}.tmp.$$" "$SLOT_PKGS"
+    mv -f "${SLOT_META}.tmp.$$" "$SLOT_META"
+}
+
+# ==============================================================================
+# BOOT ENVIRONMENT CREATION
+# ==============================================================================
+
+create_lvm_snapshot() {
+    local slot="$1" desc="$2" sys_state="$3"
+    local src_uki
+    src_uki=$(resolve_source_uki)
+    if [[ -z "$src_uki" || ! -f "$src_uki" ]]; then
+        log_err "Source UKI image not found (${src_uki:-empty})."
+        exit 1
+    fi
+
+    refresh_storage_cache
+
+    if [[ -z "${LV_STATE[$CFG_ROOT_LV]+_}" ]]; then
+        log_err "Origin LV ${CFG_VG_NAME}/${CFG_ROOT_LV} not found."
+        exit 1
+    fi
+
+    local snap_targets=("${CFG_ROOT_LV}:${CFG_SNAP_ROOT_SIZE}")
+    local has_var=0 has_home=0
+    if [[ -n "$CFG_VAR_LV" && -n "${LV_STATE[$CFG_VAR_LV]+_}" ]]; then
+        snap_targets+=("${CFG_VAR_LV}:${CFG_SNAP_VAR_SIZE}")
+        has_var=1
+    fi
+    if [[ -n "$CFG_HOME_LV" && -n "${LV_STATE[$CFG_HOME_LV]+_}" ]]; then
+        snap_targets+=("${CFG_HOME_LV}:${CFG_SNAP_HOME_SIZE}")
+        has_home=1
+    fi
+
+    local req_b=0 reclaim_b=0 entry lv_orig sz_spec snap_lv info
+    for entry in "${snap_targets[@]}"; do
+        lv_orig="${entry%%:*}"
+        sz_spec="${entry#*:}"
+        req_b=$(( req_b + $(numfmt --from=iec "${sz_spec^^}" 2>/dev/null || echo 0) ))
+        snap_lv="snap_${slot}_${lv_orig}"
+        info=$(get_lv_cached_info "$snap_lv")
+        reclaim_b=$(( reclaim_b + ${info##*|} ))
+    done
+    if (( VG_FREE_B + reclaim_b < req_b )); then
+        log_err "Insufficient space in VG ${CFG_VG_NAME} (free+reclaim: $(human_bytes $((VG_FREE_B + reclaim_b))), needed: $(human_bytes "$req_b"))."
+        exit 1
+    fi
+
+    local avail_esp_b src_size_b
+    avail_esp_b=$(df -PB1 "$UKI_DIR" | awk 'NR==2 {print $4}')
+    src_size_b=$(stat -c '%s' "$src_uki")
+    if (( avail_esp_b < src_size_b )); then
+        log_err "Insufficient space on ${CFG_ESP_MOUNT} for $(basename "$SLOT_UKI")."
+        exit 1
+    fi
+
+    local old_lv
+    for old_lv in "snap_${slot}_${CFG_ROOT_LV}" "snap_${slot}_${CFG_VAR_LV:-var}" "snap_${slot}_${CFG_HOME_LV:-home}"; do
+        if [[ -n "${LV_STATE[$old_lv]+_}" ]]; then
+            lvremove -f "${CFG_VG_NAME}/${old_lv}" >/dev/null
+        fi
+    done
+
+    log_info "Capturing LVM+UKI boot environment '${slot}' (source: $(basename "$src_uki"))..."
+    sync
+
+    local created_vols=""
+    for entry in "${snap_targets[@]}"; do
+        lv_orig="${entry%%:*}"
+        sz_spec="${entry#*:}"
+        snap_lv="snap_${slot}_${lv_orig}"
+        lvcreate -s -L "$sz_spec" -n "$snap_lv" "${CFG_VG_NAME}/${lv_orig}" >/dev/null
+        created_vols+="${created_vols:+ }${lv_orig}"
+    done
+
+    patch_fstab_in_lvm_snapshot "snap_${slot}_${CFG_ROOT_LV}" "$slot" "$has_var" "$has_home"
+    patch_uki_cmdline_lvm "$src_uki" "$SLOT_UKI" "snap_${slot}_${CFG_ROOT_LV}"
+    write_slot_meta_and_pkgs "$slot" "$created_vols" "$(basename "$src_uki")" "$sys_state" "$desc"
+    sync
+
+    log_info "Snapshot '${slot}' ready (UKI: $(basename "$SLOT_UKI"))."
+    cmd_check_health || true
+}
+
+create_btrfs_snapshot() {
+    local slot="$1" desc="$2" sys_state="$3"
+    command -v btrfs >/dev/null 2>&1 || { log_err "btrfs-progs not installed."; exit 1; }
+    local fs_type
+    fs_type=$(findmnt -no FSTYPE / 2>/dev/null || true)
+    [[ "$fs_type" == "btrfs" ]] || { log_err "Root filesystem is '${fs_type:-unknown}', not btrfs."; exit 1; }
+
+    local sub_path
+    sub_path="$(btrfs_subvol_path "$slot")"
+    mkdir -p "/.snapshots"
+    chmod 0750 "/.snapshots"
+
+    if [[ -d "$sub_path" ]]; then
+        btrfs subvolume delete "$sub_path" >/dev/null
+    fi
+
+    log_info "Capturing Btrfs snapshot '${slot}' -> ${sub_path}..."
+    sync
+    btrfs subvolume snapshot / "$sub_path" >/dev/null
+
+    local snap_fstab="${sub_path}/etc/fstab"
+    if [[ -f "$snap_fstab" ]]; then
+        local rel_sub="${sub_path#/}"
+        sed -i -E "s#subvol=[^[:space:],]+#subvol=${rel_sub}#g" "$snap_fstab" 2>/dev/null || true
+    fi
+
+    local src_uki uki_base="-"
+    src_uki=$(resolve_source_uki)
+    if [[ -n "$src_uki" && -f "$src_uki" ]]; then
+        local rel_sub="${sub_path#/}"
+        if patch_uki_cmdline_btrfs "$src_uki" "$SLOT_UKI" "$rel_sub"; then
+            uki_base="$(basename "$src_uki")"
+        fi
+    else
+        SLOT_META="${STATE_DIR}/snapshots/btrfs-${slot}.meta"
+        SLOT_PKGS="${STATE_DIR}/snapshots/btrfs-${slot}.pkgs"
+    fi
+
+    write_slot_meta_and_pkgs "$slot" "btrfs:${sub_path}" "$uki_base" "$sys_state" "$desc"
+    sync
+    log_info "Btrfs snapshot '${slot}' ready (${sub_path})."
+    cmd_check_health || true
+}
+
+create_boot_environment() {
+    local slot="$1" desc="$2"
+    slot_paths "$slot"
+
+    if is_in_snapshot; then
+        log_warn "Booted inside snapshot ($(get_booted_slot)). Refusing nested snapshot."
+        exit 1
+    fi
+
+    local sys_state
+    sys_state=$(systemctl is-system-running 2>/dev/null || true)
+    if [[ "$slot" == "auto" ]]; then
+        case "$sys_state" in
+            maintenance|stopping|offline)
+                log_warn "System state '${sys_state}': skipping auto snapshot."
+                exit 0
+                ;;
+        esac
+    fi
+
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        create_btrfs_snapshot "$slot" "$desc" "$sys_state"
+    else
+        create_lvm_snapshot "$slot" "$desc" "$sys_state"
+    fi
+}
+
+cmd_create_stdin() {
+    local line="" slot="" note=""
+    IFS= read -r line || true
+    line="${line//$'\r'/}"
+    if [[ "$line" == *"|"* ]]; then
+        slot="${line%%|*}"
+        note="${line#*|}"
+    else
+        slot="$line"
+    fi
+    slot="$(printf '%s' "$slot" | tr -d '[:space:]')"
+    case "$slot" in
+        auto|stable) ;;
+        *) log_err "Invalid slot in create-stdin: ${slot:-empty}"; exit 2 ;;
+    esac
+    note="$(printf '%s' "$note" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -n "$note" && ! "$note" =~ ^[a-zA-Z0-9\ _.,:/()+-]{1,64}$ ]]; then
+        log_err "Invalid snapshot note characters."
+        exit 2
+    fi
+    if [[ -z "$note" ]]; then
+        [[ "$slot" == "auto" ]] && note="Pre-update Snapshot" || note="Manual Checkpoint"
+    fi
+    create_boot_environment "$slot" "$note"
+}
+
+# ==============================================================================
+# PROMOTE & DELETE & EXTEND
+# ==============================================================================
+
+cmd_promote() {
+    local confirm_mode="${1:-prompt}"
+    local current_slot
+    current_slot=$(get_booted_slot)
+    if [[ "$current_slot" == "main" ]]; then
+        log_err "Not booted inside a snapshot. Currently in MAIN system."
+        exit 1
+    fi
+
+    if [[ "$confirm_mode" != "confirm" ]]; then
+        read -r -p "Confirm irreversible promotion of slot '${current_slot}' to MAIN? [y/N]: " ans
+        [[ "${ans,,}" == "y" ]] || { echo "Cancelled."; exit 0; }
+    fi
+
+    slot_paths "$current_slot"
+    local ts
+    ts=$(date +%s)
+
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        local src_sub root_src mnt_top="${RUN_DIR}/btrfs_top_$$"
+        src_sub="$(btrfs_subvol_path "$current_slot")"
+        root_src=$(findmnt -no SOURCE / 2>/dev/null | sed -E 's/\[.*\]$//' || true)
+        [[ -n "$root_src" ]] || { log_err "Cannot locate Btrfs block device for /"; exit 1; }
+        mkdir -p "$mnt_top"
+        mount -o subvolid=5 "$root_src" "$mnt_top"
+        ACTIVE_MNT="$mnt_top"
+        local main_sub="${CFG_BTRFS_SUBVOL}"
+        local snap_rel="${src_sub#/}"
+        [[ -d "${mnt_top}/${snap_rel}" ]] || { log_err "Snapshot subvolume ${snap_rel} not found."; exit 1; }
+        if [[ -d "${mnt_top}/${main_sub}" ]]; then
+            mv "${mnt_top}/${main_sub}" "${mnt_top}/${main_sub}_broken_${ts}"
+        fi
+        btrfs subvolume snapshot "${mnt_top}/${snap_rel}" "${mnt_top}/${main_sub}" >/dev/null
+        if [[ -f "${mnt_top}/${main_sub}/etc/fstab" ]]; then
+            sed -i -E "s#subvol=[^[:space:],]+#subvol=${main_sub}#g" "${mnt_top}/${main_sub}/etc/fstab" 2>/dev/null || true
+        fi
+        local target_uki
+        target_uki=$(resolve_promote_target_uki "$SLOT_UKI" "$SLOT_META")
+        if [[ -f "$SLOT_UKI" && -n "$target_uki" ]]; then
+            patch_uki_cmdline_btrfs "$SLOT_UKI" "$target_uki" "$main_sub" || true
+        fi
+        umount "$mnt_top"
+        rmdir "$mnt_top"
+        ACTIVE_MNT=""
+        btrfs subvolume delete "$src_sub" >/dev/null 2>&1 || true
+        rm -f "$SLOT_UKI" "$SLOT_META" "$SLOT_PKGS"
+        log_info "Promoted Btrfs snapshot '${current_slot}' -> ${main_sub} (old saved as ${main_sub}_broken_${ts})."
+        cmd_check_health || true
+        return 0
+    fi
+
+    if [[ ! -f "$SLOT_UKI" ]]; then
+        log_err "Booted snapshot UKI ($SLOT_UKI) not found."
+        exit 1
+    fi
+    local target_uki
+    target_uki=$(resolve_promote_target_uki "$SLOT_UKI" "$SLOT_META")
+    refresh_storage_cache
+
+    lvrename "$CFG_VG_NAME" "$CFG_ROOT_LV" "${CFG_ROOT_LV}_broken_${ts}" >/dev/null
+    lvrename "$CFG_VG_NAME" "snap_${current_slot}_${CFG_ROOT_LV}" "$CFG_ROOT_LV" >/dev/null
+
+    if [[ -n "$CFG_VAR_LV" && -n "${LV_STATE[snap_${current_slot}_${CFG_VAR_LV}]+_}" ]]; then
+        [[ -n "${LV_STATE[$CFG_VAR_LV]+_}" ]] && lvrename "$CFG_VG_NAME" "$CFG_VAR_LV" "${CFG_VAR_LV}_broken_${ts}" >/dev/null
+        lvrename "$CFG_VG_NAME" "snap_${current_slot}_${CFG_VAR_LV}" "$CFG_VAR_LV" >/dev/null
+    fi
+    if [[ -n "$CFG_HOME_LV" && -n "${LV_STATE[snap_${current_slot}_${CFG_HOME_LV}]+_}" ]]; then
+        [[ -n "${LV_STATE[$CFG_HOME_LV]+_}" ]] && lvrename "$CFG_VG_NAME" "$CFG_HOME_LV" "${CFG_HOME_LV}_broken_${ts}" >/dev/null
+        lvrename "$CFG_VG_NAME" "snap_${current_slot}_${CFG_HOME_LV}" "$CFG_HOME_LV" >/dev/null
+    fi
+
+    if [[ -f "$FSTAB_PATH" ]]; then
+        awk -v vg="${CFG_VG_NAME}" -v varlv="${CFG_VAR_LV}" -v homelv="${CFG_HOME_LV}" '
+            $0 ~ /^[[:space:]]*#/ || NF < 6 { print $0; next }
+            varlv != "" && $2 == "/var" {
+                printf "/dev/%s/%s  /var  %s  %s  %s  %s\n", vg, varlv, $3, $4, $5, $6
+                next
+            }
+            homelv != "" && $2 == "/home" {
+                printf "/dev/%s/%s  /home  %s  %s  %s  %s\n", vg, homelv, $3, $4, $5, $6
+                next
+            }
+            { print $0 }
+        ' "$FSTAB_PATH" > "${FSTAB_PATH}.tmp.$$"
+        mv -f "${FSTAB_PATH}.tmp.$$" "$FSTAB_PATH"
+        chmod 644 "$FSTAB_PATH"
+    fi
+
+    patch_uki_cmdline_lvm "$SLOT_UKI" "$target_uki" "$CFG_ROOT_LV"
+    rm -f "$SLOT_UKI" "$SLOT_META" "$SLOT_PKGS"
+    log_info "Promotion complete (${CFG_VG_NAME}/${CFG_ROOT_LV}). Previous root preserved as ${CFG_ROOT_LV}_broken_${ts}."
+    cmd_check_health || true
+}
+
+delete_slot_impl() {
+    local slot="$1" force_yes="${2:-0}"
+    if [[ "$slot" != "auto" && "$slot" != "stable" ]]; then
+        log_err "Invalid slot '${slot}'. Use 'auto' or 'stable'."
+        exit 1
+    fi
+    if [[ "$(get_booted_slot)" == "$slot" ]]; then
+        log_err "Cannot delete slot '${slot}' while booted inside it."
+        exit 1
+    fi
+    if (( force_yes == 0 )); then
+        read -r -p "Delete slot '${slot}' permanently? [y/N]: " ans
+        [[ "${ans,,}" == "y" ]] || { echo "Cancelled."; exit 0; }
+    fi
+
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        local sub_path
+        sub_path="$(btrfs_subvol_path "$slot")"
+        if [[ -d "$sub_path" ]]; then
+            btrfs subvolume delete "$sub_path" >/dev/null
+        fi
+        slot_paths "$slot"
+        rm -f "$SLOT_UKI" "$SLOT_META" "$SLOT_PKGS" "${STATE_DIR}/snapshots/btrfs-${slot}.meta" "${STATE_DIR}/snapshots/btrfs-${slot}.pkgs"
+        log_info "Btrfs snapshot slot '${slot}' removed."
+        cmd_check_health || true
+        return 0
+    fi
+
+    refresh_storage_cache
+    local lv
+    for lv in "snap_${slot}_${CFG_ROOT_LV}" "snap_${slot}_${CFG_VAR_LV:-var}" "snap_${slot}_${CFG_HOME_LV:-home}"; do
+        [[ -n "${LV_STATE[$lv]+_}" ]] && lvremove -f "${CFG_VG_NAME}/${lv}" >/dev/null
+    done
+    slot_paths "$slot"
+    rm -f "$SLOT_UKI" "$SLOT_META" "$SLOT_PKGS"
+    log_info "Snapshot slot '${slot}' removed."
+    cmd_check_health || true
+}
+
+cmd_delete() {
+    local slot="${1:-}"
+    if [[ -z "$slot" ]]; then
+        printf "Select slot to delete:\n  [1] stable\n  [2] auto\n  [q] Cancel\n"
+        read -r -p "Choice: " choice
+        case "$choice" in
+            1|stable) slot="stable" ;;
+            2|auto)   slot="auto" ;;
+            *)        echo "Cancelled."; exit 0 ;;
+        esac
+    fi
+    delete_slot_impl "$slot" 0
+}
+
+cmd_extend() {
+    local lv_target="${1:-}" add_size="${2:-}"
+    [[ "$CFG_BACKEND" == "lvm_uki" ]] || { log_err "CoW extend applies only to lvm_uki backend."; exit 1; }
+    [[ -n "$lv_target" ]] || { log_err "Missing LV name (e.g. snap_auto_root)."; exit 1; }
+    refresh_storage_cache
+    [[ -n "${LV_STATE[$lv_target]+_}" ]] || { log_err "LV ${CFG_VG_NAME}/${lv_target} does not exist."; exit 1; }
+    [[ "$lv_target" =~ ^snap_(auto|stable)_[a-zA-Z0-9_+.-]+$ ]] || { log_err "Refusing non-snapshot LV: ${lv_target}"; exit 1; }
+    if [[ -z "$add_size" ]]; then
+        read -r -p "Size to add (e.g. +5G): " add_size
+    fi
+    [[ "$add_size" =~ ^\+ ]] || add_size="+${add_size}"
+    [[ "$add_size" =~ ^\+[0-9]{1,4}[kKmMgGtT]?$ ]] || { log_err "Invalid size format: ${add_size}"; exit 1; }
+    lvextend -L "$add_size" "${CFG_VG_NAME}/${lv_target}" >/dev/null
+    cmd_check_health || true
+    log_info "Extended ${lv_target} by ${add_size}."
+}
+
+cmd_extend_stdin() {
+    local line="" lv_target="" add_size=""
+    IFS= read -r line || true
+    line="${line//$'\r'/}"
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [[ "$line" == *"|"* ]] || { log_err "Expected LV|+SIZE on stdin."; exit 2; }
+    lv_target="${line%%|*}"
+    add_size="${line#*|}"
+    [[ "$lv_target" =~ ^snap_(auto|stable)_(root|var|home|[a-zA-Z0-9_.-]+)$ ]] || { log_err "Invalid LV name."; exit 2; }
+    [[ "$add_size" =~ ^\+[0-9]{1,3}[GM]$ ]] || { log_err "Invalid extend size (expected +NG or +NM)."; exit 2; }
+    cmd_extend "$lv_target" "$add_size"
+}
+
+cmd_purge_broken_stdin() {
+    local lv_name=""
+    IFS= read -r lv_name || true
+    lv_name="${lv_name//$'\r'/}"
+    lv_name="$(printf '%s' "$lv_name" | tr -d '[:space:]')"
+    [[ "$lv_name" =~ ^[a-zA-Z0-9_-]+_broken_[0-9]{8,}$ ]] || { log_err "Invalid broken LV identifier: ${lv_name:-empty}"; exit 2; }
+    refresh_storage_cache
+    [[ -n "${LV_STATE[$lv_name]+_}" ]] || { log_err "LV ${CFG_VG_NAME}/${lv_name} not found."; exit 1; }
+
+    local vg_dm="${CFG_VG_NAME//-/--}" lv_dm="${lv_name//-/--}"
+    if grep -qE "/dev/(${CFG_VG_NAME}/${lv_name}|mapper/${vg_dm}-${lv_dm})[[:space:]]" /proc/self/mounts 2>/dev/null; then
+        log_err "Refusing to remove currently mounted LV ${lv_name}."
+        exit 1
+    fi
+    lvremove -f "${CFG_VG_NAME}/${lv_name}" >/dev/null
+    cmd_check_health || true
+    log_info "Removed forensic LV ${CFG_VG_NAME}/${lv_name}."
+}
+
+# ==============================================================================
+# HEALTH, TELEMETRY MIRROR, HOOKS & TOML CONFIG
+# ==============================================================================
+
+ensure_profile_reader() {
+    [[ -f "$ALERT_PROFILE" ]] && return 0
+    mkdir -p "$(dirname "$ALERT_PROFILE")"
+    cat > "${ALERT_PROFILE}.tmp.$$" <<EOF
+#!/bin/sh
+if [ -f "$ALERT_MSG" ]; then
+    cat "$ALERT_MSG" >&2
+fi
+EOF
+    chmod 0755 "${ALERT_PROFILE}.tmp.$$"
+    mv -f "${ALERT_PROFILE}.tmp.$$" "$ALERT_PROFILE"
+}
+
+slot_cow_summary() {
+    local slot="$1"
+    if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+        printf '%s|0|ACTIVE\n' "$(btrfs_subvol_path "$slot")"
+        return
+    fi
+    local parts="" max_pct="0" health="ACTIVE"
+    local v lv info state size pct pct_int
+    for v in "$CFG_ROOT_LV" "$CFG_VAR_LV" "$CFG_HOME_LV"; do
+        [[ -n "$v" ]] || continue
+        lv="snap_${slot}_${v}"
+        info=$(get_lv_cached_info "$lv")
+        IFS='|' read -r state size pct _ <<< "$info"
+        [[ "$state" == "MISSING" ]] && continue
+        [[ "$state" != "ACTIVE" ]] && health="INACTIVE"
+        pct_int="${pct%.*}"; pct_int="${pct_int:-0}"
+        local cur_int="${max_pct%.*}"; cur_int="${cur_int:-0}"
+        if awk -v a="$pct" -v b="$max_pct" 'BEGIN { exit !(a+0 > b+0) }' 2>/dev/null; then
+            max_pct="$pct"
+        fi
+        parts+="${parts:+ · }${v} ${pct}%/${size}"
+    done
+    printf '%s|%s|%s\n' "${parts:--}" "$max_pct" "$health"
+}
+
+write_status_mirrors() {
+    local dir snaps_dir status_env
+    for dir in "$STATE_DIR" "$LEGACY_STATE_DIR"; do
+        snaps_dir="${dir}/snapshots"
+        status_env="${dir}/dr-status.env"
+        mkdir -p "$snaps_dir"
+        chmod 0755 "$dir" "$snaps_dir" 2>/dev/null || true
+
+        local slot present meta_src uki_present uki_file cow_line cow_sum max_pct lv_health
+        for slot in auto stable; do
+            slot_paths "$slot"
+            present=0
+            meta_src="$SLOT_META"
+            if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+                [[ -d "$(btrfs_subvol_path "$slot")" ]] && present=1
+                [[ -f "$meta_src" ]] || meta_src="${STATE_DIR}/snapshots/btrfs-${slot}.meta"
+            else
+                local r_info
+                r_info=$(get_lv_cached_info "snap_${slot}_${CFG_ROOT_LV}")
+                [[ "${r_info%%|*}" != "MISSING" ]] && present=1
+            fi
+
+            if (( present == 0 )); then
+                rm -f "${snaps_dir}/${slot}.meta"
+                continue
+            fi
+
+            [[ -f "$SLOT_UKI" ]] && uki_present=1 || uki_present=0
+            uki_file="${SLOT_UKI##*/}"
+            cow_line="$(slot_cow_summary "$slot")"
+            IFS='|' read -r cow_sum max_pct lv_health <<< "$cow_line"
+
+            {
+                if [[ -f "$meta_src" ]]; then
+                    grep -vE '^(UKI_PRESENT|UKI_FILE|COW_SUMMARY|MAX_COW_PCT|LV_HEALTH|BACKEND)=' "$meta_src" || true
+                else
+                    printf 'SLOT="%s"\nCREATED_AT="-"\nKERNEL="-"\nNOTE="-"\n' "$slot"
+                fi
+                printf 'BACKEND="%s"\n' "$CFG_BACKEND"
+                printf 'UKI_PRESENT="%s"\n' "$uki_present"
+                printf 'UKI_FILE="%s"\n' "$uki_file"
+                printf 'COW_SUMMARY="%s"\n' "$cow_sum"
+                printf 'MAX_COW_PCT="%s"\n' "$max_pct"
+                printf 'LV_HEALTH="%s"\n' "$lv_health"
+            } > "${snaps_dir}/${slot}.meta.tmp.$$"
+            chmod 0644 "${snaps_dir}/${slot}.meta.tmp.$$"
+            mv -f "${snaps_dir}/${slot}.meta.tmp.$$" "${snaps_dir}/${slot}.meta"
+        done
+
+        local duskcity_ready=0 uki_names="" u broken_list="" blv hook_state=0
+        if [[ -f "${UKI_DIR}/nc-rescue.efi" || -f "${UKI_DIR}/nightcity-recovery.efi" || -f "${UKI_DIR}/duskcity.efi" ]]; then
+            duskcity_ready=1
+        fi
+        [[ -f "$PACMAN_HOOK_PATH" ]] && hook_state=1
+        if [[ -d "$UKI_DIR" ]]; then
+            shopt -s nullglob
+            for u in "${UKI_DIR}"/*.efi; do
+                [[ "$u" == *.tmp.* ]] && continue
+                uki_names+="${uki_names:+,}${u##*/}"
+            done
+            shopt -u nullglob
+        fi
+        for blv in "${BROKEN_LVS[@]}"; do
+            broken_list+="${broken_list:+,}${blv}:$(human_bytes "${LV_SIZE_B[$blv]}")"
+        done
+
+        cat > "${status_env}.tmp.$$" <<EOF
+BACKEND="${CFG_BACKEND}"
+BOOTED_SLOT="$(get_booted_slot)"
+VG_FREE="${VG_FREE_H}"
+DUSKCITY_READY="${duskcity_ready}"
+UKI_NAMES="${uki_names}"
+PACMAN_HOOK="${hook_state}"
+BROKEN_LVS="${broken_list}"
+UPDATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+EOF
+        chmod 0644 "${status_env}.tmp.$$"
+        mv -f "${status_env}.tmp.$$" "$status_env"
+    done
+}
+
+cmd_check_health() {
+    refresh_storage_cache
+    ensure_profile_reader
+    write_status_mirrors
+
+    local has_alerts=0 msg_body="" slot v lv info state pct pct_int
+    local r=$'\033[1;31m' y=$'\033[1;33m' b=$'\033[1m' z=$'\033[0m'
+
+    if [[ "$CFG_BACKEND" == "lvm_uki" ]]; then
+        for slot in auto stable; do
+            for v in "$CFG_ROOT_LV" "$CFG_VAR_LV" "$CFG_HOME_LV"; do
+                [[ -n "$v" ]] || continue
+                lv="snap_${slot}_${v}"
+                info=$(get_lv_cached_info "$lv")
+                IFS='|' read -r state _ pct _ <<< "$info"
+                [[ "$state" == "MISSING" ]] && continue
+                pct_int="${pct%.*}"; pct_int="${pct_int:-0}"
+                if [[ "$state" == "INACTIVE" ]]; then
+                    msg_body+=" ${r}[CRITICAL]${z} Snapshot LV '${lv}' is ${r}INACTIVE (100% CoW)${z}.\n"
+                    has_alerts=1
+                elif (( pct_int >= CRIT_USAGE_PCT )); then
+                    msg_body+=" ${r}[CRITICAL]${z} Snapshot LV '${lv}' at ${r}${pct}%${z}. Run 'sudo ${0##*/} -e ${lv} +5G'.\n"
+                    has_alerts=1
+                elif (( pct_int >= WARN_USAGE_PCT )); then
+                    msg_body+=" ${y}[WARNING]${z} Snapshot LV '${lv}' reached ${y}${pct}%${z}.\n"
+                    has_alerts=1
+                fi
+            done
+        done
+    fi
+
+    local booted_slot
+    booted_slot=$(get_booted_slot)
+    if [[ "$booted_slot" != "main" ]]; then
+        msg_body+=" ${r}[NOTICE]${z} BOOTED INSIDE SNAPSHOT '${booted_slot}'. Promote with: ${b}sudo ${0##*/} --promote${z}\n"
+        has_alerts=1
+    fi
+    if (( ${#BROKEN_LVS[@]} > 0 )); then
+        msg_body+=" ${y}[STORAGE]${z} Forensic '_broken_' volumes present: ${BROKEN_LVS[*]}.\n"
+        has_alerts=1
+    fi
+
+    if (( has_alerts == 1 )); then
+        mkdir -p "$(dirname "$ALERT_MSG")"
+        {
+            printf "%s==============================================================================%s\n" "$r" "$z"
+            printf "%s                      NC-SNAP DR HEALTH ALERT                                 %s\n" "$r" "$z"
+            printf "%s==============================================================================%s\n" "$r" "$z"
+            printf "%b" "$msg_body"
+            printf "%s==============================================================================%s\n" "$r" "$z"
+        } > "${ALERT_MSG}.tmp.$$"
+        chmod 0644 "${ALERT_MSG}.tmp.$$"
+        mv -f "${ALERT_MSG}.tmp.$$" "$ALERT_MSG"
+    else
+        rm -f "$ALERT_MSG"
+    fi
+}
+
+cmd_status_env() {
+    refresh_storage_cache
+    local status_file="${STATE_DIR}/dr-status.env"
+    [[ -f "$status_file" ]] && cat "$status_file" || true
+}
+
+cmd_status() {
+    refresh_storage_cache
+    local current_slot env_label
+    current_slot=$(get_booted_slot)
+    printf "%s==============================================================================%s\n" "$C_BOLD" "$C_RESET"
+    printf "%s                 NC-UI BOOT ENVIRONMENT STATUS (%s)%s\n" "$C_BOLD" "${CFG_BACKEND^^}" "$C_RESET"
+    printf "%s==============================================================================%s\n" "$C_BOLD" "$C_RESET"
+    if [[ "$current_slot" != "main" ]]; then
+        env_label="${C_BOLD}${C_RED}SNAPSHOT BOOTED (${current_slot^^})${C_RESET}"
+    else
+        env_label="${C_BOLD}${C_GREEN}MAIN SYSTEM${C_RESET}"
+    fi
+    printf " Kernel        : %s%s%s\n" "$C_CYAN" "$(uname -r)" "$C_RESET"
+    printf " Environment   : %s\n" "$env_label"
+    printf " Pool Free     : %s%s%s\n" "$C_BOLD" "$VG_FREE_H" "$C_RESET"
+    printf " Pacman Hook   : %s\n" "$([[ -f "$PACMAN_HOOK_PATH" ]] && echo ENABLED || echo DISABLED)"
+    if (( ${#BROKEN_LVS[@]} > 0 )); then
+        printf " Broken LVs    : %s%s%s\n" "$C_YELLOW" "${BROKEN_LVS[*]}" "$C_RESET"
+    fi
+    local slot cow_line cow_sum max_pct lv_health
+    for slot in auto stable; do
+        slot_paths "$slot"
+        printf "\n--- SLOT: %s ---\n" "${slot^^}"
+        if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+            local sp
+            sp="$(btrfs_subvol_path "$slot")"
+            if [[ ! -d "$sp" ]]; then
+                printf " State : ABSENT\n"
+                continue
+            fi
+        else
+            local ri
+            ri=$(get_lv_cached_info "snap_${slot}_${CFG_ROOT_LV}")
+            if [[ "${ri%%|*}" == "MISSING" ]]; then
+                printf " State : ABSENT\n"
+                continue
+            fi
+        fi
+        load_meta_file "$SLOT_META"
+        cow_line="$(slot_cow_summary "$slot")"
+        IFS='|' read -r cow_sum max_pct lv_health <<< "$cow_line"
+        printf " Created : %s\n" "$META_CREATED_AT"
+        printf " Kernel  : %s\n" "$META_KERNEL"
+        printf " Note    : %s\n" "$META_NOTE"
+        printf " Storage : %s (%s)\n" "$cow_sum" "$lv_health"
+    done
+    printf "%s==============================================================================%s\n" "$C_BOLD" "$C_RESET"
+}
+
+toml_apply_updates() {
+    local upd_spec="$1"
+    mkdir -p "$(dirname "$CONF_FILE")"
+    if [[ ! -f "$CONF_FILE" ]]; then
+        cat > "$CONF_FILE" <<EOF
+[snapshots]
+backend = "${CFG_BACKEND}"
+vg_name = "${CFG_VG_NAME}"
+root_lv = "${CFG_ROOT_LV}"
+var_lv = "${CFG_VAR_LV}"
+home_lv = "${CFG_HOME_LV}"
+esp_mount = "${CFG_ESP_MOUNT}"
+uki_prefix = "${CFG_UKI_PREFIX}"
+primary_uki = "${CFG_PRIMARY_UKI}"
+snap_root_size = "${CFG_SNAP_ROOT_SIZE}"
+snap_var_size = "${CFG_SNAP_VAR_SIZE}"
+snap_home_size = "${CFG_SNAP_HOME_SIZE}"
+btrfs_subvol = "${CFG_BTRFS_SUBVOL}"
+pacman_hook_auto = ${CFG_PACMAN_HOOK_AUTO}
+EOF
+        chmod 0644 "$CONF_FILE"
+    fi
+
+    local tmp_conf="${CONF_FILE}.tmp.$$"
+    awk -v spec="$upd_spec" '
+    BEGIN {
+        n = split(spec, lines, "\n")
+        for (i = 1; i <= n; i++) {
+            if (lines[i] == "") continue
+            eq = index(lines[i], "=")
+            k = substr(lines[i], 1, eq - 1)
+            v = substr(lines[i], eq + 1)
+            upd[k] = v
+            done_k[k] = 0
+        }
+        in_sec = 0
+        saw_sec = 0
+    }
+    function flush_missing() {
+        for (k in upd) {
+            if (!done_k[k]) {
+                print k " = " upd[k]
+                done_k[k] = 1
+            }
+        }
+    }
+    /^\[.*\]/ {
+        if (in_sec) flush_missing()
+        in_sec = ($0 ~ /^\[snapshots\]/) ? 1 : 0
+        if (in_sec) saw_sec = 1
+        print
+        next
+    }
+    {
+        if (in_sec && match($0, /^[[:space:]]*([a-z_]+)[[:space:]]*=/, m) && (m[1] in upd)) {
+            k = m[1]
+            print k " = " upd[k]
+            done_k[k] = 1
+            next
+        }
+        print
+    }
+    END {
+        if (in_sec) {
+            flush_missing()
+        } else if (!saw_sec) {
+            print ""
+            print "[snapshots]"
+            flush_missing()
+        }
+    }' "$CONF_FILE" > "$tmp_conf"
+    chmod 0644 "$tmp_conf"
+    chown root:root "$tmp_conf"
+    mv -f "$tmp_conf" "$CONF_FILE"
+}
+
+apply_config_stdin() {
+    local -A updates=()
+    local count=0 line k v
+    while IFS= read -r line && (( count < 20 )); do
+        count=$((count + 1))
+        line="${line//$'\r'/}"
+        line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -n "$line" ]] || continue
+        [[ "$line" == *"="* ]] || { log_err "Invalid config line"; exit 2; }
+        k="${line%%=*}"
+        v="${line#*=}"
+        k="$(printf '%s' "$k" | tr -d '[:space:]')"
+        v="$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        case "$k" in
+            backend)
+                [[ "$v" =~ ^(lvm_uki|btrfs)$ ]] || { log_err "Invalid backend: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            pacman_hook_auto)
+                [[ "$v" =~ ^(true|false)$ ]] || { log_err "Invalid bool: $v"; exit 2; }
+                updates["$k"]="$v"
+                ;;
+            vg_name|root_lv)
+                [[ "$v" =~ ^[a-zA-Z0-9_+.-]{1,48}$ ]] || { log_err "Invalid LV/VG: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            var_lv|home_lv)
+                [[ -z "$v" || "$v" =~ ^[a-zA-Z0-9_+.-]{1,48}$ ]] || { log_err "Invalid optional LV: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            esp_mount)
+                [[ "$v" =~ ^/(boot|efi)(/[a-zA-Z0-9_.-]+)?$ ]] || { log_err "Invalid esp_mount: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            uki_prefix)
+                [[ "$v" =~ ^[a-zA-Z0-9_-]{1,40}$ ]] || { log_err "Invalid uki_prefix: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            primary_uki)
+                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^/(boot|efi)/[a-zA-Z0-9_./-]+\.efi$ ) ]] || { log_err "Invalid primary_uki: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            snap_root_size|snap_var_size|snap_home_size)
+                [[ "$v" =~ ^[0-9]{1,4}[GM]$ ]] || { log_err "Invalid snapshot size: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            btrfs_subvol)
+                [[ "$v" != *".."* && "$v" =~ ^[a-zA-Z0-9@_./-]{1,48}$ ]] || { log_err "Invalid btrfs_subvol: $v"; exit 2; }
+                updates["$k"]="\"$v\""
+                ;;
+            *)
+                log_err "Unknown [snapshots] key: $k"
+                exit 2
+                ;;
+        esac
+    done
+    (( ${#updates[@]} > 0 )) || { log_err "No valid [snapshots] updates provided."; exit 2; }
+
+    local upd_spec=""
+    for k in "${!updates[@]}"; do
+        upd_spec+="${k}=${updates[$k]}"$'\n'
+    done
+    toml_apply_updates "$upd_spec"
+    load_snap_config
+    cmd_check_health || true
+    log_info "Updated [snapshots] in ${CONF_FILE}."
+}
+
+cmd_hook_on() {
+    mkdir -p "$(dirname "$PACMAN_HOOK_PATH")"
+    cat > "${PACMAN_HOOK_PATH}.tmp.$$" <<'EOF'
+[Trigger]
+Operation = Upgrade
+Operation = Install
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Capturing pre-transaction boot snapshot (nc-snap)...
+When = PreTransaction
+Exec = /usr/lib/ncui/sbin/nc-snap --auto
+AbortOnFail
+EOF
+    chmod 0644 "${PACMAN_HOOK_PATH}.tmp.$$"
+    chown root:root "${PACMAN_HOOK_PATH}.tmp.$$"
+    mv -f "${PACMAN_HOOK_PATH}.tmp.$$" "$PACMAN_HOOK_PATH"
+    toml_apply_updates $'pacman_hook_auto=true\n'
+    cmd_check_health || true
+    log_info "Pacman pre-update hook enabled (${PACMAN_HOOK_PATH})."
+}
+
+cmd_hook_off() {
+    rm -f "$PACMAN_HOOK_PATH"
+    toml_apply_updates $'pacman_hook_auto=false\n'
+    cmd_check_health || true
+    log_info "Pacman pre-update hook disabled."
+}
+
+# ==============================================================================
+# ROUTING
+# ==============================================================================
+ACTION="${1:-status}"
+case "$ACTION" in
+    -h|--help) show_help ;;
+esac
+
+load_snap_config
+
+case "$ACTION" in
+    status|-s|--status|-l|--list)
+        cmd_status
+        exit 0
+        ;;
+    status-env)
+        cmd_status_env
+        exit 0
+        ;;
+esac
+
+if [[ "${NC_SNAP_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
+    log_err "Root privileges required."
+    exit 1
+fi
+
+acquire_lock
+
+case "$ACTION" in
+    check-health|--check-health) cmd_check_health ;;
+    -n|--new)                    create_boot_environment "stable" "Manual Checkpoint" ;;
+    --auto)                      create_boot_environment "auto" "Pre-update Pacman Hook" ;;
+    create-stdin)                cmd_create_stdin ;;
+    delete-auto)                 delete_slot_impl "auto" 1 ;;
+    delete-stable)               delete_slot_impl "stable" 1 ;;
+    -d|--delete)                 cmd_delete "${2:-}" ;;
+    -e|--extend)                 cmd_extend "${2:-}" "${3:-}" ;;
+    extend-stdin)                cmd_extend_stdin ;;
+    -p|--promote)                cmd_promote "prompt" ;;
+    promote-confirm)             cmd_promote "confirm" ;;
+    purge-broken-stdin)          cmd_purge_broken_stdin ;;
+    hook-on)                     cmd_hook_on ;;
+    hook-off)                    cmd_hook_off ;;
+    config-stdin)                apply_config_stdin ;;
+    *)
+        log_err "Invalid action: $ACTION"
+        exit 1
+        ;;
+esac

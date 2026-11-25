@@ -1,0 +1,209 @@
+# NC-UI Action Help Catalog — Firewall / nftables (English)
+# Covers: cc_firewall_chains.py, cc_firewall_connections.py, cc_firewall_rules.py
+
+# ==============================================================================
+# FIREWALL -> RULES (`panels/cc_firewall_rules.py`)
+# ==============================================================================
+["cc_fw:apply_live"]
+title = "Apply Ruleset Live (`nft -f`)"
+short = "Validates the generated `table inet filter` ruleset with `nft -c -f` and loads it into the running kernel via `pkexec` without overwriting `/etc/nftables.conf`."
+verbose = "Builds the complete `nftables` script (`define LAN_NETWORK`, `input`/`forward`/`output` base chains, enabled rules), dry-runs syntax with `nft -c -f`, and executes `nft -f` atomically via `pkexec`."
+diagram = "firewall_nft"
+diagram_focus = "apply"
+
+["cc_fw:save_etc"]
+title = "Save to `/etc/nftables.conf` & Apply"
+short = "Validates the ruleset, writes it to `/etc/nftables.conf` (`0644`), and loads it live into the kernel so it persists across reboots."
+verbose = "After `nft -c -f` succeeds, uses `pkexec` to copy the generated script to `/etc/nftables.conf` (`chmod 644`) and immediately applies `nft -f /etc/nftables.conf`."
+diagram = "firewall_nft"
+diagram_focus = "apply"
+
+["cc_fw:dry_run"]
+title = "Dry-Run Syntax Check (`nft -c -f`)"
+short = "Compiles the draft `table inet filter` script and checks it with `nft -c -f` without modifying live kernel chains."
+verbose = "Safe validation step before applying changes: catches invalid port lists, CIDR mistakes, rate-limit syntax errors, or chain hook issues."
+
+["cc_fw:sync_etc"]
+title = "Reload Rules from `/etc/nftables.conf`"
+short = "Discards unsaved NC-UI firewall edits by re-importing `$LAN_NETWORK`, chain policies, and base rules from `/etc/nftables.conf`."
+
+["cc_fw:flt_clear"]
+title = "Reset Rule Filters"
+short = "Clears all active direction, protocol, source, port, verdict, and text filters on the rules table."
+
+["cc_fw:composer_new"]
+title = "New Firewall Rule.."
+short = "Opens the rule composer card with a clean draft to define chain, protocol, match criteria, and verdict."
+
+["cc_fw:flt_cycle:dir"]
+title = "Filter Rules by Chain Direction"
+short = "Cycles the table direction filter (`ALL` → `IN` → `OUT` → `FWD`) across `input`, `output`, and `forward` chains."
+
+["cc_fw:flt_cycle:proto"]
+title = "Filter Rules by Protocol"
+short = "Cycles the protocol column filter (`ALL` → `TCP` → `UDP` → `ICMP` → `ANY`)."
+
+["cc_fw:flt_cycle:verdict"]
+title = "Filter Rules by Verdict"
+short = "Cycles the verdict column filter (`ALL` → `ACCEPT` → `DROP` → `REJECT` → `LOG`)."
+
+["cc_fw:flt_inline:src"]
+title = "Filter Rules by Source / Interface.."
+short = "Opens inline table filtering against each rule's `ip saddr`/`ip6 saddr` or interface (`iifname`/`oifname`)."
+
+["cc_fw:flt_inline:port"]
+title = "Filter Rules by Destination Port.."
+short = "Opens inline table filtering against each rule's `dport` or destination port expression."
+
+["cc_fw:flt_inline:text"]
+title = "Filter Rules by Comment / Conntrack.."
+short = "Opens inline table filtering matching `ct state`, `limit rate`, or rule comments."
+
+["cc_fw:sel_rule:*"]
+title = "Inspect Firewall Rule"
+short = "Selects this rule row to display its full match criteria, compiled `nftables` statement, and ordering/edit actions below."
+
+["cc_fw:toggle:*"]
+title = "Enable / Disable Rule"
+short = "Toggles whether this rule is included in the generated `table inet filter` ruleset (`firewall_rules.json`)."
+verbose = "Disabled rules stay preserved in `~/.config/nc-ui/firewall_rules.json` for later re-activation; click Apply or Save to load the updated ruleset into the kernel."
+
+["cc_fw:edit:*"]
+title = "Edit Selected Rule"
+short = "Loads this rule into the Rule Composer card to modify its chain, protocol, match fields, or verdict."
+
+["cc_fw:move:*:-1"]
+title = "Move Rule Up (Higher Priority)"
+short = "Moves this rule one slot earlier in the list; in `nftables`, earlier rules in the same chain match packets first."
+verbose = "Packet evaluation inside each `nftables` hook chain (`input`, `forward`, `output`) is top-to-bottom until a terminal verdict (`accept`/`drop`/`reject`) hits."
+
+["cc_fw:move:*:1"]
+title = "Move Rule Down (Lower Priority)"
+short = "Moves this rule one slot later in evaluation order before the chain's default policy takes effect."
+
+["cc_fw:del:*"]
+title = "Delete Firewall Rule"
+short = "Removes this rule from the local `firewall_rules.json` rule list; click Apply or Save to update the live kernel ruleset."
+
+["cc_fw:add_rule"]
+title = "Commit Rule to Draft Table"
+short = "Saves the composed or edited rule into the NC-UI rule list and prints its live `nftables` line."
+verbose = "Adds or updates the rule in `firewall_rules.json` after formatting `iifname`/`oifname`, `ct state`, `saddr`, `dport`, `limit rate`, and verdict. Apply or Save to push to kernel."
+
+["cc_fw:draft_cancel"]
+title = "Cancel Rule Composer"
+short = "Closes the Rule Composer card and discards unconfirmed edits in the current rule draft."
+
+["cc_fw:draft_cycle:chain"]
+title = "Select Target Chain (`input` / `output` / `forward`)"
+short = "Cycles which `table inet filter` hook chain (`IN`, `OUT`, or `FWD`) will evaluate this rule."
+
+["cc_fw:draft_cycle:proto"]
+title = "Select Rule Protocol"
+short = "Cycles the L4/L3 protocol matcher (`TCP`, `UDP`, `ICMP`, or `ANY`) for the rule draft."
+
+["cc_fw:draft_cycle:verdict"]
+title = "Select Rule Verdict"
+short = "Cycles the terminal/non-terminal action (`ACCEPT`, `DROP`, `REJECT`, or `LOG`) when a packet matches."
+verbose = "`ACCEPT` allows the packet, `DROP` discards silently, `REJECT` returns an ICMP/TCP reset error, and `LOG` emits a kernel dmesg counter prefix before continuing."
+
+["cc_fw:draft_cycle:ct"]
+title = "Cycle Conntrack State Matcher"
+short = "Cycles stateful `ct state` matching (`any`, `established,related`, `new`, `invalid`) for the draft rule."
+verbose = "Uses Linux Netfilter connection tracking so return packets of established sessions can be accepted before the chain's default `drop` policy."
+
+["cc_fw:draft_inline:src"]
+title = "Edit Source IP / CIDR / `$LAN_NETWORK`.."
+short = "Opens inline input to match `ip saddr` / `ip6 saddr` (IPv4/IPv6 CIDR or `$LAN_NETWORK`), or leave empty for any."
+
+["cc_fw:draft_inline:dport"]
+title = "Edit Destination Port(s).."
+short = "Opens inline input for single or comma-separated TCP/UDP destination ports (e.g., `22`, `80,443`)."
+
+["cc_fw:draft_inline:iface"]
+title = "Edit Network Interface Match.."
+short = "Opens inline input with interface autocompletion to restrict the rule to `iifname` or `oifname` (e.g., `lo`, `eth0`, `wg0`)."
+
+["cc_fw:draft_inline:limit"]
+title = "Edit Rate Limit.."
+short = "Opens inline input to attach an `nftables` `limit rate` expression (for example `10/minute` or `5/second`)."
+
+["cc_fw:draft_inline:comment"]
+title = "Edit Rule Comment / Log Prefix.."
+short = "Opens inline input for a human-readable rule comment (or `[PREFIX]` string when verdict is `LOG`)."
+
+# ==============================================================================
+# FIREWALL -> CHAINS & POLICIES (`panels/cc_firewall_chains.py`)
+# ==============================================================================
+["cc_fw:svc_restart"]
+title = "Start / Restart `nftables.service`"
+short = "Restarts the `systemd` `nftables.service` unit via `pkexec` to reload `/etc/nftables.conf` at the service level."
+
+["cc_fw:pol:*:drop"]
+title = "Set Default Chain Policy: DROP"
+short = "Sets this base chain's fallback policy (`input`, `forward`, or `output`) to `drop` when no rule matches."
+verbose = "Default-deny (`policy drop`) blocks all unsolicited packets on the hook unless explicitly allowed by an enabled `ACCEPT` rule above; apply or save to enforce in kernel."
+diagram = "firewall_nft"
+diagram_focus = "policy"
+
+["cc_fw:pol:*:accept"]
+title = "Set Default Chain Policy: ACCEPT"
+short = "Sets this base chain's fallback policy (`input`, `forward`, or `output`) to `accept` when no rule matches."
+verbose = "Default-allow (`policy accept`) permits unmatched traffic (standard for `output` unless strict egress filtering is desired); apply or save to enforce in kernel."
+
+["cc_fw:inline_lan"]
+title = "Edit `$LAN_NETWORK` Subnet.."
+short = "Opens inline CIDR editor for the `$LAN_NETWORK` `nftables` variable (default `10.10.0.0/24`) referenced by LAN rules."
+verbose = "Updates `define LAN_NETWORK = <cidr>` at the top of the generated `nftables.conf`, automatically updating every rule that references `$LAN_NETWORK`."
+
+["cc_fw:preset:*"]
+title = "Toggle Quick Security / Service Preset"
+short = "Enables or disables this prebuilt `nftables` rule (loopback, invalid drop, conntrack established, ICMP, SSH rate-limit, HTTP/S, Syncthing, LocalSend, drop log)."
+verbose = "Inserts or toggles the canonical preset rule in `firewall_rules.json`; inspect the generated `/etc/nftables.conf` preview below and click Apply or Save to activate."
+
+# ==============================================================================
+# FIREWALL -> LIVE CONNECTIONS (`panels/cc_firewall_connections.py`)
+# ==============================================================================
+["cc_fw:refresh"]
+title = "Refresh Live Connections (`ss -tunap`)"
+short = "Re-queries active TCP/UDP sockets, listening ports, remote peers, and owning processes from `ss -tunap`."
+
+["cc_fw:cflt_clear"]
+title = "Reset Connection Filters"
+short = "Clears all active protocol, socket state, port, peer IP, and process filters on the live connections table."
+
+["cc_fw:cflt_cycle:proto"]
+title = "Filter Connections by Protocol"
+short = "Cycles socket protocol filter (`ALL`, `TCP`, `UDP`) across live `ss -tunap` entries."
+
+["cc_fw:cflt_cycle:state"]
+title = "Filter Connections by Socket State"
+short = "Cycles socket state filter (`ALL`, `ESTAB`, `LISTEN`, `TIME-WAIT`, `SYN-SENT`) on active flows."
+
+["cc_fw:cflt_inline:port"]
+title = "Filter Connections by Local Port.."
+short = "Opens inline filter matching local socket addresses/ports (e.g., `22`, `443`, `53`)."
+
+["cc_fw:cflt_inline:peer"]
+title = "Filter Connections by Remote Peer.."
+short = "Opens inline filter matching remote peer IP or endpoint strings."
+
+["cc_fw:cflt_inline:proc"]
+title = "Filter Connections by Process.."
+short = "Opens inline filter matching the local process name owning each socket."
+
+["cc_fw:sel_flow:*"]
+title = "Inspect Socket Flow"
+short = "Selects this live socket row to view local/remote addresses, interface, process, and 1-click quick-drop actions below."
+
+["cc_fw:quick_drop:port:*:*"]
+title = "Quick-Drop Local Port (`input`)"
+short = "Creates a top-priority `DROP` rule in the `input` chain for this local protocol/port and opens Rules."
+verbose = "Prepends an enabled `DROP` rule matching the selected `proto` and `lport` to `firewall_rules.json`; click Apply Live on the Rules tab to enforce it in `nftables`."
+
+["cc_fw:quick_drop:ip:*:*"]
+title = "Quick-Block Remote Peer IP (`input`)"
+short = "Creates a top-priority `DROP` rule in the `input` chain blocking all traffic from this remote IP (`ip saddr` / `ip6 saddr`)."
+verbose = "Prepends a peer-blocking `DROP` rule into `firewall_rules.json` for the selected remote host; click Apply Live on the Rules tab to enforce it immediately."
+diagram = "firewall_nft"
+diagram_focus = "verdict"

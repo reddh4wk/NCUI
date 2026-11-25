@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-usbguard
+# Safe USBGuard CLI & TSV inspection / apply helper for NC-UI
+# ==============================================================================
+
+USBGUARD_BIN="${NC_USBGUARD_BIN:-/usr/bin/usbguard}"
+if [[ ! -x "$USBGUARD_BIN" ]]; then
+    USBGUARD_BIN="$(command -v usbguard || true)"
+fi
+
+usage() {
+    local prog="${0##*/}"
+    cat <<EOF
+Usage: ${prog} [status | list | list-tsv | allow [-t|--temp] <ID> | block [-t|--temp] <ID> | apply-stdin]
+
+Subcommands:
+  status             Print usbguard systemd service state (active/inactive)
+  list               Human-readable table of detected USB devices (default)
+  list-tsv           Tab-separated table (ID, STATUS, VID_PID, PORT, CONNECT, IFACES, NAME)
+  allow [-t] <ID>    Authorize device (persistent -p or session -t/--temp)
+  block [-t] <ID>    Block device (persistent -p or session -t/--temp)
+  apply-stdin        Read '<allow|block>:<perm|temp>:<ID>' on stdin with safety checks
+  -h, --help         Show this help
+EOF
+    exit "${1:-0}"
+}
+
+case "${1:-}" in
+    -h|--help) usage 0 ;;
+    status)
+        if systemctl is-active --quiet usbguard 2>/dev/null; then
+            printf 'active\n'
+        else
+            printf 'inactive\n'
+        fi
+        exit 0
+        ;;
+esac
+
+if [[ -z "${NC_USBGUARD_BIN:-}" && $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+[[ -n "$USBGUARD_BIN" ]] || { echo "[USBGuard] Missing 'usbguard' binary." >&2; exit 1; }
+
+parse_devices() {
+    local mode="$1" target_id="${2:-}"
+    local c_hdr="" c_grn="" c_red="" c_yel="" c_rst=""
+    if [[ "$mode" == "list" && -t 1 ]]; then
+        c_hdr=$'\033[1;36m' c_grn=$'\033[32m' c_red=$'\033[31m' c_yel=$'\033[33m' c_rst=$'\033[0m'
+    fi
+
+    "$USBGUARD_BIN" list-devices | awk -v mode="$mode" -v tid="$target_id" \
+        -v c_hdr="$c_hdr" -v c_grn="$c_grn" -v c_red="$c_red" -v c_yel="$c_yel" -v c_rst="$c_rst" '
+    BEGIN {
+        if (mode == "list") {
+            printf "%s%-4s | %-15s | %-11s | %s%s\n", c_hdr, "ID", "STATUS", "VID:PID", "DEVICE NAME", c_rst
+            print "---------------------------------------------------------"
+        }
+    }
+    {
+        id_num = $1; sub(/:$/, "", id_num)
+        status = $2
+        vid_pid = ""
+        if (match($0, / id ([^ ]+)/, mv)) vid_pid = mv[1]
+        port = ""
+        if (match($0, / via-port "([^"]*)"/, mp)) port = mp[1]
+        conn = ""
+        if (match($0, / with-connect-type "([^"]*)"/, mc)) conn = mc[1]
+        ifaces = ""
+        if (match($0, / with-interface \{ ([^}]+) \}/, mi)) {
+            ifaces = mi[1]
+        } else if (match($0, / with-interface ([^ ]+)/, mi)) {
+            ifaces = mi[1]
+        }
+        gsub(/[[:space:]]+/, " ", ifaces)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", ifaces)
+
+        name = ""
+        if (match($0, / name "(([^"\\]|\\.)*)"/, mn)) {
+            name = mn[1]
+        }
+        gsub(/[\t\r\n]+/, " ", name)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+        if (name == "") name = "(unnamed)"
+
+        if (mode == "name") {
+            if (id_num == tid) {
+                printf "%s|%s|%s\n", status, vid_pid, name
+                found = 1
+                exit
+            }
+            next
+        }
+        if (mode == "tsv") {
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id_num, status, vid_pid, port, conn, ifaces, name
+            next
+        }
+
+        if (status == "allow") {
+            s_raw = sprintf("%-15s", "allow")
+            s_col = c_grn s_raw c_rst
+            n_col = c_grn name c_rst
+        } else if (status == "reject") {
+            s_raw = sprintf("%-15s", "reject")
+            s_col = c_yel s_raw c_rst
+            n_col = c_yel name c_rst
+        } else {
+            s_raw = sprintf("%-15s", status)
+            s_col = c_red s_raw c_rst
+            n_col = c_red name c_rst
+        }
+        printf "%-4s | %s | %-11s | %s\n", id_num, s_col, vid_pid, n_col
+    }
+    END {
+        if (mode == "name" && !found) exit 2
+    }'
+}
+
+validate_id() {
+    local id="$1"
+    [[ "$id" =~ ^[0-9]+$ ]] && return 0
+    printf "[USBGuard] Invalid device ID '%s'. Expected positive integer.\n" "$id" >&2
+    exit 1
+}
+
+apply_rule() {
+    local op="$1" persist_flag="$2" id="$3"
+    validate_id "$id"
+
+    local info="" status="" vid_pid="" dev_name="(unnamed)"
+    if ! info=$(parse_devices name "$id"); then
+        printf "[USBGuard] Device %s not found.\n" "$id" >&2
+        exit 1
+    fi
+    IFS='|' read -r status vid_pid dev_name <<< "$info"
+
+    if [[ "$op" == "block" && "$vid_pid" == 1d6b:* ]]; then
+        printf "[USBGuard] Refusing to block root USB host controller (%s %s).\n" "$id" "$vid_pid" >&2
+        exit 2
+    fi
+
+    local -a args=("${op}-device")
+    [[ -n "$persist_flag" ]] && args+=("$persist_flag")
+    args+=("$id")
+
+    if "$USBGUARD_BIN" "${args[@]}"; then
+        local verify_info="" verify_status=""
+        verify_info=$(parse_devices name "$id" 2>/dev/null || true)
+        IFS='|' read -r verify_status _ <<< "$verify_info"
+        local scope="permanent"
+        [[ -z "$persist_flag" ]] && scope="session"
+        printf "[USBGuard] %s %s (%s) -> %s [%s]\n" "$op" "$id" "$dev_name" "${verify_status:-$op}" "$scope"
+        if [[ -n "$verify_status" && "$verify_status" != "$op" ]]; then
+            printf "[USBGuard] Verification mismatch for device %s: expected %s, got %s.\n" "$id" "$op" "$verify_status" >&2
+            exit 1
+        fi
+    else
+        exit 1
+    fi
+}
+
+mutate_cli() {
+    local op="$1"; shift
+    local persist="-p" id=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t|--temp) persist=""; shift ;;
+            -*)
+                printf "[USBGuard] Unknown option for '%s': %s\n" "$op" "$1" >&2
+                exit 1 ;;
+            *)
+                [[ -z "$id" ]] || { printf "[USBGuard] Too many arguments.\n" >&2; exit 1; }
+                id="$1"; shift ;;
+        esac
+    done
+    [[ -n "$id" ]] || usage 1
+    apply_rule "$op" "$persist" "$id"
+}
+
+apply_stdin_cmd() {
+    local line=""
+    IFS= read -r line || true
+    line="${line//$'\r'/}"
+    line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    if [[ ! "$line" =~ ^(allow|block):(perm|temp):([0-9]{1,5})$ ]]; then
+        printf "[USBGuard] Invalid apply-stdin payload.\n" >&2
+        exit 2
+    fi
+    local op="${BASH_REMATCH[1]}"
+    local mode="${BASH_REMATCH[2]}"
+    local id="${BASH_REMATCH[3]}"
+    local persist="-p"
+    [[ "$mode" == "temp" ]] && persist=""
+    apply_rule "$op" "$persist" "$id"
+}
+
+case "${1:-list}" in
+    list)        parse_devices list ;;
+    list-tsv)    parse_devices tsv ;;
+    allow)       shift; mutate_cli allow "$@" ;;
+    block)       shift; mutate_cli block "$@" ;;
+    apply-stdin) apply_stdin_cmd ;;
+    *)           usage 1 ;;
+esac

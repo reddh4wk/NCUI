@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+import tempfile
+
+def _bootstrap_ncui() -> None:
+    cur = os.path.dirname(os.path.realpath(__file__))
+    while cur and cur != os.path.dirname(cur):
+        core_pkg = os.path.join(cur, "packages", "nc-ui-core")
+        if os.path.isdir(core_pkg):
+            if core_pkg not in sys.path:
+                sys.path.insert(0, core_pkg)
+            break
+        cur = os.path.dirname(cur)
+    else:
+        for sys_root in ("/usr/lib/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
+            if os.path.isdir(sys_root) and sys_root not in sys.path:
+                sys.path.insert(0, sys_root)
+    from core.paths import bootstrap_sys_path
+    bootstrap_sys_path(__file__)
+
+
+_bootstrap_ncui()
+
+from panels.base import load_panel
+
+PILL_CACHE_FILE = "/tmp/nc_waybar_pills.json"
+
+
+def _save_pill_cache(panel_id: str, text: str) -> None:
+    data = {}
+    if os.path.exists(PILL_CACHE_FILE):
+        try:
+            with open(PILL_CACHE_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+        except Exception:
+            pass
+    data[panel_id] = text
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir="/tmp", prefix="nc_pills_", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, PILL_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def main():
+    panel_id = sys.argv[1].strip() if len(sys.argv) > 1 else "network"
+    panel = load_panel(panel_id)
+    pill = panel.get_bar_pill()
+    text = pill.get("text", "")
+    _save_pill_cache(panel_id, text)
+    default_cls = "module-nc-empty" if not text else "module-nc"
+    raw_cls = pill.get("class", default_cls)
+    if isinstance(raw_cls, str) and " " in raw_cls.strip():
+        raw_cls = raw_cls.split()
+    print(json.dumps({
+        "text": text,
+        "tooltip": pill.get("tooltip", ""),
+        "class": raw_cls,
+    }))
+
+
+if __name__ == "__main__":
+    main()

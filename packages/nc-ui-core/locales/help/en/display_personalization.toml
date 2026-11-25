@@ -1,0 +1,653 @@
+# NC-UI Action Help Catalog — Display & Personalization (English)
+# Covers: cc_display_monitors.py, cc_personalization_theme.py, cc_personalization_wallpaper.py, wp_display.py
+
+# ==============================================================================
+# DISPLAY & MONITORS (`panels/cc_display_monitors.py`)
+# ==============================================================================
+["cc_desk:select_out:*"]
+title = "Select Display Output"
+short = "Selects this Wayland monitor output to inspect and edit its resolution, refresh rate, scale, position, and transform."
+verbose = "Switches the active output inspector card and highlights the corresponding rectangle on the `NiriOutputMap` spatial canvas without altering any live `niri` output state."
+
+["cc_desk:power:*:*"]
+title = "Toggle Monitor Output Power"
+short = "Enables or powers off this monitor output live via `niri msg output` and updates its `output` block in `config.kdl`."
+verbose = "Disabling inserts `off` inside the output's `output \"<name>\"` block in `~/.config/niri/config.kdl` and triggers Waybar/shell layout resynchronization; enabling removes `off` and restores the connector."
+
+["cc_desk:res:*:*"]
+title = "Set Resolution & Refresh Rate"
+short = "Applies this `WIDTHxHEIGHT@HZ` display mode immediately with `niri msg output ... mode` and writes it to `config.kdl`."
+verbose = "Updates the output's active timing mode in Niri and persists `mode \"WxH@Hz\"` inside `~/.config/niri/config.kdl`, then refreshes Waybar and desktop geometry."
+
+["cc_desk:res_max:*"]
+title = "Set Native Maximum Mode"
+short = "Selects the highest pixel resolution and refresh rate advertised by this monitor's EDID mode list."
+verbose = "Picks the mode maximizing `(width * height, width, refresh_rate)` from `niri msg -j outputs`, applies it live, and writes it to `~/.config/niri/config.kdl`."
+
+["cc_desk:scale:*:*"]
+title = "Set Display Scaling Factor"
+short = "Applies this fractional or integer Wayland scale preset (`1x`–`2x`) to the selected monitor."
+verbose = "Executes `niri msg output <name> scale <val>` and persists `scale <val>` in `~/.config/niri/config.kdl`, adjusting logical workspace dimensions and Waybar layout."
+
+["cc_desk:scale_inline:*"]
+title = "Custom Display Scale.."
+short = "Opens inline input to set an arbitrary scaling factor between `0.25` and `4.0` (for example `1.15` or `1.33`)."
+verbose = "Validates a finite float in `[0.25, 4.0]`, applies it live via `niri msg output <name> scale`, and persists the custom `scale` directive in `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_inline:*"]
+title = "Set Logical Coordinates.."
+short = "Opens inline input to position this monitor at explicit `X,Y` logical coordinates (or `auto`)."
+verbose = "Accepts `X,Y` (e.g., `1920,0`), runs `niri msg output <name> position set X Y`, and writes `position x=X y=Y` into `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_auto:*"]
+title = "Auto-Position Output"
+short = "Lets `niri` automatically place this output adjacent to active monitors without gaps or overlaps."
+verbose = "Runs `niri msg output <name> position auto` and clears any pinned `position` coordinates for this connector in `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_auto_all"]
+title = "Auto-Align All Outputs"
+short = "Resets positioning to `auto` across every detected monitor in `niri` and updates `config.kdl`."
+verbose = "Iterates over all outputs from `niri msg -j outputs`, invokes `niri msg output <name> position auto`, and removes manual `position` lines from each `output` block."
+
+["cc_desk:transform:*:*"]
+title = "Set Rotation / Flip Transform"
+short = "Applies display orientation (`normal`, `90`, `180`, `270`, or `flipped-*`) live in `niri` and persists it in `config.kdl`."
+verbose = "Executes `niri msg output <name> transform <val>`, writes `transform \"<val>\"` to `~/.config/niri/config.kdl` (omitting `normal`), and resyncs shell geometry."
+
+["cc_desk:open_tui"]
+title = "Open Desktop TUI (`nc_util_desktop.sh`)"
+short = "Opens a terminal running `nc_util_desktop.sh -I` for interactive CLI display and wallpaper management."
+
+["cc_desk:nl:on"]
+title = "Enable Night Light (`nc-nightlight`)"
+short = "Starts the `nc-nightlight` color-temperature daemon using your configured Kelvin target and schedule."
+verbose = "Spawns `bin/nc-nightlight` (communicating over `/tmp/nc_ui_nightlight.sock`), replacing any standalone `wlsunset` process so screen warmth adjusts without flicker."
+
+["cc_desk:nl:off"]
+title = "Disable Night Light"
+short = "Stops `nc-nightlight` and `wlsunset`, restoring neutral 6500K daylight color calibration immediately."
+
+["cc_desk:nl_temp*"]
+title = "Night Light Color Temperature (1700K–6500K)"
+short = "Scroll or step `[-]`/`[+]` to adjust screen warmth in 250K increments when Night Light is active."
+verbose = "Persists `night_temp` in UI state and pushes the updated Kelvin value live over `/tmp/nc_ui_nightlight.sock` to `nc-nightlight`."
+
+["cc_desk:nl_sched:always"]
+title = "Night Light Schedule: Always On"
+short = "Keeps the configured warm color temperature active continuously regardless of time of day."
+
+["cc_desk:nl_sched:manual"]
+title = "Night Light Schedule: Manual Hours"
+short = "Activates warm color temperature only during your configured `HH:MM-HH:MM` evening-to-morning window."
+
+["cc_desk:nl_sched:sunset"]
+title = "Night Light Schedule: Solar Sunset"
+short = "Computes local solar elevation from latitude/longitude to engage Night Light automatically from sunset to sunrise."
+
+["cc_desk:nl_hours_inline"]
+title = "Edit Night Light Hours.."
+short = "Opens inline input to set the manual `HH:MM-HH:MM` active window (e.g., `20:00-06:30`)."
+verbose = "Validates 24-hour start/end times and pushes the updated schedule immediately to the running `nc-nightlight` daemon."
+
+["cc_desk:nl_coords_inline"]
+title = "Edit Solar Coordinates.."
+short = "Opens inline input to enter `lat,lon` decimal coordinates (e.g., `41.9,12.5`) for solar sunset calculation."
+verbose = "Validates `lat` in `[-90, 90]` and `lon` in `[-180, 180]`, enabling `nc-nightlight` to track astronomical sunset and sunrise locally offline."
+
+["cc_desk:dpms:*"]
+title = "Set DPMS Screen-Off Timeout"
+short = "Configures idle screen blanking (`5m`, `10m`, `15m`, `30m`, or `Never`) via `swayidle` and `niri`."
+verbose = "Restarts `swayidle -w` with `timeout <N*60> \"niri msg action power-off-monitors\"` (or kills `swayidle` when set to `Never`)."
+
+["cc_desk:dpms_now"]
+title = "Turn Off Monitors Now (DPMS)"
+short = "Immediately powers down all monitors via `niri msg action power-off-monitors`; move mouse or press any key to wake."
+
+# ==============================================================================
+# PERSONALIZATION -> THEME (`panels/cc_personalization_theme.py`)
+# ==============================================================================
+["cc_pers:noop"]
+title = "Sandbox Preview Element"
+short = "Live theme sandbox control demonstrating active state, morphology, and semantic axis colors (`no-op`)."
+
+["cc_pers:inline_save_theme"]
+title = "Save Theme Profile.."
+short = "Saves the current `theme.toml` colors, opacity, typography, and ASCII glyph choices as a named preset under `~/.config/nc-ui/themes/`."
+
+["cc_pers:export_theme_prompt"]
+title = "Export Theme TOML.."
+short = "Prompts for a file path to export your current `theme.toml` configuration for backup or sharing."
+
+["cc_pers:import_theme_prompt"]
+title = "Import Theme TOML.."
+short = "Prompts for a `.toml` theme file to import, validate, and apply live to NC-UI."
+
+["cc_pers:reset_theme"]
+title = "Reset Theme to Defaults"
+short = "Restores all 7 semantic color axes, surface hex, typography, and ASCII primitives in `theme.toml` to Nightcity defaults."
+
+["cc_pers:preset:*"]
+title = "Apply 1-Click Theme Preset"
+short = "Applies a complete curated palette, surface background, and border-glyph preset (`Nightcity`, `Arasaka`, `Ghost Net`, `RobCo`, `Amber Deck`, `Arctic Studio`)."
+verbose = "Updates `theme.toml` live across all 7 semantic axes (`structure`, `inactive`, `schema`, `focus`, `intent`, `vitality`, `attention`, `interrupt`, `fault`), refreshes CSS, and syncs Waybar colors if enabled."
+
+["cc_pers:wb_apply_preset_palette"]
+title = "Apply Preset Palette to Waybar"
+short = "Syncs the active NC-UI theme colors into Waybar's `style.css` palette variables and reloads Waybar."
+
+["cc_pers:load_theme:*"]
+title = "Load Saved Theme Profile"
+short = "Loads this saved `.toml` theme profile from `~/.config/nc-ui/themes/` and applies it live."
+
+["cc_pers:del_theme:*"]
+title = "Delete Saved Theme Profile"
+short = "Permanently removes this custom `.toml` theme profile file from `~/.config/nc-ui/themes/`."
+
+["cc:trans"]
+title = "Window Transparency"
+short = "Adjusts global NC-UI window background opacity (`5%`–`100%`) live."
+verbose = "Updates window surface alpha in `theme.toml` and reapplies GTK CSS immediately without restarting NC-UI."
+
+["cc_pers:box_op*"]
+title = "Box Layer Opacity"
+short = "Adjusts the inner `Box` card fill opacity (`0%`–`100%`) independently of the outer window backdrop."
+verbose = "Controls the dual-layer opacity contrast between framed `Box` surfaces and the underlying Layer-Shell window."
+
+["cc_pers:set_color:surface_bg:*"]
+title = "Select Base Surface Color"
+short = "Sets the dark base surface background hex (`surface_bg`) and automatically recalculates companion `*_bg` capsule tints."
+
+["cc_pers:inline_col:surface_bg"]
+title = "Custom Surface Hex.."
+short = "Opens inline hex input (`#RRGGBB`) for a custom `surface_bg` background color and refreshes companion `*_bg` tints."
+
+["cc_pers:wb_sync_op"]
+title = "Toggle Waybar Opacity Sync"
+short = "When enabled, applying Waybar transparency mirrors NC-UI's window opacity into Waybar's `style.css`."
+
+["cc_pers:wb_sync_col"]
+title = "Toggle Waybar Color Sync"
+short = "When enabled, theme preset or palette changes also update Waybar's color variables automatically."
+
+["cc_pers:sys_notif_op*"]
+title = "System Notification Layer Opacity"
+short = "Adjusts the background opacity (`0%`–`100%`) of desktop notifications rendered by `nc-notify-popup`."
+
+["cc_pers:toast_op*"]
+title = "Control Center Toast Opacity"
+short = "Adjusts the background opacity (`0%`–`100%`) of internal Control Center feedback toast banners and shows a live preview."
+
+["cc_pers:font:*"]
+title = "Select Monospace Font"
+short = "Switches the NC-UI monospace font family (`Courier`, `JetBrainsMono`, `FiraCode`, `Iosevka`, or custom) and recalculates grid metrics."
+verbose = "Writes `[typography].font_family` to `theme.toml` and rebuilds Pango/Cairo character cell dimensions (`char_w`, `char_h`) across all boxes."
+
+["cc_pers:font_pick_open"]
+title = "Browse System Monospace Fonts.."
+short = "Opens the searchable inline picker listing all monospace fonts installed on the system."
+
+["cc_pers:font_pick_clear"]
+title = "Clear Font Filter"
+short = "Clears the monospace font search query in the inline font picker."
+
+["cc_pers:font_size:*"]
+title = "Set Font Size (pt)"
+short = "Changes the base monospace font size (`9pt`–`14pt`) in `theme.toml` and rescales the entire UI grid proportionally."
+
+["cc_pers:winrad:*"]
+title = "Set Window Border Radius"
+short = "Sets the corner rounding (`0px`–`24px`) of NC-UI Layer-Shell windows and popups."
+
+["cc_pers:row_gap:*"]
+title = "Set Row Vertical Gap"
+short = "Sets extra vertical spacing (`0px`, `2px`, `4px`) between lines inside `Box` cards."
+
+["cc_pers:kwidth:*"]
+title = "Set KV Key Column Width"
+short = "Sets the default character column width (`16c`–`28c`) reserved for left labels in `add_kv` rows."
+
+["cc_pers:spacing:*"]
+title = "Set Card Spacing"
+short = "Adjusts the vertical gap (`2px`–`10px`) separating stacked `Box` cards."
+
+["cc_pers:inner_pad:*"]
+title = "Set Inner Box Padding"
+short = "Sets horizontal/vertical inner padding (`6px`–`18px`) inside the Control Center viewport."
+
+["cc_pers:inline_inner_pad"]
+title = "Custom Inner Padding.."
+short = "Opens inline numeric input to specify an exact pixel inner padding value."
+
+["cc_pers:outer_mar:*"]
+title = "Set Outer Window Margin"
+short = "Sets the outer Layer-Shell screen-edge margin (`4px`–`16px`) around NC-UI windows."
+
+["cc_pers:inline_outer_mar"]
+title = "Custom Outer Margin.."
+short = "Opens inline numeric input to specify an exact pixel outer screen margin."
+
+["cc_pers:set_color*"]
+title = "Set Semantic Axis Color"
+short = "Sets this semantic axis color (`structure`, `inactive`, `schema`, `focus`, `intent`, `vitality`, `attention`, `interrupt`, `fault`) and derives its `*_bg` capsule tint."
+verbose = "Calls `derive_axis_companions()` against `surface_bg` so every semantic axis keeps calibrated readability and retroilluminated capsule contrast in `theme.toml`."
+
+["cc_pers:inline_col*"]
+title = "Custom Axis Hex Color.."
+short = "Opens inline `#RRGGBB` hex editor for this semantic color axis and updates `theme.toml` live."
+
+["cc_pers:wb_sync_from_theme"]
+title = "Sync Waybar Palette from NC-UI Theme"
+short = "Derives all Waybar color slots (`wb_bg`, `wb_pill_bg`, `wb_fg`, `wb_accent`, `wb_active`, `wb_warn`, `wb_crit`) from your active NC-UI theme."
+
+["cc_pers:wb_apply_palette"]
+title = "Apply Palette to Waybar (`style.css`)"
+short = "Writes the configured Waybar palette variables into Waybar's `style.css` and reloads the Waybar process."
+
+["cc_pers:wb_color*"]
+title = "Set Waybar Color Swatch"
+short = "Sets this Waybar CSS color token (`wb_bg`, `wb_pill_bg`, `wb_fg`, `wb_accent`, `wb_active`, `wb_warn`, `wb_crit`) to the chosen hex preset."
+
+["cc_pers:inline_wb_col*"]
+title = "Custom Waybar Hex Color.."
+short = "Opens inline `#RRGGBB` hex input for this Waybar palette token."
+
+["cc_pers:box_style:*"]
+title = "Set Box Border Style"
+short = "Selects box-drawing frame characters (`Rounded`, `Single`, `Double`, `Heavy`, or `ASCII`) rendered by Cairo/canvas."
+
+["cc_pers:tbrk:*"]
+title = "Set Box Title Brackets"
+short = "Selects the decorative delimiters flanking box titles (`[ Title ]`, `:: Title ::`, `‹ Title ›`, `« Title »`)."
+
+["cc_pers:pdots:*"]
+title = "Set SelectPill Status Dots"
+short = "Chooses the active/inactive symbol pair (`● / ○`, `◆ / ◇`, `■ / □`) used inside `SelectPill` controls."
+
+["cc_pers:tcaps:*"]
+title = "Set TabBar End-Caps"
+short = "Selects the left/right vertical cap glyphs (`▏..▕`, `▐..▌`, `‹..›`) framing active `1.5x` `TabBar` tabs."
+
+["cc_pers:cicons:*"]
+title = "Set Collapsible Fold Icons"
+short = "Selects the expanded/collapsed indicator pair (`▼ / ▶`, chevron, or `⊟ / ⊞`) for `[▶ Expand]` / `[▼ Collapse]` toggles."
+
+["cc_pers:slglyph:*"]
+title = "Set Slider Fill & Empty Glyphs"
+short = "Selects the filled/unfilled bar characters (`# / -`, `█ / ░`, `━ / ─`, `= / ·`) for `Slider` and `ProgressBar`."
+
+["cc_pers:inline_spark"]
+title = "Custom Sparkline Characters.."
+short = "Opens inline input to customize the 8-level Unicode ramp (`▁▂▃▄▅▆▇█`) used by telemetry `Sparkline` widgets."
+
+["cc_pers:sbrk:*"]
+title = "Set Slider Brackets"
+short = "Selects the outer frame characters (`[ ]` or `▐ ▌`) enclosing `Slider` and `ProgressBar` tracks."
+
+["cc_pers:trule:*"]
+title = "Set Table Rule Character"
+short = "Selects the horizontal separator glyph used under table headers and section dividers."
+
+["cc_pers:kvsep:*"]
+title = "Set Key-Value Separator"
+short = "Selects the delimiter glyph rendered between the key column and value column in `add_kv` rows."
+
+["cc_pers:sbox:*"]
+title = "Set Search Box Prefix & Cursor"
+short = "Selects the search icon/prompt prefix and caret glyph used inside `InlineFilter` search bars."
+
+# ==============================================================================
+# PERSONALIZATION -> WALLPAPER (`panels/cc_personalization_wallpaper.py`)
+# ==============================================================================
+["cc_desk:toggle_fps"]
+title = "Toggle Live 15 FPS Preview"
+short = "Switches the embedded monitor preview map between static thumbnails and live 15 FPS animated preview rendering."
+
+["cc_desk:apply_staged"]
+title = "Apply Staged Wallpaper Changes"
+short = "Commits all staged monitor wallpaper, fit, slideshow, solid, or `nc-matrix` settings live via NC-UI's native Wayland wallpaper engine (`swaybg` / `nc-video-wallpaper` / `nc-matrix`)."
+verbose = "Runs the desktop wallpaper engine on each modified monitor—including running the Pillow ASCII renderer if Asciify is enabled—and clears the `PREVIEW *` staged state."
+
+["cc_desk:reset_staged"]
+title = "Discard Staged Wallpaper Changes"
+short = "Reverts unapplied preview edits back to each monitor's live `nc-desktop` state."
+
+["cc_desk:sel_all"]
+title = "Target All Monitors"
+short = "Selects all connected `niri` outputs simultaneously so subsequent wallpaper changes stage across every screen."
+
+["cc_desk:sel_mon:*"]
+title = "Toggle Monitor Selection"
+short = "Includes or excludes this `niri` output from the wallpaper editing target set."
+
+["cc_desk:mode:scene"]
+title = "Wallpaper Mode: Scene (Image / GIF / Video / YT)"
+short = "Sets wallpaper mode to a single image, animated GIF, local video, or YouTube video/playlist."
+
+["cc_desk:mode:slideshow"]
+title = "Wallpaper Mode: Folder Slideshow"
+short = "Cycles automatically through images, GIFs, or videos inside a chosen directory with configurable intervals and transitions."
+
+["cc_desk:mode:ncmatrix"]
+title = "Wallpaper Mode: NC-Matrix Shader"
+short = "Activates the native Wayland `nc-matrix` digital rain background with configurable charset, color, speed, and font size."
+
+["cc_desk:mode:solid"]
+title = "Wallpaper Mode: Solid Color"
+short = "Fills the selected monitor background with a solid `#RRGGBB` color preset or custom hex value."
+
+["cc_desk:clear_scene"]
+title = "Clear Selected Scene"
+short = "Clears the staged image, video, or YouTube URL from the current scene draft."
+
+["cc_desk:pick_scene"]
+title = "Browse Scene File (Yazi).."
+short = "Opens the embedded Yazi terminal file manager inside NC-UI to pick an image, GIF, or video file."
+
+["cc_desk:type_scene"]
+title = "Type Scene Path.."
+short = "Opens a path prompt with filesystem autocompletion to enter an image, GIF, or video path directly."
+
+["cc_desk:prompt_yt"]
+title = "Enter YouTube Video / Playlist URL.."
+short = "Prompts for a YouTube video or playlist URL to stream or download via `yt-dlp` as a live video wallpaper."
+
+["cc_desk:paste_yt"]
+title = "Paste YouTube URL from Clipboard"
+short = "Reads a YouTube video or playlist URL directly from the Wayland clipboard (`wl-paste`) into the scene draft."
+
+["cc_desk:yt_deliv:stream"]
+title = "YouTube Delivery: Direct Stream"
+short = "Resolves the YouTube stream via `yt-dlp` without storing the full video locally on disk."
+
+["cc_desk:yt_deliv:download"]
+title = "YouTube Delivery: Local Download"
+short = "Downloads the YouTube media locally first for stutter-free offline looping playback."
+
+["cc_desk:fit:fill"]
+title = "Scaling Mode: Fill (Cover)"
+short = "Scales the wallpaper to fill the entire monitor while preserving aspect ratio (cropping excess edges)."
+
+["cc_desk:fit:fit"]
+title = "Scaling Mode: Fit (Contain)"
+short = "Fits the entire image or video inside the monitor frame while preserving aspect ratio."
+
+["cc_desk:fit:center"]
+title = "Scaling Mode: Center (1:1)"
+short = "Renders the media unscaled at its native pixel dimensions centered on the output."
+
+["cc_desk:fit:stretch"]
+title = "Scaling Mode: Stretch"
+short = "Stretches the wallpaper to match exact monitor width and height regardless of aspect ratio."
+
+["cc_desk:align:top"]
+title = "Crop Alignment: Top"
+short = "Anchors oversized cropped media toward the top edge of the monitor."
+
+["cc_desk:align:center"]
+title = "Crop Alignment: Center"
+short = "Centers cropped media vertically on the monitor."
+
+["cc_desk:align:bottom"]
+title = "Crop Alignment: Bottom"
+short = "Anchors oversized cropped media toward the bottom edge of the monitor."
+
+["cc_desk:ascii_toggle:0"]
+title = "Wallpaper Style: Original Pixels"
+short = "Displays the selected image or slideshow frame directly without ASCII character conversion."
+
+["cc_desk:ascii_toggle:1"]
+title = "Wallpaper Style: Asciified Renderer"
+short = "Converts static images or slideshow frames into stylized ASCII/Unicode art using NC-UI's Pillow renderer and caches the result."
+
+["cc_desk:ascii_defaults"]
+title = "Reset Asciify Parameters"
+short = "Restores ASCII renderer mode, charset, density, tint, scale, contrast, and brightness to factory defaults."
+
+["cc_desk:ascii_mode:*"]
+title = "ASCII Color Mode"
+short = "Chooses how ASCII glyphs are colored (`color`, `green` phosphor, `cyan`, `amber`, or `mono`)."
+
+["cc_desk:ascii_chars:*"]
+title = "ASCII Character Set Preset"
+short = "Selects the luminance glyph ramp (`Standard`, `Binary`, `Katakana`, or `Kanjis`) used to render image pixels."
+
+["cc_desk:inline_ascii_chars"]
+title = "Custom ASCII Glyph Ramp.."
+short = "Opens inline input to define a custom luminance-ordered character string (e.g., ` .:-=+*#%@`)."
+
+["cc_desk:ascii_density*"]
+title = "ASCII Grid Density"
+short = "Adjusts character cell density (`0.25x`–`2.5x`) controlling how fine or blocky the rendered ASCII wallpaper appears."
+
+["cc_desk:ascii_tint*"]
+title = "ASCII Background Tint"
+short = "Blends underlying image color tint (`0.0`–`1.0`) behind the rendered ASCII characters."
+
+["cc_desk:ascii_scale*"]
+title = "ASCII Font Glyph Scale"
+short = "Scales glyph size (`0.25x`–`1.5x`) relative to each grid cell in the ASCII renderer."
+
+["cc_desk:ascii_contrast*"]
+title = "ASCII Pre-Contrast"
+short = "Adjusts source image contrast (`0.5`–`2.0`) before luminance quantization into ASCII glyphs."
+
+["cc_desk:ascii_brightness*"]
+title = "ASCII Pre-Brightness"
+short = "Adjusts source image brightness (`0.5`–`2.0`) before ASCII character mapping."
+
+["cc_desk:ascii_invert:0"]
+title = "ASCII Luminance: Normal"
+short = "Maps brighter pixels to denser glyphs against a dark background."
+
+["cc_desk:ascii_invert:1"]
+title = "ASCII Luminance: Inverted"
+short = "Inverts luminance mapping so darker regions receive denser ASCII characters."
+
+["cc_desk:ascii_clear_cache"]
+title = "Clear ASCII Render Cache"
+short = "Deletes all cached pre-rendered ASCII wallpaper PNGs from disk to free space or force regeneration."
+
+["cc_desk:ascii_cancel"]
+title = "Cancel ASCII Render Job"
+short = "Aborts the currently running background ASCII wallpaper conversion job."
+
+["cc_desk:vid_loop:loop"]
+title = "Video Playback: Loop Forever"
+short = "Repeats the video or YouTube wallpaper seamlessly in an endless loop."
+
+["cc_desk:vid_loop:once"]
+title = "Video Playback: Play Once"
+short = "Plays the video wallpaper once and holds on completion instead of looping."
+
+["cc_desk:pl_ord:sequential"]
+title = "Playlist Order: Sequential"
+short = "Plays YouTube playlist items in their original track order."
+
+["cc_desk:pl_ord:shuffle"]
+title = "Playlist Order: Shuffle"
+short = "Randomizes track order when playing a YouTube playlist wallpaper."
+
+["cc_desk:pl_prev"]
+title = "Previous Playlist Track"
+short = "Skips backward to the previous video in the active YouTube playlist wallpaper."
+
+["cc_desk:pl_next"]
+title = "Next Playlist Track"
+short = "Advances immediately to the next video in the active YouTube playlist wallpaper."
+
+["cc_desk:vid_mute:1"]
+title = "Video Wallpaper Audio: Muted"
+short = "Silences audio output from video and YouTube wallpapers (recommended default)."
+
+["cc_desk:vid_mute:0"]
+title = "Video Wallpaper Audio: Enabled"
+short = "Unmutes audio playback for video and YouTube wallpapers using the configured volume percentage."
+
+["cc_desk:vid_vol:*"]
+title = "Set Video Wallpaper Volume"
+short = "Sets the playback audio volume (`20%`–`100%`) when video wallpaper audio is unmuted."
+
+["cc_desk:pick_folder"]
+title = "Browse Slideshow Folder (Yazi).."
+short = "Opens the embedded Yazi browser to select a directory containing wallpapers for slideshow mode."
+
+["cc_desk:type_folder"]
+title = "Type Slideshow Folder Path.."
+short = "Opens a path prompt with directory autocompletion to set the slideshow source folder."
+
+["cc_desk:slide_int:*"]
+title = "Set Slideshow Interval"
+short = "Sets how often the slideshow switches to the next wallpaper (`1m`, `5m`, `15m`, `30m`, or `1h`)."
+
+["cc_desk:inline_interval"]
+title = "Custom Slideshow Interval.."
+short = "Opens inline input to specify a custom duration (for example `45s`, `10m`, or `2h`)."
+
+["cc_desk:slide_ord:shuffle"]
+title = "Slideshow Order: Shuffle"
+short = "Picks wallpapers from the folder in randomized order."
+
+["cc_desk:slide_ord:sequential"]
+title = "Slideshow Order: Sequential"
+short = "Steps through folder wallpapers in sorted filename order."
+
+["cc_desk:slide_tr:*"]
+title = "Set Slideshow Transition Effect"
+short = "Chooses the Wayland transition shader (`fade`, `wipe`, `grow`, `wave`, or `none`) between slides."
+
+["cc_desk:slide_spd:0.5s"]
+title = "Transition Speed: Fast (0.5s)"
+short = "Runs slideshow transition animations over a crisp 0.5-second duration."
+
+["cc_desk:slide_spd:1.5s"]
+title = "Transition Speed: Normal (1.5s)"
+short = "Runs slideshow transition animations over a smooth 1.5-second duration."
+
+["cc_desk:slide_spd:3.0s"]
+title = "Transition Speed: Slow (3.0s)"
+short = "Runs slideshow transition animations slowly over 3.0 seconds."
+
+["cc_desk:prev"]
+title = "Previous Slideshow Wallpaper"
+short = "Switches the active slideshow immediately to the previous image in the sequence."
+
+["cc_desk:pause"]
+title = "Pause Slideshow Timer"
+short = "Freezes the automatic slideshow rotation on the current wallpaper."
+
+["cc_desk:resume"]
+title = "Resume Slideshow Timer"
+short = "Resumes automatic slideshow rotation on the configured schedule."
+
+["cc_desk:next"]
+title = "Next Slideshow Wallpaper"
+short = "Advances the slideshow immediately to the next image using the selected transition."
+
+["cc_desk:inline_solid_hex"]
+title = "Custom Solid Color Hex.."
+short = "Opens inline `#RRGGBB` color input for a custom solid-color desktop background."
+
+["cc_desk:solid_hex:*"]
+title = "Select Solid Background Preset"
+short = "Stages this classic or designer `#RRGGBB` solid color swatch for the selected monitors."
+
+["cc_desk:cm_charset:*"]
+title = "NC-Matrix Character Set"
+short = "Selects the falling glyph alphabet (`Katakana`, `ASCII`, `Binary`, or `Hex`) for `nc-matrix`."
+
+["cc_desk:cm_col:*"]
+title = "NC-Matrix Shader Color"
+short = "Sets the `nc-matrix` rain color (`Green`, `Cyan`, `Yellow`, `White`, or `Rainbow`)."
+
+["cc_desk:cm_col_custom"]
+title = "Custom NC-Matrix Hex Color.."
+short = "Opens inline 6-digit hex input to tint `nc-matrix` rain with an arbitrary RGB color."
+
+["cc_desk:cm_head:*"]
+title = "Trail Head Color (White / Shader / Blend)"
+short = "Choose how the leading character of every `nc-matrix` trail is colored: bright **White**, the active **Shader Color**, or a per-trail **Random Blend** between the shader color and bright white (whose upper white range scales with `Speed Luminescence` according to trail speed)."
+
+["cc_desk:cm_spd:*"]
+title = "NC-Matrix Rain Speed (1–10)"
+short = "Sets the base animation fall cadence on a perceptual curve (`1` = `520 ms` slowest, `5` = `200 ms` balanced default, up to `10` = `20 ms` fastest) for `nc-matrix`."
+
+["cc_desk:cm_spawn*"]
+title = "Trail Spawn Rate (0.0x–3.0x)"
+short = "Scroll or click `[-]`/`[+]` to adjust how frequently `nc-matrix` spawns new falling character trails (`0.0x` = none, `1.0x` = base, `1.5x` = Matrix default, `3.0x` = 3× frequency)."
+verbose = "Scales the per-column trail spawn interval via `nc-matrix --spawn-rate <0.0..3.0>` (and hot-reloads via `/tmp/nc-matrix_<output>.conf`). `0.0x` halts new spawns cleanly; `1.5x` balances density and readability."
+
+["cc_desk:cm_var*"]
+title = "Per-Trail Speed Variance (0.0–10.0)"
+short = "Sets the geometric speed spread around `Speed Level` (`0.0` = strictly uniform flow; `5.0` = balanced ~5.7× contrast; `10.0` = extreme up to ~32× contrast between background and foreground trails)."
+verbose = "Each autonomous trail samples a multiplicative step period `base_ms * spread^(-u)` (`spread = 2^(var/2)`) via `--speed-variance <0.0..10.0>`, enabling dramatic simultaneous speed differences and overtaking on every column."
+
+["cc_desk:cm_overlap:*"]
+title = "Trail Overlap Rule (Hybrid / Parallax / Intensity)"
+short = "Controls what happens when a fast trail overtakes a slower trail on the same column: `Hybrid` (foreground glyph + combined glow), `Parallax` (faster covers slower, then uncovers intact), or `Intensity` (additive phosphor resonance)."
+
+["cc_desk:cm_parallax*"]
+title = "Speed-Linked Trail Luminescence (0%–100%)"
+short = "Controls how strongly slower trails darken and narrows their random head white-blend range (`0%` = uniform 100% brightness; `50%` = calibrated film-Matrix depth; `100%` = ultra-deep background dimming with white heads reserved for fast trails, updated live)."
+
+["cc_desk:cm_glow*"]
+title = "CRT Phosphor Glow (0%–100%)"
+short = "Controls the hardware phosphor halo intensity pre-baked into `nc-matrix`'s `RG8` glyph atlas (`0%` sharp crisp text, up to `100%` bright CRT glow)."
+
+["cc_desk:cm_decay:*"]
+title = "Tail Luminance Falloff"
+short = "Selects whether falling trail tails fade out via an **Exponential CRT** phosphor persistence curve (bright head, long dark afterglow) or **Linear** fade."
+
+["cc_desk:cm_shimmer:*"]
+title = "Live Tail Glyph Shimmer (0.5x–4x)"
+short = "Sets how many glyphs mutate per trail step (`Off` = `0`, `Low` = `0.5/step`, `Medium` = `1/step`, `High` = `2/step`, `Insane` = `4/step`)."
+
+["cc_desk:cm_mirror:*"]
+title = "Horizontal Glyph Mirroring"
+short = "Flips falling glyphs horizontally in the shader (`Normal`, all `Mirrored` film-style, or `Mixed` per glyph) with zero extra memory."
+
+["cc_desk:cm_tail:*"]
+title = "Trail Tail Length"
+short = "Scales average falling trail tail length (`Short`, `Normal`, `Long`) independently of `Trail Spawn Rate`."
+
+["cc_desk:cm_density:*"]
+title = "Column Grid Spacing"
+short = "Switches between `Classic (Gutter)` (every 2nd column, `cmatrix`-style) and `Dense` (all columns active for a solid wall of code)."
+
+["cc_desk:cm_size:*"]
+title = "NC-Matrix Glyph Size (pt)"
+short = "Sets the rendered font point size (`6pt`–`20pt`) of `nc-matrix` rain columns."
+
+["cc_desk:cm_trans:*"]
+title = "NC-Matrix Transition Style"
+short = "Selects how `nc-matrix` enters/exits (`Flow` fade-in, `Drain` rain-out, or `Instant`)."
+
+["cc_desk:close_yazi"]
+title = "Close Embedded Yazi Browser"
+short = "Terminates the embedded Yazi PTY session and hides the file-picker card."
+
+# ==============================================================================
+# WAYBAR POPUP -> DISPLAY (`panels/wp_display.py`)
+# ==============================================================================
+["disp:next:*"]
+title = "Next Wallpaper"
+short = "Advances the active slideshow on this monitor to the next wallpaper via `nc_util_desktop.sh --next`."
+
+["disp:pause:*"]
+title = "Pause Slideshow"
+short = "Pauses automatic wallpaper rotation on this monitor (`nc_util_desktop.sh --pause`)."
+
+["disp:resume:*"]
+title = "Resume Slideshow"
+short = "Resumes automatic wallpaper rotation on this monitor (`nc_util_desktop.sh --resume`)."
+
+["disp:set_img:*"]
+title = "Set Image Wallpaper.."
+short = "Prompts for an image path (with file completion) and applies it to this monitor immediately."
+
+["disp:matrix:*"]
+title = "Start NC-Matrix (Green)"
+short = "Launches green ASCII `nc-matrix` live wallpaper on this monitor (`nc_util_desktop.sh -o <out> -c -C green`)."
+
+["disp:matrix_jp:*"]
+title = "Start NC-Matrix JP (Katakana)"
+short = "Launches Japanese Katakana green `nc-matrix` live wallpaper on this monitor (`-c -C green -j`)."

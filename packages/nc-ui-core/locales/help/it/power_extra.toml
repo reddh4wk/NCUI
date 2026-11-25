@@ -1,0 +1,108 @@
+# Catalogo Aiuto Azioni NC-UI — Extra Inattività/Risveglio & UPS NUT (IT)
+
+# ==============================================================================
+# ENERGIA -> INATTIVITÀ, BLOCCO, DPMS & SOSPENSIONE (`panels/cc_power_idle.py`)
+# ==============================================================================
+["cc_pwr:dim_idle:1"]
+title = "Attiva Attenuazione Schermo in Inattività"
+short = "Abbassa la luminosità al 10% (`brightnessctl -s set 10%`) prima del blocco schermo e la ripristina al risveglio."
+verbose = "Calcola il timer a metà del timeout di auto-blocco (minimo 60s, oppure 150s se il blocco è disattivato) e rigenera la configurazione di `swayidle` o `~/.config/hypr/hypridle.conf`."
+
+["cc_pwr:dim_idle:0"]
+title = "Disattiva Attenuazione Schermo"
+short = "Mantiene invariata la luminosità fino allo spegnimento DPMS del monitor o al blocco sessione."
+verbose = "Rimuove il listener `brightnessctl` da `swayidle` / `hypridle` e riavvia subito il demone di inattività."
+
+["cc_pwr:idle_min:*"]
+title = "Imposta Timeout Auto-Blocco"
+short = "Imposta i minuti di inattività prima di eseguire il comando di blocco schermo (`0` / `Off` disattiva il blocco)."
+verbose = "Salva `idle_lock_min` nello stato e riavvia `swayidle` (o aggiorna `~/.config/hypr/hypridle.conf` e riavvia `hypridle`) con il locker configurato."
+
+["cc_pwr:dpms_min:*"]
+title = "Imposta Timeout Spegnimento Schermo (DPMS)"
+short = "Imposta i minuti prima di spegnere i monitor Wayland (`niri msg action power-off-monitors`, `0` = Off)."
+verbose = "Configura `swayidle` / `hypridle` per spegnere le uscite video dopo l'attesa scelta e chiamare `niri msg action power-on-monitors` alla ripresa."
+
+["cc_pwr:caffeine:on"]
+title = "Attiva Modalità Caffeina (Resta Sveglio)"
+short = "Acquisisce un blocco `systemd-inhibit --what=idle` (unità utente `ncui-caffeine`) impedendo blocco, DPMS e sospensione."
+verbose = "Avvia un inibitore transitorio tramite `systemd-run --user --unit=ncui-caffeine` (o `systemd-inhibit` in background) per mantenere il sistema attivo durante presentazioni o lavori lunghi."
+
+["cc_pwr:caffeine:off"]
+title = "Disattiva Modalità Caffeina"
+short = "Rilascia il blocco `ncui-caffeine` (`systemd-inhibit`) ripristinando i normali timer di attenuazione, blocco, DPMS e sospensione."
+
+["cc_pwr:lock_now"]
+title = "Blocca Schermo Ora"
+short = "Avvia immediatamente il comando di blocco schermo configurato (es. `swaylock` o `hyprlock`)."
+
+["cc_pwr:susp_ac:*"]
+title = "Imposta Auto-Sospensione su Rete (AC)"
+short = "Imposta i minuti di inattività prima della sospensione (`systemd-ac-power && systemctl suspend`) su alimentazione AC (`0` = Mai)."
+verbose = "Aggiorna il listener condizionato AC in `swayidle` / `hypridle` così il sistema sospende dopo questo intervallo solo quando è collegato alla rete elettrica."
+
+["cc_pwr:susp_bat:*"]
+title = "Imposta Auto-Sospensione su Batteria"
+short = "Imposta i minuti di inattività prima della sospensione (`systemd-ac-power || systemctl suspend`) su batteria (`0` = Mai)."
+verbose = "Aggiorna il listener condizionato su batteria in `swayidle` / `hypridle` per sospendere solo a batteria o quando i due timeout coincidono."
+
+["cc_pwr:pwr_btn:*"]
+title = "Configura Pulsante Accensione Hardware"
+short = "Scrive `HandlePowerKey=` (`poweroff`, `suspend`, `hibernate` o `ignore`) in `/etc/systemd/logind.conf.d/ncui.conf`."
+verbose = "Salva il drop-in tramite l'helper sudoers `power_logind` (o `pkexec`) e verifica su disco la direttiva `HandlePowerKey`."
+
+# ==============================================================================
+# ENERGIA -> UPS / NUT (`panels/cc_power_ups.py`, `panels/wp_ups.py`)
+# ==============================================================================
+["cc_pwr:nut_en:1"]
+title = "Attiva Monitor UPS NUT"
+short = "Abilita il polling `upsc` per l'UPS configurato e invia `SIGUSR2` a Waybar per mostrare la pillola UPS."
+
+["cc_pwr:nut_en:0"]
+title = "Disattiva Monitor UPS NUT"
+short = "Disabilita il polling `upsc` e invia `SIGUSR2` a Waybar per nascondere il modulo UPS dalla barra."
+
+["cc_pwr:inline_host"]
+title = "Modifica Host / IP Server NUT.."
+short = "Apre l'input inline per impostare hostname o indirizzo IP del demone `upsd` (default `127.0.0.1`)."
+
+["cc_pwr:inline_port"]
+title = "Modifica Porta TCP Server NUT.."
+short = "Apre l'input numerico (`1..65535`) per la porta TCP di `upsd` (la porta standard NUT è `3493`)."
+
+["cc_pwr:inline_ups"]
+title = "Modifica Nome Target UPS.."
+short = "Apre l'input inline per l'identificativo UPS NUT (supporta `nome` oppure `nome@host:porta`, es. `ecoflow`)."
+
+["cc_pwr:discover"]
+title = "Rileva Automaticamente UPS NUT"
+short = "Interroga `upsc -l <host>:<porta>` in background per elencare tutti gli UPS esposti dal server NUT."
+verbose = "Esegue `upsc -l` sull'endpoint configurato, memorizza le unità trovate come pillole di selezione rapida e seleziona la prima se nessuna è ancora impostata."
+
+["cc_pwr:sel_ups:*"]
+title = "Seleziona Unità UPS Rilevata"
+short = "Imposta questo identificativo UPS NUT come target attivo di telemetria per Control Center e Waybar."
+
+["cc_pwr:poll:*"]
+title = "Imposta Intervallo Polling UPS"
+short = "Regola la frequenza con cui NC-UI e il modulo Waybar interrogano `upsc` (`2s`, `5s`, `10s`, `15s` o `30s`)."
+
+["cc_pwr:inline_poll"]
+title = "Modifica Intervallo Polling Custom.."
+short = "Apre l'input numerico inline (`1..3600` secondi) per un intervallo di polling `upsc` personalizzato."
+
+["cc_pwr:wb_fld:*"]
+title = "Attiva/Nascondi Riga Popup UPS Waybar"
+short = "Mostra o nasconde questo campo telemetrico (`status`, `charge`, `runtime`, `load`, `power`, `voltage`, `model`, `mfr`, `serial`, `temp`) nel popup Waybar."
+
+["cc_pwr:ups_low:*"]
+title = "Imposta Soglia Batteria Bassa UPS"
+short = "Imposta la percentuale di carica (`10%..50%`) sotto la quale NC-UI segnala stato critico e avvisi di batteria scarica."
+
+["cc_pwr:ups_test_notify"]
+title = "Invia Notifica di Test UPS"
+short = "Invia una notifica desktop di prova con `notify-send` per verificare gli avvisi critici dell'UPS."
+
+["ups:refresh"]
+title = "Aggiorna Telemetria UPS Ora"
+short = "Invalida la cache `upsc` ed esegue subito una nuova lettura nel popup UPS di Waybar."

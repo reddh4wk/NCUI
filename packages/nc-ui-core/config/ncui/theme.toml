@@ -1,0 +1,115 @@
+[typography]
+font_family = "Courier"
+font_size = 11
+font_weight = "bold"
+cursor_theme = "NCUI Cursor"
+cursor_size = 16
+cursor_archive = ""
+
+[geometry]
+compact_cols = 44
+expanded_cols = 96
+sidebar_nav_cols = 24
+popup_gap_top = 8
+popup_max_height = 900
+window_border_width = 1
+window_border_radius = 16
+panel_padding = 10
+card_spacing = 6
+screen_margin = 8
+default_key_width = 20
+row_gap = 2
+
+[ascii]
+box_style = "rounded"
+title_brackets = ["[ ", " ]"]
+button_brackets = ["[", "]"]
+slider_brackets = ["[", "]"]
+slider_fill = "#"
+slider_empty = "-"
+sparkline_chars = "▁▂▃▄▅▆▇█"
+pill_dots = ["●", "○"]
+tab_caps = ["▏", "▕"]
+collapsible_icons = ["▼", "▶"]
+table_rule = "─"
+kv_separator = ":"
+search_prefix = " >"
+search_brackets = ["▏", "▕"]
+search_cursor = "│"
+sys_notif_style = "tactical"
+toast_style = "tactical"
+hover_help_style = "cyberpunk"
+
+[colors]
+surface_bg = "#080a0f"
+window_opacity = 0.86
+box_opacity = 0.55
+toast_opacity = 0.8
+sys_notif_opacity = 0.8
+hover_help_opacity = 0.80
+waybar_sync_opacity = true
+waybar_sync_color = true
+window_bg = "rgba(8, 10, 15, 0.86)"
+window_border = "#3e465c"
+background = "#06080c"
+structure = "#3e465c"
+structure_bg = "#141824"
+inactive = "#596278"
+schema = "#8b9bb8"
+focus = "#ffffff"
+focus_val = "#dce6f7"
+intent = "#00f0ff"
+intent_soft = "#3ec8d6"
+intent_bg = "#002b36"
+vitality = "#00f57a"
+vitality_soft = "#3ebd7c"
+vitality_bg = "#002915"
+attention = "#ffe619"
+attention_soft = "#c7b438"
+attention_bg = "#332b00"
+interrupt = "#ff2a9d"
+interrupt_rest = "#c45b8c"
+interrupt_bg = "#36081e"
+fault = "#ff2442"
+fault_soft = "#c9495b"
+fault_bg = "#38060e"
+wb_bg = "#080a0f"
+wb_pill_bg = "#141824"
+wb_fg = "#dce6f7"
+wb_accent = "#00f0ff"
+wb_active = "#00f57a"
+wb_warn = "#ffe619"
+wb_crit = "#ff2442"
+primary = "#ffffff"
+secondary = "#8b9bb8"
+muted = "#596278"
+accent = "#00f0ff"
+info = "#00f0ff"
+box_inactive = "#3e465c"
+box_elected = "#3e465c"
+box_highlight = "#ffffff"
+box_selected = "#ffffff"
+input_bg = "#0b0e15"
+input_fg = "#ffffff"
+input_placeholder = "#596278"
+input_border = "#3e465c"
+input_border_focus = "#00f0ff"
+
+[colors.thresholds]
+normal = "#00f57a"
+warning = "#ffe619"
+alert = "#ff2a9d"
+critical = "#ff2442"
+
+[ascii.chars]
+tl = "╭"
+tr = "╮"
+bl = "╰"
+br = "╯"
+h = "─"
+v = "│"
+ml = "├"
+mr = "┤"
+mt = "┬"
+mb = "┴"
+mc = "┼"

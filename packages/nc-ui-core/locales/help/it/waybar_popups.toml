@@ -1,0 +1,199 @@
+# NC-UI Catalogo Aiuto Azioni — Popup Waybar & Helper Condivisi (Italiano)
+# Copre: wp_capture.py, wp_clipboard.py, wp_hotkeys.py, wp_kb_layout.py,
+#        wp_notifications.py, wp_session.py, wp_system.py, ui:copy:*, ui:cmd:*
+
+# ==============================================================================
+# POPUP WAYBAR -> CATTURA SCHERMO (`panels/wp_capture.py`)
+# ==============================================================================
+["cap:trigger:area"]
+title = "Cattura Area Selezionata"
+short = "Avvia la selezione interattiva `slurp` seguita da `grim` (dopo l'eventuale ritardo) ed esegue l'azione scelta."
+
+["cap:trigger:window"]
+title = "Cattura Finestra Selezionata"
+short = "Cattura una finestra tramite `niri msg action screenshot-window`, rifila i bordi trasparenti con `magick` ed esegue l'azione."
+
+["cap:trigger:screen"]
+title = "Cattura Schermo Intero"
+short = "Acquisisce l'intero monitor Wayland attivo tramite `grim` ed esegue l'azione appunti/Satty/salvataggio impostata."
+
+["cap:trigger:last"]
+title = "Ripeti Ultima Cattura"
+short = "Riacquisisce le stesse coordinate dell'ultima area, finestra o schermo senza richiedere nuovamente `slurp`."
+
+["cap:toggle_copy_delay"]
+title = "Applica Ritardo su Ripeti Ultima"
+short = "Applica il timer di ritardo anche quando premi Ripeti Ultima Cattura (`[●]` = usa ritardo, `[○]` = immediata)."
+
+["cap:delay:dec"]
+title = "Riduci Ritardo Cattura"
+short = "Riduce di 1 secondo il conto alla rovescia prima dello scatto (fino a `0s`)."
+
+["cap:delay:inc"]
+title = "Aumenta Ritardo Cattura"
+short = "Aumenta di 1 secondo il conto alla rovescia prima dello scatto per aprire eventuali menu."
+
+["cap:delay_inline"]
+title = "Modifica Ritardo Cattura (0–999s)"
+short = "Permette di digitare inline il ritardo esatto in secondi prima di avviare `grim`."
+
+["cap:action:*"]
+title = "Scegli Azione Post-Cattura Attiva"
+short = "Imposta l'azione per questa sessione: Copia (`wl-copy`), Annota (`satty`), Salva PNG o Copia + Satty."
+
+["cap:default:*"]
+title = "Imposta Azione Predefinita Cattura"
+short = "Salva questa pipeline post-cattura (`wl-copy` / `satty` / file) come scelta predefinita persistente."
+
+["cap:annotate:*"]
+title = "Annota Ultimo Screenshot con Satty"
+short = "Apre l'ultimo PNG salvato dentro `satty` per aggiungere frecce, sfocature, ritagli e ricopiare."
+
+["cap:copy:*"]
+title = "Copia Screenshot negli Appunti"
+short = "Invia il file PNG salvato negli appunti Wayland tramite `wl-copy --type image/png`."
+
+["cap:open_dir"]
+title = "Apri Cartella Screenshot"
+short = "Apre la cartella di destinazione degli screenshot nel gestore file predefinito."
+
+# ==============================================================================
+# POPUP WAYBAR -> APPUNTI (`panels/wp_clipboard.py`)
+# ==============================================================================
+["clip:search"]
+title = "Cerca nella Cronologia Appunti"
+short = "Apre il filtro live inline tra le voci `cliphist` e gli appunti fissati."
+
+["clip:clear_search"]
+title = "Azzera Filtro Appunti"
+short = "Cancella il filtro attivo e mostra di nuovo tutta la cronologia recente."
+
+["clip:wipe"]
+title = "Svuota Cronologia Appunti"
+short = "Esegue `cliphist wipe` e pulisce le cache locali di testo e miniature (gli appunti fissati restano)."
+
+["clip:toggle_images"]
+title = "Attiva/Disattiva Cattura Immagini"
+short = "Abilita o disabilita il watcher immagini `wl-paste` in `cliphist` rimuovendo i dati binari quando disattivo."
+
+["clip:pin:*"]
+title = "Fissa / Rimuovi Stellina Appunto"
+short = "Salva questo testo tra gli appunti fissati in cima al popup affinché sopravviva a `cliphist wipe`."
+
+["clip:unpin:*"]
+title = "Sblocca Appunto Fissato"
+short = "Rimuove questo testo dalla sezione degli appunti fissati in alto."
+
+["clip:save:*"]
+title = "Salva Immagine Appunti su File"
+short = "Decodifica questa immagine binaria da `cliphist` e la salva su disco in formato PNG/JPEG/WebP."
+
+["clip:del:*"]
+title = "Elimina Voce Appunti"
+short = "Elimina questa singola voce dalla cronologia tramite `cliphist delete`."
+
+# ==============================================================================
+# POPUP WAYBAR -> SCORCIATOIE (`panels/wp_hotkeys.py`)
+# ==============================================================================
+["hk:flt_open"]
+title = "Filtra Scorciatoie Niri"
+short = "Filtra in tempo reale i `binds` di `config.kdl` per combinazione tasti, categoria o azione."
+
+["hk:flt_clear"]
+title = "Azzera Filtro Scorciatoie"
+short = "Cancella il testo di ricerca e mostra nuovamente tutte le scorciatoie Niri."
+
+["hk:open_cc"]
+title = "Modifica Scorciatoie nel Control Center"
+short = "Apre `Control Center -> Input -> Scorciatoie` per aggiungere, modificare o testare i binding Niri."
+
+# ==============================================================================
+# POPUP WAYBAR -> LAYOUT TASTIERA (`panels/wp_kb_layout.py`)
+# ==============================================================================
+["kbl:cycle"]
+title = "Cicla Layout Tastiera Attivo"
+short = "Passa immediatamente al successivo layout XKB configurato nella sessione Niri."
+
+["kbl:set:*"]
+title = "Seleziona Layout Tastiera"
+short = "Attiva subito questo indice di layout XKB nella sessione Niri corrente."
+
+["kbl:open_cc"]
+title = "Gestisci Layout Tastiera"
+short = "Apre `Control Center -> Input -> Tastiera` per aggiungere, riordinare o personalizzare i layout XKB."
+
+# ==============================================================================
+# POPUP WAYBAR -> NOTIFICHE (`panels/wp_notifications.py`)
+# ==============================================================================
+["notif:toggle_group"]
+title = "Raggruppa / Cronologico"
+short = "Alterna il Centro Notifiche tra schede collassabili per applicazione e schede cronologiche."
+
+["notif:clear_all"]
+title = "Cancella Tutte le Notifiche"
+short = "Elimina tutte le notifiche attive presenti nel Centro Notifiche."
+
+["notif:clear_app:*"]
+title = "Cancella Notifiche Applicazione"
+short = "Elimina tutte le notifiche appartenenti al gruppo di questa singola applicazione."
+
+["notif:click:*"]
+title = "Apri / Esegui Azione Notifica"
+short = "Esegue il comando di apertura o focus configurato per l'applicazione di questa notifica."
+
+["notif:del:*"]
+title = "Chiudi Singola Notifica"
+short = "Rimuove questa singola notifica dal Centro Notifiche."
+
+# ==============================================================================
+# POPUP WAYBAR -> SESSIONE & ENERGIA (`panels/wp_session.py`)
+# ==============================================================================
+["sess:lock"]
+title = "Blocca Schermo Ora"
+short = "Esegue il comando di blocco Wayland configurato (`swaylock`, `hyprlock`, `gtklock`, ecc.) e chiude il popup."
+
+["sess:setup_lock"]
+title = "Configura Comando Blocco Schermo"
+short = "Apre `Control Center -> Waybar -> Opzioni` per scegliere o digitare il comando di blocco schermo."
+
+["sess:ask:suspend"]
+title = "Sospendi in RAM (Passo 1)"
+short = "Arma la conferma prima di bloccare lo schermo (se configurato) ed eseguire `systemctl suspend`."
+
+["sess:do:suspend"]
+title = "Conferma Sospensione in RAM"
+short = "Blocca la sessione (se configurato) e sospende subito il sistema in RAM (`systemctl suspend`)."
+
+["sess:ask:*"]
+title = "Arma Azione Sessione / Energia"
+short = "Richiede un secondo click su Conferma per eseguire Logout, Riavvio o Spegnimento in sicurezza."
+
+["sess:do:*"]
+title = "Conferma Azione Sessione / Energia"
+short = "Esegue l'azione armata: uscita sessione (`niri msg action quit` / `loginctl`), `systemctl reboot` o `systemctl poweroff`."
+
+["sess:cancel"]
+title = "Annulla Conferma in Sospeso"
+short = "Disarma la conferma di Sospensione, Logout, Riavvio o Spegnimento senza eseguire nulla."
+
+# ==============================================================================
+# POPUP WAYBAR -> MONITOR SISTEMA (`panels/wp_system.py`)
+# ==============================================================================
+["sys:btop"]
+title = "Apri Monitor `btop`"
+short = "Avvia `btop` in una nuova finestra terminale e chiude il popup Monitor Sistema."
+
+# ==============================================================================
+# URI HELPER CONDIVISI (`ui/shell.py`)
+# ==============================================================================
+["ui:copy:*"]
+title = "Copia Valore negli Appunti"
+short = "Copia direttamente questo indirizzo IP, indirizzo MAC o identificatore negli appunti Wayland (`wl-copy`)."
+
+["ui:cmd:sync"]
+title = "Sincronizza Buffer su Disco (`sync`)"
+short = "Esegue `sync` per scrivere su disco i buffer dirty in memoria kernel e aggiorna la telemetria."
+
+["ui:cmd:*"]
+title = "Esegui Comando Helper"
+short = "Avvia il comando shell associato in background e aggiorna la vista del pannello."

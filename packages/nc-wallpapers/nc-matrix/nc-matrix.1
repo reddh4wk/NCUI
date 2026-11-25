@@ -1,0 +1,166 @@
+.TH NC-MATRIX 1 "November 2026" "nc-matrix 1.0.0" "User Commands"
+.SH NAME
+nc-matrix \- high-performance C11/EGL/Wayland & TTY Matrix digital rain engine
+.SH SYNOPSIS
+.B nc-matrix
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B nc-matrix
+renders an autonomous multi-trail Matrix digital rain either inside an interactive terminal (ncurses/TTY) or as a GPU-accelerated Wayland desktop background (\fIwlr-layer-shell\fR + OpenGL ES 3.0 / OpenGL 3.2 with a pre-baked \fBRG8\fR PangoCairo glyph atlas and CRT phosphor halo).
+.PP
+Out of the box,
+.B nc-matrix
+defaults to a film-authentic Matrix calibration (half-width Katakana glyphs, dense columns, speed level 5, speed variance 5.0, spawn rate 1.5x, random white-blended heads, 50% speed luminescence attenuation, 60% CRT phosphor glow, exponential tail decay, insane glyph shimmer, random mirroring, long tails).
+Pass
+.B \-\-classic
+to restore vintage sparse ASCII \fBcmatrix\fR defaults.
+.SH OPTIONS
+.SS Classic cmatrix-Compatible Flags
+.TP
+.B \-a
+Asynchronous trail speeds (enabled by default).
+.TP
+.B \-b / \-B / \-n
+Enable partial bold, force all bold (default), or disable bold glyphs.
+.TP
+.B \-c
+Use Japanese half-width Katakana + digits charset (default).
+.TP
+.BI \-C " COLOR"
+Set color (\fBgreen\fR, \fBcyan\fR, \fByellow\fR, \fBwhite\fR, \fBred\fR, \fBblue\fR, \fBmagenta\fR, \fBrainbow\fR, or \fB#RRGGBB\fR; default: \fBgreen\fR).
+.TP
+.B \-f
+Force \fBlinux\fR TERM type.
+.TP
+.B \-l / \-x
+Linux console matrix font / X window mtx.pcf glyph range.
+.TP
+.B \-L
+Lock mode (disable \fBq\fR quit key).
+.TP
+.BI \-M " MESSAGE"
+Centered locked overlay message.
+.TP
+.B \-m
+Use lambda (\fIλ\fR) characters.
+.TP
+.B \-o
+Old-style scrolling.
+.TP
+.B \-r
+Enable rainbow per-cell colors.
+.TP
+.B \-s
+Screensaver mode (exit on keypress).
+.TP
+.BI \-t " TTY"
+Write output to a specific TTY device.
+.TP
+.BI \-u " DELAY"
+Override step period using classic \fBcmatrix\fR delay (\fI0..20\fR, period = \fIdelay * 10 ms\fR).
+.TP
+.B \-k
+Enable / cycle tail glyph shimmer.
+.TP
+.B \-h, \-\-help
+Show help summary and exit.
+.TP
+.B \-V, \-\-version
+Print version string and exit.
+.SS Preset & Rain Physics Options
+.TP
+.B \-\-classic
+Reset rain defaults to vintage sparse ASCII \fBcmatrix\fR appearance.
+.TP
+.BI \-\-charset " MODE"
+One of \fBkatakana\fR (default), \fBascii\fR, \fBbinary\fR, \fBhex\fR, \fBlambda\fR.
+.TP
+.BI \-\-color " COL"
+Named color, \fBrainbow\fR, or \fB#RRGGBB\fR hex code (default: \fBgreen\fR).
+.TP
+.BI \-\-head-color " MODE"
+Trail head color mode: \fBwhite\fR, \fBmatch\fR (shader color), or \fBblend\fR (random per-trail blend; default).
+.TP
+.BI \-\-speed " 1..10"
+Base fall cadence: \fB1\fR=520 ms .. \fB5\fR=200 ms (default) .. \fB10\fR=20 ms.
+.TP
+.BI \-\-spawn-rate " 0.0..3.0"
+Per-column trail spawn multiplier (default: \fB1.5\fR; \fB0.0\fR halts new spawns).
+.TP
+.BI \-\-speed-variance " 0.0..10.0"
+Geometric per-trail speed spread around base speed (default: \fB5.0\fR; \fB0.0\fR uniform).
+.TP
+.BI \-\-overlap " MODE"
+Rule when fast trails overtake slower ones: \fBhybrid\fR (default), \fBparallax\fR, or \fBadditive\fR.
+.TP
+.BI \-\-parallax " 0.0..1.0"
+Slowness-to-darkness luminescence & random head-blend range attenuation (default: \fB0.50\fR).
+.TP
+.BI \-\-glow " 0.0..1.0"
+CRT phosphor halo intensity (default: \fB0.60\fR).
+.TP
+.BI \-\-decay " MODE"
+Tail falloff curve: \fBexponential\fR (default) or \fBlinear\fR.
+.TP
+.BI \-\-shimmer " MODE"
+Live tail glyph mutations per step: \fBoff\fR (0), \fBlow\fR (0.5/step), \fBmed\fR (1/step), \fBhigh\fR (2/step), or \fBinsane\fR (4/step; default).
+.TP
+.BI \-\-mirror " MODE"
+Horizontal glyph mirroring: \fBoff\fR, \fBon\fR, or \fBrandom\fR (default).
+.TP
+.BI \-\-tail-length " MODE"
+Trail tail length scale: \fBshort\fR, \fBnormal\fR, or \fBlong\fR (default).
+.TP
+.BI \-\-dense " 0|1"
+Column grid density: \fB0\fR=classic alternate columns, \fB1\fR=every column (default: \fB1\fR).
+.SS Wayland Wallpaper & Benchmark Options
+.TP
+.B \-\-wallpaper
+Run as a Wayland \fIwlr-layer-shell\fR desktop background.
+.TP
+.BI \-\-output " NAME"
+Target monitor name (used to pick geometry and \fI/tmp/nc-matrix_<NAME>.conf\fR).
+.TP
+.BI \-\-font-size " 5..32"
+Font size in points (default: \fB9\fR).
+.TP
+.BI \-\-x " X " \-\-y " Y " \-\-width " W " \-\-height " H"
+Logical origin and pixel size override for target monitor.
+.TP
+.BI \-\-pid-file " PATH"
+Runtime PID file path.
+.TP
+.BI \-\-ipc-socket " PATH"
+UNIX stream socket accepting \fBquit\fR, \fBpause\fR, and \fBresume\fR.
+.TP
+.B \-\-software
+Force CPU dirty-tile Cairo renderer instead of EGL/GL shader.
+.TP
+.BI \-\-benchmark " FRAMES"
+Run headless simulation/packing benchmark for \fIFRAMES\fR frames.
+.SH INTERACTIVE KEYS (TTY MODE)
+.TP
+.B q
+Quit (unless \fB\-L\fR lock mode).
+.TP
+.B p / P
+Pause or resume animation.
+.TP
+.B + / \-
+Increase or decrease speed level (\fI1..10\fR).
+.TP
+.B v / V
+Decrease or increase speed variance (\fI0..10\fR).
+.TP
+.B 0\-9
+Override cadence with classic \fBcmatrix\fR delay (\fIn * 10 ms\fR).
+.TP
+.B c / h / k / d / r
+Cycle charset, trail head mode, shimmer mode; toggle dense columns or rainbow.
+.TP
+.B ! @ # $ % ^ &
+Switch color to Red, Green, Yellow, Blue, Magenta, Cyan, or White.
+.SH SIGNALS & HOT-RELOAD
+In wallpaper mode, sending \fBSIGUSR1\fR (flow) or \fBSIGUSR2\fR (drain-to-black) reloads key=value settings from \fI/tmp/nc-matrix_<output>.conf\fR in-place without restarting the Wayland surface.
+.SH AUTHOR
+Damiano (Nightcity / NC-UI project).

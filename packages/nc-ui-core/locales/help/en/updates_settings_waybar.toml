@@ -1,0 +1,335 @@
+# NC-UI Action Help Catalog — Updates, Notifications, Waybar & Shell Chrome (English)
+# Covers: cc_engine_updates.py, cc_updates_*.py, cc_settings_notifications.py,
+#         cc_waybar_layout.py, cc_waybar_options.py, control_center.py
+
+# ==============================================================================
+# UPDATES (`panels/cc_engine_updates.py`, `panels/cc_updates_*.py`)
+# ==============================================================================
+["cc_upd:scan"]
+title = "Scan All Package Sources"
+short = "Probes `checkupdates`, AUR (`paru`/`yay -Qua`), Flatpak updates, orphans (`pacman -Qdtq`), and `paccache` safely."
+verbose = "Reads sync/local databases in the background using read-only `checkupdates` (never locking the real `/var/lib/pacman/db.lck`) and caches totals for instant tab switching."
+
+["cc_upd:refresh"]
+title = "Refresh Package & Update Lists"
+short = "Reloads pending official, AUR, Flatpak, and orphan lists immediately."
+
+["cc_upd:upgrade_official"]
+title = "Upgrade Official Arch Packages"
+short = "Opens an interactive terminal running `sudo pacman -Syu` for official Arch/CachyOS repositories."
+verbose = "Launches `sudo pacman -Syu` in a visible terminal so you can review pacnew notices, kernel hooks, and Limine/UKI regeneration prompts."
+
+["cc_upd:upgrade_aur"]
+title = "Upgrade AUR Foreign Packages"
+short = "Opens a terminal running `paru -Sua` (or `yay -Sua`) to rebuild and update AUR packages."
+verbose = "Lets you inspect PKGBUILD diffs and build output interactively inside a dedicated terminal session."
+
+["cc_upd:upgrade_flatpak"]
+title = "Upgrade All Flatpak Apps & Runtimes"
+short = "Opens a terminal running `flatpak update` to pull pending Flatpak application and runtime updates."
+
+["cc_upd:pkg_up:*"]
+title = "Update Single Package"
+short = "Opens a terminal running `sudo pacman -S <pkg>` or `<aur_helper> -S <pkg>` for this package."
+
+["cc_upd:rm_foreign:*"]
+title = "Remove Foreign / AUR Package"
+short = "Opens a terminal running `sudo pacman -Rns <pkg>` to uninstall this foreign package and unused deps."
+
+["cc_upd:fp_up:*"]
+title = "Update Single Flatpak App"
+short = "Opens a terminal running `flatpak update <app_id>` to update only this Flatpak application."
+
+["cc_upd:fp_rm:*"]
+title = "Uninstall Flatpak Application"
+short = "Opens a terminal running `flatpak uninstall <app_id>` to remove this Flatpak app."
+
+["cc_upd:paccache"]
+title = "Clean Pacman Package Cache"
+short = "Opens a terminal running `sudo paccache -rk2` to keep the 2 most recent cached tarballs per package."
+verbose = "Frees gigabytes from `/var/cache/pacman/pkg/` while preserving the active and previous package versions for quick offline downgrades."
+
+["cc_upd:save_pkglist"]
+title = "Snapshot Package List to Vault"
+short = "Runs `nc-hanoi pkglist-stdin` in a terminal to record installed official and foreign packages to the Vault NAS."
+
+["cc_upd:flatpak_unused"]
+title = "Prune Unused Flatpak Runtimes"
+short = "Opens a terminal running `flatpak uninstall --unused` to remove orphaned runtimes and extensions."
+
+["cc_upd:rm_orphans"]
+title = "Remove All Orphan Packages"
+short = "Opens a terminal piping `pacman -Qdtq` into `sudo pacman -Rns -` to purge unneeded dependency leftovers."
+
+["cc_upd:rm_orphan:*"]
+title = "Remove Orphan Package"
+short = "Opens a terminal running `sudo pacman -Rns <pkg>` to uninstall this orphaned dependency."
+
+["cc_upd:keep_orphan:*"]
+title = "Mark Orphan as Explicitly Installed"
+short = "Runs `sudo pacman -D --asexplicit <pkg>` in a terminal so pacman keeps this package permanently."
+
+["cc_upd:aur_filter:all"]
+title = "Show All AUR & Foreign Packages"
+short = "Shows both pending AUR updates and all installed foreign (`pacman -Qm`) packages."
+
+["cc_upd:aur_filter:pending"]
+title = "Filter Pending AUR Updates"
+short = "Shows only AUR packages that currently have a newer version available."
+
+["cc_upd:aur_filter:installed"]
+title = "Filter Installed Foreign Packages"
+short = "Shows all installed foreign/AUR packages (`pacman -Qm`) regardless of update status."
+
+["cc_upd:fp_filter:all"]
+title = "Show All Flatpak Entries"
+short = "Displays both pending Flatpak updates and all currently installed Flatpak applications."
+
+["cc_upd:fp_filter:pending"]
+title = "Filter Pending Flatpak Updates"
+short = "Displays only Flatpak apps and runtimes with an available remote update."
+
+["cc_upd:fp_filter:installed"]
+title = "Filter Installed Flatpaks"
+short = "Displays all locally installed Flatpak applications."
+
+["cc_upd:search_open*"]
+title = "Filter Package Table"
+short = "Opens inline search to filter packages by name, repository, or version in real time."
+
+["cc_upd:clear_search*"]
+title = "Clear Package Filter"
+short = "Resets the active package filter query and shows the full list again."
+
+["cc_upd:toggle_all*"]
+title = "Toggle Full vs Fit Table View"
+short = "Expands the package table beyond the viewport fit limit or collapses it back to compact rows."
+
+# ==============================================================================
+# SETTINGS -> NOTIFICATIONS (`panels/cc_settings_notifications.py`)
+# ==============================================================================
+["cc_notif:test"]
+title = "Send Test Notification"
+short = "Dispatches a test desktop notification through `nc-util-notify.sh` (or `notify-send`) to verify routing."
+
+["cc_notif:clear"]
+title = "Clear Notification Archive"
+short = "Deletes all stored notifications from the NC-UI history file immediately."
+
+["cc_notif:dnd:1"]
+title = "Enable Do Not Disturb (DND)"
+short = "Suppresses popup banners and marks DND active while still archiving incoming notifications."
+verbose = "Sets `dnd = true` in notification rules so `nc-notify-popup` and sound alerts stay quiet until DND is turned off."
+
+["cc_notif:dnd:0"]
+title = "Disable Do Not Disturb"
+short = "Resumes normal desktop notification popup spawning and alert playback."
+
+["cc_notif:quiet_toggle"]
+title = "Toggle Scheduled Quiet Hours"
+short = "Enables or disables automatic Do Not Disturb silencing during the configured nightly `HH:MM-HH:MM` window."
+verbose = "When active, `nc-notify-popup` checks the current local clock against `quiet_window` (handling overnight spans like `23:00-07:00`) and suppresses popups automatically."
+
+["cc_notif:quiet_win:*"]
+title = "Select Quiet Hours Preset"
+short = "Applies a preset overnight quiet-hours span (`22:00-07:00`, `23:00-07:00`, or `00:00-08:00`)."
+
+["cc_notif:inline_quiet"]
+title = "Set Custom Quiet Hours Window"
+short = "Edits a custom `HH:MM-HH:MM` silent schedule range inline (press Enter to save)."
+
+["cc_notif:max:*"]
+title = "Set Notification Archive Limit"
+short = "Caps stored notification history at `25`, `50`, `100`, or `200` items (oldest entries prune automatically)."
+
+["cc_notif:group_app:1"]
+title = "Group Notifications by App"
+short = "Groups notifications inside the Waybar Notification Center into per-application collapsible cards."
+
+["cc_notif:group_app:0"]
+title = "Sort Notifications Chronologically"
+short = "Displays notifications in a flat chronological stream from newest to oldest."
+
+["cc_notif:popup_preview"]
+title = "Preview Floating Notification Popup"
+short = "Spawns a live `nc-notify-popup` banner right now using your active position, effect, timeout, and opacity."
+
+["cc_notif:popup_en:1"]
+title = "Enable `nc-notify-popup` Banners"
+short = "Turns on floating Layer-Shell notification banners when new desktop notifications arrive."
+verbose = "Enables `popup_enabled = true` so `nc-notify-popup` displays transient overlays on the chosen screen corner unless DND or Quiet Hours suppress them."
+
+["cc_notif:popup_en:0"]
+title = "Disable `nc-notify-popup` Banners"
+short = "Stops floating banners from spawning while still logging notifications to the Notification Center archive."
+
+["cc_notif:popup_timeout:*"]
+title = "Set Popup Auto-Dismiss Duration"
+short = "Sets how many seconds (`3s`, `5s`, `8s`, `12s`, or `Sticky`) `nc-notify-popup` stays visible."
+verbose = "Choosing `Sticky` (`0s`) keeps each banner on screen until you manually dismiss or click it."
+
+["cc_notif:inline_popup_timeout"]
+title = "Set Custom Popup Timeout"
+short = "Enters a custom auto-dismiss duration in seconds inline for `nc-notify-popup` banners."
+
+["cc_notif:popup_pos:*"]
+title = "Set Notification Popup Anchor"
+short = "Anchors `nc-notify-popup` banners to top-left, top-center, top-right, bottom-left, bottom-center, or bottom-right."
+
+["cc_notif:popup_effect:*"]
+title = "Set Notification Popup Animation"
+short = "Selects the Layer-Shell reveal transition (`Slide`, `Fade`, `Slide + Fade`, or `Instant`) for `nc-notify-popup`."
+
+["cc_notif:popup_op*"]
+title = "Adjust Notification Popup Opacity"
+short = "Scroll or click `[-]`/`[+]` to tune background opacity (0–100%) of `nc-notify-popup` floating banners."
+verbose = "Updates system notification opacity immediately in `theme.toml` so floating banners blend cleanly over dark or busy windows."
+
+["cc_notif:urg:*"]
+title = "Set Minimum Urgency Filter"
+short = "Suppresses notifications below `Low`, `Normal`, or `Critical` urgency from popping up."
+
+["cc_notif:app_pick_open"]
+title = "Search App to Mute"
+short = "Opens the live application ID picker (`window_app_ids` + archive apps) to mute noisy apps quickly."
+
+["cc_notif:app_pick_clear"]
+title = "Clear App Picker Search"
+short = "Clears the inline mute-app picker filter text."
+
+["cc_notif:mute_app:*"]
+title = "Mute App Notifications"
+short = "Adds this application to `muted_apps` so its notifications are suppressed from popups and archives."
+
+["cc_notif:allow_app:*"]
+title = "Allow App Notifications"
+short = "Removes this application from `muted_apps` so its notifications display normally again."
+
+["cc_notif:click_toggle:*"]
+title = "Toggle Click-to-Launch Action"
+short = "Enables or disables clicking notifications from this app to focus or launch its target command."
+
+["cc_notif:prompt_click_cmd:*"]
+title = "Set Custom Click Launch Command"
+short = "Prompts for a custom shell command executed when clicking a notification from this application."
+
+["cc_notif:trigger_click:*"]
+title = "Execute Notification Click Action"
+short = "Runs the configured launch/focus command associated with this notification's application."
+
+["cc_notif:del:*"]
+title = "Dismiss Archived Notification"
+short = "Removes this single notification entry from the stored archive."
+
+# ==============================================================================
+# WAYBAR LAYOUT & OPTIONS (`panels/cc_waybar_layout.py`, `cc_waybar_options.py`)
+# ==============================================================================
+["cc_wb:apply"]
+title = "Save `config.jsonc` & Reload Waybar"
+short = "Writes your Waybar module layout and options to `~/.config/waybar/config.jsonc` and reloads the live bar."
+verbose = "Updates `modules-left`, `modules-center`, `modules-right`, and module properties in `config.jsonc`, then sends `SIGUSR2` (or restarts Waybar) so changes appear on screen."
+
+["cc_wb:up:*:*"]
+title = "Move Waybar Module Left / Up"
+short = "Moves this module one slot earlier inside its `modules-left`, `modules-center`, or `modules-right` array."
+
+["cc_wb:down:*:*"]
+title = "Move Waybar Module Right / Down"
+short = "Moves this module one slot later inside its `modules-left`, `modules-center`, or `modules-right` array."
+
+["cc_wb:move:*:left"]
+title = "Move Module to Left Section"
+short = "Moves this active Waybar module into `modules-left` in `config.jsonc`."
+
+["cc_wb:move:*:center"]
+title = "Move Module to Center Section"
+short = "Moves this active Waybar module into `modules-center` in `config.jsonc`."
+
+["cc_wb:move:*:right"]
+title = "Move Module to Right Section"
+short = "Moves this active Waybar module into `modules-right` in `config.jsonc`."
+
+["cc_wb:add:*:left"]
+title = "Add Module to Left Section"
+short = "Enables this plugin from the pool and appends it to `modules-left` in `config.jsonc`."
+
+["cc_wb:add:*:center"]
+title = "Add Module to Center Section"
+short = "Enables this plugin from the pool and appends it to `modules-center` in `config.jsonc`."
+
+["cc_wb:add:*:right"]
+title = "Add Module to Right Section"
+short = "Enables this plugin from the pool and appends it to `modules-right` in `config.jsonc`."
+
+["cc_wb:remove:*"]
+title = "Remove Module from Waybar"
+short = "Removes this module from active bar sections back to the disabled pool (remember to click Apply)."
+
+["cc_wb:prompt_lock_cmd"]
+title = "Set Custom Screen Lock Command"
+short = "Prompts for the shell command executed by the Session popup Lock button and Suspend auto-lock."
+
+["cc_wb:set_lock:*"]
+title = "Select Screen Lock Preset"
+short = "Sets `screen_lock_cmd` to `swaylock`, `hyprlock`, `gtklock`, `waylock`, `loginctl lock-session`, or clears it."
+
+["cc_wb:net_spd:on"]
+title = "Show Live Speed on Network Pill"
+short = "Displays real-time RX/TX bandwidth counters alongside icons in Waybar `custom/netcycle`."
+
+["cc_wb:net_spd:off"]
+title = "Network Pill Icons Only"
+short = "Hides live numeric throughput text on Waybar `custom/netcycle`, showing compact link status icons only."
+
+["cc_wb:net_unit:bytes"]
+title = "Display Network Speed in Bytes/s"
+short = "Formats `custom/netcycle` throughput in `KB/s` and `MB/s`."
+
+["cc_wb:net_unit:bits"]
+title = "Display Network Speed in Bits/s"
+short = "Formats `custom/netcycle` throughput in `Kbps` and `Mbps`."
+
+["cc_wb:net_if:*"]
+title = "Select Monitored Network Interface"
+short = "Pins `custom/netcycle` traffic aggregation to `auto` (default route), `ALL`, or a specific NIC."
+
+["cc_wb:win_pct*"]
+title = "Adjust Window Title Width Budget"
+short = "Sets `niri/window` `max-length` as a percentage of estimated free Waybar character space (5–100%)."
+verbose = "Balances free horizontal bar space between `niri/window` and `custom/media`, writes the computed character cap to `config.jsonc`, and applies on Waybar reload."
+
+["cc_wb:med_pct*"]
+title = "Adjust Media Bar Width Budget"
+short = "Sets `custom/media` width as a percentage of estimated free Waybar character space (5–100%)."
+verbose = "Updates Spotify/MPRIS track label width immediately and coordinates total allocation against `niri/window` so Waybar modules never overflow."
+
+["cc_wb:sys_glow:1"]
+title = "Enable CPU / RAM Critical Bar Glow"
+short = "Highlights Waybar `custom/cpu` and `custom/ram` pills in critical red when load exceeds the threshold."
+
+["cc_wb:sys_glow:0"]
+title = "Disable CPU / RAM Critical Bar Glow"
+short = "Keeps Waybar `custom/cpu` and `custom/ram` pills in normal styling regardless of load percentage."
+
+["cc_wb:sys_glow_thresh*"]
+title = "Set Critical Bar Glow Threshold"
+short = "Scroll or click `[-]`/`[+]` to set the CPU/RAM percentage (50–95%) that triggers critical red styling on Waybar."
+
+["cc_wb:prn_vis:auto"]
+title = "Auto-Hide Printers Bar Indicator"
+short = "Shows Waybar `custom/printers` only when active CUPS print jobs or errors are present."
+
+["cc_wb:prn_vis:always"]
+title = "Always Show Printers Bar Indicator"
+short = "Keeps Waybar `custom/printers` permanently visible in `modules-right` of `config.jsonc`."
+
+# ==============================================================================
+# CONTROL CENTER CHROME FALLBACKS (`control_center.py`)
+# ==============================================================================
+["cc:lang:*"]
+title = "Switch Interface Language"
+short = "Switches NC-UI labels and action help catalogs to the chosen language immediately."
+
+["cc:subtab*"]
+title = "Switch Section Subtab"
+short = "Switches between sub-pages inside the active Control Center section."

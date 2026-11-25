@@ -1,0 +1,275 @@
+# NC-UI Action Help Catalog — Telemetry, Limine Boot & Recovery (English)
+# Covers: cc_telemetry_boot.py, cc_telemetry_recovery.py, cc_telemetry_resources.py, cc_engine_telemetry.py
+
+# ==============================================================================
+# TELEMETRY -> LIMINE BOOTLOADER STUDIO (`panels/cc_telemetry_boot.py`)
+# ==============================================================================
+["cc_boot:apply"]
+title = "Apply Staged Limine Configuration"
+short = "Renders the staged `limine.conf` draft and writes it to the ESP via `nc-rescue limine-apply-stdin`."
+verbose = "Commits your previewed timeout, resolution, wallpaper, palette, and boot entry tree safely through the privileged `nc-rescue` helper, backing up the existing `limine.conf` before overwriting."
+diagram = "boot_recovery"
+diagram_focus = "limine"
+
+["cc_boot:reset"]
+title = "Discard Staged Limine Edits"
+short = "Clears all unsaved preview changes and reloads the active `limine.conf` from disk."
+
+["cc_boot:to:*"]
+title = "Set Limine Boot Timeout"
+short = "Stages `timeout:` countdown (`0s`, `3s`, `5s`, `10s`, or `no` manual wait) in the `limine.conf` draft."
+verbose = "Controls how long the Limine menu waits before booting the default entry. Choosing `no` pauses indefinitely until you press Enter."
+
+["cc_boot:toggle_remember"]
+title = "Toggle Remember Last Entry"
+short = "Toggles `remember_last_entry: yes/no` so Limine pre-selects whichever kernel or UKI you booted last."
+
+["cc_boot:toggle_verbose"]
+title = "Toggle Limine Verbose Output"
+short = "Toggles `verbose: yes/no` to show detailed Limine stage/module loading messages during early boot."
+
+["cc_boot:res:*"]
+title = "Set Limine Display Resolution"
+short = "Stages `interface_resolution:` (`auto`, `1920x1080`, `2560x1440`, or `3840x2160`) for the boot menu."
+
+["cc_boot:margin*"]
+title = "Adjust Limine Terminal Margin"
+short = "Scroll or click `[-]`/`[+]` to adjust `term_margin:` (0–160 px) around the Limine boot menu box."
+verbose = "Updates the live Cairo bezel preview and stages `term_margin:` in your `limine.conf` draft (`8 px` per step)."
+
+["cc_boot:preset:*"]
+title = "Apply Limine Theme Preset"
+short = "Applies a curated color palette (`Fallout`, `Nightcity`, `Amber CRT`, or `Arch Blue`) to the Limine draft."
+verbose = "Updates foreground, bright foreground, terminal background RGB, branding accent, backdrop, and all 8 ANSI palette slots in the live preview without touching disk until you click Apply."
+
+["cc_boot:wp_import"]
+title = "Import Limine Wallpaper to ESP"
+short = "Prompts for a local PNG/JPEG/BMP image to stage as `wallpaper: boot():/...` for the boot screen."
+
+["cc_boot:wp_clear"]
+title = "Clear Limine Wallpaper"
+short = "Removes `wallpaper:` from the staged `limine.conf` draft, leaving a solid `backdrop` color."
+
+["cc_boot:wp_cycle_style"]
+title = "Cycle Limine Wallpaper Style"
+short = "Cycles `wallpaper_style:` between `stretched`, `centered`, and `tiled` in the live Limine preview."
+
+["cc_boot:wp_esp:*"]
+title = "Select ESP Wallpaper Asset"
+short = "Selects an existing image file already located on the EFI System Partition (`boot():/...`)."
+
+["cc_boot:opacity*"]
+title = "Adjust Terminal Background Opacity"
+short = "Scroll or click `[-]`/`[+]` to set `term_background:` alpha transparency (0–100%) over the wallpaper."
+verbose = "Controls how strongly the Limine terminal window obscures the background wallpaper in `limine.conf` (`10%` steps)."
+
+["cc_boot:branding_open"]
+title = "Edit Limine Interface Branding"
+short = "Opens inline editing for `interface_branding:` shown in the top banner of the Limine boot menu."
+
+["cc_boot:inline_col:pal_*"]
+title = "Edit Limine ANSI Palette Color"
+short = "Edits one of the 8 `term_palette` hex colors (`#RRGGBB`) used by Limine terminal text and borders."
+
+["cc_boot:inline_col:*"]
+title = "Edit Limine Theme Hex Color"
+short = "Edits `#RRGGBB` hex color for foreground, bright text, terminal background, branding, or backdrop."
+
+["cc_boot:set_col:*"]
+title = "Set Limine Hex Color"
+short = "Stages the specified `#RRGGBB` color value into the active Limine theme draft."
+
+["cc_boot:add_entry"]
+title = "Add Limine Boot Entry"
+short = "Prompts for a title, UKI/kernel `path:`, and optional `cmdline:` to append a new boot menu entry."
+
+["cc_boot:preview_sel:*"]
+title = "Select / Toggle Entry in Preview"
+short = "Clicks an entry inside the live Limine monitor preview to inspect it or expand/collapse a submenu folder."
+
+["cc_boot:sel_node:*"]
+title = "Inspect Limine Menu Node"
+short = "Highlights this boot entry or folder in the inspector below to edit its title, comment, path, or cmdline."
+
+["cc_boot:toggle_dir:*"]
+title = "Expand / Collapse Section"
+short = "Shows or hides the contents of this section without changing any system setting."
+
+["cc_boot:set_default:*"]
+title = "Set Default Boot Entry"
+short = "Stages `default_entry:` to boot this top-level Limine entry automatically after timeout."
+
+["cc_boot:move_up:*"]
+title = "Move Boot Entry Up"
+short = "Moves this boot entry or folder one slot higher in the staged `limine.conf` menu order."
+
+["cc_boot:move_dn:*"]
+title = "Move Boot Entry Down"
+short = "Moves this boot entry or folder one slot lower in the staged `limine.conf` menu order."
+
+["cc_boot:del_node:*"]
+title = "Delete Boot Entry"
+short = "Removes this boot entry from the staged `limine.conf` draft (at least one entry must remain)."
+
+["cc_boot:edit_node:title:*"]
+title = "Edit Entry Display Title"
+short = "Edits the visible menu title (`/Title`) of the selected Limine boot entry or folder."
+
+["cc_boot:edit_node:comment:*"]
+title = "Edit Entry Comment"
+short = "Edits the optional `comment:` subtitle displayed for the selected Limine entry."
+
+["cc_boot:edit_node:path:*"]
+title = "Edit Boot Image Path"
+short = "Edits the `path:` (`boot():/EFI/Linux/...efi` or kernel path) booted by this Limine entry."
+
+["cc_boot:edit_node:cmdline:*"]
+title = "Edit Kernel Command Line"
+short = "Edits the `cmdline:` kernel parameters passed when booting this Limine entry."
+
+["cc_set:limine_edit"]
+title = "Open `limine.conf` in Terminal Editor"
+short = "Launches `sudo $EDITOR` on `/boot/limine.conf` in a terminal window for raw manual inspection or edits."
+
+["cc_set:limine_*"]
+title = "Adjust Limine Boot Setting"
+short = "Stages a `timeout` or `default_entry` change in the pending `limine.conf` draft."
+
+# ==============================================================================
+# TELEMETRY -> RECOVERY, DUSKCITY LIVE & GOLDEN IMAGES (`cc_telemetry_recovery.py`)
+# ==============================================================================
+["cc_sys:rescue_refresh"]
+title = "Probe Recovery & Chroot Environment"
+short = "Runs `nc-rescue check-health` and `nc-chroot candidates-tsv` to refresh ESP, UKI, SquashFS, and disk status."
+verbose = "Queries free ESP space, `recovery.squashfs` and `nc-rescue.efi` presence/signatures, Limine registration, and candidate LUKS/LVM disks without modifying any files."
+
+["cc_sys:rescue_build_full_term"]
+title = "Build Full Rescue SquashFS + UKI"
+short = "Opens an interactive root terminal running `nc-rescue --build-recovery` to pack a fresh `recovery.squashfs` and UKI."
+verbose = "Creates a bootable live-in-RAM SquashFS image of the Nightcity environment alongside its initramfs/UKI on the ESP so you can recover even if the encrypted root LV fails."
+diagram = "boot_recovery"
+diagram_focus = "rescue"
+
+["cc_sys:rescue_sync_ncui_term"]
+title = "Sync NC-UI into Recovery Image"
+short = "Runs `sudo nc-rescue --sync-ncui` in a terminal to update NC-UI inside the existing Rescue SquashFS without a full rebuild."
+
+["cc_sys:rescue_build_ask"]
+title = "Rebuild & Sign Rescue UKI"
+short = "Requests confirmation before rebuilding the Duskcity Rescue UKI (`nc-rescue.efi`) on the ESP."
+
+["cc_sys:rescue_build_do"]
+title = "Confirm Rescue UKI Build"
+short = "Executes `nc-rescue build-uki` asynchronously, generating the Rescue UKI and signing it if `sbctl` is enabled."
+
+["cc_sys:rescue_build_cancel"]
+title = "Cancel Rescue UKI Build"
+short = "Dismisses the pending Rescue UKI rebuild confirmation."
+
+["cc_sys:rescue_reg_limine"]
+title = "Register Rescue Entry in Limine"
+short = "Runs `nc-rescue register-limine` so the Rescue UKI appears as an explicit fallback entry in `limine.conf`."
+
+["cc_sys:rescue_uki_open"]
+title = "Set Rescue UKI Filename"
+short = "Edits `uki_name` (e.g., `nc-rescue.efi`) saved via `nc-rescue config-stdin` for ESP UKI builds."
+
+["cc_sys:rescue_cfg:sign_sbctl:true"]
+title = "Enable `sbctl` Signing on Rescue UKI"
+short = "Configures `nc-rescue` (`sign_sbctl=true`) to sign newly built Rescue UKIs with your Secure Boot keys."
+
+["cc_sys:rescue_cfg:sign_sbctl:false"]
+title = "Disable `sbctl` Signing on Rescue UKI"
+short = "Configures `nc-rescue` (`sign_sbctl=false`) to skip Secure Boot signing when building Rescue UKIs."
+
+["cc_sys:dc_commit"]
+title = "Commit Live RAM Changes to Disk"
+short = "Launches `sudo nc-rescue commit` in a terminal to persist changes from the live RAM SquashFS overlay onto the root LV."
+verbose = "Designed for Duskcity live-recovery sessions: syncs your repaired `/etc`, packages, or configs from RAM back to the physical encrypted root partition."
+diagram = "boot_recovery"
+diagram_focus = "commit"
+
+["cc_sys:dc_commit_rebuild"]
+title = "Commit Live Changes & Rebuild Rescue"
+short = "Runs `sudo nc-rescue commit-rebuild` in a terminal to flush live RAM changes to root and regenerate `recovery.squashfs` + UKI."
+
+["cc_sys:rescue_rb_ask"]
+title = "Rollback ESP Recovery Files"
+short = "Requests confirmation before restoring the previous `.old` `recovery.squashfs` and UKI backup on the ESP."
+
+["cc_sys:rescue_rb_do"]
+title = "Confirm ESP Recovery Rollback"
+short = "Executes `nc-rescue rollback-esp` to swap back the prior `.old` SquashFS/UKI image if the newest build failed to boot."
+
+["cc_sys:rescue_rb_cancel"]
+title = "Cancel ESP Rollback"
+short = "Cancels the pending `.old` ESP recovery rollback."
+
+["cc_sys:chroot_scan"]
+title = "Scan Disks for Chroot Targets"
+short = "Runs `nc-chroot candidates-tsv` to enumerate host and external disks with LUKS2/LVM/ESP partitions."
+
+["cc_sys:dc_chroot"]
+title = "Open Encrypted Chroot Terminal"
+short = "Launches `sudo nc-chroot` in a terminal to unlock LUKS2, activate LVM, mount `/run/nightcity-chroot`, and enter shell."
+verbose = "Automatically binds `/dev`, `/proc`, `/sys`, `/run`, and the target ESP so you can repair kernels, `mkinitcpio`, `sbctl`, or `limine.conf` offline."
+diagram = "boot_recovery"
+diagram_focus = "chroot"
+
+["cc_sys:chroot_umount"]
+title = "Unmount & Close Chroot"
+short = "Runs `nc-chroot -u` to unmount `/run/nightcity-chroot` cleanly and close any unlocked LVM/LUKS mappers."
+
+["cc_sys:dc_golden_save"]
+title = "Capture Golden Image to Vault"
+short = "Runs `sudo nc-golden --save` in a terminal to image the verified system state onto the Vault NAS."
+verbose = "Creates a timestamped full-system Golden Image directory on your configured NAS Vault path complete with SHA256 verification manifests."
+diagram = "boot_recovery"
+diagram_focus = "golden"
+
+["cc_sys:dc_golden_restore"]
+title = "Restore System from Golden Image"
+short = "Runs `sudo nc-golden --restore` in an interactive terminal to deploy a Golden Image onto a target disk."
+
+["cc_sys:rescue_gdir_open"]
+title = "Set Golden Images Vault Subdir"
+short = "Edits `golden_subdir` (e.g., `images`) saved via `nc-rescue config-stdin` under your Vault mount."
+
+["cc_sys:golden_verify:*"]
+title = "Verify Golden Image SHA256"
+short = "Runs `nc-golden verify-stdin` asynchronously to audit every chunk/archive checksum inside this Golden Image."
+
+# ==============================================================================
+# TELEMETRY -> RESOURCES, HANOI EXTRA & EMBEDDED TUIS (`cc_telemetry_resources.py`)
+# ==============================================================================
+["cc_sys:hanoi_list"]
+title = "Load Tracked Vault Files"
+short = "Fetches the indexed file inventory and drift status from the mounted Vault Hanoi store."
+
+["cc_sys:hanoi_load_hist"]
+title = "Load Hanoi Rotation History"
+short = "Queries the Tower-of-Hanoi generational backup log and slot retention timeline on the Vault NAS."
+
+["cc_sys:tui_restart:*"]
+title = "Restart Embedded TUI Session"
+short = "Terminates and respawns the embedded PTY session (`btop` or `nvtop`) inside this card."
+
+["cc_sys:sync_disks"]
+title = "Flush Filesystem Buffers (`sync`)"
+short = "Flushes pending dirty pages from kernel page cache straight to physical NVMe/storage media."
+
+["cc_sys:goto_power_profiles"]
+title = "Open Power Profiles & CPU Policy"
+short = "Jumps to `Power -> Profiles` to switch between Gaming/Performance and Hardened/Balanced power postures."
+
+["cc_sys:btop"]
+title = "Open `btop` in Standalone Terminal"
+short = "Launches a full-screen `btop` system monitor window outside the embedded Control Center card."
+
+["cc_sys:nvtop"]
+title = "Open `nvtop` in Standalone Terminal"
+short = "Launches `nvtop` in a standalone terminal to inspect RTX/GPU utilization, VRAM, and compute processes."
+
+["cc_sys:*"]
+title = "Run Telemetry / System Action"
+short = "Executes this telemetry or system recovery action."

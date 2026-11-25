@@ -1,0 +1,200 @@
+# NC-UI Action Help Catalog (IT) — Data & Ora, Motore Calendario & Popup Calendario Waybar
+
+# ==============================================================================
+# DATETIME -> ORA, FUSO ORARIO & LOCALE (`panels/cc_datetime_time.py`)
+# ==============================================================================
+["cc_dt:sync_now"]
+title = "Forza Risincronizzazione NTP"
+short = "Apre un terminale con `sudo systemctl restart systemd-timesyncd && timedatectl status` per forzare subito il sync NTP."
+verbose = "Riavvia il client `systemd-timesyncd` affinché interroghi immediatamente i server NTP configurati mostrando stato ed esito della sincronizzazione."
+
+["cc_dt:ntp:true"]
+title = "Attiva Sincronizzazione NTP Automatica"
+short = "Esegue `timedatectl set-ntp true` per abilitare la sincronizzazione continua dell'orologio tramite `systemd-timesyncd`."
+
+["cc_dt:ntp:false"]
+title = "Disattiva Sincronizzazione NTP Automatica"
+short = "Esegue `timedatectl set-ntp false` per passare l'orologio di sistema in modalità manuale senza polling `systemd-timesyncd`."
+
+["cc_dt:rtc:0"]
+title = "Imposta Orologio Hardware RTC su UTC"
+short = "Esegue `timedatectl set-local-rtc 0` affinché l'RTC della scheda madre mantenga l'ora UTC (standard Linux consigliato)."
+
+["cc_dt:rtc:1"]
+title = "Imposta Orologio Hardware RTC su Ora Locale"
+short = "Esegue `timedatectl set-local-rtc 1` affinché l'RTC della scheda madre usi l'ora locale (utile per dual-boot Windows)."
+
+["cc_dt:ntp_term"]
+title = "Modifica Configurazione Server NTP"
+short = "Apre `/etc/systemd/timesyncd.conf` con `$EDITOR` nel terminale per personalizzare pool NTP e server di fallback."
+
+["cc_dt:tz_search_open"]
+title = "Cerca e Imposta Fuso Orario IANA"
+short = "Attiva il selettore inline `cc_dt_tz_picker` sui fusi `zoneinfo`; `Invio` applica il primo risultato tramite `timedatectl set-timezone`."
+verbose = "Digita una città o area geografica (es. `Rome`, `Tokyo`, `America/New_York`) per filtrare i fusi IANA, clicca una pillola o premi `Invio` per aggiornare `/etc/localtime`."
+
+["cc_dt:tz_search_clear"]
+title = "Pulisci Ricerca Fuso Orario"
+short = "Azzera il testo di ricerca corrente in `cc_dt_tz_picker`."
+
+["cc_dt:set_tz:*"]
+title = "Applica Fuso Orario IANA"
+short = "Esegue `timedatectl set-timezone <tz>` per aggiornare immediatamente `/etc/localtime` e il fuso orario attivo."
+
+["cc_dt:lang:en_US.UTF-8"]
+title = "Imposta Locale Sistema: en_US.UTF-8"
+short = "Esegue `localectl set-locale LANG=en_US.UTF-8` per impostare la lingua predefinita di sistema su Inglese US UTF-8."
+
+["cc_dt:lang:it_IT.UTF-8"]
+title = "Imposta Locale Sistema: it_IT.UTF-8"
+short = "Esegue `localectl set-locale LANG=it_IT.UTF-8` per impostare la lingua predefinita di sistema su Italiano UTF-8."
+
+["cc_dt:lctime:it_IT.UTF-8"]
+title = "Imposta LC_TIME: 24h (it_IT.UTF-8)"
+short = "Esegue `localectl set-locale LC_TIME=it_IT.UTF-8` per formattare date e orari a 24 ore secondo la convenzione italiana."
+
+["cc_dt:lctime:C.UTF-8"]
+title = "Imposta LC_TIME: POSIX/C (C.UTF-8)"
+short = "Esegue `localectl set-locale LC_TIME=C.UTF-8` per usare la formattazione data/ora POSIX/ISO standard a 24 ore."
+
+["cc_dt:barfmt:*"]
+title = "Imposta Formato Orologio Waybar"
+short = "Aggiorna `\"clock\".\"format\"` in `~/.config/waybar/config.jsonc` con questo preset e invia `SIGUSR2` per ricaricare Waybar."
+verbose = "Sostituisce la stringa di formato dell'orologio Waybar (`{:%H:%M}`, `{:%a %d %b  %H:%M}`, `{:%Y-%m-%d %H:%M:%S}` o `{:%I:%M %p}`) applicandola dal vivo alla barra."
+
+# ==============================================================================
+# DATETIME -> MOTORE CALENDARIO & FEED ICAL (`panels/cc_datetime_calendar.py`)
+# ==============================================================================
+["cc_cal:mode:ical"]
+title = "Attiva Modalità iCal + SQLite Locale"
+short = "Inizializza o imposta il backend calendario su `ical`, unendo gli eventi locali di `calendar.db` ai feed `.ics` sottoscritti."
+verbose = "Salva gli URL dei feed remoti in `ical_feeds.json` e mantiene nella cache di `~/.config/nc-ui/calendar.db` sia i `VEVENT` sincronizzati sia gli appuntamenti locali."
+
+["cc_cal:mode:local"]
+title = "Attiva Solo Modalità SQLite Locale"
+short = "Inizializza o imposta il backend calendario su `local`, salvando gli eventi solo in `calendar.db` senza sincronizzazione iCal di rete."
+
+["cc_cal:rem_set:*"]
+title = "Imposta Anticipo Promemoria"
+short = "Imposta quanti minuti prima dell'inizio di un evento (`0` = Off, oppure `5m`–`60m`) il modulo orologio Waybar invia una notifica."
+
+["cc_cal:rem_inline"]
+title = "Imposta Minuti Promemoria Personalizzati"
+short = "Apre la modifica numerica inline (`cc_cal_rem_inline`) per inserire un anticipo personalizzato tra `0` e `10080` minuti."
+
+["cc_cal:rem_test"]
+title = "Invia Notifica Promemoria di Test"
+short = "Invia subito un'anteprima di notifica desktop NC-UI mostrando i minuti di anticipo attualmente configurati."
+
+["cc_cal:clear_local"]
+title = "Svuota Tutti gli Eventi Locali"
+short = "Elimina tutti gli eventi creati localmente in `calendar.db` lasciando intatti gli eventi sincronizzati dai feed iCal."
+verbose = "Esegue `DELETE FROM events WHERE source = 'local'` su `~/.config/nc-ui/calendar.db`. Gli eventi provenienti da sottoscrizioni iCal restano invariati finché il feed è attivo."
+
+["cc_cal:ical_add"]
+title = "Aggiungi Sottoscrizione iCal (.ics)"
+short = "Chiede un URL `http://`, `https://` o `webcal://` del feed `.ics` e un nome descrittivo, lo salva in `ical_feeds.json` e avvia subito il sync."
+verbose = "Compatibile con i link segreti `.ics` in sola lettura di Google Calendar, Nextcloud/CalDAV, Proton Calendar o Outlook senza richiedere token OAuth."
+
+["cc_cal:sync_now"]
+title = "Sincronizza Ora Tutti i Feed iCal"
+short = "Avvia in background una sincronizzazione forzata di tutti i feed `.ics` abilitati aggiornando `calendar.db`."
+
+["cc_cal:ical_sync_interval:*"]
+title = "Imposta Intervallo Auto-Sync iCal"
+short = "Imposta ogni quanto aggiornare in background i feed `.ics` attivi (`15m`, `30m`, `1h` oppure solo `Manuale`)."
+
+["cc_cal:ical_toggle:*"]
+title = "Attiva / Disattiva Feed iCal"
+short = "Abilita o disabilita questa sottoscrizione `.ics`; abilitandola in modalità `ical` avvia subito un sync in background."
+
+["cc_cal:ical_del:*"]
+title = "Rimuovi Sottoscrizione iCal"
+short = "Rimuove questo feed da `ical_feeds.json` ed elimina tutti i suoi eventi memorizzati da `calendar.db`."
+
+["cc_cal:export_ics"]
+title = "Esporta Calendario in RFC 5545 (.ics)"
+short = "Chiede il percorso di destinazione ed esporta gli eventi di `calendar.db` in formato standard iCalendar `.ics`."
+
+["cc_cal:import_ics"]
+title = "Importa Eventi da File .ics"
+short = "Chiede un file `.ics` locale (con completamento `.ics`) e importa i suoi `VEVENT` dentro `calendar.db`."
+
+["cc_cal:export_db"]
+title = "Esporta Snapshot Database SQLite (.db)"
+short = "Chiede un percorso di destinazione e salva una copia binaria SQLite di `calendar.db`."
+
+["cc_cal:import_db"]
+title = "Ripristina / Unisci Backup SQLite (.db)"
+short = "Chiede un file di backup `.db`/`.sqlite`/`.sqlite3` e ne importa/unisce gli eventi dentro `calendar.db`."
+
+# ==============================================================================
+# POPUP WAYBAR -> CALENDARIO (`panels/wp_calendar.py`)
+# ==============================================================================
+["cal:prev"]
+title = "Settimana / Mese Precedente"
+short = "Indietreggia di una settimana nella vista Settimana estesa, oppure di un mese nelle viste Compatta e Mese estesa."
+
+["cal:today"]
+title = "Vai a Oggi"
+short = "Riporta mese visualizzato, data selezionata e finestra oraria settimanale alla data odierna."
+
+["cal:next"]
+title = "Settimana / Mese Successivo"
+short = "Avanza di una settimana nella vista Settimana estesa, oppure di un mese nelle viste Compatta e Mese estesa."
+
+["cal:day:*"]
+title = "Seleziona Giorno sul Calendario"
+short = "Seleziona questa data (`YYYY-MM-DD`) nell'ispettore giornaliero ed esce dall'elenco esteso dell'intero mese."
+
+["cal:add_start"]
+title = "Nuovo Evento Locale"
+short = "Avvia la sequenza guidata in 3 passaggi (`Titolo` → `Orario` → `Descrizione`) per creare un evento nella data scelta su `calendar.db`."
+
+["cal:toggle_all"]
+title = "Alterna Giorno / Prossimi Eventi Mese"
+short = "Alterna l'agenda nel popup compatto tra gli eventi del solo giorno selezionato e tutti gli eventi futuri del mese."
+
+["cal:event:*"]
+title = "Ispeziona Dettagli Evento"
+short = "Apre questo evento nel pannello Dettaglio Evento mostrando fascia oraria, sorgente, luogo e URL cliccabili nelle note."
+
+["cal:close_event"]
+title = "Chiudi Scheda Dettaglio Evento"
+short = "Chiude la scheda compatta del dettaglio evento mantenendo aperto il popup calendario."
+
+["cal:del:*"]
+title = "Elimina Evento Locale"
+short = "Elimina subito questo evento locale da `calendar.db` (gli eventi dei feed iCal in sola lettura non sono eliminabili qui)."
+
+["cal:sync"]
+title = "Sincronizza Feed iCal"
+short = "Avvia subito in background un aggiornamento forzato (`force_sync=True`) dei feed `.ics` per il mese visualizzato."
+
+["cal:view:week"]
+title = "Passa a Vista Griglia Settimana"
+short = "Passa la vista estesa del Calendario alla griglia oraria su 7 giorni affiancata dall'ispettore del giorno."
+
+["cal:view:month"]
+title = "Passa a Vista Griglia Mese"
+short = "Passa la vista estesa del Calendario alla matrice mensile completa affiancata dall'ispettore del giorno."
+
+["cal:add_hour:*"]
+title = "Crea Evento in Questa Ora"
+short = "Avvia un nuovo evento locale nella data selezionata preimpostando questa fascia di 1 ora (es. `14:00-15:00`). Supporta scorrimento rotella."
+
+["cal:slot:*:*"]
+title = "Crea Evento nello Slot Vuoto"
+short = "Seleziona questo giorno e avvia un nuovo evento locale preimpostato su questa fascia oraria esatta. Supporta scorrimento rotella."
+
+["cal:wscroll"]
+title = "Scorri Ore Griglia Settimana"
+short = "Zona di scorrimento con rotella sulla griglia settimanale: ruotando su o giù sposta la finestra di 13 ore tra `00:00` e `23:00`."
+
+["cal:wscroll:up"]
+title = "Scorri Griglia Settimana Indietro"
+short = "Sposta la finestra oraria di 13 ore nella vista Settimana di 1 ora indietro verso `00:00`."
+
+["cal:wscroll:down"]
+title = "Scorri Griglia Settimana Avanti"
+short = "Sposta la finestra oraria di 13 ore nella vista Settimana di 1 ora avanti verso `23:00`."

@@ -1,0 +1,12 @@
+{
+  "uinput_unlock": true,
+  "usbguard_inspect": true,
+  "gaming_mode": true,
+  "cups_service": true,
+  "power_cpu_tune": true,
+  "nftables_service": true,
+  "nftables_apply": true,
+  "sbctl_verify": true,
+  "cups_sysgroup": true,
+  "power_logind": true
+}

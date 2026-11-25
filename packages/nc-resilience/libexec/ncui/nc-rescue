@@ -1,0 +1,1431 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-rescue
+# Generalized Recovery UKI Builder, Live RAM SquashFS Commit, Limine & Rollback
+# ==============================================================================
+set -euo pipefail
+
+CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+STATE_DIR="${NC_RESCUE_STATE_DIR:-/var/lib/ncui}"
+UPPER_DIR="${NC_RESCUE_UPPER_DIR:-/run/recovery-ram/upper}"
+CHROOT_STATE="${NC_CHROOT_STATE_FILE:-/run/dc-arch-chroot.state}"
+CHROOT_MNT="${NC_CHROOT_MNT_BASE:-/run/nightcity-chroot}"
+INITCPIO_HOOK_PATH="${NC_RESCUE_HOOK_PATH:-/etc/initcpio/hooks/recovery-ram}"
+INITCPIO_INST_PATH="${NC_RESCUE_INST_PATH:-/etc/initcpio/install/recovery-ram}"
+MKINIT_CONF="${NC_RESCUE_MKINIT_CONF:-/etc/mkinitcpio-recovery.conf}"
+ROLLBACK_BIN="${NC_RESCUE_ROLLBACK_BIN:-/usr/bin/dc-rollback}"
+UKI_STATE_FILE="${NC_RESCUE_UKI_STATE:-/etc/initcpio/.uki-state.sha256}"
+BOOT_COMMIT_FLAG="/run/recovery-committed-this-boot"
+
+if [[ -t 1 ]]; then
+    CLR_RESET=$'\033[0m' CLR_INFO=$'\033[38;5;152m' CLR_STEP=$'\033[38;5;116m'
+    CLR_OK=$'\033[38;5;151m' CLR_WARN=$'\033[38;5;222m' CLR_ERR=$'\033[38;5;210m'
+    CLR_BOLD=$'\033[1m'
+else
+    CLR_RESET='' CLR_INFO='' CLR_STEP='' CLR_OK='' CLR_WARN='' CLR_ERR='' CLR_BOLD=''
+fi
+
+msg_info() { printf "%s::%s %b\n" "$CLR_INFO" "$CLR_RESET" "$*"; }
+msg_step() { printf "%s==>%s %b\n" "$CLR_STEP" "$CLR_RESET" "$*"; }
+msg_ok()   { printf "%s==>%s %b\n" "$CLR_OK" "$CLR_RESET" "$*"; }
+msg_warn() { printf "%s[!]%s %b\n" "$CLR_WARN" "$CLR_RESET" "$*" >&2; }
+msg_err()  { printf "%s[x] ERROR:%s %b\n" "$CLR_ERR" "$CLR_RESET" "$*" >&2; }
+
+show_help() {
+    local prog="${0##*/}"
+    cat <<EOF
+${CLR_BOLD}${prog}${CLR_RESET} — NC-UI Recovery UKI, Live RAM SquashFS & Limine Manager
+
+Usage:
+  sudo ${prog} <ACTION>
+
+Actions:
+  status                    Human-readable recovery & ESP artifact summary
+  status-env                Print machine-readable KEY=VALUE rescue telemetry
+  check-health              Refresh ${STATE_DIR}/rescue-status.env and print it
+  install-hooks             Install/update recovery-ram mkinitcpio hook & dc-rollback
+  build-uki                 Build/rebuild Recovery UKI on ESP & register Limine entry
+  commit, -c                Commit Live RAM OverlayFS into ESP recovery.squashfs
+  commit-rebuild, -r        Rebuild Recovery UKI and commit Live RAM SquashFS
+  commit-skip-uki, -s       Commit SquashFS ignoring UKI mismatch warnings
+  rollback-esp              Restore .old recovery SquashFS/UKI artifacts on ESP
+  limine-set-stdin          Update timeout or default_entry in ESP limine.conf
+  config-stdin              Update [recovery] keys in ${CONF_FILE}
+  -h, --help                Show this help
+EOF
+    exit 0
+}
+
+CFG_HOSTNAME="linux"
+CFG_ESP_MOUNT="/boot"
+CFG_VG_NAME="vg0"
+CFG_SMB_CREDS="/etc/samba/nas-cred"
+CFG_UKI_NAME="nc-rescue.efi"
+CFG_SIGN_SBCTL="true"
+CFG_GOLDEN_SUBDIR="images"
+
+load_rescue_config() {
+    local host_def
+    host_def="$(uname -n 2>/dev/null | cut -d. -f1 || true)"
+    CFG_HOSTNAME="${host_def:-linux}"
+    if [[ -r "$CONF_FILE" ]]; then
+        local sec="" line k v
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ -n "$line" ]] || continue
+            if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\]$ ]]; then
+                sec="${BASH_REMATCH[1]}"
+                continue
+            fi
+            if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*(true|false|\"[^\"]*\")$ ]]; then
+                k="${BASH_REMATCH[1]}"
+                v="${BASH_REMATCH[2]}"
+                v="${v#\"}"; v="${v%\"}"
+                case "${sec}.${k}" in
+                    identity.hostname)    CFG_HOSTNAME="$v" ;;
+                    snapshots.esp_mount)  CFG_ESP_MOUNT="${v%/}"; [[ -n "$CFG_ESP_MOUNT" ]] || CFG_ESP_MOUNT="/boot" ;;
+                    snapshots.vg_name)    CFG_VG_NAME="$v" ;;
+                    vault.smb_creds_file) CFG_SMB_CREDS="$v" ;;
+                    recovery.uki_name)    [[ -n "$v" ]] && CFG_UKI_NAME="$v" ;;
+                    recovery.sign_sbctl)  CFG_SIGN_SBCTL="$v" ;;
+                    recovery.golden_subdir) CFG_GOLDEN_SUBDIR="$v" ;;
+                esac
+            fi
+        done < "$CONF_FILE"
+    fi
+    return 0
+}
+
+TMP_FILES=()
+WE_MOUNTED_ESP=0
+TARGET_MNT=""
+COMMIT_VIEW="/run/recovery-ram/commit-view"
+HAD_PREV_UKI_STATE=0
+PREV_UKI_STATE=""
+IN_FINAL_SWAP=0
+COMMIT_COMPLETED=0
+NEW_SQUASHFS=""
+NEW_UKI=""
+
+cleanup_rescue() {
+    local exit_code=$?
+    trap - EXIT INT TERM HUP
+    set +e
+    if findmnt -n "$COMMIT_VIEW" &>/dev/null; then
+        umount "$COMMIT_VIEW" 2>/dev/null || umount -l "$COMMIT_VIEW" 2>/dev/null
+    fi
+    if [[ -d "$COMMIT_VIEW" ]] && ! mountpoint -q "$COMMIT_VIEW" 2>/dev/null; then
+        rmdir "$COMMIT_VIEW" 2>/dev/null
+    fi
+    local tf
+    for tf in "${TMP_FILES[@]}"; do
+        [[ -n "$tf" ]] && rm -f "$tf" 2>/dev/null
+    done
+    if (( exit_code != 0 && COMMIT_COMPLETED == 0 )); then
+        if (( HAD_PREV_UKI_STATE == 1 )); then
+            printf '%s\n' "$PREV_UKI_STATE" > "$UKI_STATE_FILE" 2>/dev/null
+        fi
+        if (( IN_FINAL_SWAP == 0 )); then
+            [[ -n "$NEW_SQUASHFS" && -f "$NEW_SQUASHFS" ]] && rm -f "$NEW_SQUASHFS"
+            [[ -n "$NEW_UKI" && -f "$NEW_UKI" ]] && rm -f "$NEW_UKI"
+        fi
+    fi
+    if (( WE_MOUNTED_ESP == 1 )) && [[ -n "$TARGET_MNT" ]]; then
+        sync 2>/dev/null || true
+        umount "$TARGET_MNT" 2>/dev/null || umount -l "$TARGET_MNT" 2>/dev/null
+        [[ -d "$TARGET_MNT" ]] && ! mountpoint -q "$TARGET_MNT" 2>/dev/null && rmdir "$TARGET_MNT" 2>/dev/null
+    fi
+    exit "$exit_code"
+}
+trap cleanup_rescue EXIT INT TERM HUP
+
+ESP_DEV=""
+resolve_esp_mnt() {
+    local need_rw="${1:-0}"
+    TARGET_MNT=""
+    ESP_DEV=""
+    if [[ -n "${NC_RESCUE_ESP_DIR:-}" && -d "${NC_RESCUE_ESP_DIR}" ]]; then
+        TARGET_MNT="${NC_RESCUE_ESP_DIR%/}"
+        ESP_DEV="sandbox"
+        return 0
+    fi
+    if [[ -f /run/recovery-ram/esp-device ]]; then
+        ESP_DEV="$(tr -d '[:space:]' < /run/recovery-ram/esp-device || true)"
+    fi
+    local cand
+    for cand in "$CFG_ESP_MOUNT" "/boot" "/efi" "/run/boot-esp" "/boot/efi"; do
+        [[ -n "$cand" ]] || continue
+        if mountpoint -q "$cand" 2>/dev/null; then
+            TARGET_MNT="$cand"
+            ESP_DEV="$(findmnt -n -o SOURCE "$cand" 2>/dev/null || echo "$ESP_DEV")"
+            if (( need_rw == 1 )); then
+                local opts
+                opts="$(findmnt -n -o OPTIONS "$cand" 2>/dev/null || true)"
+                if [[ ",$opts," == *",ro,"* ]]; then
+                    mount -o remount,rw "$cand" 2>/dev/null || true
+                fi
+            fi
+            return 0
+        fi
+    done
+    if [[ -z "$ESP_DEV" || ! -b "$ESP_DEV" ]]; then
+        local p_tmp="/run/nc-esp-probe.$$" part fstype
+        mkdir -p "$p_tmp"
+        while read -r part; do
+            [[ -b "$part" ]] || continue
+            fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+            [[ "$fstype" == "vfat" ]] || continue
+            if mount -t vfat -o ro "$part" "$p_tmp" 2>/dev/null; then
+                if [[ -f "$p_tmp/recovery.squashfs" || -d "$p_tmp/EFI/Linux" || -f "$p_tmp/limine.conf" ]]; then
+                    ESP_DEV="$part"
+                    umount "$p_tmp" 2>/dev/null || true
+                    break
+                fi
+                umount "$p_tmp" 2>/dev/null || true
+            fi
+        done < <(lsblk -pnro PATH,TYPE 2>/dev/null | awk '$2=="part" {print $1}')
+        rmdir "$p_tmp" 2>/dev/null || true
+    fi
+    if [[ -n "$ESP_DEV" && -b "$ESP_DEV" ]]; then
+        TARGET_MNT="/run/nc-boot-esp.$$"
+        mkdir -p "$TARGET_MNT"
+        local m_opt="ro,umask=0077"
+        (( need_rw == 1 )) && m_opt="rw,flush,umask=0077"
+        if mount -t vfat -o "$m_opt" "$ESP_DEV" "$TARGET_MNT" 2>/dev/null; then
+            WE_MOUNTED_ESP=1
+            return 0
+        fi
+        rmdir "$TARGET_MNT" 2>/dev/null || true
+        TARGET_MNT=""
+    fi
+    return 1
+}
+
+detect_kernel() {
+    RUNNING_KVER="$(uname -r)"
+    INSTALLED_KVER=""
+    if [[ -d "/usr/lib/modules/${RUNNING_KVER}" && ( -f "/usr/lib/modules/${RUNNING_KVER}/modules.dep" || -d "/usr/lib/modules/${RUNNING_KVER}/kernel" ) ]]; then
+        INSTALLED_KVER="$RUNNING_KVER"
+    else
+        local mod_dir base_mod
+        while IFS= read -r mod_dir; do
+            [[ -d "$mod_dir" ]] || continue
+            base_mod="${mod_dir##*/}"
+            [[ "$base_mod" == extramodules* ]] && continue
+            if [[ -f "${mod_dir}/modules.dep" || -d "${mod_dir}/kernel" ]]; then
+                INSTALLED_KVER="$base_mod"
+            fi
+        done < <(printf '%s\n' /usr/lib/modules/* | sort -V)
+    fi
+    [[ -n "$INSTALLED_KVER" ]] || return 1
+    KERNEL_IMG="/usr/lib/modules/${INSTALLED_KVER}/vmlinuz"
+    if [[ ! -f "$KERNEL_IMG" && -n "$TARGET_MNT" ]]; then
+        local c_vm
+        for c_vm in "${TARGET_MNT}"/vmlinuz-*; do
+            [[ -f "$c_vm" ]] && { KERNEL_IMG="$c_vm"; break; }
+        done
+    fi
+    [[ -f "$KERNEL_IMG" ]]
+}
+
+compute_uki_fingerprint() {
+    {
+        echo "KVER=${INSTALLED_KVER:-}"
+        local f
+        for f in \
+            "${KERNEL_IMG:-}" \
+            /boot/*-ucode.img \
+            "$MKINIT_CONF" \
+            /etc/mkinitcpio.conf \
+            "$INITCPIO_HOOK_PATH" \
+            "$INITCPIO_INST_PATH" \
+            /usr/lib/initcpio/hooks/recovery-ram \
+            /usr/lib/initcpio/install/recovery-ram \
+            /etc/vconsole.conf \
+            /etc/modprobe.d/*.conf \
+            "/usr/lib/modules/${INSTALLED_KVER:-none}/modules.dep" \
+            "/usr/lib/modules/${INSTALLED_KVER:-none}"/extramodules/*nvidia* \
+            "/usr/lib/modules/${INSTALLED_KVER:-none}"/updates/*nvidia* \
+            "/usr/lib/modules/${INSTALLED_KVER:-none}"/kernel/drivers/video/*nvidia*; do
+            [[ -n "$f" && -f "$f" ]] && sha256sum "$f" 2>/dev/null || true
+        done
+    } | sha256sum | awk '{print $1}'
+}
+
+write_recovery_hook_files() {
+    mkdir -p "$(dirname "$INITCPIO_HOOK_PATH")" "$(dirname "$INITCPIO_INST_PATH")" "$(dirname "$ROLLBACK_BIN")"
+
+    cat <<'EOF_HOOK' > "$INITCPIO_HOOK_PATH"
+#!/usr/bin/ash
+
+run_hook() {
+    mount_handler="recovery_mount_handler"
+}
+
+recovery_mount_handler() {
+    local newroot="${1:-/new_root}"
+    local C_RESET="\033[0m" C_BOLD="\033[1m" C_SLATE="\033[38;5;110m"
+    local C_MINT="\033[38;5;114m" C_PEACH="\033[38;5;216m" C_ROSE="\033[38;5;203m"
+    local C_LAVENDER="\033[38;5;146m" C_MUTED="\033[38;5;245m"
+    local probe_dir="/run/boot-esp" ram_dir="/run/recovery-ram" console_dev="/dev/console"
+    [ -c "$console_dev" ] || console_dev="/dev/tty0"
+
+    mkdir -p "$probe_dir" "$newroot"
+    umount "$probe_dir" 2>/dev/null || true
+
+    local force_menu=0
+    if grep -Eq '(^|[[:space:]])recovery\.menu([=[:space:]]|$)' /proc/cmdline 2>/dev/null; then
+        force_menu=1
+    fi
+
+    calc_tmpfs_size() {
+        local mem_kb mem_mb size_mb
+        mem_kb=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null)
+        [ -n "$mem_kb" ] || { echo "16G"; return; }
+        mem_mb=$((mem_kb / 1024))
+        if [ "$mem_mb" -ge 24576 ]; then
+            echo "16G"
+        else
+            size_mb=$((mem_mb * 70 / 100))
+            [ "$size_mb" -lt 4096 ] && size_mb=4096
+            echo "${size_mb}M"
+        fi
+    }
+
+    scan_esp_candidates() {
+        local part dev_name dev_path uuid fsize
+        for part in /sys/class/block/*; do
+            [ -f "$part/partition" ] || continue
+            dev_name=$(basename "$part")
+            case "$dev_name" in loop*|ram*|dm-*|md*|sr*|zram*) continue ;; esac
+            dev_path="/dev/$dev_name"
+            [ -b "$dev_path" ] || continue
+            if mount -t vfat -o ro "$dev_path" "$probe_dir" 2>/dev/null; then
+                uuid=$(blkid -s UUID -o value "$dev_path" 2>/dev/null || true)
+                [ -n "$uuid" ] || uuid="no-uuid"
+                if [ -s "$probe_dir/recovery.squashfs" ]; then
+                    fsize=$(ls -lh "$probe_dir/recovery.squashfs" 2>/dev/null | awk '{print $5}')
+                    echo "${dev_path}|recovery.squashfs|${fsize:-?}|${uuid}|primary"
+                fi
+                if [ -s "$probe_dir/recovery.squashfs.old" ]; then
+                    fsize=$(ls -lh "$probe_dir/recovery.squashfs.old" 2>/dev/null | awk '{print $5}')
+                    echo "${dev_path}|recovery.squashfs.old|${fsize:-?}|${uuid}|fallback"
+                fi
+                umount "$probe_dir" 2>/dev/null || true
+            fi
+        done
+    }
+
+    printf "%b\n" "${C_SLATE}:: NC-UI RECOVERY${C_RESET} Scanning ESP for recovery.squashfs..."
+    local timeout=20 scan_results=""
+    while [ "$timeout" -gt 0 ]; do
+        scan_results=$(scan_esp_candidates)
+        [ -n "$scan_results" ] && break
+        sleep 0.5
+        timeout=$((timeout - 1))
+    done
+
+    local selected_dev="" selected_file="" auto_boot_tried=0
+    while :; do
+        if [ -x "$newroot/sbin/init" ] || [ -L "$newroot/sbin/init" ] || [ -x "$newroot/usr/lib/systemd/systemd" ]; then
+            return 0
+        fi
+        [ -n "$scan_results" ] || scan_results=$(scan_esp_candidates)
+        local primary_count=0 total_count=0 single_dev="" single_file=""
+        local IFS_OLD="$IFS"
+        IFS="
+"
+        for entry in $scan_results; do
+            [ -n "$entry" ] || continue
+            total_count=$((total_count + 1))
+            if [ "${entry##*|}" = "primary" ]; then
+                primary_count=$((primary_count + 1))
+                single_dev="${entry%%|*}"
+                local r="${entry#*|}"; single_file="${r%%|*}"
+            fi
+        done
+        IFS="$IFS_OLD"
+
+        if [ "$primary_count" -eq 1 ] && [ "$force_menu" -eq 0 ] && [ "$auto_boot_tried" -eq 0 ]; then
+            selected_dev="$single_dev"; selected_file="$single_file"; auto_boot_tried=1
+        else
+            printf "\n%b\n" "${C_BOLD}${C_LAVENDER}NC-UI RESCUE — EMERGENCY / LIVE RAM MENU${C_RESET}"
+            if [ "$total_count" -gt 0 ]; then
+                local idx=1
+                IFS="
+"
+                for entry in $scan_results; do
+                    [ -n "$entry" ] || continue
+                    printf "  [%d] %s (%s)\n" "$idx" "$(echo "$entry" | cut -d'|' -f1)" "$(echo "$entry" | cut -d'|' -f2)"
+                    idx=$((idx + 1))
+                done
+                IFS="$IFS_OLD"
+            else
+                printf "  (No recovery.squashfs found on ESP — use [s] for rescue shell)\n"
+            fi
+            printf "  [r] Rescan  [s] Rescue Shell (ash)  [b] Reboot  [p] Poweroff\n"
+            local choice=""
+            printf "%b" "${C_LAVENDER}Select: ${C_RESET}" > "$console_dev"
+            read -r choice < "$console_dev" || choice="s"
+            case "$choice" in
+                [1-9]*)
+                    local ce
+                    ce=$(echo "$scan_results" | sed -n "${choice}p")
+                    [ -n "$ce" ] || continue
+                    selected_dev=$(echo "$ce" | cut -d'|' -f1)
+                    selected_file=$(echo "$ce" | cut -d'|' -f2)
+                    ;;
+                [rR]) scan_results=""; sleep 1; continue ;;
+                [sS]) launch_interactive_shell; scan_results=""; continue ;;
+                [bB]) reboot -f ;;
+                [pP]) poweroff -f ;;
+                *) continue ;;
+            esac
+        fi
+
+        mount -t vfat -o ro "$selected_dev" "$probe_dir" 2>/dev/null || { force_menu=1; continue; }
+        local tmpfs_sz
+        tmpfs_sz=$(calc_tmpfs_size)
+        mkdir -p "$ram_dir"
+        mount -t tmpfs -o "size=${tmpfs_sz},mode=0755" tmpfs "$ram_dir" || { umount "$probe_dir" 2>/dev/null || true; force_menu=1; continue; }
+        echo "$selected_dev" > "$ram_dir/esp-device"
+        echo "$selected_file" > "$ram_dir/booted-image"
+        if ! cp "$probe_dir/$selected_file" "$ram_dir/recovery.squashfs"; then
+            umount "$probe_dir" 2>/dev/null || true; umount "$ram_dir" 2>/dev/null || true; force_menu=1; continue
+        fi
+        umount "$probe_dir" 2>/dev/null || umount -l "$probe_dir" 2>/dev/null
+        mkdir -p "$ram_dir/sqfs" "$ram_dir/upper" "$ram_dir/work"
+        mount -t squashfs -o loop,ro "$ram_dir/recovery.squashfs" "$ram_dir/sqfs" || { umount "$ram_dir" 2>/dev/null || true; force_menu=1; continue; }
+        mount -t overlay overlay -o "lowerdir=$ram_dir/sqfs,upperdir=$ram_dir/upper,workdir=$ram_dir/work" "$newroot" || { umount "$ram_dir/sqfs" 2>/dev/null || true; umount "$ram_dir" 2>/dev/null || true; force_menu=1; continue; }
+        break
+    done
+}
+EOF_HOOK
+    chmod 0755 "$INITCPIO_HOOK_PATH"
+
+    cat <<'EOF_INST' > "$INITCPIO_INST_PATH"
+#!/bin/bash
+
+build() {
+    local mod b
+    for mod in vfat fat nls_cp437 nls_iso8859-1 loop squashfs overlay dm_mod dm_crypt ext4 btrfs; do
+        add_module "$mod" 2>/dev/null || true
+    done
+    for b in blkid losetup cryptsetup lvm btrfs dc-rollback; do
+        if command -v "$b" >/dev/null 2>&1; then
+            add_binary "$(command -v "$b")"
+        fi
+    done
+    add_runscript
+}
+
+help() {
+    cat <<HELPEOF
+NC-UI / Duskcity Live RAM SquashFS & Emergency Rescue hook.
+HELPEOF
+}
+EOF_INST
+    chmod 0644 "$INITCPIO_INST_PATH"
+
+    if [[ ! -f "$MKINIT_CONF" ]]; then
+        cat <<'EOF_CONF' > "$MKINIT_CONF"
+MODULES=(vfat squashfs overlay loop)
+BINARIES=()
+FILES=()
+HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems recovery-ram)
+COMPRESSION="zstd"
+EOF_CONF
+        chmod 0644 "$MKINIT_CONF"
+    fi
+
+    cat <<EOF_RB > "$ROLLBACK_BIN"
+#!/bin/sh
+# NC-UI / Duskcity Emergency Rollback Utility (busybox ash compatible)
+PROBE_DIR="/run/boot-esp"
+RAM_DIR="/run/recovery-ram"
+NEWROOT="/new_root"
+UKI_NAME="${CFG_UKI_NAME}"
+CONSOLE="/dev/console"
+[ -c "\$CONSOLE" ] || CONSOLE="/dev/tty0"
+mkdir -p "\$PROBE_DIR" "\$NEWROOT"
+
+find_and_mount_esp() {
+    if mountpoint -q "\$PROBE_DIR" 2>/dev/null; then
+        [ -f "\$PROBE_DIR/recovery.squashfs.old" ] || [ -f "\$PROBE_DIR/recovery.squashfs" ] && return 0
+        umount "\$PROBE_DIR" 2>/dev/null || true
+    fi
+    for part in /sys/class/block/*; do
+        [ -f "\$part/partition" ] || continue
+        dev_name=\$(basename "\$part")
+        case "\$dev_name" in loop*|ram*|dm-*|md*|sr*|zram*) continue ;; esac
+        dev_path="/dev/\$dev_name"
+        [ -b "\$dev_path" ] || continue
+        if mount -t vfat -o ro "\$dev_path" "\$PROBE_DIR" 2>/dev/null; then
+            if [ -f "\$PROBE_DIR/recovery.squashfs.old" ] || [ -f "\$PROBE_DIR/EFI/Linux/\${UKI_NAME}.old" ]; then
+                ESP_FOUND="\$dev_path"
+                return 0
+            fi
+            umount "\$PROBE_DIR" 2>/dev/null || true
+        fi
+    done
+    return 1
+}
+
+ESP_FOUND=""
+if ! find_and_mount_esp; then
+    printf "ERROR: No ESP with .old rollback images found.\n"
+    exit 1
+fi
+[ -z "\$ESP_FOUND" ] && ESP_FOUND=\$(grep " \$PROBE_DIR " /proc/mounts 2>/dev/null | cut -d' ' -f1)
+OLD_UKI="\$PROBE_DIR/EFI/Linux/\${UKI_NAME}.old"
+CUR_UKI="\$PROBE_DIR/EFI/Linux/\${UKI_NAME}"
+OLD_SQ="\$PROBE_DIR/recovery.squashfs.old"
+CUR_SQ="\$PROBE_DIR/recovery.squashfs"
+
+mount -o remount,rw "\$PROBE_DIR" 2>/dev/null || exit 1
+[ -s "\$OLD_UKI" ] && cp -f "\$OLD_UKI" "\$CUR_UKI"
+[ -s "\$OLD_SQ" ] && cp -f "\$OLD_SQ" "\$CUR_SQ"
+sync
+umount "\$PROBE_DIR" 2>/dev/null || true
+printf "Rolled back .old recovery artifacts on %s.\n" "\${ESP_FOUND}"
+EOF_RB
+    chmod 0755 "$ROLLBACK_BIN"
+    if [[ -n "$TARGET_MNT" && -d "$TARGET_MNT" ]]; then
+        cp -f "$ROLLBACK_BIN" "${TARGET_MNT}/dc-rollback.sh" 2>/dev/null || true
+    fi
+    return 0
+}
+
+parse_limine_meta() {
+    local lconf="$1"
+    LIMINE_TIMEOUT="5"
+    LIMINE_DEFAULT_ENTRY="1"
+    LIMINE_HAS_RECOVERY="0"
+    LIMINE_ENTRIES=""
+    [[ -r "$lconf" ]] || return 0
+
+    local t_val d_val
+    t_val="$(awk -F':' '/^[[:space:]]*timeout[[:space:]]*:/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$lconf" 2>/dev/null || true)"
+    d_val="$(awk -F':' '/^[[:space:]]*default_entry[[:space:]]*:/ {gsub(/[^0-9]/,"",$2); print $2; exit}' "$lconf" 2>/dev/null || true)"
+    [[ -n "$t_val" ]] && LIMINE_TIMEOUT="$t_val"
+    [[ -n "$d_val" ]] && LIMINE_DEFAULT_ENTRY="$d_val"
+    if grep -Fq "/EFI/Linux/${CFG_UKI_NAME}" "$lconf" 2>/dev/null || grep -Eiq '/EFI/Linux/.*(recovery|rescue)\.efi' "$lconf" 2>/dev/null; then
+        LIMINE_HAS_RECOVERY="1"
+    fi
+    LIMINE_ENTRIES="$(awk '
+        /^[[:space:]]*\// {
+            s=$0
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+            sub(/^\/+/, "", s)
+            sub(/^\+/, "", s)
+            gsub(/\|/, "-", s)
+            if (length(s) > 0) {
+                if (count > 0) printf "||"
+                printf "%s", s
+                count++
+                if (count >= 12) exit
+            }
+        }
+    ' "$lconf" 2>/dev/null || true)"
+    return 0
+}
+
+collect_and_write_status() {
+    load_rescue_config
+    resolve_esp_mnt 0 || true
+
+    local uki_name="$CFG_UKI_NAME" uki_dir=""
+    if [[ -n "$TARGET_MNT" ]]; then
+        uki_dir="${TARGET_MNT}/EFI/Linux"
+        if [[ ! -f "${uki_dir}/${uki_name}" ]]; then
+            local alt
+            for alt in "nightcity-recovery.efi" "nc-rescue.efi" "duskcity.efi"; do
+                if [[ -f "${uki_dir}/${alt}" ]]; then
+                    uki_name="$alt"
+                    break
+                fi
+            done
+        fi
+    fi
+
+    local uki_path="${uki_dir}/${uki_name}"
+    local uki_old="${uki_dir}/${uki_name}.old"
+    local sq_path="${TARGET_MNT}/recovery.squashfs"
+    local sq_old="${TARGET_MNT}/recovery.squashfs.old"
+    local rb_esp="${TARGET_MNT}/dc-rollback.sh"
+
+    local uki_present=0 uki_size="-" uki_mtime="-" uki_signed="na"
+    local uki_old_present=0 uki_old_size="-"
+    local sq_present=0 sq_size="-" sq_mtime="-"
+    local sq_old_present=0 sq_old_size="-"
+    local rb_present=0 esp_free_h="-" esp_free_b="0"
+
+    if [[ -n "$TARGET_MNT" ]]; then
+        esp_free_h="$(df -h --output=avail "$TARGET_MNT" 2>/dev/null | tail -n1 | tr -d ' ' || echo "-")"
+        esp_free_b="$(df -B1 --output=avail "$TARGET_MNT" 2>/dev/null | tail -n1 | tr -dc '0-9' || echo "0")"
+        if [[ -f "$uki_path" ]]; then
+            uki_present=1
+            uki_size="$(du -h "$uki_path" 2>/dev/null | awk '{print $1}' || echo "-")"
+            uki_mtime="$(date -r "$uki_path" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "-")"
+            if command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+                if sbctl verify "$uki_path" >/dev/null 2>&1; then
+                    uki_signed="1"
+                else
+                    uki_signed="0"
+                fi
+            fi
+        fi
+        if [[ -f "$uki_old" ]]; then
+            uki_old_present=1
+            uki_old_size="$(du -h "$uki_old" 2>/dev/null | awk '{print $1}' || echo "-")"
+        fi
+        if [[ -f "$sq_path" ]]; then
+            sq_present=1
+            sq_size="$(du -h "$sq_path" 2>/dev/null | awk '{print $1}' || echo "-")"
+            sq_mtime="$(date -r "$sq_path" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "-")"
+        fi
+        if [[ -f "$sq_old" ]]; then
+            sq_old_present=1
+            sq_old_size="$(du -h "$sq_old" 2>/dev/null | awk '{print $1}' || echo "-")"
+        fi
+        if [[ -f "$rb_esp" || -x "$ROLLBACK_BIN" ]]; then
+            rb_present=1
+        fi
+    fi
+
+    local limine_conf=""
+    LIMINE_TIMEOUT="5"
+    LIMINE_DEFAULT_ENTRY="1"
+    LIMINE_HAS_RECOVERY="0"
+    LIMINE_ENTRIES=""
+    local lim_wp_rel="" lim_wp_cache="" lim_esp_imgs=""
+    if [[ -n "$TARGET_MNT" ]]; then
+        local lc
+        for lc in "${TARGET_MNT}/limine.conf" "${TARGET_MNT}/limine/limine.conf"; do
+            if [[ -f "$lc" ]]; then
+                limine_conf="$lc"
+                parse_limine_meta "$lc"
+                mkdir -p "$STATE_DIR"
+                cp -f "$lc" "${STATE_DIR}/.limine.conf.tmp.$$" 2>/dev/null || true
+                if [[ -f "${STATE_DIR}/.limine.conf.tmp.$$" ]]; then
+                    chown root:root "${STATE_DIR}/.limine.conf.tmp.$$" 2>/dev/null || true
+                    chmod 0644 "${STATE_DIR}/.limine.conf.tmp.$$" 2>/dev/null || true
+                    mv -f "${STATE_DIR}/.limine.conf.tmp.$$" "${STATE_DIR}/limine.conf.cache"
+                fi
+                local raw_wp
+                raw_wp="$(awk -F':' '/^[[:space:]]*wallpaper[[:space:]]*:/ {sub(/^[[:space:]]*wallpaper[[:space:]]*:[[:space:]]*/, ""); print; exit}' "$lc" 2>/dev/null || true)"
+                raw_wp="${raw_wp%%#*}"
+                raw_wp="$(printf '%s' "$raw_wp" | sed -e 's/^boot()://' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+                if [[ -n "$raw_wp" ]]; then
+                    lim_wp_rel="${raw_wp#/}"
+                    local wp_src="${TARGET_MNT}/${lim_wp_rel}"
+                    if [[ -f "$wp_src" ]]; then
+                        lim_wp_cache="${STATE_DIR}/limine-wallpaper.cache"
+                        cp -f "$wp_src" "${lim_wp_cache}.tmp.$$" 2>/dev/null || true
+                        if [[ -f "${lim_wp_cache}.tmp.$$" ]]; then
+                            chown root:root "${lim_wp_cache}.tmp.$$" 2>/dev/null || true
+                            chmod 0644 "${lim_wp_cache}.tmp.$$" 2>/dev/null || true
+                            mv -f "${lim_wp_cache}.tmp.$$" "$lim_wp_cache"
+                        fi
+                    fi
+                fi
+                break
+            fi
+        done
+        local imgs_list=() img_f rel_img
+        while IFS= read -r img_f; do
+            [[ -f "$img_f" ]] || continue
+            rel_img="${img_f#${TARGET_MNT}/}"
+            imgs_list+=("$rel_img")
+            (( ${#imgs_list[@]} >= 12 )) && break
+        done < <(find "$TARGET_MNT" -maxdepth 2 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.bmp' \) 2>/dev/null | sort)
+        if (( ${#imgs_list[@]} > 0 )); then
+            local IFS=','
+            lim_esp_imgs="${imgs_list[*]}"
+        fi
+    fi
+
+    local live_ram=0 booted_img="" uki_needs_rebuild=0
+    if [[ -d "$UPPER_DIR" ]]; then
+        live_ram=1
+        [[ -f /run/recovery-ram/booted-image ]] && booted_img="$(tr -d '[:space:]' < /run/recovery-ram/booted-image || true)"
+        if detect_kernel && [[ -f "$uki_path" ]]; then
+            local cur_fp saved_fp=""
+            cur_fp="$(compute_uki_fingerprint)"
+            [[ -f "$UKI_STATE_FILE" ]] && saved_fp="$(tr -d '[:space:]' < "$UKI_STATE_FILE" || true)"
+            if [[ "$INSTALLED_KVER" != "$RUNNING_KVER" ]] || [[ -n "$saved_fp" && "$cur_fp" != "$saved_fp" ]]; then
+                uki_needs_rebuild=1
+            fi
+        elif [[ ! -f "$uki_path" ]]; then
+            uki_needs_rebuild=1
+        fi
+    fi
+
+    local chroot_active=0 chroot_dev="" chroot_vg=""
+    if mountpoint -q "$CHROOT_MNT" 2>/dev/null; then
+        chroot_active=1
+    fi
+    if [[ -r "$CHROOT_STATE" ]]; then
+        chroot_dev="$(awk -F'=' '/^STATE_LUKS_DEV=/ {print $2; exit}' "$CHROOT_STATE" 2>/dev/null || true)"
+        chroot_vg="$(awk -F'=' '/^STATE_VG_NAME=/ {print $2; exit}' "$CHROOT_STATE" 2>/dev/null || true)"
+    fi
+
+    local updated_at
+    updated_at="$(date '+%Y-%m-%d %H:%M:%S')"
+    mkdir -p "$STATE_DIR"
+    local tmp_env="${STATE_DIR}/.rescue-status.tmp.$$"
+    (
+        umask 0022
+        cat > "$tmp_env" <<EOF
+UKI_NAME="${uki_name}"
+UKI_CONFIGURED="${CFG_UKI_NAME}"
+UKI_PRESENT="${uki_present}"
+UKI_SIZE="${uki_size}"
+UKI_MTIME="${uki_mtime}"
+UKI_SIGNED="${uki_signed}"
+UKI_OLD_PRESENT="${uki_old_present}"
+UKI_OLD_SIZE="${uki_old_size}"
+SQUASHFS_PRESENT="${sq_present}"
+SQUASHFS_SIZE="${sq_size}"
+SQUASHFS_MTIME="${sq_mtime}"
+SQUASHFS_OLD_PRESENT="${sq_old_present}"
+SQUASHFS_OLD_SIZE="${sq_old_size}"
+ROLLBACK_SCRIPT_PRESENT="${rb_present}"
+ESP_MOUNT="${TARGET_MNT}"
+ESP_DEV="${ESP_DEV}"
+ESP_FREE_HUMAN="${esp_free_h}"
+ESP_FREE_BYTES="${esp_free_b}"
+LIVE_RAM_ACTIVE="${live_ram}"
+BOOTED_IMAGE="${booted_img}"
+UKI_NEEDS_REBUILD="${uki_needs_rebuild}"
+CHROOT_ACTIVE="${chroot_active}"
+CHROOT_DEV="${chroot_dev}"
+CHROOT_VG="${chroot_vg}"
+LIMINE_CONF_PATH="${limine_conf}"
+LIMINE_TIMEOUT="${LIMINE_TIMEOUT}"
+LIMINE_DEFAULT_ENTRY="${LIMINE_DEFAULT_ENTRY}"
+LIMINE_HAS_RECOVERY="${LIMINE_HAS_RECOVERY}"
+LIMINE_ENTRIES="${LIMINE_ENTRIES}"
+LIMINE_WALLPAPER_REL="${lim_wp_rel}"
+LIMINE_WALLPAPER_CACHE="${lim_wp_cache}"
+LIMINE_ESP_IMAGES="${lim_esp_imgs}"
+SIGN_SBCTL="${CFG_SIGN_SBCTL}"
+GOLDEN_SUBDIR="${CFG_GOLDEN_SUBDIR}"
+UPDATED_AT="${updated_at}"
+EOF
+    )
+    chown root:root "$tmp_env" 2>/dev/null || true
+    chmod 0644 "$tmp_env"
+    mv -f "$tmp_env" "${STATE_DIR}/rescue-status.env"
+    cat "${STATE_DIR}/rescue-status.env"
+    return 0
+}
+
+swap_pair_safe() {
+    local new_f="$1" cur_f="$2" bak_f="$3" save_old="$4"
+    if (( save_old == 1 )) && [[ -f "$cur_f" ]]; then
+        mv -f "$cur_f" "$bak_f"
+    fi
+    if ! mv -f "$new_f" "$cur_f"; then
+        msg_err "Failed moving ${new_f} -> ${cur_f}; restoring .old if present."
+        if (( save_old == 1 )) && [[ -f "$bak_f" && ! -f "$cur_f" ]]; then
+            mv -f "$bak_f" "$cur_f"
+        fi
+        exit 1
+    fi
+}
+
+ensure_limine_recovery_entry() {
+    local lconf="" c
+    for c in "${TARGET_MNT}/limine.conf" "${TARGET_MNT}/limine/limine.conf"; do
+        [[ -f "$c" ]] && { lconf="$c"; break; }
+    done
+    [[ -n "$lconf" ]] || return 0
+    if grep -Fq "/EFI/Linux/${CFG_UKI_NAME}" "$lconf" 2>/dev/null; then
+        return 0
+    fi
+    msg_step "Registering /Disaster Recovery entry in ${lconf}..."
+    local tmp_l="${lconf}.tmp.$$"
+    cp -f "$lconf" "$tmp_l"
+    if grep -Eq '^[[:space:]]*/Disaster Recovery' "$lconf" 2>/dev/null; then
+        cat >> "$tmp_l" <<EOF
+
+  //NC-UI - RAM Recovery
+    comment: NC-UI / Duskcity Rescue UKI
+    protocol: efi
+    path: boot():/EFI/Linux/${CFG_UKI_NAME}
+EOF
+    else
+        cat >> "$tmp_l" <<EOF
+
+/Disaster Recovery
+  //NC-UI - RAM Recovery
+    comment: NC-UI / Duskcity Rescue UKI
+    protocol: efi
+    path: boot():/EFI/Linux/${CFG_UKI_NAME}
+EOF
+    fi
+    chmod --reference="$lconf" "$tmp_l" 2>/dev/null || chmod 0644 "$tmp_l"
+    chown --reference="$lconf" "$tmp_l" 2>/dev/null || true
+    mv -f "$tmp_l" "$lconf"
+}
+
+build_uki_standalone() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP partition read-write."; exit 1; }
+    detect_kernel || { msg_err "No installed kernel modules/vmlinuz found in /usr/lib/modules."; exit 1; }
+    write_recovery_hook_files
+
+    local uki_dir="${TARGET_MNT}/EFI/Linux"
+    local cur_uki="${uki_dir}/${CFG_UKI_NAME}"
+    local bak_uki="${uki_dir}/${CFG_UKI_NAME}.old"
+    NEW_UKI="${uki_dir}/${CFG_UKI_NAME}.new"
+    mkdir -p "$uki_dir"
+
+    local tmp_conf="/run/nc-mkinitcpio-recovery.$$.conf"
+    local tmp_cmd="/run/nc-uki-cmdline.$$.txt"
+    TMP_FILES+=("$tmp_conf" "$tmp_cmd")
+    cp -f "$MKINIT_CONF" "$tmp_conf"
+    if [[ -x "$ROLLBACK_BIN" ]]; then
+        printf '\nBINARIES+=(%s)\n' "$ROLLBACK_BIN" >> "$tmp_conf"
+    fi
+    if [[ -f /etc/kernel/cmdline-recovery ]]; then
+        cp -f /etc/kernel/cmdline-recovery "$tmp_cmd"
+    elif [[ -d "$UPPER_DIR" && -f /etc/kernel/cmdline ]]; then
+        cp -f /etc/kernel/cmdline "$tmp_cmd"
+    else
+        printf 'rw loglevel=4\n' > "$tmp_cmd"
+    fi
+
+    msg_step "Building Recovery UKI (${cur_uki}) for kernel ${INSTALLED_KVER}..."
+    mkinitcpio -c "$tmp_conf" -k "$KERNEL_IMG" --cmdline "$tmp_cmd" --uki "$NEW_UKI"
+    [[ -s "$NEW_UKI" ]] || { msg_err "mkinitcpio did not produce ${NEW_UKI}."; exit 1; }
+
+    if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        msg_step "Signing Recovery UKI with sbctl..."
+        sbctl sign -s "$NEW_UKI" >/dev/null 2>&1 || sbctl sign "$NEW_UKI" || msg_warn "sbctl sign returned warning; continuing."
+    fi
+
+    IN_FINAL_SWAP=1
+    swap_pair_safe "$NEW_UKI" "$cur_uki" "$bak_uki" 1
+    if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        sbctl sign -s "$cur_uki" >/dev/null 2>&1 || true
+    fi
+    ensure_limine_recovery_entry
+    sync
+    mkdir -p "$(dirname "$UKI_STATE_FILE")"
+    compute_uki_fingerprint > "$UKI_STATE_FILE"
+    COMMIT_COMPLETED=1
+    msg_ok "Recovery UKI ready: ${cur_uki}"
+    collect_and_write_status >/dev/null
+    if [[ -x /usr/lib/ncui/sbin/nc-snap ]]; then
+        /usr/lib/ncui/sbin/nc-snap check-health >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+do_live_commit() {
+    local opt_rebuild="$1" opt_replace="$2" opt_skip_uki="$3"
+    load_rescue_config
+    if [[ ! -d "$UPPER_DIR" ]]; then
+        msg_err "Live RAM overlay (${UPPER_DIR}) not detected. Boot into Live Recovery RAM first, or use build-uki."
+        exit 2
+    fi
+    resolve_esp_mnt 1 || { msg_err "Unable to resolve/mount ESP read-write."; exit 1; }
+    detect_kernel || { msg_err "No installed kernel found in /usr/lib/modules."; exit 1; }
+    write_recovery_hook_files
+
+    local target_sq="${TARGET_MNT}/recovery.squashfs"
+    local backup_sq="${TARGET_MNT}/recovery.squashfs.old"
+    NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
+    local uki_dir="${TARGET_MNT}/EFI/Linux"
+    local target_uki="${uki_dir}/${CFG_UKI_NAME}"
+    local backup_uki="${uki_dir}/${CFG_UKI_NAME}.old"
+    NEW_UKI="${uki_dir}/${CFG_UKI_NAME}.new"
+
+    if [[ -f "$UKI_STATE_FILE" ]]; then
+        HAD_PREV_UKI_STATE=1
+        PREV_UKI_STATE="$(cat "$UKI_STATE_FILE" 2>/dev/null || true)"
+    fi
+
+    local reasons=()
+    [[ "$INSTALLED_KVER" != "$RUNNING_KVER" ]] && reasons+=("Kernel mismatch: running=${RUNNING_KVER}, installed=${INSTALLED_KVER}")
+    [[ ! -f "$target_uki" ]] && reasons+=("Missing Recovery UKI ${target_uki}")
+    if (( ${#reasons[@]} > 0 && opt_rebuild == 0 && opt_skip_uki == 0 )); then
+        msg_err "Recovery UKI requires rebuild (${reasons[*]}). Use commit-rebuild or commit-skip-uki."
+        exit 1
+    fi
+
+    local esp_free_b sq_est_b=4294967296 req_b
+    esp_free_b="$(df -B1 --output=avail "$TARGET_MNT" | tail -n1 | tr -dc '0-9')"
+    if [[ -f "$target_sq" ]]; then
+        local cur_sq_b
+        cur_sq_b="$(stat -c%s "$target_sq")"
+        sq_est_b=$(( cur_sq_b * 110 / 100 + 268435456 ))
+    fi
+    req_b="$sq_est_b"
+    (( opt_rebuild == 1 )) && req_b=$(( req_b + 367001600 ))
+    if (( opt_replace == 1 )); then
+        rm -f "$backup_sq"
+        (( opt_rebuild == 1 )) && rm -f "$backup_uki"
+    elif (( esp_free_b < req_b )); then
+        msg_err "Insufficient free space on ESP ($((esp_free_b/1048576))MB free < $((req_b/1048576))MB estimated)."
+        exit 1
+    fi
+
+    if (( opt_rebuild == 1 )); then
+        mkdir -p "$uki_dir"
+        local tmp_conf="/run/nc-commit-mkinit.$$.conf" tmp_cmd="/run/nc-commit-cmd.$$.txt"
+        TMP_FILES+=("$tmp_conf" "$tmp_cmd")
+        cp -f "$MKINIT_CONF" "$tmp_conf"
+        [[ -x "$ROLLBACK_BIN" ]] && printf '\nBINARIES+=(%s)\n' "$ROLLBACK_BIN" >> "$tmp_conf"
+        if [[ -f /etc/kernel/cmdline ]]; then
+            cp -f /etc/kernel/cmdline "$tmp_cmd"
+        else
+            sed -E 's/(^|[[:space:]])(BOOT_IMAGE=[^[:space:]]+|initrd=[^[:space:]]+|recovery\.menu([^[:space:]]*)?)//g; s/^[[:space:]]+//; s/[[:space:]]+$//' /proc/cmdline > "$tmp_cmd"
+        fi
+        msg_step "Rebuilding Recovery UKI (${NEW_UKI})..."
+        mkinitcpio -c "$tmp_conf" -k "$KERNEL_IMG" --cmdline "$tmp_cmd" --uki "$NEW_UKI"
+        [[ -s "$NEW_UKI" ]] || { msg_err "UKI build failed."; exit 1; }
+        if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+            sbctl sign "$NEW_UKI" || msg_warn "sbctl sign warning."
+        fi
+        compute_uki_fingerprint > "$UKI_STATE_FILE"
+    fi
+
+    msg_step "Cleaning volatile overlay caches & packing ${NEW_SQUASHFS}..."
+    rm -rf /var/cache/pacman/pkg/* /var/log/journal/* 2>/dev/null || true
+    mkdir -p "$COMMIT_VIEW"
+    mount --bind / "$COMMIT_VIEW"
+
+    local creds_rel="${CFG_SMB_CREDS#/}"
+    mksquashfs "$COMMIT_VIEW" "$NEW_SQUASHFS" \
+        -one-file-system -comp zstd -Xcompression-level 19 -b 1M -noappend \
+        -wildcards -e \
+        'proc/*' 'sys/*' 'dev/*' 'run/*' 'tmp/*' 'mnt/*' 'media/*' 'nas/*' \
+        'var/cache/pacman/pkg/*' 'var/log/*' 'var/tmp/*' 'var/lib/systemd/random-seed' \
+        "$creds_rel" 'etc/samba/nas-cred' \
+        'root/.cache/*' 'home/*/.cache/*' \
+        'root/.bash_history' 'home/*/.bash_history' \
+        'root/.zsh_history' 'home/*/.zsh_history'
+
+    unsquashfs -s "$NEW_SQUASHFS" >/dev/null 2>&1 || { msg_err "SquashFS integrity check failed."; exit 1; }
+    local new_sz
+    new_sz="$(stat -c%s "$NEW_SQUASHFS")"
+    (( new_sz < 4294967295 )) || { msg_err "SquashFS exceeds FAT32 4 GiB limit (${new_sz} bytes)."; exit 1; }
+
+    sync
+    IN_FINAL_SWAP=1
+    local save_old=1
+    if (( opt_replace == 1 )) || [[ -f "$BOOT_COMMIT_FLAG" ]]; then
+        save_old=0
+    fi
+    if (( opt_rebuild == 1 )); then
+        swap_pair_safe "$NEW_UKI" "$target_uki" "$backup_uki" "$save_old"
+        if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+            sbctl sign -s "$target_uki" >/dev/null 2>&1 || true
+        fi
+    fi
+    swap_pair_safe "$NEW_SQUASHFS" "$target_sq" "$backup_sq" "$save_old"
+    (( opt_replace == 0 )) && touch "$BOOT_COMMIT_FLAG"
+    sync
+    COMMIT_COMPLETED=1
+    msg_ok "Live RAM SquashFS committed atomically to ${target_sq}."
+    collect_and_write_status >/dev/null
+    return 0
+}
+
+do_rollback_esp() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP partition read-write."; exit 1; }
+    local uki_dir="${TARGET_MNT}/EFI/Linux"
+    local cur_uki="${uki_dir}/${CFG_UKI_NAME}"
+    local old_uki="${uki_dir}/${CFG_UKI_NAME}.old"
+    local cur_sq="${TARGET_MNT}/recovery.squashfs"
+    local old_sq="${TARGET_MNT}/recovery.squashfs.old"
+
+    if [[ ! -s "$old_sq" && ! -s "$old_uki" ]]; then
+        msg_err "No .old recovery images found on ESP (${TARGET_MNT})."
+        exit 1
+    fi
+    local restored=0
+    if [[ -s "$old_uki" ]]; then
+        cp -f "$old_uki" "$cur_uki"
+        if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+            sbctl sign -s "$cur_uki" >/dev/null 2>&1 || sbctl sign "$cur_uki" >/dev/null 2>&1 || true
+        fi
+        restored=$((restored + 1))
+    fi
+    if [[ -s "$old_sq" ]]; then
+        cp -f "$old_sq" "$cur_sq"
+        restored=$((restored + 1))
+    fi
+    sync
+    msg_ok "Restored ${restored} .old recovery artifact(s) on ESP."
+    collect_and_write_status >/dev/null
+    return 0
+}
+
+do_limine_set_stdin() {
+    load_rescue_config
+    local input
+    input="$(cat)"
+    local key val
+    key="$(printf '%s\n' "$input" | head -n1 | cut -d'=' -f1 | tr -d '[:space:]')"
+    val="$(printf '%s\n' "$input" | head -n1 | cut -d'=' -f2- | tr -d '[:space:]')"
+    if [[ "$key" != "timeout" && "$key" != "default_entry" ]]; then
+        msg_err "Unsupported limine key: ${key}"
+        exit 1
+    fi
+    if [[ ! "$val" =~ ^[0-9]{1,2}$ ]]; then
+        msg_err "Invalid integer value for ${key}: ${val}"
+        exit 1
+    fi
+    if [[ "$key" == "timeout" ]] && (( val > 60 )); then
+        msg_err "Timeout must be 0..60 seconds."
+        exit 1
+    fi
+    if [[ "$key" == "default_entry" ]] && (( val < 1 || val > 20 )); then
+        msg_err "Default entry must be 1..20."
+        exit 1
+    fi
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local lconf="" c
+    for c in "${TARGET_MNT}/limine.conf" "${TARGET_MNT}/limine/limine.conf"; do
+        [[ -f "$c" ]] && { lconf="$c"; break; }
+    done
+    [[ -n "$lconf" ]] || { msg_err "limine.conf not found on ESP."; exit 1; }
+    local tmp_l="${lconf}.tmp.$$"
+    awk -v k="$key" -v v="$val" '
+        BEGIN { done = 0 }
+        $0 ~ "^[[:space:]]*" k "[[:space:]]*:" {
+            print k ": " v
+            done = 1
+            next
+        }
+        { print $0 }
+        END {
+            if (!done) print k ": " v
+        }
+    ' "$lconf" > "$tmp_l"
+    chmod --reference="$lconf" "$tmp_l" 2>/dev/null || chmod 0644 "$tmp_l"
+    chown --reference="$lconf" "$tmp_l" 2>/dev/null || true
+    mv -f "$tmp_l" "$lconf"
+    sync
+    collect_and_write_status >/dev/null
+    msg_ok "LIMINE_OK|${key}=${val}"
+    return 0
+}
+
+do_limine_apply_stdin() {
+    load_rescue_config
+    local tmp_in="/run/nc-limine-in.$$"
+    TMP_FILES+=("$tmp_in")
+    cat > "$tmp_in"
+    local sz
+    sz="$(wc -c < "$tmp_in" | tr -d ' ')"
+    if (( sz < 16 || sz > 262144 )); then
+        msg_err "Invalid limine.conf payload size (${sz} bytes)."
+        exit 1
+    fi
+    if ! grep -Eq '^[[:space:]]*(path|image_path|kernel_path):' "$tmp_in"; then
+        msg_err "Refusing limine.conf without any boot entry path: line."
+        exit 1
+    fi
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local lconf="" c
+    for c in "${TARGET_MNT}/limine.conf" "${TARGET_MNT}/limine/limine.conf"; do
+        [[ -f "$c" ]] && { lconf="$c"; break; }
+    done
+    [[ -n "$lconf" ]] || lconf="${TARGET_MNT}/limine.conf"
+    if [[ -f "$lconf" ]]; then
+        cp -f "$lconf" "${lconf}.bak" 2>/dev/null || true
+    fi
+    local tmp_l="${lconf}.tmp.$$"
+    cp -f "$tmp_in" "$tmp_l"
+    chmod --reference="$lconf" "$tmp_l" 2>/dev/null || chmod 0644 "$tmp_l"
+    chown --reference="$lconf" "$tmp_l" 2>/dev/null || true
+    mv -f "$tmp_l" "$lconf"
+    sync
+    collect_and_write_status >/dev/null
+    msg_ok "LIMINE_APPLY_OK|${lconf}"
+    return 0
+}
+
+do_limine_wallpaper_stdin() {
+    load_rescue_config
+    local src_path
+    read -r src_path || true
+    src_path="$(printf '%s' "$src_path" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -z "$src_path" || "$src_path" == *".."* || ! -f "$src_path" ]]; then
+        msg_err "Wallpaper file not found: ${src_path}"
+        exit 1
+    fi
+    local bname ext sz
+    bname="$(basename "$src_path")"
+    ext="${bname##*.}"
+    ext="${ext,,}"
+    if [[ ! "$ext" =~ ^(png|jpg|jpeg|bmp)$ ]]; then
+        msg_err "Unsupported Limine image format (.${ext}). Use PNG, JPG, or BMP."
+        exit 1
+    fi
+    sz="$(stat -c%s "$src_path" 2>/dev/null || echo 0)"
+    if (( sz < 64 || sz > 33554432 )); then
+        msg_err "Wallpaper size invalid (${sz} bytes, max 32 MiB)."
+        exit 1
+    fi
+    local safe_name
+    safe_name="$(printf '%s' "$bname" | tr ' ' '-' | sed -E 's/[^a-zA-Z0-9._-]/-/g')"
+    [[ "$safe_name" =~ ^[a-zA-Z0-9._-]+\.(png|jpg|jpeg|bmp|PNG|JPG|JPEG|BMP)$ ]] || safe_name="limine-wallpaper.${ext}"
+
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local dst="${TARGET_MNT}/${safe_name}"
+    cp -f "$src_path" "${dst}.tmp.$$"
+    chmod 0644 "${dst}.tmp.$$" 2>/dev/null || true
+    mv -f "${dst}.tmp.$$" "$dst"
+    sync
+    local b2h=""
+    if command -v b2sum >/dev/null 2>&1; then
+        b2h="$(b2sum "$dst" | awk '{print $1}')"
+    fi
+    mkdir -p "$STATE_DIR"
+    cp -f "$dst" "${STATE_DIR}/limine-wallpaper.cache" 2>/dev/null || true
+    chmod 0644 "${STATE_DIR}/limine-wallpaper.cache" 2>/dev/null || true
+    if [[ -n "$b2h" ]]; then
+        printf 'WALLPAPER_OK|boot():/%s#%s|%s\n' "$safe_name" "$b2h" "$safe_name"
+    else
+        printf 'WALLPAPER_OK|boot():/%s|%s\n' "$safe_name" "$safe_name"
+    fi
+    return 0
+}
+
+do_register_limine() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    ensure_limine_recovery_entry
+    sync
+    collect_and_write_status >/dev/null
+    msg_ok "REGISTER_LIMINE_OK|${CFG_UKI_NAME}"
+    return 0
+}
+
+_resolve_ncui_source_dir() {
+    local cand
+    for cand in "${NCUI_SRC_DIR:-}" "/opt/ncui" /home/*/Projects/ncui; do
+        if [[ -n "$cand" && -f "${cand}/panels/control_center.py" && -d "${cand}/ui" ]]; then
+            printf '%s' "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_inject_ncui_into_rootfs() {
+    local root_dir="$1" src_dir="$2"
+    msg_step "Installing NC-UI & bundled resilience helpers into ${root_dir}/opt/ncui..."
+    mkdir -p "${root_dir}/opt/ncui" "${root_dir}/usr/local/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
+    rsync -a --delete --exclude='.git' --exclude='.gnome-panels' --exclude='__pycache__' --exclude='*.pyc' "${src_dir}/" "${root_dir}/opt/ncui/"
+    local h
+    for h in "${src_dir}"/libexec/ncui/nc-*; do
+        [[ -f "$h" ]] || continue
+        install -m 0755 "$h" "${root_dir}/usr/lib/ncui/sbin/$(basename "$h")"
+    done
+    if [[ -f "$CONF_FILE" ]]; then
+        install -m 0644 "$CONF_FILE" "${root_dir}/etc/ncui/resilience.toml"
+    fi
+    cat <<'EOF_BIN' > "${root_dir}/usr/local/bin/ncui"
+#!/usr/bin/env bash
+exec python3 /opt/ncui/ncui.py "$@"
+EOF_BIN
+    cat <<'EOF_CTL' > "${root_dir}/usr/local/bin/nc-ctl"
+#!/usr/bin/env bash
+exec python3 /opt/ncui/bin/nc-ctl "$@"
+EOF_CTL
+    chmod 0755 "${root_dir}/usr/local/bin/ncui" "${root_dir}/usr/local/bin/nc-ctl"
+    if [[ ! -f "${root_dir}/etc/sudoers.d/ncui-recovery" ]]; then
+        mkdir -p -m 0750 "${root_dir}/etc/sudoers.d"
+        cat <<'EOF_SUD' > "${root_dir}/etc/sudoers.d/ncui-recovery"
+%wheel ALL=(ALL:ALL) NOPASSWD: /usr/lib/ncui/sbin/nc-rescue, /usr/lib/ncui/sbin/nc-chroot, /usr/lib/ncui/sbin/nc-golden, /usr/lib/ncui/sbin/nc-snap, /usr/lib/ncui/sbin/nc-vault, /usr/lib/ncui/sbin/nc-hanoi, /usr/lib/ncui/sbin/nc-disks
+EOF_SUD
+        chmod 0440 "${root_dir}/etc/sudoers.d/ncui-recovery"
+    fi
+    cat <<'EOF_DESK' > "${root_dir}/usr/share/applications/ncui.desktop"
+[Desktop Entry]
+Type=Application
+Name=NC-UI Control Center
+Exec=ncui --control-center
+Terminal=false
+Categories=System;Settings;
+EOF_DESK
+    return 0
+}
+
+do_sync_ncui_squashfs() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local src_dir
+    src_dir="$(_resolve_ncui_source_dir)" || { msg_err "NC-UI repository not found."; exit 1; }
+    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
+    [[ -s "$cur_sq" ]] || { msg_err "No existing ${cur_sq} on ESP. Run --build-recovery first."; exit 1; }
+
+    local work_dir="/var/tmp/ncui-sqfs-sync.$$"
+    trap 'rm -rf "'"$work_dir"'" 2>/dev/null || true; cleanup_rescue' EXIT INT TERM HUP
+    msg_step "Unpacking ${cur_sq} into ${work_dir}..."
+    rm -rf "$work_dir"
+    unsquashfs -d "$work_dir" "$cur_sq"
+
+    if ! chroot "$work_dir" python3 -c "import gi; gi.require_version('Gtk','3.0'); import ctypes; ctypes.CDLL('libvterm.so.0')" >/dev/null 2>&1; then
+        msg_step "Installing missing NC-UI GTK3/libvterm dependencies inside recovery rootfs..."
+        pacman --noconfirm --needed -S --root "$work_dir" --cachedir /var/cache/pacman/pkg python python-gobject gtk3 cairo pango gdk-pixbuf2 libvterm rsync || true
+    fi
+    _inject_ncui_into_rootfs "$work_dir" "$src_dir"
+
+    NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
+    msg_step "Packing updated ${NEW_SQUASHFS} (zstd -19)..."
+    mksquashfs "$work_dir" "$NEW_SQUASHFS" -comp zstd -Xcompression-level 19 -b 1M -noappend
+    unsquashfs -s "$NEW_SQUASHFS" >/dev/null 2>&1 || { msg_err "SquashFS integrity check failed."; exit 1; }
+    local nsz
+    nsz="$(stat -c%s "$NEW_SQUASHFS")"
+    (( nsz < 4294967295 )) || { msg_err "SquashFS exceeds 4 GiB FAT32 limit (${nsz} bytes)."; exit 1; }
+
+    IN_FINAL_SWAP=1
+    swap_pair_safe "$NEW_SQUASHFS" "$cur_sq" "$bak_sq" 1
+    sync
+    COMMIT_COMPLETED=1
+    rm -rf "$work_dir"
+    build_uki_standalone
+    msg_ok "Synced NC-UI into ${cur_sq} and rebuilt signed UKI."
+    return 0
+}
+
+do_build_recovery_squashfs() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local src_dir
+    src_dir="$(_resolve_ncui_source_dir)" || { msg_err "NC-UI repository not found."; exit 1; }
+    command -v pacstrap >/dev/null 2>&1 || { msg_err "pacstrap not found (install arch-install-scripts)."; exit 1; }
+
+    local mode_sel="1"
+    printf "\n%s=== NC-UI LIVE RECOVERY SQUASHFS + SIGNED UKI BUILDER ===%s\n" "$CLR_BOLD" "$CLR_RESET"
+    printf "  Target ESP   : %s (%s)\n" "$TARGET_MNT" "${ESP_DEV:-unknown}"
+    printf "  Target UKI   : %s/EFI/Linux/%s (sbctl=%s)\n" "$TARGET_MNT" "$CFG_UKI_NAME" "$CFG_SIGN_SBCTL"
+    printf "  NC-UI Source : %s\n\n" "$src_dir"
+    printf "  [1] Wayland Desktop (niri + waybar + foot) + NC-UI + DR Tools (Recommended)\n"
+    printf "  [2] Minimal Rescue Console + NC-UI + DR Tools\n"
+    read -r -p "Select profile [1/2] (Enter=1, Ctrl+C to cancel): " mode_sel </dev/tty || mode_sel="1"
+    mode_sel="${mode_sel:-1}"
+
+    local kern_pkg="linux-cachyos" ucode_pkg=""
+    if pacman -Q linux-cachyos-hardened >/dev/null 2>&1; then
+        kern_pkg="linux-cachyos-hardened"
+    elif pacman -Q linux >/dev/null 2>&1; then
+        kern_pkg="linux"
+    fi
+    if lscpu 2>/dev/null | grep -qi "Intel"; then ucode_pkg="intel-ucode"; elif lscpu 2>/dev/null | grep -qi "AMD"; then ucode_pkg="amd-ucode"; fi
+
+    local pkgs=(
+        base "$kern_pkg" $ucode_pkg linux-firmware mkinitcpio
+        cryptsetup lvm2 btrfs-progs dosfstools gptfdisk parted efibootmgr sbctl
+        arch-install-scripts pv zstd rsync cifs-utils nfs-utils openssh
+        smartmontools nvme-cli networkmanager sudo polkit zsh btop nvtop
+        python python-gobject gtk3 cairo pango gdk-pixbuf2 libvterm
+    )
+    if [[ "$mode_sel" == "1" ]]; then
+        pkgs+=(niri waybar foot fuzzel polkit-gnome ttf-jetbrains-mono-nerd noto-fonts)
+    fi
+
+    local build_dir="/var/tmp/ncui-sqfs-build.$$"
+    trap 'rm -rf "'"$build_dir"'" 2>/dev/null || true; cleanup_rescue' EXIT INT TERM HUP
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+
+    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (${kern_pkg})..."
+    pacstrap -c "$build_dir" "${pkgs[@]}"
+
+    printf '%s-recovery\n' "${CFG_HOSTNAME:-nightcity}" > "${build_dir}/etc/hostname"
+    write_recovery_hook_files
+    cp -f "$INITCPIO_HOOK_PATH" "${build_dir}/etc/initcpio/hooks/recovery-ram" 2>/dev/null || true
+    cp -f "$INITCPIO_INST_PATH" "${build_dir}/etc/initcpio/install/recovery-ram" 2>/dev/null || true
+    systemctl --root="$build_dir" enable NetworkManager.service >/dev/null 2>&1 || true
+    _inject_ncui_into_rootfs "$build_dir" "$src_dir"
+    rm -rf "${build_dir}/var/cache/pacman/pkg"/* "${build_dir}/var/log/journal"/* 2>/dev/null || true
+
+    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
+    NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
+    msg_step "Compressing ${NEW_SQUASHFS} (zstd -19)..."
+    mksquashfs "$build_dir" "$NEW_SQUASHFS" -comp zstd -Xcompression-level 19 -b 1M -noappend
+    unsquashfs -s "$NEW_SQUASHFS" >/dev/null 2>&1 || { msg_err "SquashFS integrity check failed."; exit 1; }
+    local nsz
+    nsz="$(stat -c%s "$NEW_SQUASHFS")"
+    (( nsz < 4294967295 )) || { msg_err "SquashFS exceeds 4 GiB FAT32 limit (${nsz} bytes)."; exit 1; }
+
+    IN_FINAL_SWAP=1
+    swap_pair_safe "$NEW_SQUASHFS" "$cur_sq" "$bak_sq" 1
+    sync
+    COMMIT_COMPLETED=1
+    rm -rf "$build_dir"
+    build_uki_standalone
+    msg_ok "Live Recovery SquashFS + Signed UKI built successfully on ESP!"
+    return 0
+}
+
+do_config_stdin() {
+    local payload
+    payload="$(cat)"
+    mkdir -p "$(dirname "$CONF_FILE")"
+    if [[ ! -f "$CONF_FILE" ]]; then
+        cat <<'EOF_SEED' > "$CONF_FILE"
+# NC-UI Resilience, Posture & Disaster Recovery Configuration
+
+[recovery]
+uki_name = "nc-rescue.efi"
+sign_sbctl = true
+golden_subdir = "images"
+EOF_SEED
+    fi
+    local line k v
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -n "$line" && "$line" == *"="* ]] || continue
+        k="${line%%=*}"
+        v="${line#*=}"
+        k="$(printf '%s' "$k" | tr -d '[:space:]')"
+        v="$(printf '%s' "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        case "$k" in
+            uki_name)
+                if [[ ! "$v" =~ ^[a-zA-Z0-9._-]{1,64}\.efi$ ]]; then
+                    msg_err "Invalid uki_name: ${v}"
+                    exit 1
+                fi
+                CFG_UKI_NAME="$v"
+                ;;
+            sign_sbctl)
+                if [[ "$v" != "true" && "$v" != "false" ]]; then
+                    msg_err "Invalid sign_sbctl: ${v}"
+                    exit 1
+                fi
+                CFG_SIGN_SBCTL="$v"
+                ;;
+            golden_subdir)
+                if [[ "$v" == *".."* || ! "$v" =~ ^[a-zA-Z0-9_./-]{1,80}$ ]]; then
+                    msg_err "Invalid golden_subdir: ${v}"
+                    exit 1
+                fi
+                CFG_GOLDEN_SUBDIR="$v"
+                ;;
+            *)
+                msg_err "Unsupported [recovery] key: ${k}"
+                exit 1
+                ;;
+        esac
+    done <<< "$payload"
+
+    local tmp_cfg="${CONF_FILE}.tmp.$$"
+    awk -v sec_target="recovery" -v uki="$CFG_UKI_NAME" -v sb="$CFG_SIGN_SBCTL" -v gs="$CFG_GOLDEN_SUBDIR" '
+        function emit_missing() {
+            if (in_sec && !seen_uki) print "uki_name = \"" uki "\""
+            if (in_sec && !seen_sb)  print "sign_sbctl = " sb
+            if (in_sec && !seen_gs)  print "golden_subdir = \"" gs "\""
+        }
+        /^\[/ {
+            if (in_sec) { emit_missing(); in_sec = 0 }
+            if ($0 == "[" sec_target "]") { in_sec = 1; found_sec = 1 }
+            print $0; next
+        }
+        in_sec && $0 ~ /^[[:space:]]*uki_name[[:space:]]*=/ { print "uki_name = \"" uki "\""; seen_uki = 1; next }
+        in_sec && $0 ~ /^[[:space:]]*sign_sbctl[[:space:]]*=/ { print "sign_sbctl = " sb; seen_sb = 1; next }
+        in_sec && $0 ~ /^[[:space:]]*golden_subdir[[:space:]]*=/ { print "golden_subdir = \"" gs "\""; seen_gs = 1; next }
+        { print $0 }
+        END {
+            if (in_sec) { emit_missing() }
+            else if (!found_sec) {
+                print ""
+                print "[recovery]"
+                print "uki_name = \"" uki "\""
+                print "sign_sbctl = " sb
+                print "golden_subdir = \"" gs "\""
+            }
+        }
+    ' "$CONF_FILE" > "$tmp_cfg"
+    chown root:root "$tmp_cfg" 2>/dev/null || true
+    chmod 0644 "$tmp_cfg"
+    mv -f "$tmp_cfg" "$CONF_FILE"
+    collect_and_write_status >/dev/null 2>&1 || true
+    msg_ok "CONFIG_OK"
+    return 0
+}
+
+ACTION="${1:-status}"
+case "$ACTION" in
+    -h|--help)
+        show_help
+        ;;
+    status)
+        out="$(collect_and_write_status)"
+        msg_ok "NC-UI Recovery Status (${CONF_FILE})"
+        printf '%s\n' "$out" | sed 's/^/  /'
+        ;;
+    status-env|check-health|--check-health)
+        collect_and_write_status
+        ;;
+    install-hooks)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        load_rescue_config
+        resolve_esp_mnt 1 || true
+        write_recovery_hook_files
+        msg_ok "Installed recovery-ram hooks and ${ROLLBACK_BIN}."
+        ;;
+    build-uki)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        build_uki_standalone
+        ;;
+    commit|-c)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_live_commit 0 0 0
+        ;;
+    commit-rebuild|-r|--rebuild)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_live_commit 1 0 0
+        ;;
+    commit-skip-uki|-s|--skip-uki)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_live_commit 0 0 1
+        ;;
+    rollback-esp)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_rollback_esp
+        ;;
+    limine-set-stdin)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_limine_set_stdin
+        ;;
+    limine-apply-stdin)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_limine_apply_stdin
+        ;;
+    limine-wallpaper-stdin)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_limine_wallpaper_stdin
+        ;;
+    register-limine)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_register_limine
+        ;;
+    --sync-ncui)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_sync_ncui_squashfs
+        ;;
+    --build-recovery)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        do_build_recovery_squashfs
+        ;;
+    config-stdin)
+        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        load_rescue_config
+        do_config_stdin
+        ;;
+    *)
+        msg_err "Unknown action: ${ACTION}. Use --help."
+        exit 1
+        ;;
+esac

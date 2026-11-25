@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+import argparse
+import os
+import signal
+import sys
+import tempfile
+import traceback
+
+def _bootstrap_ncui() -> None:
+    cur = os.path.dirname(os.path.realpath(__file__))
+    while cur and cur != os.path.dirname(cur):
+        core_pkg = os.path.join(cur, "packages", "nc-ui-core")
+        if os.path.isdir(core_pkg):
+            if core_pkg not in sys.path:
+                sys.path.insert(0, core_pkg)
+            break
+        cur = os.path.dirname(cur)
+    else:
+        for sys_root in ("/usr/lib/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
+            if os.path.isdir(sys_root) and sys_root not in sys.path:
+                sys.path.insert(0, sys_root)
+    from core.paths import bootstrap_sys_path
+    bootstrap_sys_path(__file__)
+
+
+_bootstrap_ncui()
+
+C_RESET = "\033[0m"
+C_BOLD = "\033[1m"
+C_GREEN = "\033[38;2;166;227;161m"
+C_CYAN = "\033[38;2;137;220;235m"
+C_LAVENDER = "\033[38;2;205;214;244m"
+C_YELLOW = "\033[38;2;249;226;175m"
+C_RED = "\033[38;2;243;139;168m"
+
+
+def _msg_info(text: str, quiet: bool = False) -> None:
+    if not quiet:
+        sys.stdout.write(f"{C_CYAN}╭─[{C_BOLD}NC-SHOT{C_RESET}{C_CYAN}]{C_RESET} {C_LAVENDER}{text}{C_RESET}\n")
+        sys.stdout.flush()
+
+
+def _msg_ok(text: str, quiet: bool = False) -> None:
+    if not quiet:
+        sys.stdout.write(f"{C_GREEN}╰─[✓ OK]{C_RESET}    {text}\n")
+        sys.stdout.flush()
+
+
+def _msg_err(text: str) -> None:
+    sys.stderr.write(f"{C_RED}╰─[✗ ERR]{C_RESET}   {text}\n")
+    sys.stderr.flush()
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    helper_epilog = f"""{C_LAVENDER}Esempi d'uso:{C_RESET}
+  {C_GREEN}# Genera la vista offscreen:{C_RESET}
+  nc-shot input shortcuts -o /tmp/k_std.png
+  nc-shot network interfaces
+"""
+    parser = argparse.ArgumentParser(
+        prog="nc-shot",
+        description="Generatore di screenshot offscreen Cairo/GTK3 per review visiva di NC-UI.",
+        epilog=helper_epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument("-h", "--help", action="store_true", help="Mostra questo messaggio di aiuto ed esce.")
+    parser.add_argument("-s", "--section", type=str, default="", help="ID sezione Control Center o pannello popup (es. input, network).")
+    parser.add_argument("-t", "--subtab", type=str, default="", help="ID della subtab interna (es. shortcuts, interfaces).")
+    parser.add_argument("-m", "--mode", choices=["settings", "popup"], default="settings", help="Modalità finestra: 'settings' o 'popup'.")
+    parser.add_argument("-o", "--output", type=str, default="", help="Percorso del file PNG di output.")
+    parser.add_argument("-e", "--expanded", action="store_true", help="Forza vista espansa (popup).")
+    parser.add_argument("-l", "--lang", choices=["en", "it", ""], default="", help="Forza lingua (en/it).")
+    parser.add_argument("-f", "--focus", type=int, default=-1, help="Focus tastiera su bottone X.")
+    parser.add_argument("-w", "--wait-ms", type=int, default=260, help="Wait asincrono in ms.")
+    parser.add_argument("--mon-size", type=str, default="", help="Simula risoluzione logica monitor WxH (es. 2560x720).")
+    parser.add_argument("--scale", type=float, default=1.0, help="Simula scaling factor (es. 1.25, 1.5, 2.0).")
+    parser.add_argument("--viewport", action="store_true", help="Mantiene il viewport reale invece di sbloccare l'altezza infinita.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Quiet mode.")
+    parser.add_argument("pos_args", nargs="*", help="Argomenti posizionali: [section] [subtab] [output_png]")
+    return parser
+
+
+def _parse_rgba_float(rgba_str: str) -> tuple[float, float, float, float]:
+    from core.config import _parse_rgba_components
+    r, g, b, a = _parse_rgba_components(rgba_str)
+    return (r / 255.0), (g / 255.0), (b / 255.0), a
+
+
+def _draw_rounded_frame(cr, width: int, height: int, radius: float, bg_rgba: str, brd_rgba: str) -> None:
+    import math
+    cr.set_source_rgba(0.06, 0.06, 0.07, 1.0)
+    cr.paint()
+
+    r, g, b, a = _parse_rgba_float(bg_rgba)
+    rad = max(0.0, min(float(radius), min(width, height) / 2.0))
+    x, y, w, h = 0.5, 0.5, width - 1.0, height - 1.0
+
+    cr.new_sub_path()
+    cr.arc(x + w - rad, y + rad, rad, -math.pi / 2, 0)
+    cr.arc(x + w - rad, y + h - rad, rad, 0, math.pi / 2)
+    cr.arc(x + rad, y + h - rad, rad, math.pi / 2, math.pi)
+    cr.arc(x + rad, y + rad, rad, math.pi, 3 * math.pi / 2)
+    cr.close_path()
+
+    cr.set_source_rgba(r, g, b, max(0.92, a))
+    cr.fill_preserve()
+
+    br, bg_c, bb, ba = _parse_rgba_float(brd_rgba)
+    cr.set_source_rgba(br, bg_c, bb, max(0.25, ba))
+    cr.set_line_width(1.0)
+    cr.stroke()
+
+
+def main() -> int:
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(130))
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    if args.help:
+        parser.print_help()
+        return 0
+
+    pos = list(args.pos_args or [])
+    png_pos = [p for p in pos if p.endswith(".png")]
+    non_png_pos = [p for p in pos if not p.endswith(".png")]
+    section = args.section or (non_png_pos[0] if len(non_png_pos) >= 1 else ("" if args.mode == "settings" else "network"))
+    subtab = args.subtab or (non_png_pos[1] if len(non_png_pos) >= 2 else "")
+    output_path = args.output or (png_pos[-1] if png_pos else "")
+    if not output_path:
+        sec_slug = section or "last"
+        sub_slug = f"_{subtab}" if subtab else ""
+        output_path = f"/tmp/nc_review_{sec_slug}{sub_slug}.png"
+
+    output_path = os.path.abspath(os.path.expanduser(output_path))
+    out_dir = os.path.dirname(output_path)
+    if out_dir and not os.path.exists(out_dir):
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception as e:
+            _msg_err(f"Impossibile creare la directory di destinazione '{out_dir}': {e}")
+            return 2
+
+    os.environ["NC_UI_OFFSCREEN"] = "1"
+    scale_f = max(0.5, float(getattr(args, "scale", 1.0) or 1.0))
+    if getattr(args, "mon_size", ""):
+        m_wh = str(args.mon_size).lower().split("x", 1)
+        if len(m_wh) == 2 and m_wh[0].strip().isdigit() and m_wh[1].strip().isdigit():
+            os.environ["NC_SHOT_MON_W"] = m_wh[0].strip()
+            os.environ["NC_SHOT_MON_H"] = m_wh[1].strip()
+    elif abs(scale_f - 1.0) > 0.01:
+        phys_w, phys_h = 2560, 1440
+        try:
+            import json, subprocess
+            res = subprocess.run(["niri", "msg", "-j", "focused-output"], capture_output=True, text=True, timeout=0.6)
+            if res.returncode == 0 and res.stdout:
+                data = json.loads(res.stdout)
+                modes = data.get("modes") or []
+                ci = data.get("current_mode")
+                if ci is not None and 0 <= ci < len(modes):
+                    phys_w = int(modes[ci].get("width", phys_w))
+                    phys_h = int(modes[ci].get("height", phys_h))
+                else:
+                    lg = data.get("logical") or {}
+                    sc_cur = float(lg.get("scale", 1.0) or 1.0)
+                    phys_w = int(round(float(lg.get("width", phys_w)) * sc_cur))
+                    phys_h = int(round(float(lg.get("height", phys_h)) * sc_cur))
+        except Exception:
+            pass
+        os.environ["NC_SHOT_MON_W"] = str(max(640, int(round(phys_w / scale_f))))
+        os.environ["NC_SHOT_MON_H"] = str(max(480, int(round(phys_h / scale_f))))
+    broadway_proc = None
+
+    try:
+        import cairo
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk, Gdk, GLib
+
+        if not Gtk.init_check()[0]:
+            import shutil, subprocess, time
+            if shutil.which("broadwayd") and os.environ.get("NC_SHOT_BW_CHILD") != "1":
+                env_bw = os.environ.copy()
+                env_bw["XDG_RUNTIME_DIR"] = "/tmp"
+                broadway_proc = subprocess.Popen(
+                    ["broadwayd", ":5"],
+                    env=env_bw,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(0.25)
+                child_env = env_bw.copy()
+                child_env["GDK_BACKEND"] = "broadway"
+                child_env["BROADWAY_DISPLAY"] = ":5"
+                child_env["NC_SHOT_BW_CHILD"] = "1"
+                rc = subprocess.call([sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env=child_env)
+                return rc
+            if not Gtk.init_check()[0]:
+                _msg_err("Impossibile inizializzare GTK3.")
+                return 3
+    except Exception as e:
+        _msg_err(f"Impossibile inizializzare GTK3 / Cairo: {e}")
+        return 3
+
+    from core.config import THEME, get_effective_window_bg
+    from core.state import STATE
+    from core.i18n import get_active_language, reload_locale
+    from ui.shell import ShellWindow
+
+    prev_lang = get_active_language()
+    if args.lang in ("en", "it"):
+        reload_locale(args.lang)
+
+    if subtab:
+        if args.mode == "settings" and section:
+            STATE.set("control_center", f"subtab_{section}", subtab)
+        elif args.mode != "settings":
+            STATE.set(section, "active_tab", subtab)
+
+    if args.mode == "popup" and args.expanded:
+        STATE.set(section, "expanded", True)
+
+    _msg_info(
+        f"Rendering {C_BOLD}{args.mode}:{section or '<last>'}{('/' + subtab) if subtab else ''}{C_RESET} -> {output_path}",
+        quiet=args.quiet,
+    )
+
+    try:
+        win = ShellWindow(panel_id=section, mode=args.mode)
+        if subtab and args.mode == "settings" and hasattr(win.panel, "set_subtab"):
+            win.panel.set_subtab(subtab)
+            win.refresh_view()
+
+        root_widget = getattr(win, "main_box", None) or getattr(win, "root_box", None) or win.get_child()
+        if root_widget is None:
+            _msg_err("Impossibile individuare il widget radice dentro ShellWindow.")
+            return 4
+
+        off = Gtk.OffscreenWindow()
+        win.remove(root_widget)
+        off.add(root_widget)
+
+        def _unlock_natural_scroll_geometry():
+            win.scrolled_window.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+            win.scrolled_window.set_propagate_natural_width(True)
+            win.scrolled_window.set_propagate_natural_height(True)
+            win.scrolled_window.set_max_content_height(-1)
+            if hasattr(win, "nav_scrolled"):
+                win.nav_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+                win.nav_scrolled.set_propagate_natural_width(True)
+                win.nav_scrolled.set_propagate_natural_height(True)
+
+        _unlock_natural_scroll_geometry()
+        target_w = win._total_window_px()
+        off.set_default_size(target_w, 720)
+        off.show_all()
+
+        wait_ms = max(80, min(3000, int(args.wait_ms)))
+        GLib.timeout_add(wait_ms, Gtk.main_quit)
+        Gtk.main()
+
+        if args.focus >= 0 and hasattr(win, "focus_link_by_index"):
+            win.focus_link_by_index(args.focus)
+
+        _unlock_natural_scroll_geometry()
+        hdr_nat_h = 0
+        if args.mode == "settings" and getattr(win, "header_listbox", None) is not None:
+            for child in win.header_listbox.get_children():
+                child.queue_resize()
+            win.header_listbox.queue_resize()
+            _h_min, hdr_nat_h = win.header_listbox.get_preferred_height()
+
+        for child in win.listbox.get_children():
+            child.queue_resize()
+        win.listbox.queue_resize()
+
+        _l_min, list_nat_h = win.listbox.get_preferred_height()
+        right_w_px = int(round(win.content_canvas.total_px))
+        bw = int(THEME["geometry"].get("window_border_width", 1))
+
+        final_w = target_w
+        if args.viewport:
+            if args.mode == "settings":
+                _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
+                v_chrome = m_top + m_bot
+                final_h = max(320, win._get_cc_target_height_px())
+                content_h = max(240, final_h - v_chrome - (2 * bw))
+                win._populate_settings_nav(target_h_px=content_h)
+                if getattr(win, "header_listbox", None) is not None:
+                    win.header_listbox.set_size_request(right_w_px, -1)
+                avail_body_h = max(80, content_h - hdr_nat_h)
+                win.scrolled_window.set_policy(
+                    Gtk.PolicyType.NEVER,
+                    Gtk.PolicyType.AUTOMATIC if list_nat_h > avail_body_h else Gtk.PolicyType.NEVER,
+                )
+                win.scrolled_window.set_max_content_height(avail_body_h)
+                win.scrolled_window.set_size_request(right_w_px, avail_body_h)
+                win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
+            else:
+                pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
+                p_max = win.panel.get_max_height() if hasattr(win.panel, "get_max_height") else None
+                _mw, max_popup_h = win._get_popup_bounds_px()
+                max_h = min(int(p_max or THEME["geometry"]["popup_max_height"]), max_popup_h)
+                list_h = min(list_nat_h, max_h) if list_nat_h > max_h else max(list_nat_h, 24)
+                win.scrolled_window.set_policy(
+                    Gtk.PolicyType.NEVER,
+                    Gtk.PolicyType.AUTOMATIC if list_nat_h > max_h else Gtk.PolicyType.NEVER,
+                )
+                win.scrolled_window.set_max_content_height(max_h)
+                win.scrolled_window.set_size_request(right_w_px, list_h)
+                final_h = max(120, list_h + pad + (2 * bw))
+        elif args.mode == "settings":
+            _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
+            v_chrome = m_top + m_bot
+            content_h = max(hdr_nat_h + list_nat_h, win._get_cc_target_height_px() - v_chrome, 240)
+            final_h = content_h + v_chrome
+            win._populate_settings_nav(target_h_px=content_h)
+            if getattr(win, "header_listbox", None) is not None:
+                win.header_listbox.set_size_request(right_w_px, -1)
+            win.scrolled_window.set_size_request(right_w_px, max(120, content_h - hdr_nat_h))
+            win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
+        else:
+            pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
+            final_h = max(list_nat_h + pad + (2 * bw), 240)
+            win.scrolled_window.set_size_request(right_w_px, max(200, final_h - pad - (2 * bw)))
+        root_widget.set_size_request(final_w, final_h)
+        off.set_size_request(final_w, final_h)
+        off.resize(final_w, final_h)
+
+        GLib.timeout_add(60, Gtk.main_quit)
+        Gtk.main()
+
+        off.check_resize()
+        alloc_rect = Gdk.Rectangle()
+        alloc_rect.x = 0
+        alloc_rect.y = 0
+        alloc_rect.width = final_w
+        alloc_rect.height = final_h
+        off.size_allocate(alloc_rect)
+        root_widget.size_allocate(alloc_rect)
+
+        for _ in range(120):
+            if not Gtk.events_pending():
+                break
+            Gtk.main_iteration_do(False)
+
+        import math
+        dev_scale = max(1, int(math.ceil(scale_f))) if abs(scale_f - 1.0) > 0.01 and scale_f > 1.0 else 1
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, final_w * dev_scale, final_h * dev_scale)
+        if dev_scale > 1:
+            surface.set_device_scale(float(dev_scale), float(dev_scale))
+        cr = cairo.Context(surface)
+
+        bg_col = get_effective_window_bg(win.wb_look.get("bg"))
+        brd_col = THEME["colors"].get("window_border", "rgba(255, 255, 255, 0.12)")
+        rad = win.wb_look["rad"] if win.wb_look.get("rad") is not None else THEME["geometry"]["window_border_radius"]
+        _draw_rounded_frame(cr, final_w, final_h, rad, bg_col, brd_col)
+
+        root_widget.draw(cr)
+
+        fd, tmp_png = tempfile.mkstemp(dir=out_dir or "/tmp", prefix=".nc_shot_", suffix=".png")
+        os.close(fd)
+        surface.write_to_png(tmp_png)
+        os.replace(tmp_png, output_path)
+
+        _msg_ok(f"Screenshot salvato ({final_w}x{final_h}px): {C_BOLD}{output_path}{C_RESET}", quiet=args.quiet)
+        return 0
+
+    except Exception as e:
+        _msg_err(f"Errore durante la generazione dello screenshot: {e}\n{traceback.format_exc()}")
+        return 1
+    finally:
+        tel_mod = sys.modules.get("panels.cc_engine_resources")
+        if tel_mod is not None and hasattr(tel_mod, "close_embedded_tuis"):
+            try:
+                tel_mod.close_embedded_tuis()
+            except Exception:
+                pass
+        if args.lang in ("en", "it") and prev_lang != args.lang:
+            reload_locale(prev_lang)
+        if broadway_proc is not None:
+            try:
+                broadway_proc.terminate()
+                broadway_proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    broadway_proc.kill()
+                except Exception:
+                    pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())

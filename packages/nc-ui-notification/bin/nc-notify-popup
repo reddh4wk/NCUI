@@ -1,0 +1,492 @@
+#!/usr/bin/env python3
+"""NC-UI Layer-Shell Desktop Notification Popup Host."""
+
+import argparse
+import json
+import os
+import signal
+import socket
+import sys
+import uuid
+
+def _bootstrap_ncui() -> None:
+    cur = os.path.dirname(os.path.realpath(__file__))
+    while cur and cur != os.path.dirname(cur):
+        core_pkg = os.path.join(cur, "packages", "nc-ui-core")
+        if os.path.isdir(core_pkg):
+            if core_pkg not in sys.path:
+                sys.path.insert(0, core_pkg)
+            break
+        cur = os.path.dirname(cur)
+    else:
+        for sys_root in ("/usr/lib/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
+            if os.path.isdir(sys_root) and sys_root not in sys.path:
+                sys.path.insert(0, sys_root)
+    from core.paths import bootstrap_sys_path
+    bootstrap_sys_path(__file__)
+
+
+_bootstrap_ncui()
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+from gi.repository import Gdk, GLib, Gtk, GtkLayerShell
+
+from core.config import (
+    DEFAULT_THEME,
+    THEME,
+    _deep_merge,
+    get_sys_notif_opacity,
+    get_sys_notif_style,
+    sanitize_theme_dict,
+)
+from core.i18n import t
+from panels.cc_engine_notifications import (
+    _get_app_icon,
+    _load_rules,
+    get_app_click_config,
+    get_popup_socket_path,
+    trigger_notification_click,
+)
+from ui.help_overlay import StyledNotifCard
+from ui.kit import get_semantic_palette
+
+_MAX_VISIBLE = 4
+
+
+def _reload_live_notif_theme() -> None:
+    path = os.path.expanduser("~/.config/nc-ui/theme.toml")
+    if os.path.exists(path):
+        try:
+            import tomllib
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            if isinstance(data, dict):
+                merged = sanitize_theme_dict(_deep_merge(DEFAULT_THEME, data))
+                THEME.update(merged)
+        except Exception:
+            pass
+
+
+def _resolve_transition(pos: str, effect: str) -> tuple[Gtk.RevealerTransitionType, int, bool]:
+    """Return `(gtk_transition_type, duration_ms, use_opacity_fade)`."""
+    if effect == "none":
+        return Gtk.RevealerTransitionType.NONE, 0, False
+    if effect == "fade":
+        return Gtk.RevealerTransitionType.CROSSFADE, 240, False
+    use_fade = (effect == "slide_fade")
+    if pos.endswith("-right"):
+        tr = Gtk.RevealerTransitionType.SLIDE_LEFT
+    elif pos.endswith("-left"):
+        tr = Gtk.RevealerTransitionType.SLIDE_RIGHT
+    elif pos.startswith("bottom-"):
+        tr = Gtk.RevealerTransitionType.SLIDE_UP
+    else:
+        tr = Gtk.RevealerTransitionType.SLIDE_DOWN
+    return tr, 240, use_fade
+
+
+def build_popup_card(notif: dict, uid: str, clickable: bool = False, on_link=None) -> StyledNotifCard:
+    """Build a composable Cairo notification card respecting active sys_notif_style, opacity & severity."""
+    _reload_live_notif_theme()
+    pal = get_semantic_palette()
+
+    app_name = str(notif.get("app") or notif.get("app_name") or "NC-UI").strip() or "NC-UI"
+    title_raw = str(notif.get("title") or notif.get("summary") or app_name).strip()
+    body_raw = str(notif.get("body") or "").strip().replace("\r", "")
+    urgency = str(notif.get("urgency") or "normal").strip().lower()
+    time_s = str(notif.get("time") or "").strip()
+
+    raw_op = notif.get("opacity")
+    if raw_op is not None:
+        try:
+            eff_op = max(0.0, min(1.0, float(raw_op)))
+        except Exception:
+            eff_op = get_sys_notif_opacity()
+    else:
+        eff_op = get_sys_notif_opacity()
+
+    if urgency == "critical":
+        accent = pal["fault"]
+        b_txt = t("cc_notifications.urg_critical")
+        b_fg, b_bg = pal["fault"], pal["fault_bg"]
+        hdr_pref = "CRIT"
+    elif urgency == "low":
+        accent = pal["schema"]
+        b_txt, b_fg, b_bg = "", "", ""
+        hdr_pref = "INFO"
+    else:
+        accent = pal["intent"]
+        b_txt, b_fg, b_bg = "", "", ""
+        hdr_pref = "NOTIFY"
+
+    subtitle = title_raw if title_raw != app_name else ""
+    body_clip = body_raw if len(body_raw) <= 220 else (body_raw[:217].rstrip() + "...")
+    return StyledNotifCard(
+        style=get_sys_notif_style(),
+        title=app_name,
+        subtitle=subtitle,
+        body=body_clip,
+        icon=_get_app_icon(app_name),
+        accent_hex=accent,
+        badge_text=b_txt,
+        badge_fg=b_fg,
+        badge_bg=b_bg,
+        meta_right=time_s,
+        close_uri=f"popup:close:{uid}",
+        body_click_uri=f"popup:open:{uid}" if clickable else "",
+        header_prefix=hdr_pref,
+        opacity=eff_op,
+        max_width_px=460,
+        on_link=on_link,
+    )
+
+
+class _ToastSlot:
+    """Single revealed notification card with hover-pause timer and fade support."""
+
+    def __init__(self, host, uid: str, notif: dict, rules: dict):
+        self.host = host
+        self.uid = uid
+        self.notif = notif
+        self.closing = False
+        self.hovered = False
+        self.timer_id = None
+        self.fade_id = None
+        self.remaining_ms = self._calc_duration_ms(notif, rules)
+
+        clickable = bool(get_app_click_config(notif.get("app") or notif.get("app_name") or "", rules))
+        card = build_popup_card(notif, uid, clickable=clickable, on_link=self._on_link)
+
+        self.eb = Gtk.EventBox()
+        self.eb.set_visible_window(False)
+        self.eb.add_events(
+            Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+        )
+        for hw in [self.eb] + card.get_hover_widgets():
+            hw.add_events(
+                Gdk.EventMask.ENTER_NOTIFY_MASK
+                | Gdk.EventMask.LEAVE_NOTIFY_MASK
+                | Gdk.EventMask.BUTTON_PRESS_MASK
+            )
+            hw.connect("enter-notify-event", self._on_enter)
+            hw.connect("leave-notify-event", self._on_leave)
+            hw.connect("button-press-event", self._on_btn_press)
+        self.eb.add(card)
+
+        self.revealer = Gtk.Revealer()
+        tr_type, tr_ms, use_fade = _resolve_transition(rules.get("popup_position", "top-right"), rules.get("popup_effect", "slide"))
+        self.tr_ms = tr_ms
+        self.use_fade = use_fade
+        self.revealer.set_transition_type(tr_type)
+        self.revealer.set_transition_duration(tr_ms)
+        self.revealer.set_reveal_child(False)
+        self.revealer.add(self.eb)
+
+        if self.use_fade:
+            self.eb.set_opacity(0.0)
+
+    @staticmethod
+    def _calc_duration_ms(notif: dict, rules: dict) -> int:
+        sec = int(rules.get("popup_timeout", 5))
+        if sec <= 0:
+            return 0
+        if str(notif.get("urgency", "")).lower() == "critical":
+            sec = max(sec, 10)
+        return sec * 1000
+
+    def start(self) -> None:
+        self.revealer.show_all()
+        self.revealer.set_reveal_child(True)
+        if self.use_fade:
+            self._animate_opacity(0.0, 1.0, 220)
+        if self.remaining_ms > 0:
+            self.timer_id = GLib.timeout_add(self.remaining_ms, self._on_timeout)
+
+    def _animate_opacity(self, start_a: float, end_a: float, dur_ms: int) -> None:
+        if self.fade_id is not None:
+            GLib.source_remove(self.fade_id)
+            self.fade_id = None
+        if dur_ms <= 0:
+            self.eb.set_opacity(end_a)
+            return
+        steps = max(1, dur_ms // 16)
+        state = {"step": 0}
+
+        def _tick() -> bool:
+            state["step"] += 1
+            frac = min(1.0, state["step"] / float(steps))
+            self.eb.set_opacity(start_a + (end_a - start_a) * frac)
+            if frac >= 1.0:
+                self.fade_id = None
+                return False
+            return True
+
+        self.fade_id = GLib.timeout_add(16, _tick)
+
+    def _cancel_timer(self) -> None:
+        if self.timer_id is not None:
+            GLib.source_remove(self.timer_id)
+            self.timer_id = None
+
+    def _on_enter(self, _w, _ev) -> bool:
+        self.hovered = True
+        self._cancel_timer()
+        return False
+
+    def _on_leave(self, _w, ev) -> bool:
+        if ev.detail == Gdk.NotifyType.INFERIOR:
+            return False
+        self.hovered = False
+        if not self.closing and self.remaining_ms > 0:
+            self._cancel_timer()
+            self.timer_id = GLib.timeout_add(max(1500, self.remaining_ms // 2), self._on_timeout)
+        return False
+
+    def _on_btn_press(self, _w, ev) -> bool:
+        if ev.button == 3:
+            self.dismiss()
+            return True
+        return False
+
+    def _on_link(self, uri: str) -> None:
+        if uri == f"popup:close:{self.uid}":
+            self.dismiss()
+        elif uri == f"popup:open:{self.uid}":
+            trigger_notification_click(self.notif)
+            self.dismiss()
+
+    def _on_timeout(self) -> bool:
+        self.timer_id = None
+        if not self.hovered:
+            self.dismiss()
+        return False
+
+    def dismiss(self) -> None:
+        if self.closing:
+            return
+        self.closing = True
+        self._cancel_timer()
+        if self.use_fade:
+            self._animate_opacity(float(self.eb.get_opacity()), 0.0, 180)
+        self.revealer.set_reveal_child(False)
+        wait_ms = max(20, self.tr_ms + 30) if self.tr_ms > 0 else 10
+        GLib.timeout_add(wait_ms, self._finish_remove)
+
+    def _finish_remove(self) -> bool:
+        if self.fade_id is not None:
+            GLib.source_remove(self.fade_id)
+            self.fade_id = None
+        self.host.remove_slot(self)
+        return False
+
+
+class NotifyPopupHost(Gtk.Window):
+    """Layer-Shell overlay host stacking active notification popup slots."""
+
+    def __init__(self, initial_payload: dict | None = None):
+        super().__init__(type=Gtk.WindowType.TOPLEVEL)
+        self.slots: list[_ToastSlot] = []
+        self.sock_path = get_popup_socket_path()
+        self.srv_sock = None
+        self._sock_watch_id = None
+
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual() if screen else None
+        if visual and screen.is_composited():
+            self.set_visual(visual)
+        self.set_app_paintable(True)
+        self.set_decorated(False)
+        self.set_resizable(False)
+        self.connect("draw", self._on_win_draw)
+
+        self._apply_css()
+        self._init_layer_shell()
+
+        self.stack_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add(self.stack_box)
+
+        self._start_socket_server()
+        if initial_payload:
+            self.push_notification(initial_payload)
+
+    @staticmethod
+    def _on_win_draw(_widget, cr) -> bool:
+        cr.save()
+        cr.set_operator(cairo.OPERATOR_SOURCE)
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.0)
+        cr.paint()
+        cr.restore()
+        return False
+
+    def _apply_css(self) -> None:
+        typo = THEME["typography"]
+        c_acc = get_semantic_palette()["intent"]
+        css = f"""
+        window, box, eventbox, #nc-card-eb {{
+            background-color: transparent;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            font-family: '{typo["font_family"]}', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', 'Symbols Nerd Font', monospace;
+            font-size: {typo["font_size"]}pt;
+            font-weight: {typo["font_weight"]};
+            font-feature-settings: "liga=0, clig=0, dlig=0, hlig=0";
+        }}
+        link {{ color: inherit; text-decoration: none; }}
+        link:hover {{ color: {c_acc}; text-shadow: 0 0 4px {c_acc}; }}
+        a {{ text-decoration: none; }}
+        """
+        prov = Gtk.CssProvider()
+        prov.load_from_data(css.encode("utf-8"))
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            prov,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+    def _init_layer_shell(self) -> None:
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_namespace(self, "nc-notify-popup")
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)
+        self.apply_position("top-right")
+
+    def apply_position(self, pos: str) -> None:
+        is_bot = pos.startswith("bottom-")
+        is_left = pos.endswith("-left")
+        is_right = pos.endswith("-right")
+        top_gap = int(THEME["geometry"].get("popup_gap_top", 44))
+
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, not is_bot)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, is_bot)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, is_left)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, is_right)
+
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 0 if is_bot else top_gap)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, 20 if is_bot else 0)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, 18 if is_left else 0)
+        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, 18 if is_right else 0)
+        self.current_pos = pos
+
+    def push_notification(self, notif: dict) -> None:
+        _reload_live_notif_theme()
+        self._apply_css()
+        rules = _load_rules()
+        pos = str(rules.get("popup_position", "top-right"))
+        self.apply_position(pos)
+
+        while len(self.slots) >= _MAX_VISIBLE:
+            oldest = self.slots.pop(0)
+            oldest.dismiss()
+
+        slot = _ToastSlot(self, uuid.uuid4().hex[:10], notif, rules)
+        self.slots.append(slot)
+        if pos.startswith("bottom-"):
+            self.stack_box.pack_end(slot.revealer, False, False, 0)
+        else:
+            self.stack_box.pack_start(slot.revealer, False, False, 0)
+            self.stack_box.reorder_child(slot.revealer, 0)
+        self.show()
+        self.stack_box.show()
+        slot.start()
+
+    def remove_slot(self, slot: _ToastSlot) -> None:
+        if slot in self.slots:
+            self.slots.remove(slot)
+        if slot.revealer.get_parent() is self.stack_box:
+            self.stack_box.remove(slot.revealer)
+        self.resize(1, 1)
+        if not self.slots and not any(True for _ in self.stack_box.get_children()):
+            self.shutdown()
+
+    def _start_socket_server(self) -> None:
+        try:
+            if os.path.exists(self.sock_path):
+                os.unlink(self.sock_path)
+            srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            srv.bind(self.sock_path)
+            os.chmod(self.sock_path, 0o600)
+            srv.listen(16)
+            srv.setblocking(False)
+            self.srv_sock = srv
+            self._sock_watch_id = GLib.io_add_watch(srv.fileno(), GLib.IO_IN, self._on_socket_accept)
+        except Exception:
+            self.srv_sock = None
+
+    def _on_socket_accept(self, _fd, _cond) -> bool:
+        if self.srv_sock is None:
+            return False
+        try:
+            conn, _ = self.srv_sock.accept()
+            with conn:
+                conn.settimeout(0.2)
+                chunks = []
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+                    chunks.append(data)
+            raw = b"".join(chunks).decode("utf-8", errors="replace")
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if isinstance(payload, dict):
+                    self.push_notification(payload)
+        except Exception:
+            pass
+        return True
+
+    def shutdown(self) -> None:
+        if self._sock_watch_id is not None:
+            GLib.source_remove(self._sock_watch_id)
+            self._sock_watch_id = None
+        if self.srv_sock is not None:
+            try:
+                self.srv_sock.close()
+            except Exception:
+                pass
+            self.srv_sock = None
+        try:
+            if os.path.exists(self.sock_path):
+                os.unlink(self.sock_path)
+        except Exception:
+            pass
+        Gtk.main_quit()
+
+
+def main() -> int:
+    signal.signal(signal.SIGINT, lambda *_: Gtk.main_quit())
+    signal.signal(signal.SIGTERM, lambda *_: Gtk.main_quit())
+
+    parser = argparse.ArgumentParser(description="NC-UI Notification Popup Host")
+    parser.add_argument("--payload", default="", help="JSON notification payload")
+    args, _ = parser.parse_known_args()
+
+    payload = None
+    if args.payload:
+        try:
+            parsed = json.loads(args.payload)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except Exception:
+            pass
+
+    if not payload:
+        return 0
+
+    host = NotifyPopupHost(initial_payload=payload)
+    Gtk.main()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

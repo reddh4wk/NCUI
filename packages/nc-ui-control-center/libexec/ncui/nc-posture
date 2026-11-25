@@ -1,0 +1,592 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-posture
+# Generalized Hot-Switchable Hardened <-> Gaming Runtime Posture Manager
+# ==============================================================================
+
+readonly STATE_DIR="${NC_GAMING_STATE_DIR:-/run/nc-gamemode}"
+readonly STATE_FILE="${STATE_DIR}/state.env"
+readonly LOCK_FILE="${NC_GAMING_LOCK_FILE:-/run/lock/nc-gamemode.lock}"
+readonly CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+readonly SYSCTL_SEC_FILE="${NC_GAMING_SYSCTL_SEC:-/etc/sysctl.d/99-security.conf}"
+readonly PROC_HIDEPID_CONF="${NC_GAMING_HIDEPID_CONF:-/etc/systemd/system/proc.mount.d/hidepid.conf}"
+readonly PROC_ROOT="${NC_GAMING_PROC_ROOT:-/proc}"
+readonly SYS_CPU_DIR="${NC_GAMING_SYS_CPU:-/sys/devices/system/cpu}"
+
+if [[ -t 1 ]]; then
+    readonly C_RESET=$'\033[0m' C_BOLD=$'\033[1m'
+    readonly C_BLUE=$'\033[38;5;153m' C_GREEN=$'\033[38;5;151m'
+    readonly C_PEACH=$'\033[38;5;216m' C_ROSE=$'\033[38;5;210m'
+    readonly C_MUTED=$'\033[38;5;246m'
+else
+    readonly C_RESET='' C_BOLD='' C_BLUE='' C_GREEN='' C_PEACH='' C_ROSE='' C_MUTED=''
+fi
+
+QUIET=false
+FORCE=false
+ACTION=""
+IN_TRANSITION=false
+
+log_info() { [[ "$QUIET" == true ]] || printf "%s[*]%s %s\n" "$C_BLUE"  "$C_RESET" "$1"; }
+log_ok()   { [[ "$QUIET" == true ]] || printf "%s[+]%s %s\n" "$C_GREEN" "$C_RESET" "$1"; }
+log_warn() { printf "%s[!]%s %s\n" "$C_PEACH" "$C_RESET" "$1" >&2; }
+log_err()  { printf "%s[-]%s %s\n" "$C_ROSE"  "$C_RESET" "$1" >&2; }
+
+usage() {
+    local prog="${0##*/}"
+    cat <<HELP
+Usage: sudo ${prog} [OPTIONS] <on|off|off-force|status|status-env|config-stdin>
+
+Actions:
+  on           Apply enabled [posture] gaming tunables from ${CONF_FILE}
+  off          Restore previous hardened posture
+  off-force    Restore hardened posture even if Proton/Wine processes are running
+  status       Human-readable posture summary
+  status-env   Machine-readable KEY=VALUE posture summary
+  config-stdin Update [posture] keys in ${CONF_FILE} from stdin lines
+HELP
+    exit 0
+}
+
+read_line_into() {
+    local __var="$1" __path="$2" __def="${3:-}" __val=""
+    if [[ -r "$__path" ]]; then
+        IFS= read -r __val < "$__path" || true
+    fi
+    printf -v "$__var" '%s' "${__val:-$__def}"
+}
+
+CFG_NTSYNC="true"
+CFG_PROC_HIDEPID="true"
+CFG_PTRACE_RELAX="true"
+CFG_VM_TUNING="true"
+CFG_SUSPEND_AUDIT="true"
+CFG_NVIDIA_PERSISTENCE="true"
+CFG_CPU_GOVERNOR="performance"
+
+load_posture_config() {
+    [[ -r "$CONF_FILE" ]] || return 0
+    local in_sec=0 line k v
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ -n "$line" ]] || continue
+        if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\]$ ]]; then
+            [[ "${BASH_REMATCH[1]}" == "posture" ]] && in_sec=1 || in_sec=0
+            continue
+        fi
+        (( in_sec == 1 )) || continue
+        if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*(true|false|\"[a-z]+\")$ ]]; then
+            k="${BASH_REMATCH[1]}"
+            v="${BASH_REMATCH[2]//\"/}"
+            case "$k" in
+                ntsync)             CFG_NTSYNC="$v" ;;
+                proc_hidepid)       CFG_PROC_HIDEPID="$v" ;;
+                ptrace_relax)       CFG_PTRACE_RELAX="$v" ;;
+                vm_tuning)          CFG_VM_TUNING="$v" ;;
+                suspend_audit)      CFG_SUSPEND_AUDIT="$v" ;;
+                nvidia_persistence) CFG_NVIDIA_PERSISTENCE="$v" ;;
+                cpu_governor)
+                    case "$v" in
+                        performance|schedutil|powersave) CFG_CPU_GOVERNOR="$v" ;;
+                    esac ;;
+            esac
+        fi
+    done < "$CONF_FILE"
+}
+
+get_proc_hidepid() {
+    local mounts_file="${PROC_ROOT}/self/mounts"
+    [[ -r "$mounts_file" ]] || mounts_file="${PROC_ROOT}/mounts"
+    local _src mp _fs opts _rest
+    if [[ -r "$mounts_file" ]]; then
+        while read -r _src mp _fs opts _rest; do
+            if [[ "$mp" == "/proc" ]]; then
+                if [[ "$opts" =~ hidepid=([^,[:space:]]+) ]]; then
+                    printf '%s\n' "${BASH_REMATCH[1]}"
+                    return
+                fi
+                break
+            fi
+        done < "$mounts_file"
+    fi
+    printf '0\n'
+}
+
+get_configured_hidepid_opts() {
+    local line opts=""
+    if [[ -r "$PROC_HIDEPID_CONF" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            [[ "$line" == Options=* ]] && opts="${line#Options=}"
+        done < "$PROC_HIDEPID_CONF"
+        if [[ -n "$opts" ]]; then
+            printf '%s\n' "$opts"
+            return
+        fi
+    fi
+    printf 'rw,nosuid,nodev,noexec,relatime,hidepid=2\n'
+}
+
+get_audit_status() {
+    command -v auditctl >/dev/null 2>&1 || { printf 'absent\n'; return; }
+    local line key val
+    while read -r key val _; do
+        if [[ "$key" == "enabled" ]]; then
+            printf '%s\n' "$val"
+            return
+        fi
+    done < <(auditctl -s 2>/dev/null || true)
+    printf 'unknown\n'
+}
+
+get_cpu_governor() {
+    local val
+    read_line_into val "${SYS_CPU_DIR}/cpu0/cpufreq/scaling_governor" "n/a"
+    printf '%s\n' "$val"
+}
+
+set_cpu_governor() {
+    local target_gov="$1" avail="" gov_path
+    read_line_into avail "${SYS_CPU_DIR}/cpu0/cpufreq/scaling_available_governors" ""
+    if [[ " $avail " != *" $target_gov "* ]]; then
+        if [[ "$target_gov" != "performance" && " $avail " == *" powersave "* ]]; then
+            target_gov="powersave"
+        elif [[ " $avail " == *" schedutil "* ]]; then
+            target_gov="schedutil"
+        else
+            return 0
+        fi
+    fi
+    for gov_path in "${SYS_CPU_DIR}"/cpu*/cpufreq/scaling_governor; do
+        [[ -w "$gov_path" ]] && printf '%s\n' "$target_gov" > "$gov_path" 2>/dev/null || true
+    done
+}
+
+get_cpu_epp() {
+    local val
+    read_line_into val "${SYS_CPU_DIR}/cpu0/cpufreq/energy_performance_preference" ""
+    printf '%s\n' "$val"
+}
+
+set_cpu_epp() {
+    local target_epp="$1" avail="" epp_path
+    [[ -n "$target_epp" ]] || return 0
+    read_line_into avail "${SYS_CPU_DIR}/cpu0/cpufreq/energy_performance_available_preferences" ""
+    if [[ -n "$avail" && " $avail " != *" $target_epp "* ]]; then
+        return 0
+    fi
+    for epp_path in "${SYS_CPU_DIR}"/cpu*/cpufreq/energy_performance_preference; do
+        [[ -w "$epp_path" ]] && printf '%s\n' "$target_epp" > "$epp_path" 2>/dev/null || true
+    done
+}
+
+get_cpu_boost() {
+    local val
+    read_line_into val "${SYS_CPU_DIR}/cpufreq/boost" ""
+    printf '%s\n' "$val"
+}
+
+set_cpu_boost() {
+    local target_boost="$1" boost_path="${SYS_CPU_DIR}/cpufreq/boost"
+    [[ "$target_boost" == "0" || "$target_boost" == "1" ]] || return 0
+    [[ -w "$boost_path" ]] && printf '%s\n' "$target_boost" > "$boost_path" 2>/dev/null || true
+}
+
+set_sysctl_safe() {
+    local key="$1" val="$2"
+    local proc_path="${PROC_ROOT}/sys/${key//./\/}"
+    if [[ -e "$proc_path" ]]; then
+        sysctl -q -w "${key}=${val}" 2>/dev/null || log_warn "Cannot modify $key (kernel locked)."
+    fi
+}
+
+get_gpu_pm() {
+    command -v nvidia-smi >/dev/null 2>&1 || { printf '\n'; return; }
+    local pm
+    pm=$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader 2>/dev/null | head -n1 | tr -d '[:space:]' || true)
+    case "$pm" in
+        Enabled)  printf '1\n' ;;
+        Disabled) printf '0\n' ;;
+        *)        printf '\n' ;;
+    esac
+}
+
+load_state_file() {
+    PREV_PTRACE="1" PREV_MAX_MAP="1048576" PREV_DIRTY_BG="10" PREV_DIRTY_R="20"
+    PREV_PERF_PARANOID="2" PREV_USERNS="" PREV_GOVERNOR="powersave"
+    PREV_EPP="" PREV_BOOST=""
+    PREV_AUDIT="1" PREV_GPU_PM="" PREV_HIDEPID_OPTS=""
+    PREV_HIDEPID_VAL=""
+    [[ -r "$STATE_FILE" ]] || return 0
+    local k v
+    while IFS='=' read -r k v || [[ -n "$k" ]]; do
+        [[ -z "$k" || "$k" == \#* ]] && continue
+        case "$k" in
+            PREV_PTRACE)        PREV_PTRACE="$v" ;;
+            PREV_MAX_MAP)       PREV_MAX_MAP="$v" ;;
+            PREV_DIRTY_BG)      PREV_DIRTY_BG="$v" ;;
+            PREV_DIRTY_R)       PREV_DIRTY_R="$v" ;;
+            PREV_PERF_PARANOID) PREV_PERF_PARANOID="$v" ;;
+            PREV_USERNS)        PREV_USERNS="$v" ;;
+            PREV_GOVERNOR)      PREV_GOVERNOR="$v" ;;
+            PREV_EPP)           PREV_EPP="$v" ;;
+            PREV_BOOST)         PREV_BOOST="$v" ;;
+            PREV_AUDIT)         PREV_AUDIT="$v" ;;
+            PREV_GPU_PM)        PREV_GPU_PM="$v" ;;
+            PREV_HIDEPID_OPTS)  PREV_HIDEPID_OPTS="$v" ;;
+            PREV_HIDEPID_VAL)   PREV_HIDEPID_VAL="$v" ;;
+        esac
+    done < "$STATE_FILE"
+}
+
+restore_hardened_state() {
+    local is_abort="${1:-0}"
+    load_state_file
+
+    local audit_state
+    audit_state=$(get_audit_status)
+    if [[ "$audit_state" == "0" && "${PREV_AUDIT:-1}" == "1" ]]; then
+        auditctl -e 1 >/dev/null 2>&1 || log_warn "Could not re-enable auditctl."
+    fi
+
+    set_sysctl_safe kernel.yama.ptrace_scope "${PREV_PTRACE:-1}"
+    set_sysctl_safe vm.max_map_count "${PREV_MAX_MAP:-1048576}"
+    set_sysctl_safe vm.dirty_background_ratio "${PREV_DIRTY_BG:-10}"
+    set_sysctl_safe vm.dirty_ratio "${PREV_DIRTY_R:-20}"
+    set_sysctl_safe kernel.perf_event_paranoid "${PREV_PERF_PARANOID:-2}"
+    [[ -n "${PREV_USERNS:-}" ]] && set_sysctl_safe kernel.unprivileged_userns_clone "$PREV_USERNS"
+
+    if [[ -f "$SYSCTL_SEC_FILE" ]]; then
+        sysctl -q --load="$SYSCTL_SEC_FILE" 2>/dev/null || true
+    fi
+
+    if [[ "${PREV_HIDEPID_VAL:-0}" != "0" ]]; then
+        local proc_opts="${PREV_HIDEPID_OPTS:-$(get_configured_hidepid_opts)}"
+        mount -o "remount,$proc_opts" /proc 2>/dev/null || mount -o "remount,hidepid=${PREV_HIDEPID_VAL}" /proc 2>/dev/null || true
+    fi
+
+    if [[ -c /dev/ntsync ]]; then
+        modprobe -r ntsync 2>/dev/null || true
+    fi
+
+    set_cpu_governor "${PREV_GOVERNOR:-powersave}"
+    set_cpu_epp "$PREV_EPP"
+    set_cpu_boost "$PREV_BOOST"
+
+    if [[ -n "${PREV_GPU_PM:-}" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi -pm "$PREV_GPU_PM" >/dev/null 2>&1 || true
+    fi
+
+    rm -f "$STATE_FILE" "${STATE_FILE}.tmp."*
+    (( is_abort == 0 )) && log_ok "Hardened posture restored (CPU governor: $(get_cpu_governor))."
+}
+
+cleanup_on_abort() {
+    local exit_code=$?
+    set +e
+    if [[ "$IN_TRANSITION" == true && $exit_code -ne 0 ]]; then
+        log_err "Interrupted ($exit_code). Rolling back to hardened posture..."
+        restore_hardened_state 1
+    fi
+}
+trap cleanup_on_abort EXIT
+trap 'exit 130' INT TERM HUP
+
+has_running_games() {
+    local pdir pid comm cmdline
+    for pdir in "${PROC_ROOT}"/[0-9]*; do
+        pid="${pdir##*/}"
+        [[ "$pid" == "$$" || "$pid" == "$PPID" ]] && continue
+        read_line_into comm "${pdir}/comm" ""
+        case "$comm" in
+            wineserver|reaper) return 0 ;;
+        esac
+        if [[ -r "${pdir}/cmdline" ]]; then
+            cmdline=$(tr '\0' ' ' < "${pdir}/cmdline" 2>/dev/null || true)
+            if [[ "$cmdline" == *"/reaper "* || "$cmdline" == *"SteamLaunch"* || "$cmdline" == *"steam_app_"* ]]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+emit_status_env() {
+    local active="0" ntsync="0" running="0" k_ver ptrace_val map_val dirty_bg dirty_r userns_val hidepid_val audit_val gov_val
+    [[ -f "$STATE_FILE" ]] && active="1"
+    [[ -c /dev/ntsync ]] && ntsync="1"
+    has_running_games && running="1" || true
+    read_line_into k_ver "${PROC_ROOT}/sys/kernel/osrelease" ""
+    [[ -n "$k_ver" ]] || k_ver=$(uname -r)
+    read_line_into ptrace_val "${PROC_ROOT}/sys/kernel/yama/ptrace_scope" "n/a"
+    read_line_into map_val    "${PROC_ROOT}/sys/vm/max_map_count" "n/a"
+    read_line_into dirty_bg   "${PROC_ROOT}/sys/vm/dirty_background_ratio" "n/a"
+    read_line_into dirty_r    "${PROC_ROOT}/sys/vm/dirty_ratio" "n/a"
+    read_line_into userns_val "${PROC_ROOT}/sys/kernel/unprivileged_userns_clone" "n/a"
+    hidepid_val=$(get_proc_hidepid)
+    audit_val=$(get_audit_status)
+    gov_val=$(get_cpu_governor)
+    printf 'ACTIVE=%s\nKERNEL=%s\nNTSYNC=%s\nHIDEPID=%s\nPTRACE=%s\nUSERNS=%s\nAUDIT=%s\nMAX_MAP=%s\nDIRTY_BG=%s\nDIRTY_R=%s\nGOV=%s\nRUNNING_GAMES=%s\n' \
+        "$active" "$k_ver" "$ntsync" "$hidepid_val" "$ptrace_val" "$userns_val" "$audit_val" "$map_val" "$dirty_bg" "$dirty_r" "$gov_val" "$running"
+}
+
+show_status() {
+    local active=0 k_ver ptrace_val map_val dirty_bg dirty_r userns_val hidepid_val audit_val gov_val ntsync_state="absent"
+    [[ -f "$STATE_FILE" ]] && active=1
+    read_line_into k_ver "${PROC_ROOT}/sys/kernel/osrelease" ""
+    [[ -n "$k_ver" ]] || k_ver=$(uname -r)
+    read_line_into ptrace_val "${PROC_ROOT}/sys/kernel/yama/ptrace_scope" "n/a"
+    read_line_into map_val    "${PROC_ROOT}/sys/vm/max_map_count" "n/a"
+    read_line_into dirty_bg   "${PROC_ROOT}/sys/vm/dirty_background_ratio" "n/a"
+    read_line_into dirty_r    "${PROC_ROOT}/sys/vm/dirty_ratio" "n/a"
+    read_line_into userns_val "${PROC_ROOT}/sys/kernel/unprivileged_userns_clone" "n/a"
+    hidepid_val=$(get_proc_hidepid)
+    audit_val=$(get_audit_status)
+    gov_val=$(get_cpu_governor)
+    [[ -c /dev/ntsync ]] && ntsync_state="active ($(stat -c '%a' /dev/ntsync))"
+
+    local mode_label="HARDENED"
+    (( active == 1 )) && mode_label="GAMING"
+    printf "Mode: %s | Kernel: %s | NTSync: %s | hidepid=%s | ptrace=%s | max_map=%s | gov=%s | audit=%s | dirty=%s/%s | userns=%s\n" \
+        "$mode_label" "$k_ver" "$ntsync_state" "$hidepid_val" "$ptrace_val" "$map_val" "$gov_val" "$audit_val" "$dirty_bg" "$dirty_r" "$userns_val"
+}
+
+apply_config_stdin() {
+    mkdir -p "$(dirname "$CONF_FILE")"
+    if [[ ! -f "$CONF_FILE" ]]; then
+        cat > "$CONF_FILE" <<'EOF'
+[posture]
+ntsync = true
+proc_hidepid = true
+ptrace_relax = true
+vm_tuning = true
+suspend_audit = true
+nvidia_persistence = true
+cpu_governor = "performance"
+EOF
+        chmod 0644 "$CONF_FILE"
+    fi
+
+    local -A updates=()
+    local count=0 line k v
+    while IFS= read -r line && (( count < 10 )); do
+        count=$((count + 1))
+        line="${line//$'\r'/}"
+        line="$(printf '%s' "$line" | tr -d '[:space:]')"
+        [[ -n "$line" ]] || continue
+        if [[ "$line" =~ ^(ntsync|proc_hidepid|ptrace_relax|vm_tuning|suspend_audit|nvidia_persistence)=(true|false)$ ]]; then
+            updates["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+        elif [[ "$line" =~ ^cpu_governor=(performance|schedutil|powersave)$ ]]; then
+            updates["cpu_governor"]="\"${BASH_REMATCH[1]}\""
+        else
+            log_err "Invalid config-stdin line: $line"
+            exit 2
+        fi
+    done
+    (( ${#updates[@]} > 0 )) || { log_err "No valid [posture] updates provided."; exit 2; }
+
+    local upd_spec=""
+    for k in "${!updates[@]}"; do
+        upd_spec+="${k}=${updates[$k]}"$'\n'
+    done
+
+    local tmp_conf="${CONF_FILE}.tmp.$$"
+    awk -v spec="$upd_spec" '
+    BEGIN {
+        n = split(spec, lines, "\n")
+        for (i = 1; i <= n; i++) {
+            if (lines[i] == "") continue
+            eq = index(lines[i], "=")
+            k = substr(lines[i], 1, eq - 1)
+            v = substr(lines[i], eq + 1)
+            upd[k] = v
+            done_k[k] = 0
+        }
+        in_posture = 0
+        saw_posture = 0
+    }
+    function flush_missing() {
+        for (k in upd) {
+            if (!done_k[k]) {
+                print k " = " upd[k]
+                done_k[k] = 1
+            }
+        }
+    }
+    /^\[.*\]/ {
+        if (in_posture) flush_missing()
+        in_posture = ($0 ~ /^\[posture\]/) ? 1 : 0
+        if (in_posture) saw_posture = 1
+        print
+        next
+    }
+    {
+        if (in_posture && match($0, /^[[:space:]]*([a-z_]+)[[:space:]]*=/, m) && (m[1] in upd)) {
+            k = m[1]
+            print k " = " upd[k]
+            done_k[k] = 1
+            next
+        }
+        print
+    }
+    END {
+        if (in_posture) {
+            flush_missing()
+        } else if (!saw_posture) {
+            print ""
+            print "[posture]"
+            flush_missing()
+        }
+    }' "$CONF_FILE" > "$tmp_conf"
+    chmod 0644 "$tmp_conf"
+    chown root:root "$tmp_conf"
+    mv -f "$tmp_conf" "$CONF_FILE"
+    log_ok "Updated [posture] in ${CONF_FILE}."
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help) usage ;;
+        on|-1|--on|--enable)       ACTION="on"; shift ;;
+        off|-0|--off|--disable)    ACTION="off"; shift ;;
+        off-force)                 ACTION="off"; FORCE=true; shift ;;
+        status|-s|--status)        ACTION="status"; shift ;;
+        status-env)                ACTION="status-env"; shift ;;
+        config-stdin)              ACTION="config-stdin"; shift ;;
+        -f|--force)                FORCE=true; shift ;;
+        -q|--quiet)                QUIET=true; shift ;;
+        *)                         log_err "Invalid argument: $1"; exit 1 ;;
+    esac
+done
+
+[[ -n "$ACTION" ]] || { log_err "No action specified."; exit 1; }
+
+if [[ "$ACTION" == "status" ]]; then
+    show_status
+    exit 0
+elif [[ "$ACTION" == "status-env" ]]; then
+    emit_status_env
+    exit 0
+fi
+
+if [[ "${NC_GAMING_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
+    log_err "Root privileges required."
+    exit 1
+fi
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock -n 9 || { log_err "Another ${0##*/} instance is already running."; exit 1; }
+
+load_posture_config
+
+case "$ACTION" in
+    config-stdin)
+        apply_config_stdin
+        exit 0
+        ;;
+    on)
+        if [[ -f "$STATE_FILE" && "$FORCE" == false ]]; then
+            show_status
+            exit 0
+        fi
+        IN_TRANSITION=true
+        mkdir -p "$STATE_DIR"
+        chmod 700 "$STATE_DIR"
+        if [[ ! -f "$STATE_FILE" ]]; then
+            local_tmp="${STATE_FILE}.tmp.$$"
+            read_line_into p_ptrace "${PROC_ROOT}/sys/kernel/yama/ptrace_scope" "1"
+            read_line_into p_map    "${PROC_ROOT}/sys/vm/max_map_count" "1048576"
+            read_line_into p_dbg    "${PROC_ROOT}/sys/vm/dirty_background_ratio" "10"
+            read_line_into p_dr     "${PROC_ROOT}/sys/vm/dirty_ratio" "20"
+            read_line_into p_perf   "${PROC_ROOT}/sys/kernel/perf_event_paranoid" "2"
+            read_line_into p_userns "${PROC_ROOT}/sys/kernel/unprivileged_userns_clone" ""
+            p_gov=$(get_cpu_governor)
+            p_epp=$(get_cpu_epp)
+            p_boost=$(get_cpu_boost)
+            p_audit=$(get_audit_status)
+            p_gpupm=$(get_gpu_pm)
+            p_hidepid=$(get_configured_hidepid_opts)
+            p_hidepid_val=$(get_proc_hidepid)
+            (
+                umask 0077
+                cat > "$local_tmp" <<EOF
+PREV_PTRACE=$p_ptrace
+PREV_MAX_MAP=$p_map
+PREV_DIRTY_BG=$p_dbg
+PREV_DIRTY_R=$p_dr
+PREV_PERF_PARANOID=$p_perf
+PREV_USERNS=$p_userns
+PREV_GOVERNOR=$p_gov
+PREV_EPP=$p_epp
+PREV_BOOST=$p_boost
+PREV_AUDIT=$p_audit
+PREV_GPU_PM=$p_gpupm
+PREV_HIDEPID_OPTS=$p_hidepid
+PREV_HIDEPID_VAL=$p_hidepid_val
+EOF
+            )
+            mv -f "$local_tmp" "$STATE_FILE"
+        fi
+
+        if [[ "$CFG_NTSYNC" == "true" ]]; then
+            if modprobe ntsync 2>/dev/null; then
+                [[ -c /dev/ntsync ]] && chmod 0666 /dev/ntsync 2>/dev/null || true
+            fi
+        fi
+
+        if [[ "$CFG_PROC_HIDEPID" == "true" ]]; then
+            mount -o remount,hidepid=0 /proc 2>/dev/null || true
+        fi
+
+        if [[ "$CFG_PTRACE_RELAX" == "true" ]]; then
+            read_line_into cur_ptrace "${PROC_ROOT}/sys/kernel/yama/ptrace_scope" "0"
+            [[ "$cur_ptrace" != "3" ]] && set_sysctl_safe kernel.yama.ptrace_scope 0
+            set_sysctl_safe kernel.unprivileged_userns_clone 1
+            set_sysctl_safe kernel.perf_event_paranoid 1
+        fi
+
+        if [[ "$CFG_VM_TUNING" == "true" ]]; then
+            set_sysctl_safe vm.max_map_count 2147483642
+            set_sysctl_safe vm.dirty_background_ratio 3
+            set_sysctl_safe vm.dirty_ratio 8
+        fi
+
+        if [[ "$CFG_SUSPEND_AUDIT" == "true" ]]; then
+            audit_state=$(get_audit_status)
+            if [[ "$audit_state" == "1" ]]; then
+                auditctl -e 0 >/dev/null 2>&1 || true
+            fi
+        fi
+
+        set_cpu_governor "performance"
+        set_cpu_epp "performance"
+        set_cpu_boost "1"
+
+        if [[ "$CFG_NVIDIA_PERSISTENCE" == "true" ]] && command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia-smi -pm 1 >/dev/null 2>&1 || true
+        fi
+
+        IN_TRANSITION=false
+        log_ok "Gaming posture applied (CPU governor: $(get_cpu_governor))."
+        show_status
+        exit 0
+        ;;
+    off)
+        if [[ ! -f "$STATE_FILE" && "$FORCE" == false ]]; then
+            show_status
+            exit 0
+        fi
+        if [[ "$FORCE" == false ]] && has_running_games; then
+            log_warn "Running Proton/Wine processes detected. Close them or use off-force."
+            exit 3
+        fi
+        IN_TRANSITION=true
+        restore_hardened_state 0
+        IN_TRANSITION=false
+        show_status
+        exit 0
+        ;;
+esac

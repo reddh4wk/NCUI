@@ -1,0 +1,499 @@
+# NC-UI Action Help Catalog — Printers, Discovery, Queue & CUPS Server (EN)
+
+# ==============================================================================
+# GENERAL NAVIGATION & POPUP CONTROLS
+# ==============================================================================
+["cc_prn:refresh"]
+title = "Refresh CUPS & Printers"
+short = "Clears cached `lpstat`, `lpoptions`, job queue, and daemon snapshots and reloads live CUPS state."
+
+["prn_pop:refresh"]
+title = "Refresh Print Spooler Popup"
+short = "Invalidates the cached printer/job snapshot and reloads CUPS queue status immediately."
+
+["cc_prn:goto_subtab:discovery"]
+title = "Open Add Printer & Discovery"
+short = "Switches to the Discovery & Add Printer subtab to scan TCP/IP LAN or USB devices and configure new queues."
+
+["cc_prn:goto_subtab:queue"]
+title = "Open Print Queue"
+short = "Switches to the Queue subtab to inspect active or completed CUPS spooler jobs."
+
+["cc_prn:goto_subtab:server"]
+title = "Open CUPS Server & Policies"
+short = "Switches to the Server subtab to control `cups.service`, `avahi-daemon`, `cupsctl` flags, and error logs."
+
+["cc_prn:goto_subtab:*"]
+title = "Switch Printers Subtab"
+short = "Switches to the requested subtab inside the Printers & CUPS section."
+
+["cc_prn:cancel_confirm"]
+title = "Cancel Destructive Action"
+short = "Dismisses the two-step confirmation prompt without removing the printer, class, or print queue."
+
+# ==============================================================================
+# INSTALLED PRINTERS, INSPECTOR, PPD PREFERENCES & QUICK PRINT
+# ==============================================================================
+["cc_prn:dev_filter_open"]
+title = "Filter Installed Printers.."
+short = "Opens inline search to filter installed CUPS queues by name, URI, protocol, description, location, or driver."
+
+["cc_prn:dev_filter_clear"]
+title = "Clear Printer Filter"
+short = "Clears the active installed-printers filter string and shows all CUPS queues."
+
+["cc_prn:select_prn:*"]
+title = "Inspect Printer Queue"
+short = "Selects this CUPS queue in the inspector below to edit URI, driver/PPD, defaults, Quick Print, and ink/toner supplies."
+
+["cc_prn:set_default:*"]
+title = "Set Default Printer"
+short = "Sets this queue as both user default (`lpoptions -d`) and system-wide CUPS default (`lpadmin -d`)."
+
+["cc_prn:pause_prn:*"]
+title = "Pause Printer Queue"
+short = "Stops the CUPS queue (`cupsdisable <printer>`) so queued jobs wait instead of dispatching to the device."
+
+["cc_prn:enable_prn:*"]
+title = "Resume Printer Queue"
+short = "Re-enables the CUPS queue (`cupsenable <printer>`) and resumes dispatching held/pending jobs."
+
+["cc_prn:accept_prn:*:1"]
+title = "Accept New Print Jobs"
+short = "Runs `cupsaccept <printer>` so applications and network clients can submit new jobs to this queue."
+
+["cc_prn:accept_prn:*:0"]
+title = "Reject New Print Jobs"
+short = "Runs `cupsreject <printer>` to block new job submissions while letting already queued jobs finish."
+
+["cc_prn:share_prn:*:1"]
+title = "Share Printer on LAN"
+short = "Sets `printer-is-shared=true` via `lpadmin` so this queue is advertised when server sharing is enabled."
+
+["cc_prn:share_prn:*:0"]
+title = "Unshare Printer (Local Only)"
+short = "Sets `printer-is-shared=false` via `lpadmin` so this queue remains accessible only on the local host."
+
+["cc_prn:restart_prn:*"]
+title = "Recover & Restart Printer Queue"
+short = "Runs `cupsenable` and `cupsaccept` together to clear `stop-printer` fault states and accept jobs again."
+
+["cc_prn:ask_confirm:delete_prn:*"]
+title = "Remove Printer Queue.."
+short = "Arms a two-step confirmation before permanently deleting this CUPS queue (`lpadmin -x`)."
+
+["cc_prn:delete_prn:*"]
+title = "Confirm Remove Printer"
+short = "Permanently deletes this CUPS printer queue and its `/etc/cups/ppd/` configuration via `lpadmin -x`."
+
+["cc_prn:rename_prn:*"]
+title = "Rename Printer Queue.."
+short = "Opens inline input to recreate the queue under a new name, migrate its PPD/options and active jobs (`lpmove`), and delete the old queue."
+verbose = "Validates queue name syntax (`[A-Za-z0-9_-]`), copies `/etc/cups/ppd/<old>.ppd` and error/sharing settings to the new queue via `lpadmin`, moves any active jobs with `lpmove`, preserves default status, and removes the old queue."
+
+["cc_prn:clone_prompt:*"]
+title = "Clone Printer Queue.."
+short = "Prompts for a new queue name and duplicates the URI, PPD driver, description, and location into a second profile."
+
+["cc_prn:edit_uri:*"]
+title = "Edit Device URI.."
+short = "Opens inline entry to change the CUPS backend URI (`ipp://`, `ipps://`, `socket://`, `lpd://`, `smb://`, `usb://`) via `lpadmin -v`."
+
+["cc_prn:edit_desc:*"]
+title = "Edit Printer Description.."
+short = "Opens inline entry to update the human-readable CUPS description (`lpadmin -D`)."
+
+["cc_prn:edit_loc:*"]
+title = "Edit Printer Location.."
+short = "Opens inline entry to update the physical location string (`lpadmin -L`)."
+
+["cc_prn:probe_uri*"]
+title = "Probe Printer Endpoint"
+short = "Tests TCP socket reachability and IPP capability/latency against the configured printer host and port."
+
+["cc_prn:open_addr:*"]
+title = "Open Printer Web Interface"
+short = "Opens `http(s)://<printer-host>` in your browser to access the hardware's embedded admin/EWS page."
+
+["cc_prn:test_page:*"]
+title = "Print CUPS Test Page"
+short = "Submits `/usr/share/cups/data/testprint` (or a generated PostScript calibration sheet) via `lp -d`."
+
+["cc_prn:print_file:*"]
+title = "Print File.."
+short = "Opens the Quick Print composer and prompts for a PDF, PostScript, TXT, or image file path with tab-completion."
+
+["cc_prn:drv_edit_mode:*"]
+title = "Select Driver Mode"
+short = "Switches driver assignment mode between `IPP Everywhere` (driverless), `CUPS Database`, `Raw` pass-through, and `Custom PPD`."
+
+["cc_prn:drv_edit_search"]
+title = "Search CUPS Driver Database.."
+short = "Opens inline search across `lpinfo -m` models and installed vendor PPDs."
+
+["cc_prn:drv_edit_clear"]
+title = "Clear Driver Search"
+short = "Clears the inline driver database search query."
+
+["cc_prn:drv_edit_pick:*"]
+title = "Select CUPS Driver Model"
+short = "Stages this `lpinfo -m` model ID or PPD entry before clicking `[✓ Apply Driver]`."
+
+["cc_prn:drv_edit_ppd"]
+title = "Browse Custom PPD File.."
+short = "Prompts for a `.ppd` or `.ppd.gz` file path (defaulting to `/usr/share/cups/model/`) and validates it."
+
+["cc_prn:drv_edit_apply:*"]
+title = "Apply Driver to Queue"
+short = "Applies the selected driverless model (`-m everywhere`), raw queue, database driver, or custom PPD (`-P`) via `lpadmin`."
+
+["cc_prn:set_opt:*:*=*"]
+title = "Set Printer Option Default"
+short = "Applies this PPD or IPP preference (`PageSize`, `Duplex`, `ColorModel`, `number-up`, `print-scaling`, etc.) to user `lpoptions` and system `lpadmin` defaults."
+verbose = "Writes `<key>=<val>` to `~/.cups/lpoptions` via `lpoptions -p` and persists `<key>-default=<val>` system-wide via `lpadmin -p` for supported PPD and IPP standard attributes."
+
+["cc_prn:cycle_opt:*:*"]
+title = "Cycle Extended PPD Option"
+short = "Advances to the next valid choice for this PPD option and saves it via `lpoptions` and `lpadmin -o <key>-default`."
+
+["cc_prn:err_policy:*:*"]
+title = "Set Printer Error Policy"
+short = "Sets `printer-error-policy` (`retry-job`, `abort-job`, or `stop-printer`) via `lpadmin` when backend delivery fails."
+
+["cc_prn:reset_user_opts:*"]
+title = "Reset User `lpoptions` Overrides"
+short = "Runs `lpoptions -x <printer>` to remove per-user option overrides in `~/.cups/lpoptions` and fall back to system defaults."
+
+["cc_prn:ppd_grp:*"]
+title = "Switch PPD Option Group"
+short = "Filters the extended PPD options list to the selected manufacturer/PPD group."
+
+["cc_prn:qp_pick_file"]
+title = "Choose Quick Print Document.."
+short = "Prompts for a printable file (`.pdf`, `.ps`, `.eps`, `.txt`, `.png`, `.jpg`, `.svg`) with filesystem path completion."
+
+["cc_prn:qp_copies*"]
+title = "Adjust Quick Print Copies (1..20)"
+short = "Sets the copy count (`-n <copies>`) for the Quick Print draft via slider."
+
+["cc_prn:qp_copies_edit"]
+title = "Edit Custom Copy Count (1..99).."
+short = "Opens inline numeric entry (`1..99`) for Quick Print copies beyond the 1..20 slider range."
+
+["cc_prn:qp_pages_all"]
+title = "Print All Pages"
+short = "Clears any page range restriction (`-P`) in the Quick Print draft so the entire document prints."
+
+["cc_prn:qp_pages_edit"]
+title = "Edit Page Range.."
+short = "Opens inline entry for a CUPS page range (`-P`, e.g., `1-5,8`) in the Quick Print draft."
+
+["cc_prn:qp_fit:0"]
+title = "Quick Print Scaling: Original Size"
+short = "Disables `fit-to-page` scaling so the document prints at its native 100% dimensions."
+
+["cc_prn:qp_fit:1"]
+title = "Quick Print Scaling: Fit to Page"
+short = "Enables `-o fit-to-page` in Quick Print so oversized pages shrink cleanly inside printable margins."
+
+["cc_prn:qp_sides:*"]
+title = "Set Quick Print Duplex Mode"
+short = "Overrides `sides` (`default`, `one-sided`, `two-sided-long-edge`, or `two-sided-short-edge`) for the Quick Print job."
+
+["cc_prn:qp_color:*"]
+title = "Set Quick Print Color Mode"
+short = "Overrides `print-color-mode` (`default`, `color`, or `monochrome`) for the Quick Print job."
+
+["cc_prn:qp_submit:*"]
+title = "Submit Quick Print Job"
+short = "Dispatches the staged document and options (`-n`, `-P`, `fit-to-page`, `sides`, `print-color-mode`) to CUPS via `lp`."
+
+["cc_prn:identify_prn:*"]
+title = "Identify Hardware Printer"
+short = "Sends an IPP `Identify-Printer` request (`ipptool ... identify-printer.test`) to flash LEDs or beep on supported devices."
+
+["cc_prn:maint:*:levels"]
+title = "Query Supply Levels"
+short = "Sends `#CUPS-COMMAND` `ReportLevels` (`application/vnd.cups-command`) to refresh ink/toner marker levels."
+
+["cc_prn:maint:*:selftest"]
+title = "Print Hardware Self-Test Page"
+short = "Sends `#CUPS-COMMAND` `PrintSelfTestPage` so the printer generates an internal nozzle/calibration report."
+
+["cc_prn:maint:*:clean"]
+title = "Run Printhead Cleaning Cycle"
+short = "Sends `#CUPS-COMMAND` `Clean all` to run the printer's internal printhead/drum maintenance cycle."
+
+# ==============================================================================
+# DISCOVERY, ADD PRINTER WIZARD, DRIVER PACKAGES & CLASSES
+# ==============================================================================
+["cc_prn:scan_all"]
+title = "Scan Network & USB Printers"
+short = "Runs a parallel TCP port scan (`:9100`, `:631`, `:515`) on the selected subnet plus `lpinfo -v` / Avahi mDNS discovery."
+
+["cc_prn:tcp_subnet_pick:*"]
+title = "Select LAN Subnet to Scan"
+short = "Selects this detected IPv4 `/24` subnet and launches a TCP printer port scan across its hosts."
+
+["cc_prn:tcp_subnet_custom"]
+title = "Scan Custom IP / Subnet.."
+short = "Opens inline entry for a custom IPv4 host or `/24` CIDR subnet to probe for network printers."
+
+["cc_prn:wiz_open_tcp:*"]
+title = "Configure Discovered TCP Printer"
+short = "Opens the inline setup drawer pre-filled with this host's IP/ports, runs smart IPP probing, and searches matching drivers."
+
+["cc_prn:wiz_open_disc:*"]
+title = "Configure Discovered CUPS/USB Device"
+short = "Opens the setup drawer pre-filled with this `lpinfo -v` / mDNS / USB URI and queries smart driver suggestions."
+
+["cc_prn:wiz_open_manual"]
+title = "Open Manual Printer Setup"
+short = "Opens the setup drawer with an empty draft to configure a custom `socket://`, `ipp://`, `lpd://`, `smb://`, or `usb://` URI."
+
+["cc_prn:wiz_close"]
+title = "Close Setup Drawer"
+short = "Closes the inline Add Printer provisioning drawer."
+
+["cc_prn:open_installed:*"]
+title = "Open Existing Installed Printer"
+short = "Jumps to the Installed Printers subtab with this already-configured queue selected in the inspector."
+
+["cc_prn:create_pdf_queue"]
+title = "Create Virtual PDF Printer"
+short = "Creates a `Print_to_PDF` CUPS queue backed by `cups-pdf:/` using `CUPS-PDF_opt.ppd`."
+
+["cc_prn:draft_field:*"]
+title = "Edit New Printer Draft Field.."
+short = "Opens inline entry for the queue name, URI, host/IP, description, or location in the Add Printer draft."
+
+["cc_prn:draft_proto:*"]
+title = "Select Printer Backend Protocol"
+short = "Switches the Add Printer draft protocol (`socket` TCP/9100, `ipp`, `ipps`, `lpd`, `smb`, or `usb`) and updates the URI template."
+
+["cc_prn:draft_tcp_port:*"]
+title = "Select TCP Port Mode (9100 / 631 / 515)"
+short = "Updates the `socket://` / TCP port in the Add Printer draft between JetDirect (`9100`), IPP (`631`), and LPD (`515`)."
+
+["cc_prn:smb_auth_prompt"]
+title = "Authenticate & Browse SMB Shares.."
+short = "Prompts for Windows/SMB username and password, probes `smbclient -L <host>` via a temporary `0600` auth file, and populates `smb://`."
+
+["cc_prn:draft_drv_mode:*"]
+title = "Select Wizard Driver Mode"
+short = "Switches driver resolution in the Add Printer wizard between `Smart Auto`, `CUPS Database`, `Custom PPD`, and `Raw`."
+
+["cc_prn:drv_search_open"]
+title = "Filter Drivers & Packages.."
+short = "Opens inline search to filter local `lpinfo -m` PPDs and matching distro driver packages."
+
+["cc_prn:drv_search_clear"]
+title = "Clear Driver Filter"
+short = "Resets the Add Printer driver filter query and scrolls back to the top."
+
+["cc_prn:drv_pkg_rescan"]
+title = "Rescan Distro Driver Packages"
+short = "Forces a fresh package-manager query (`pacman` / AUR helper) for vendor printer driver packages matching this model."
+
+["cc_prn:drv_box_scroll*"]
+title = "Scroll Driver Match List"
+short = "Scrolls up or down through the ranked CUPS driver and distro package candidates."
+
+["cc_prn:pick_drv:*"]
+title = "Select Local CUPS Driver"
+short = "Selects this ranked `lpinfo -m` driver or local PPD in the Add Printer draft."
+
+["cc_prn:pick_pkg_drv:*"]
+title = "Use Installed Package Driver"
+short = "Reloads `lpinfo -m` drivers and automatically matches the PPD provided by this installed package."
+
+["cc_prn:install_drv_pkg:*"]
+title = "Install Vendor Driver Package"
+short = "Opens a terminal to install this driver package via your package manager (`pacman`/`yay`/`paru`) and watches for completion."
+verbose = "Candidates scoring below 90% confidence ask for explicit confirmation first so you do not install an unrelated vendor package by mistake."
+
+["cc_prn:install_drv_pkg_force:*"]
+title = "Confirm Driver Package Install"
+short = "Confirms installing a lower-confidence vendor driver package in a terminal window and refreshes available PPDs afterward."
+
+["cc_prn:cancel_pkg_confirm"]
+title = "Cancel Package Install Prompt"
+short = "Dismisses the low-confidence driver package confirmation prompt."
+
+["cc_prn:browse_ppd"]
+title = "Browse PPD File.."
+short = "Prompts for a `.ppd` or `.ppd.gz` driver file path in `/usr/share/cups/model/` and validates its PPD headers."
+
+["cc_prn:draft_toggle:make_default"]
+title = "Toggle Set as Default on Install"
+short = "When enabled, marks the newly created queue as the default printer immediately after installation."
+
+["cc_prn:draft_toggle:shared"]
+title = "Toggle Share on LAN on Install"
+short = "When enabled, creates the queue with `printer-is-shared=true`."
+
+["cc_prn:draft_reset"]
+title = "Reset Add Printer Draft"
+short = "Clears all draft fields (name, URI, host, description, driver selection) back to defaults."
+
+["cc_prn:install_printer"]
+title = "Install Printer Queue"
+short = "Starts `cups.service` if needed and creates the queue with `lpadmin -p <name> -E -v <uri>` and the resolved driver/PPD."
+
+["cc_prn:install_printer_test"]
+title = "Install Queue & Print Test Page"
+short = "Creates the CUPS printer queue via `lpadmin` and immediately submits a CUPS test page to verify output."
+
+["cc_prn:select_class:*"]
+title = "Inspect Printer Pool / Class"
+short = "Selects this CUPS Printer Class so you can add or remove member printers for round-robin failover pooling."
+
+["cc_prn:class_new_prompt"]
+title = "Create Printer Pool / Class.."
+short = "Prompts for a pool name and binds the first printer into a new CUPS Printer Class via `lpadmin -c`."
+
+["cc_prn:class_toggle_member:*:*"]
+title = "Toggle Class Member Printer"
+short = "Adds (`lpadmin -c`) or removes (`lpadmin -r`) this printer from the selected CUPS failover pool."
+
+["cc_prn:ask_confirm:class_delete:*"]
+title = "Delete Printer Class.."
+short = "Arms two-step confirmation before deleting this CUPS Printer Class (member queues stay intact)."
+
+["cc_prn:class_delete:*"]
+title = "Confirm Delete Printer Class"
+short = "Deletes the CUPS Printer Class via `lpadmin -x` without removing its individual member printers."
+
+# ==============================================================================
+# PRINT QUEUE & JOBS (`cc_printers_queue.py`, `wp_printers.py`)
+# ==============================================================================
+["cc_prn:q_mode:not-completed"]
+title = "View Active Spooler Jobs"
+short = "Shows pending, held, processing, and stopped CUPS jobs (`which-jobs=not-completed`)."
+
+["cc_prn:q_mode:completed"]
+title = "View Completed Job History"
+short = "Shows finished and canceled CUPS jobs (`which-jobs=completed`) so you can inspect metadata or reprint."
+
+["cc_prn:q_cycle_prn"]
+title = "Cycle Queue Printer Filter"
+short = "Cycles the print job table between `ALL` queues and each individual installed printer."
+
+["cc_prn:q_filter_open"]
+title = "Filter Print Jobs.."
+short = "Opens inline search to filter jobs by job ID, document title, owner, printer name, or timestamp."
+
+["cc_prn:q_filter_clear"]
+title = "Clear Job Filter"
+short = "Clears the active print-queue search filter."
+
+["cc_prn:select_job:*"]
+title = "Inspect Print Job"
+short = "Selects this CUPS job ID in the inspector below to view attributes, priority, move targets, or authentication prompts."
+
+["cc_prn:job_hold:*:1"]
+title = "Hold Print Job"
+short = "Puts this job on hold (`lp -i <job_id> -H hold`) so it stays in the spooler without printing until released."
+
+["cc_prn:job_hold:*:0"]
+title = "Release Held Print Job"
+short = "Resumes a held job (`lp -i <job_id> -H resume`) so the CUPS scheduler can dispatch it."
+
+["cc_prn:job_prio:*:95"]
+title = "Bump Job to Urgent Priority (95)"
+short = "Raises this job's IPP priority to `95` (`lp -i <job_id> -q 95`) so it jumps ahead of normal `50` jobs."
+
+["cc_prn:job_prio:*:*"]
+title = "Set Job Priority"
+short = "Sets CUPS job scheduling priority (`25` Low, `50` Normal, `75` High, `95` Urgent) via `lp -i <job_id> -q`."
+
+["cc_prn:job_cancel:*"]
+title = "Cancel Print Job"
+short = "Aborts and removes this job from the CUPS spooler (`cancel <job_id>`)."
+
+["cc_prn:job_reprint:*"]
+title = "Reprint Completed Job"
+short = "Re-queues a completed CUPS job (`lp -i <job_id> -H restart`) if its spool data is still retained in `/var/spool/cups`."
+
+["cc_prn:job_auth:*"]
+title = "Authenticate Held Job.."
+short = "Prompts for username and password and resumes an `auth-info-required` job via `lp -i <jid> -H resume -o auth-info=...`."
+
+["cc_prn:job_move:*:*"]
+title = "Move Job to Another Printer"
+short = "Transfers this queued job to another CUPS printer queue (`lpmove <job_id> <destination>`)."
+
+["cc_prn:ask_confirm:purge_queue:*"]
+title = "Purge All Queued Jobs.."
+short = "Arms two-step confirmation before canceling every pending/held job in the selected scope (`cancel -a`)."
+
+["cc_prn:purge_queue:*"]
+title = "Confirm Purge Print Queue"
+short = "Cancels all queued jobs on the filtered printer or across all CUPS queues (`cancel -a`)."
+
+["prn_pop:ask_purge"]
+title = "Purge All Active Jobs.."
+short = "Arms two-step confirmation in the Waybar popup before canceling all active CUPS jobs."
+
+["prn_pop:cancel_purge"]
+title = "Cancel Queue Purge"
+short = "Dismisses the purge confirmation buttons in the Waybar printers popup."
+
+# ==============================================================================
+# CUPS SERVER, AVAHI, `cupsctl` FLAGS & PRIVILEGES
+# ==============================================================================
+["cc_prn:webui"]
+title = "Open CUPS Web Admin (localhost:631)"
+short = "Opens the local CUPS web management console (`http://localhost:631`) in your browser."
+
+["cc_prn:svc:start:cups.service"]
+title = "Start CUPS Spooler"
+short = "Starts `cups.service` via `systemctl start` so local and network print queues become active."
+
+["cc_prn:svc:stop:cups.service"]
+title = "Stop CUPS Spooler"
+short = "Stops `cups.service` via `systemctl stop`."
+
+["cc_prn:svc:restart:cups.service"]
+title = "Restart CUPS Spooler"
+short = "Restarts `cups.service` via `systemctl restart` to reload `cupsd.conf` or backend state."
+
+["cc_prn:svc:enable:cups.service"]
+title = "Enable CUPS at Boot"
+short = "Enables `cups.service` via `systemctl enable` so the print spooler starts automatically on boot."
+
+["cc_prn:svc:disable:cups.service"]
+title = "Disable CUPS at Boot"
+short = "Disables `cups.service` autostart (`systemctl disable`) so CUPS only runs when started manually."
+
+["cc_prn:svc:start:avahi-daemon.service"]
+title = "Start Avahi mDNS Responder"
+short = "Starts `avahi-daemon.service` so `dnssd://`, AirPrint, and IPP Everywhere LAN autodiscovery work."
+
+["cc_prn:svc:restart:avahi-daemon.service"]
+title = "Restart Avahi mDNS Responder"
+short = "Restarts `avahi-daemon.service` to refresh LAN `.local` / `_ipp._tcp` service browsing."
+
+["cc_prn:cupsctl:*:1"]
+title = "Enable CUPS Server Policy Flag"
+short = "Enables this global `cupsd.conf` directive via `cupsctl --<flag>` (`share-printers`, `remote-any`, `remote-admin`, `user-cancel-any`, or `debug-logging`)."
+
+["cc_prn:cupsctl:*:0"]
+title = "Disable CUPS Server Policy Flag"
+short = "Disables this global `cupsd.conf` directive via `cupsctl --no-<flag>`."
+
+["cc_prn:clear_logs"]
+title = "Truncate CUPS Error Log"
+short = "Truncates `/var/log/cups/error_log` cleanly to 0 bytes using privileged `truncate -s 0`."
+
+["cc_prn:dismiss_logs_view"]
+title = "Dismiss Current Log Lines in UI"
+short = "Hides already-read `/var/log/cups/error_log` entries from the panel view during this session without modifying the log file."
+
+["priv:revoke:cups_service"]
+title = "Revoke CUPS Service Sudoers Rule"
+short = "Removes the least-privilege `/etc/sudoers.d/ncui-*` rule for `cups.service` / `avahi-daemon` and log truncation."
+
+["priv:revoke:cups_sysgroup"]
+title = "Revoke CUPS Admin Group Rule"
+short = "Removes the `/etc/sudoers.d/ncui-*` helper rule used to grant CUPS `sys`/`lpadmin` administrative group access."

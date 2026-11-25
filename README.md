@@ -18,7 +18,7 @@
 [![Platform](https://img.shields.io/badge/Wayland-niri_%2F_Layer--Shell-00f0ff?style=for-the-badge&labelColor=0b0c10&logo=wayland&logoColor=00f0ff)](#-architecture--control-center)
 [![Renderer](https://img.shields.io/badge/Renderer-GTK3_%2B_Cairo_%2B_Pango-00ff73?style=for-the-badge&labelColor=0b0c10)](#-the-four-orthogonal-channels)
 [![Zero Bloat](https://img.shields.io/badge/Python_Deps-Zero_External_Packages-ffeb19?style=for-the-badge&labelColor=0b0c10&logo=python&logoColor=ffeb19)](#-quick-start)
-[![Shader Engine](https://img.shields.io/badge/ncmatrix-C11_%2B_OpenGL_%2F_EGL-ff2a9d?style=for-the-badge&labelColor=0b0c10)](#-ncmatrix-native-wallpaper-engine)
+[![Shader Engine](https://img.shields.io/badge/nc--matrix-C11_%2B_OpenGL_%2F_EGL-ff2a9d?style=for-the-badge&labelColor=0b0c10)](#-nc-matrix-native-wallpaper-engine)
 [![i18n](https://img.shields.io/badge/Locales-EN_%7C_IT_Hot--Reload-8c9bba?style=for-the-badge&labelColor=0b0c10)](#-configuration--i18n)
 
 <br/>
@@ -45,8 +45,8 @@ It bridges the gap between raw Linux CLI control and tactile visual feedback —
       <img src="assets/screenshots/cc_personalization_theme.png" alt="NC-UI Live Theme Sandbox and 7-Axis Semantic Color Studio" />
     </td>
     <td width="50%" align="center">
-      <b>🧬 Multi-Monitor Map & Native <code>ncmatrix</code> Engine</b><br/>
-      <img src="assets/screenshots/cc_personalization_wallpaper.png" alt="NC-UI Multi-Monitor Wallpaper Map with Live ncmatrix Shader Preview" />
+      <b>🧬 Multi-Monitor Map & Native <code>nc-matrix</code> Engine</b><br/>
+      <img src="assets/screenshots/cc_personalization_wallpaper.png" alt="NC-UI Multi-Monitor Wallpaper Map with Live nc-matrix Shader Preview" />
     </td>
   </tr>
   <tr>
@@ -118,7 +118,7 @@ Launched as an independent floating layer-shell window (`nc-ctl settings`), clea
 | :---: | :--- | :--- |
 | ℹ️ | **System Information** | `overview` — OS/kernel telemetry, hardware inventory, session & runtime summary |
 | 🖥️ | **Display** | `monitors`, `scaling` — Multi-monitor topology, modes, refresh rates, transforms & fractional scaling |
-| 🎨 | **Personalizations** | `theme`, `wallpaper` — Live theme sandbox, dual-layer transparency, 7-axis palette editor, Waybar sync, multi-monitor wallpaper scenes, slideshows, videos & `ncmatrix` shader controls |
+| 🎨 | **Personalizations** | `theme`, `wallpaper` — Live theme sandbox, dual-layer transparency, 7-axis palette editor, Waybar sync, multi-monitor wallpaper scenes, slideshows, videos & `nc-matrix` shader controls |
 | ⊞ | **Waybar Plug-Ins** | `layout`, `options` — Live module placement across `left`/`center`/`right` bar zones, spacing & per-module behavior |
 | 📦 | **Applications** | `floating`, `mime`, `autostart` — Compositor floating window rules, default apps/package-manager/MIME handlers & autostart entries |
 | ⌨️ | **Input Devices** | `mouse`, `keyboard`, `macros`, `shortcuts`, `controllers` — Pointer accel/scroll, XKB layouts, `/dev/uinput` hardware macro editor, compositor keybinding explorer & controllers |
@@ -153,15 +153,15 @@ NC-UI never guesses what you wanted to scroll or edit:
 
 ---
 
-## 🧬 `ncmatrix`: Native C11 / OpenGL Wallpaper Engine
+## 🧬 `nc-matrix`: Native C11 / OpenGL Wallpaper Engine
 
-Included under [`utils/ncmatrix/`](utils/ncmatrix/), **ncmatrix** renders customizable digital rain directly on Wayland outputs via `gtk-layer-shell`, `OpenGL/EGL` shaders, and pre-baked Pango/Cairo glyph atlases (`ASCII`, `Katakana JP`, `Binary`, `Hexadecimal`), with automatic software fallback.
+Packaged as an optional standalone package under [`utils/nc-matrix/`](utils/nc-matrix/), **nc-matrix** renders customizable digital rain in TrueColor 24-bit TTYs or directly on Wayland outputs via `gtk-layer-shell`, `OpenGL/EGL` shaders, and pre-baked Pango/Cairo glyph atlases (`ASCII`, `Katakana JP`, `Binary`, `Hexadecimal`), with automatic software fallback.
 
 ```bash
-make -C utils/ncmatrix
+cd utils/nc-matrix && makepkg -si
 ```
 
-> Outputs `bin/ncmatrix` (links against `gtk+-3.0`, `gtk-layer-shell-0`, `pangocairo`, `epoxy`, `ncursesw`, `gio-unix-2.0`, `wayland-client`, `wayland-egl`, `egl`).
+> Installs `/usr/bin/nc-matrix` (`nc-matrix` package; links against `gtk+-3.0`, `gtk-layer-shell-0`, `pangocairo`, `epoxy`, `ncursesw`, `gio-unix-2.0`, `wayland-client`, `wayland-egl`, `egl`).
 
 ---
 
@@ -179,8 +179,8 @@ NC-UI requires **zero external PyPI packages** — only standard OS system libra
 git clone https://github.com/reddh4wk/ncui.git
 cd ncui
 
-# Build native Wayland ncmatrix shader (optional)
-make -C utils/ncmatrix
+# Build & install optional standalone nc-matrix package
+(cd utils/nc-matrix && makepkg -si)
 
 # Open Control Center
 ./bin/nc-ctl settings
@@ -222,7 +222,7 @@ ncui/
 │   └── wp_*.py            # Waybar layer-shell micro-popups (13 modules)
 ├── ui/                    # Sub-pixel Canvas, Box/Widget primitives & ShellWindow
 └── utils/
-    ├── ncmatrix/          # C11 + OpenGL/EGL native Wayland wallpaper engine
+    ├── nc-matrix/         # Standalone C11 + OpenGL/EGL Wayland & TTY digital rain package
     └── *.sh               # Desktop, floater, notification & screenshot utilities
 ```
 

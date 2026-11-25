@@ -1,0 +1,499 @@
+# Catalogo Aiuto Azioni NC-UI — Stampanti, Ricerca, Coda & Server CUPS (IT)
+
+# ==============================================================================
+# NAVIGAZIONE GENERALE & CONTROLLI POPUP
+# ==============================================================================
+["cc_prn:refresh"]
+title = "Aggiorna CUPS e Stampanti"
+short = "Svuota le cache `lpstat`, `lpoptions`, coda lavori e stato demoni ricaricando i dati reali da CUPS."
+
+["prn_pop:refresh"]
+title = "Aggiorna Popup Coda di Stampa"
+short = "Invalida la cache stampanti/lavori e ricarica subito lo stato della coda CUPS."
+
+["cc_prn:goto_subtab:discovery"]
+title = "Apri Aggiungi Stampante e Ricerca"
+short = "Passa alla sottoscheda Ricerca per scansionare stampanti LAN TCP/IP o USB e creare nuove code."
+
+["cc_prn:goto_subtab:queue"]
+title = "Apri Coda di Stampa"
+short = "Passa alla sottoscheda Coda per gestire lavori CUPS attivi o completati."
+
+["cc_prn:goto_subtab:server"]
+title = "Apri Server e Politiche CUPS"
+short = "Passa alla sottoscheda Server per gestire `cups.service`, `avahi-daemon`, flag `cupsctl` e log errori."
+
+["cc_prn:goto_subtab:*"]
+title = "Cambia Sottoscheda Stampanti"
+short = "Passa alla sottoscheda richiesta nella sezione Stampanti & CUPS."
+
+["cc_prn:cancel_confirm"]
+title = "Annulla Azione Distruttiva"
+short = "Chiude la richiesta di conferma a due passaggi senza rimuovere stampante, classe o coda."
+
+# ==============================================================================
+# STAMPANTI INSTALLATE, ISPETTORE, PREFERENZE PPD & STAMPA RAPIDA
+# ==============================================================================
+["cc_prn:dev_filter_open"]
+title = "Filtra Stampanti Installate.."
+short = "Apre la ricerca inline per filtrare le code CUPS per nome, URI, protocollo, descrizione, posizione o driver."
+
+["cc_prn:dev_filter_clear"]
+title = "Azzera Filtro Stampanti"
+short = "Cancella il filtro attivo mostrando tutte le code CUPS installate."
+
+["cc_prn:select_prn:*"]
+title = "Ispeziona Coda Stampante"
+short = "Seleziona questa coda nell'ispettore sottostante per modificare URI, driver/PPD, preferenze, Stampa Rapida e livelli inchiostro."
+
+["cc_prn:set_default:*"]
+title = "Imposta Stampante Predefinita"
+short = "Imposta questa coda sia come default utente (`lpoptions -d`) sia a livello di sistema CUPS (`lpadmin -d`)."
+
+["cc_prn:pause_prn:*"]
+title = "Metti in Pausa Stampante"
+short = "Sospende la coda (`cupsdisable <printer>`) trattenendo i lavori nello spooler senza inviarli al dispositivo."
+
+["cc_prn:enable_prn:*"]
+title = "Riprendi Stampante"
+short = "Riabilita la coda (`cupsenable <printer>`) riprendendo l'invio dei lavori in attesa."
+
+["cc_prn:accept_prn:*:1"]
+title = "Accetta Nuovi Lavori"
+short = "Esegue `cupsaccept <printer>` consentendo ad applicazioni e client di inviare nuovi lavori alla coda."
+
+["cc_prn:accept_prn:*:0"]
+title = "Rifiuta Nuovi Lavori"
+short = "Esegue `cupsreject <printer>` bloccando nuovi invii mentre i lavori già accodati continuano."
+
+["cc_prn:share_prn:*:1"]
+title = "Condividi Stampante in LAN"
+short = "Imposta `printer-is-shared=true` via `lpadmin` rendendo la coda annunciabile quando la condivisione server è attiva."
+
+["cc_prn:share_prn:*:0"]
+title = "Disattiva Condivisione (Solo Locale)"
+short = "Imposta `printer-is-shared=false` via `lpadmin` limitando la coda all'host locale."
+
+["cc_prn:restart_prn:*"]
+title = "Ripristina e Riavvia Coda"
+short = "Esegue insieme `cupsenable` e `cupsaccept` per sbloccare stati di errore `stop-printer`."
+
+["cc_prn:ask_confirm:delete_prn:*"]
+title = "Rimuovi Coda Stampante.."
+short = "Richiede conferma esplicita prima di eliminare definitivamente questa coda CUPS (`lpadmin -x`)."
+
+["cc_prn:delete_prn:*"]
+title = "Conferma Rimozione Stampante"
+short = "Elimina definitivamente la coda CUPS e la sua configurazione `/etc/cups/ppd/` tramite `lpadmin -x`."
+
+["cc_prn:rename_prn:*"]
+title = "Rinomina Coda Stampante.."
+short = "Apre l'input inline per ricreare la coda sotto nuovo nome, migrare PPD/opzioni e lavori (`lpmove`) ed eliminare la vecchia."
+verbose = "Valida la sintassi (`[A-Za-z0-9_-]`), copia `/etc/cups/ppd/<old>.ppd` e opzioni sulla nuova coda con `lpadmin`, sposta eventuali lavori attivi con `lpmove`, preserva lo stato predefinito e rimuove il vecchio nome."
+
+["cc_prn:clone_prompt:*"]
+title = "Clona Coda Stampante.."
+short = "Chiede un nuovo nome coda e duplica URI, driver PPD, descrizione e posizione in un secondo profilo."
+
+["cc_prn:edit_uri:*"]
+title = "Modifica URI Dispositivo.."
+short = "Apre l'input inline per cambiare l'URI backend CUPS (`ipp://`, `ipps://`, `socket://`, `lpd://`, `smb://`, `usb://`) con `lpadmin -v`."
+
+["cc_prn:edit_desc:*"]
+title = "Modifica Descrizione Stampante.."
+short = "Apre l'input inline per aggiornare la descrizione leggibile della coda (`lpadmin -D`)."
+
+["cc_prn:edit_loc:*"]
+title = "Modifica Posizione Stampante.."
+short = "Apre l'input inline per aggiornare la posizione fisica della stampante (`lpadmin -L`)."
+
+["cc_prn:probe_uri*"]
+title = "Verifica Raggiungibilità Endpoint"
+short = "Testa connettività TCP su porta e capacità/latenza IPP verso host e porta configurati."
+
+["cc_prn:open_addr:*"]
+title = "Apri Interfaccia Web Stampante"
+short = "Apre `http(s)://<host-stampante>` nel browser per accedere alla console web integrata del dispositivo."
+
+["cc_prn:test_page:*"]
+title = "Stampa Pagina di Prova CUPS"
+short = "Invia `/usr/share/cups/data/testprint` (o una pagina diagnostica PostScript generata al volo) con `lp -d`."
+
+["cc_prn:print_file:*"]
+title = "Stampa File.."
+short = "Apre Stampa Rapida e chiede il percorso di un file PDF, PostScript, TXT o immagine con autocompletamento."
+
+["cc_prn:drv_edit_mode:*"]
+title = "Seleziona Modalità Driver"
+short = "Commuta l'assegnazione driver tra `IPP Everywhere` (senza driver), `Database CUPS`, `Raw` e `PPD Custom`."
+
+["cc_prn:drv_edit_search"]
+title = "Cerca nel Database Driver CUPS.."
+short = "Apre la ricerca inline tra i modelli `lpinfo -m` e i PPD di marca installati."
+
+["cc_prn:drv_edit_clear"]
+title = "Azzera Ricerca Driver"
+short = "Svuota il filtro di ricerca nel database driver."
+
+["cc_prn:drv_edit_pick:*"]
+title = "Seleziona Modello Driver CUPS"
+short = "Seleziona in bozza questo ID modello `lpinfo -m` prima di premere `[✓ Applica Driver]`."
+
+["cc_prn:drv_edit_ppd"]
+title = "Sfoglia File PPD Custom.."
+short = "Chiede il percorso di un file `.ppd` o `.ppd.gz` (partendo da `/usr/share/cups/model/`) e ne valida la sintassi."
+
+["cc_prn:drv_edit_apply:*"]
+title = "Applica Driver alla Coda"
+short = "Applica alla coda il modello driverless (`-m everywhere`), raw, dal database oppure PPD custom (`-P`) via `lpadmin`."
+
+["cc_prn:set_opt:*:*=*"]
+title = "Imposta Preferenza Predefinita"
+short = "Salva questa opzione PPD/IPP (`PageSize`, `Duplex`, `ColorModel`, `number-up`, `print-scaling`, ecc.) in `lpoptions` utente e `lpadmin` di sistema."
+verbose = "Scrive `<chiave>=<valore>` in `~/.cups/lpoptions` con `lpoptions -p` e rende persistente `<chiave>-default=<valore>` a livello di sistema con `lpadmin -p` per gli attributi standard PPD e IPP."
+
+["cc_prn:cycle_opt:*:*"]
+title = "Scorri Opzione PPD Estesa"
+short = "Passa alla scelta successiva disponibile per questa opzione PPD e la salva con `lpoptions` e `lpadmin -o <chiave>-default`."
+
+["cc_prn:err_policy:*:*"]
+title = "Imposta Politica Errore Stampante"
+short = "Imposta `printer-error-policy` (`retry-job`, `abort-job` o `stop-printer`) via `lpadmin` in caso di errore invio."
+
+["cc_prn:reset_user_opts:*"]
+title = "Ripristina Override Utente `lpoptions`"
+short = "Esegue `lpoptions -x <printer>` rimuovendo gli override personali in `~/.cups/lpoptions` per tornare ai default di sistema."
+
+["cc_prn:ppd_grp:*"]
+title = "Cambia Gruppo Opzioni PPD"
+short = "Filtra le opzioni PPD estese mostrando solo il gruppo produttore/sezione selezionato."
+
+["cc_prn:qp_pick_file"]
+title = "Scegli Documento Stampa Rapida.."
+short = "Chiede il percorso di un file stampabile (`.pdf`, `.ps`, `.eps`, `.txt`, `.png`, `.jpg`, `.svg`) con autocompletamento."
+
+["cc_prn:qp_copies*"]
+title = "Regola Copie Stampa Rapida (1..20)"
+short = "Imposta il numero di copie (`-n <copie>`) nella bozza di Stampa Rapida tramite slider."
+
+["cc_prn:qp_copies_edit"]
+title = "Modifica Copie Custom (1..99).."
+short = "Apre l'input numerico inline (`1..99`) per specificare copie oltre il limite 1..20 dello slider."
+
+["cc_prn:qp_pages_all"]
+title = "Stampa Tutte le Pagine"
+short = "Rimuove eventuali filtri intervallo pagine (`-P`) nella bozza di Stampa Rapida per stampare l'intero file."
+
+["cc_prn:qp_pages_edit"]
+title = "Modifica Intervallo Pagine.."
+short = "Apre l'input inline per impostare un intervallo pagine CUPS (`-P`, es. `1-5,8`)."
+
+["cc_prn:qp_fit:0"]
+title = "Scala Stampa Rapida: Dimensione Originale"
+short = "Disattiva `fit-to-page` stampando il documento alle dimensioni native al 100%."
+
+["cc_prn:qp_fit:1"]
+title = "Scala Stampa Rapida: Adatta alla Pagina"
+short = "Abilita `-o fit-to-page` in Stampa Rapida per scalare automaticamente contenuti eccedenti entro i margini."
+
+["cc_prn:qp_sides:*"]
+title = "Imposta Fronte/Retro Stampa Rapida"
+short = "Sovrascrive `sides` (`default`, `one-sided`, `two-sided-long-edge`, `two-sided-short-edge`) per questo invio."
+
+["cc_prn:qp_color:*"]
+title = "Imposta Colore Stampa Rapida"
+short = "Sovrascrive `print-color-mode` (`default`, `color` o `monochrome`) per questo invio."
+
+["cc_prn:qp_submit:*"]
+title = "Invia Lavoro Stampa Rapida"
+short = "Inoltra a CUPS tramite `lp` il file selezionato applicando copie, pagine, adattamento, fronte/retro e colore."
+
+["cc_prn:identify_prn:*"]
+title = "Identifica Stampante Fisica"
+short = "Invia una richiesta IPP `Identify-Printer` (`ipptool ... identify-printer.test`) per far lampeggiare o suonare il dispositivo."
+
+["cc_prn:maint:*:levels"]
+title = "Aggiorna Livelli Inchiostro / Toner"
+short = "Invia `#CUPS-COMMAND` `ReportLevels` (`application/vnd.cups-command`) per rileggere i livelli consumabili."
+
+["cc_prn:maint:*:selftest"]
+title = "Stampa Self-Test Hardware"
+short = "Invia `#CUPS-COMMAND` `PrintSelfTestPage` per avviare il test ugelli o calibrazione interno della stampante."
+
+["cc_prn:maint:*:clean"]
+title = "Avvia Pulizia Testine"
+short = "Invia `#CUPS-COMMAND` `Clean all` per eseguire il ciclo di manutenzione testine/tamburo della stampante."
+
+# ==============================================================================
+# RICERCA DISPOSITIVI, WIZARD AGGIUNTA, PACCHETTI DRIVER & CLASSI
+# ==============================================================================
+["cc_prn:scan_all"]
+title = "Scansiona Stampanti Rete e USB"
+short = "Avvia una scansione parallela porte TCP (`:9100`, `:631`, `:515`) sulla subnet scelta insieme a `lpinfo -v` / Avahi mDNS."
+
+["cc_prn:tcp_subnet_pick:*"]
+title = "Seleziona Subnet LAN da Scansionare"
+short = "Seleziona questa subnet IPv4 `/24` rilevata e avvia la scansione delle porte di stampa TCP."
+
+["cc_prn:tcp_subnet_custom"]
+title = "Scansiona IP o Subnet Custom.."
+short = "Apre l'input inline per sondare un host IPv4 o una subnet CIDR `/24` personalizzata alla ricerca di stampanti."
+
+["cc_prn:wiz_open_tcp:*"]
+title = "Configura Stampante TCP Rilevata"
+short = "Apre il drawer di setup precompilato con IP/porte rilevate, esegue smart-probe IPP e cerca i driver compatibili."
+
+["cc_prn:wiz_open_disc:*"]
+title = "Configura Dispositivo CUPS/USB Rilevato"
+short = "Apre il drawer di setup con questo URI `lpinfo -v` / mDNS / USB interrogando i driver compatibili."
+
+["cc_prn:wiz_open_manual"]
+title = "Apri Configurazione Manuale Stampante"
+short = "Apre il drawer vuoto per configurare manualmente un URI `socket://`, `ipp://`, `lpd://`, `smb://` o `usb://`."
+
+["cc_prn:wiz_close"]
+title = "Chiudi Drawer Configurazione"
+short = "Chiude il pannello inline di creazione nuova stampante."
+
+["cc_prn:open_installed:*"]
+title = "Apri Stampante Già Installata"
+short = "Passa alla scheda Stampanti Installate selezionando questa coda già configurata nell'ispettore."
+
+["cc_prn:create_pdf_queue"]
+title = "Crea Stampante Virtuale PDF"
+short = "Crea la coda CUPS `Print_to_PDF` basata su backend `cups-pdf:/` con `CUPS-PDF_opt.ppd`."
+
+["cc_prn:draft_field:*"]
+title = "Modifica Campo Bozza Stampante.."
+short = "Apre l'input inline per nome coda, URI, host/IP, descrizione o posizione nella bozza di installazione."
+
+["cc_prn:draft_proto:*"]
+title = "Seleziona Protocollo Backend"
+short = "Cambia il protocollo nella bozza (`socket` TCP/9100, `ipp`, `ipps`, `lpd`, `smb` o `usb`) aggiornando il modello URI."
+
+["cc_prn:draft_tcp_port:*"]
+title = "Seleziona Porta TCP (9100 / 631 / 515)"
+short = "Cambia la porta TCP nella bozza tra JetDirect (`9100`), IPP (`631`) e LPD (`515`)."
+
+["cc_prn:smb_auth_prompt"]
+title = "Autentica e Sfoglia Condivisioni SMB.."
+short = "Chiede utente e password Windows/SMB, interroga `smbclient -L <host>` tramite file `0600` temporaneo e compila `smb://`."
+
+["cc_prn:draft_drv_mode:*"]
+title = "Seleziona Modalità Driver Wizard"
+short = "Alterna la scelta driver nel wizard tra `Smart Auto`, `Database CUPS`, `PPD Custom` e `Raw`."
+
+["cc_prn:drv_search_open"]
+title = "Filtra Driver e Pacchetti.."
+short = "Apre la ricerca inline tra i PPD locali `lpinfo -m` e i pacchetti driver della distribuzione."
+
+["cc_prn:drv_search_clear"]
+title = "Azzera Filtro Driver"
+short = "Cancella il testo di ricerca driver nel wizard e riporta lo scorrimento in cima."
+
+["cc_prn:drv_pkg_rescan"]
+title = "Riesegui Ricerca Pacchetti Driver"
+short = "Forza una nuova ricerca tramite package manager (`pacman` / helper AUR) dei driver di marca compatibili."
+
+["cc_prn:drv_box_scroll*"]
+title = "Scorri Lista Driver Compatibili"
+short = "Scorre su o giù i driver CUPS locali e i pacchetti distro ordinati per affinità."
+
+["cc_prn:pick_drv:*"]
+title = "Seleziona Driver CUPS Locale"
+short = "Seleziona questo driver `lpinfo -m` o PPD locale nella bozza della nuova stampante."
+
+["cc_prn:pick_pkg_drv:*"]
+title = "Usa Driver da Pacchetto Installato"
+short = "Ricarica l'elenco `lpinfo -m` e abbina automaticamente il PPD fornito da questo pacchetto già installato."
+
+["cc_prn:install_drv_pkg:*"]
+title = "Installa Pacchetto Driver Produttore"
+short = "Apre un terminale per installare il pacchetto driver (`pacman`/`yay`/`paru`) monitorandone il completamento."
+verbose = "I pacchetti con punteggio di affinità inferiore al 90% richiedono prima conferma esplicita per evitare installazioni errate."
+
+["cc_prn:install_drv_pkg_force:*"]
+title = "Conferma Installazione Pacchetto Driver"
+short = "Conferma l'installazione nel terminale di un pacchetto driver con affinità moderata e aggiorna i PPD al termine."
+
+["cc_prn:cancel_pkg_confirm"]
+title = "Annulla Installazione Pacchetto"
+short = "Chiude la conferma per il pacchetto driver a bassa confidenza."
+
+["cc_prn:browse_ppd"]
+title = "Sfoglia File PPD.."
+short = "Chiede il percorso di un file `.ppd` o `.ppd.gz` in `/usr/share/cups/model/` e ne valida le intestazioni."
+
+["cc_prn:draft_toggle:make_default"]
+title = "Imposta come Predefinita all'Installazione"
+short = "Se attivo, imposta la nuova coda come stampante predefinita subito dopo la creazione."
+
+["cc_prn:draft_toggle:shared"]
+title = "Condividi in LAN all'Installazione"
+short = "Se attivo, crea la coda con attributo `printer-is-shared=true`."
+
+["cc_prn:draft_reset"]
+title = "Azzera Bozza Nuova Stampante"
+short = "Ripristina tutti i campi della bozza (nome, URI, host, descrizione, driver) ai valori iniziali."
+
+["cc_prn:install_printer"]
+title = "Installa Coda Stampante"
+short = "Avvia `cups.service` se fermo e crea la coda tramite `lpadmin -p <nome> -E -v <uri>` con il driver scelto."
+
+["cc_prn:install_printer_test"]
+title = "Installa Coda e Stampa Prova"
+short = "Crea la coda CUPS con `lpadmin` e invia subito una pagina di prova per verificare l'output reale."
+
+["cc_prn:select_class:*"]
+title = "Ispeziona Pool / Classe Stampanti"
+short = "Seleziona questa Classe CUPS per aggiungere o rimuovere stampanti membro in failover / bilanciamento."
+
+["cc_prn:class_new_prompt"]
+title = "Crea Pool / Classe Stampanti.."
+short = "Chiede il nome del pool e vi associa la prima stampante creando una Classe CUPS tramite `lpadmin -c`."
+
+["cc_prn:class_toggle_member:*:*"]
+title = "Aggiungi/Rimuovi Membro Classe"
+short = "Aggiunge (`lpadmin -c`) o rimuove (`lpadmin -r`) questa stampante dal pool CUPS selezionato."
+
+["cc_prn:ask_confirm:class_delete:*"]
+title = "Elimina Classe Stampanti.."
+short = "Richiede conferma prima di eliminare questa Classe CUPS (le singole stampanti restano intatte)."
+
+["cc_prn:class_delete:*"]
+title = "Conferma Eliminazione Classe"
+short = "Elimina la Classe CUPS con `lpadmin -x` lasciando invariate tutte le code membro."
+
+# ==============================================================================
+# CODA DI STAMPA & LAVORI (`cc_printers_queue.py`, `wp_printers.py`)
+# ==============================================================================
+["cc_prn:q_mode:not-completed"]
+title = "Mostra Lavori Attivi in Coda"
+short = "Visualizza i lavori CUPS in attesa, sospesi, in stampa o bloccati (`which-jobs=not-completed`)."
+
+["cc_prn:q_mode:completed"]
+title = "Mostra Storico Lavori Completati"
+short = "Visualizza i lavori CUPS terminati o annullati (`which-jobs=completed`) per ispezione o ristampa."
+
+["cc_prn:q_cycle_prn"]
+title = "Scorri Filtro Stampante Coda"
+short = "Cicla il filtro della tabella lavori tra `ALL` (tutte le code) e ciascuna stampante installata."
+
+["cc_prn:q_filter_open"]
+title = "Filtra Lavori in Coda.."
+short = "Apre la ricerca inline per filtrare i lavori per ID, titolo documento, utente, stampante o data."
+
+["cc_prn:q_filter_clear"]
+title = "Azzera Filtro Lavori"
+short = "Cancella il filtro testuale nella coda di stampa."
+
+["cc_prn:select_job:*"]
+title = "Ispeziona Lavoro di Stampa"
+short = "Seleziona questo ID lavoro CUPS nell'ispettore per vedere dettagli, priorità, destinazione spostamento o autenticazione."
+
+["cc_prn:job_hold:*:1"]
+title = "Sospendi Lavoro (Hold)"
+short = "Mette in attesa il lavoro (`lp -i <job_id> -H hold`) mantenendolo nello spooler finché non viene rilasciato."
+
+["cc_prn:job_hold:*:0"]
+title = "Rilascia Lavoro Sospeso"
+short = "Riprende un lavoro in hold (`lp -i <job_id> -H resume`) consentendo a CUPS di inviarlo alla stampante."
+
+["cc_prn:job_prio:*:95"]
+title = "Porta Priorità a Urgente (95)"
+short = "Alza la priorità IPP del lavoro a `95` (`lp -i <job_id> -q 95`) facendolo passare davanti ai lavori normali (`50`)."
+
+["cc_prn:job_prio:*:*"]
+title = "Imposta Priorità Lavoro"
+short = "Imposta la priorità di scheduling CUPS (`25` Bassa, `50` Normale, `75` Alta, `95` Urgente) tramite `lp -i <job_id> -q`."
+
+["cc_prn:job_cancel:*"]
+title = "Annulla Lavoro di Stampa"
+short = "Interrompe ed elimina questo lavoro dallo spooler CUPS (`cancel <job_id>`)."
+
+["cc_prn:job_reprint:*"]
+title = "Ristampa Lavoro Completato"
+short = "Riaccoda un lavoro completato (`lp -i <job_id> -H restart`) se i dati sono ancora conservati in `/var/spool/cups`."
+
+["cc_prn:job_auth:*"]
+title = "Autentica Lavoro Bloccato.."
+short = "Chiede utente e password e sblocca un lavoro `auth-info-required` tramite `lp -i <jid> -H resume -o auth-info=...`."
+
+["cc_prn:job_move:*:*"]
+title = "Sposta Lavoro su Altra Stampante"
+short = "Trasferisce questo lavoro in coda verso un'altra stampante CUPS (`lpmove <job_id> <destinazione>`)."
+
+["cc_prn:ask_confirm:purge_queue:*"]
+title = "Svuota Coda di Stampa.."
+short = "Richiede conferma esplicita prima di annullare tutti i lavori in attesa nell'ambito scelto (`cancel -a`)."
+
+["cc_prn:purge_queue:*"]
+title = "Conferma Svuota Coda"
+short = "Annulla tutti i lavori accodati sulla stampante filtrata o su tutte le code CUPS (`cancel -a`)."
+
+["prn_pop:ask_purge"]
+title = "Svuota Tutti i Lavori Attivi.."
+short = "Attiva la conferma a due passaggi nel popup Waybar prima di annullare tutti i lavori CUPS attivi."
+
+["prn_pop:cancel_purge"]
+title = "Annulla Svuotamento Coda"
+short = "Nasconde i pulsanti di conferma svuotamento nel popup stampanti di Waybar."
+
+# ==============================================================================
+# SERVER CUPS, AVAHI, FLAG `cupsctl` & PRIVILEGI
+# ==============================================================================
+["cc_prn:webui"]
+title = "Apri Web Admin CUPS (localhost:631)"
+short = "Apre nel browser la console web locale di amministrazione CUPS (`http://localhost:631`)."
+
+["cc_prn:svc:start:cups.service"]
+title = "Avvia Spooler CUPS"
+short = "Avvia `cups.service` con `systemctl start` attivando le code di stampa locali e di rete."
+
+["cc_prn:svc:stop:cups.service"]
+title = "Ferma Spooler CUPS"
+short = "Arresta `cups.service` tramite `systemctl stop`."
+
+["cc_prn:svc:restart:cups.service"]
+title = "Riavvia Spooler CUPS"
+short = "Riavvia `cups.service` con `systemctl restart` per ricaricare `cupsd.conf` o i backend."
+
+["cc_prn:svc:enable:cups.service"]
+title = "Abilita CUPS all'Avvio"
+short = "Abilita `cups.service` con `systemctl enable` avviando automaticamente lo spooler al boot."
+
+["cc_prn:svc:disable:cups.service"]
+title = "Disabilita CUPS all'Avvio"
+short = "Disabilita l'avvio automatico (`systemctl disable`) lasciando CUPS avviabile solo manualmente."
+
+["cc_prn:svc:start:avahi-daemon.service"]
+title = "Avvia Responder Avahi mDNS"
+short = "Avvia `avahi-daemon.service` abilitando `dnssd://`, AirPrint e autodiscovery IPP Everywhere in LAN."
+
+["cc_prn:svc:restart:avahi-daemon.service"]
+title = "Riavvia Responder Avahi mDNS"
+short = "Riavvia `avahi-daemon.service` per aggiornare la risoluzione `.local` e i servizi `_ipp._tcp`."
+
+["cc_prn:cupsctl:*:1"]
+title = "Attiva Policy Server CUPS"
+short = "Attiva questa direttiva globale `cupsd.conf` tramite `cupsctl --<flag>` (`share-printers`, `remote-any`, `remote-admin`, `user-cancel-any`, `debug-logging`)."
+
+["cc_prn:cupsctl:*:0"]
+title = "Disattiva Policy Server CUPS"
+short = "Disattiva questa direttiva globale `cupsd.conf` tramite `cupsctl --no-<flag>`."
+
+["cc_prn:clear_logs"]
+title = "Svuota Error Log CUPS"
+short = "Azzera `/var/log/cups/error_log` a 0 byte tramite `truncate -s 0` privilegiato."
+
+["cc_prn:dismiss_logs_view"]
+title = "Nascondi Righe Log nella Vista UI"
+short = "Nasconde dalla vista corrente le righe già lette di `/var/log/cups/error_log` per questa sessione senza toccare il file su disco."
+
+["priv:revoke:cups_service"]
+title = "Revoca Regola Sudoers Servizio CUPS"
+short = "Rimuove la regola `/etc/sudoers.d/ncui-*` per gestione `cups.service` / `avahi-daemon` e troncamento log."
+
+["priv:revoke:cups_sysgroup"]
+title = "Revoca Regola Gruppo Admin CUPS"
+short = "Rimuove la regola helper `/etc/sudoers.d/ncui-*` usata per aggiungere l'utente al gruppo amministrativo CUPS (`sys`/`lpadmin`)."

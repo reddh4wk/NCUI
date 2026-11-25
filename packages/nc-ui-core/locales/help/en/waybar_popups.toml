@@ -1,0 +1,199 @@
+# NC-UI Action Help Catalog — Waybar Popups & Shared Helpers (English)
+# Covers: wp_capture.py, wp_clipboard.py, wp_hotkeys.py, wp_kb_layout.py,
+#         wp_notifications.py, wp_session.py, wp_system.py, ui:copy:*, ui:cmd:*
+
+# ==============================================================================
+# WAYBAR POPUP -> CAPTURE (`panels/wp_capture.py`)
+# ==============================================================================
+["cap:trigger:area"]
+title = "Capture Selected Screen Area"
+short = "Launches `slurp` region selection followed by `grim` (after any configured delay) and runs the active post-action."
+
+["cap:trigger:window"]
+title = "Capture Active / Picked Window"
+short = "Captures a window via `niri msg action screenshot-window`, trims transparent borders with `magick`, and runs your post-action."
+
+["cap:trigger:screen"]
+title = "Capture Entire Active Output"
+short = "Captures the whole active Wayland monitor via `grim` and runs the selected clipboard/Satty/save action."
+
+["cap:trigger:last"]
+title = "Repeat Last Capture Geometry"
+short = "Re-captures the exact previous area, window, or screen coordinates without prompting `slurp` again."
+
+["cap:toggle_copy_delay"]
+title = "Reuse Delay on Last-Area Repeat"
+short = "Applies the configured timer delay even when clicking Repeat Last Capture (`[●]` = apply delay, `[○]` = instant)."
+
+["cap:delay:dec"]
+title = "Decrease Capture Delay"
+short = "Reduces the pre-screenshot countdown timer by 1 second (down to `0s`)."
+
+["cap:delay:inc"]
+title = "Increase Capture Delay"
+short = "Increases the pre-screenshot countdown timer by 1 second so menus can settle before capture."
+
+["cap:delay_inline"]
+title = "Edit Capture Delay (0–999s)"
+short = "Lets you type an exact countdown delay in seconds inline before triggering `grim`."
+
+["cap:action:*"]
+title = "Select Active Post-Capture Action"
+short = "Sets what happens right after capture for this session: Copy (`wl-copy`), Annotate (`satty`), Save PNG, or Copy + Satty."
+
+["cap:default:*"]
+title = "Set Default Post-Capture Action"
+short = "Saves this post-capture pipeline (`wl-copy` / `satty` / file) as the persistent default in state/config."
+
+["cap:annotate:*"]
+title = "Annotate Last Screenshot in Satty"
+short = "Opens the saved PNG capture inside `satty` for arrows, blur, crop, and clipboard re-copy."
+
+["cap:copy:*"]
+title = "Copy Saved Screenshot to Clipboard"
+short = "Pipes the saved PNG image file into `wl-copy --type image/png`."
+
+["cap:open_dir"]
+title = "Open Screenshots Folder"
+short = "Opens the target screenshots directory in your default file manager."
+
+# ==============================================================================
+# WAYBAR POPUP -> CLIPBOARD (`panels/wp_clipboard.py`)
+# ==============================================================================
+["clip:search"]
+title = "Search Clipboard History"
+short = "Opens live inline filtering across `cliphist` entries and pinned snippets."
+
+["clip:clear_search"]
+title = "Clear Clipboard Filter"
+short = "Clears the active clipboard filter text and shows all recent entries."
+
+["clip:wipe"]
+title = "Wipe Clipboard History"
+short = "Runs `cliphist wipe` and clears local decoded text and image thumbnail caches (pinned snippets remain)."
+
+["clip:toggle_images"]
+title = "Toggle Clipboard Image Capture"
+short = "Enables or disables `wl-paste` image watching in `cliphist` and purges binary image entries when turned off."
+
+["clip:pin:*"]
+title = "Pin / Unpin Text Snippet"
+short = "Stars this text snippet into persistent pins so it survives `cliphist wipe` and stays at the top."
+
+["clip:unpin:*"]
+title = "Unpin Saved Snippet"
+short = "Removes this snippet from the pinned section at the top of the Clipboard popup."
+
+["clip:save:*"]
+title = "Save Clipboard Image to File"
+short = "Decodes this binary image entry from `cliphist` and saves it to disk as PNG/JPEG/WebP."
+
+["clip:del:*"]
+title = "Delete Clipboard Entry"
+short = "Removes this single entry from `cliphist` via `cliphist delete`."
+
+# ==============================================================================
+# WAYBAR POPUP -> HOTKEYS (`panels/wp_hotkeys.py`)
+# ==============================================================================
+["hk:flt_open"]
+title = "Filter Niri Keybindings"
+short = "Filters Niri `config.kdl` `binds` live by key combo, category, or action description."
+
+["hk:flt_clear"]
+title = "Clear Hotkeys Filter"
+short = "Resets the keybinding search query and displays every Niri bind."
+
+["hk:open_cc"]
+title = "Edit Shortcuts in Control Center"
+short = "Opens `Control Center -> Input -> Shortcuts` to add, edit, or test Niri keybindings."
+
+# ==============================================================================
+# WAYBAR POPUP -> KEYBOARD LAYOUT (`panels/wp_kb_layout.py`)
+# ==============================================================================
+["kbl:cycle"]
+title = "Cycle Active Keyboard Layout"
+short = "Advances immediately to the next configured Niri XKB keyboard layout."
+
+["kbl:set:*"]
+title = "Switch to Keyboard Layout"
+short = "Activates this specific XKB layout index immediately in the running Niri session."
+
+["kbl:open_cc"]
+title = "Manage Keyboard Layouts"
+short = "Opens `Control Center -> Input -> Keyboard` to add, reorder, or customize XKB layouts and options."
+
+# ==============================================================================
+# WAYBAR POPUP -> NOTIFICATIONS (`panels/wp_notifications.py`)
+# ==============================================================================
+["notif:toggle_group"]
+title = "Toggle Group by Application"
+short = "Switches the Notification Center between per-application collapsible groups and chronological cards."
+
+["notif:clear_all"]
+title = "Clear All Notifications"
+short = "Dismisses every active notification in the Notification Center archive."
+
+["notif:clear_app:*"]
+title = "Clear App Notifications"
+short = "Dismisses all notifications belonging to this single application group."
+
+["notif:click:*"]
+title = "Open / Trigger Notification Action"
+short = "Executes the configured launch or focus command for this notification's application."
+
+["notif:del:*"]
+title = "Dismiss Notification"
+short = "Removes this single notification from the Notification Center."
+
+# ==============================================================================
+# WAYBAR POPUP -> SESSION & POWER (`panels/wp_session.py`)
+# ==============================================================================
+["sess:lock"]
+title = "Lock Screen Now"
+short = "Runs the configured Wayland screen locker (`swaylock`, `hyprlock`, `gtklock`, etc.) and closes the popup."
+
+["sess:setup_lock"]
+title = "Configure Screen Lock Command"
+short = "Opens `Control Center -> Waybar -> Options` to pick or type your screen lock command."
+
+["sess:ask:suspend"]
+title = "Suspend to RAM (Step 1)"
+short = "Arms confirmation before locking the screen (if configured) and running `systemctl suspend`."
+
+["sess:do:suspend"]
+title = "Confirm Suspend to RAM"
+short = "Locks the session (if configured) and suspends the system to RAM immediately (`systemctl suspend`)."
+
+["sess:ask:*"]
+title = "Arm Power / Session Action"
+short = "Requires a second click on Confirm to execute Logout, Reboot, or Power Off safely."
+
+["sess:do:*"]
+title = "Confirm Power / Session Action"
+short = "Executes the armed session exit (`niri msg action quit` / `loginctl`), `systemctl reboot`, or `systemctl poweroff`."
+
+["sess:cancel"]
+title = "Cancel Pending Confirmation"
+short = "Disarms the pending Suspend, Logout, Reboot, or Power Off confirmation without taking action."
+
+# ==============================================================================
+# WAYBAR POPUP -> SYSTEM MONITOR (`panels/wp_system.py`)
+# ==============================================================================
+["sys:btop"]
+title = "Open `btop` Monitor"
+short = "Launches `btop` in a new terminal window and dismisses the System Monitor popup."
+
+# ==============================================================================
+# SHARED HELPER URIS (`ui/shell.py`)
+# ==============================================================================
+["ui:copy:*"]
+title = "Copy Value to Clipboard"
+short = "Copies this IP address, MAC address, or identifier straight to the Wayland clipboard (`wl-copy`)."
+
+["ui:cmd:sync"]
+title = "Sync Filesystem Buffers (`sync`)"
+short = "Runs `sync` to flush dirty kernel memory buffers to physical storage and refreshes telemetry."
+
+["ui:cmd:*"]
+title = "Run Helper Shell Command"
+short = "Runs the bound shell helper asynchronously in the background and refreshes the panel."

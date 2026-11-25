@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""/usr/lib/ncui/sbin/nc-disks — Root Disk, Partition Flag, LVM & SMART Health Probe."""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+SMART_CACHE_PATH = os.environ.get("NC_DISKS_CACHE", "/var/lib/ncui/disks-smart.json")
+LSBLK_COLS = (
+    "NAME,KNAME,PATH,PKNAME,TYPE,SIZE,FSTYPE,FSVER,LABEL,PARTLABEL,"
+    "PARTTYPE,PARTFLAGS,UUID,PARTUUID,MOUNTPOINTS,FSUSE%,FSAVAIL,FSUSED,"
+    "MODEL,SERIAL,TRAN,ROTA,PTTYPE,RM,RO,STATE"
+)
+
+
+def _run_json(cmd: list[str], timeout: float = 4.0) -> dict | None:
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        if not res.stdout:
+            return None
+        return json.loads(res.stdout)
+    except Exception:
+        return None
+
+
+def _parse_int(val) -> int | None:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except Exception:
+        return None
+
+
+def _extract_smart(dev_path: str) -> dict:
+    info = {
+        "supported": False,
+        "passed": None,
+        "temp_c": None,
+        "wear_pct": None,
+        "spare_pct": None,
+        "power_on_hours": None,
+        "power_cycles": None,
+        "unsafe_shutdowns": None,
+        "bytes_written": None,
+        "firmware": "",
+        "bad_sectors": None,
+        "bad_detail": {"realloc": 0, "pending": 0, "uncorr": 0, "media": 0},
+    }
+    if not shutil.which("smartctl"):
+        return info
+    data = _run_json(["smartctl", "-j", "-H", "-A", "-i", dev_path], timeout=4.5)
+    if not isinstance(data, dict):
+        return info
+
+    ss = data.get("smart_status")
+    if isinstance(ss, dict) and "passed" in ss:
+        info["supported"] = True
+        info["passed"] = bool(ss["passed"])
+
+    fw = str(data.get("firmware_version") or "").strip()
+    if fw:
+        info["firmware"] = fw
+
+    temp_d = data.get("temperature")
+    if isinstance(temp_d, dict) and _parse_int(temp_d.get("current")) is not None:
+        info["temp_c"] = _parse_int(temp_d.get("current"))
+
+    poh = data.get("power_on_time")
+    if isinstance(poh, dict) and _parse_int(poh.get("hours")) is not None:
+        info["power_on_hours"] = _parse_int(poh.get("hours"))
+
+    if _parse_int(data.get("power_cycle_count")) is not None:
+        info["power_cycles"] = _parse_int(data.get("power_cycle_count"))
+
+    nvme = data.get("nvme_smart_health_information_log")
+    if isinstance(nvme, dict):
+        info["supported"] = True
+        if info["temp_c"] is None:
+            info["temp_c"] = _parse_int(nvme.get("temperature"))
+        info["wear_pct"] = _parse_int(nvme.get("percentage_used"))
+        info["spare_pct"] = _parse_int(nvme.get("available_spare"))
+        if info["power_on_hours"] is None:
+            info["power_on_hours"] = _parse_int(nvme.get("power_on_hours"))
+        if info["power_cycles"] is None:
+            info["power_cycles"] = _parse_int(nvme.get("power_cycles"))
+        info["unsafe_shutdowns"] = _parse_int(nvme.get("unsafe_shutdowns"))
+        duw = _parse_int(nvme.get("data_units_written"))
+        if duw is not None:
+            # NVMe data_units_written is in units of 1000 * 512 bytes = 512000 bytes
+            info["bytes_written"] = duw * 512000
+        m_err = _parse_int(nvme.get("media_errors")) or 0
+        info["bad_detail"]["media"] = m_err
+        info["bad_sectors"] = m_err
+        return info
+
+    ata = data.get("ata_smart_attributes")
+    if isinstance(ata, dict) and isinstance(ata.get("table"), list):
+        info["supported"] = True
+        realloc = pending = uncorr = rep_unc = 0
+        for row in ata["table"]:
+            if not isinstance(row, dict):
+                continue
+            aid = _parse_int(row.get("id"))
+            raw_d = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+            rval = _parse_int(raw_d.get("value")) or 0
+            if aid == 5:
+                realloc = rval
+            elif aid == 197:
+                pending = rval
+            elif aid == 198:
+                uncorr = rval
+            elif aid == 187:
+                rep_unc = rval
+            elif aid in (190, 194) and info["temp_c"] is None:
+                # Mask off min/max packed high bytes in ATA temperature attributes
+                t_cand = rval & 0xFF
+                if 0 < t_cand < 120:
+                    info["temp_c"] = t_cand
+            elif aid in (231, 232, 177, 202):
+                norm_v = _parse_int(row.get("value"))
+                if norm_v is not None and 0 <= norm_v <= 100:
+                    if aid == 231 and info["wear_pct"] is None:
+                        info["wear_pct"] = max(0, 100 - norm_v)
+                    elif aid == 232 and info["spare_pct"] is None:
+                        info["spare_pct"] = norm_v
+        info["bad_detail"] = {
+            "realloc": realloc,
+            "pending": pending,
+            "uncorr": max(uncorr, rep_unc),
+            "media": 0,
+        }
+        info["bad_sectors"] = realloc + pending + max(uncorr, rep_unc)
+        return info
+
+    scsi_gdl = _parse_int(data.get("scsi_grown_defect_list"))
+    if scsi_gdl is not None:
+        info["supported"] = True
+        info["bad_detail"]["media"] = scsi_gdl
+        info["bad_sectors"] = scsi_gdl
+    return info
+
+
+def _extract_sfdisk_flags(dev_path: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    if not shutil.which("sfdisk"):
+        return out
+    data = _run_json(["sfdisk", "-J", dev_path], timeout=2.5)
+    pt = data.get("partitiontable") if isinstance(data, dict) else None
+    if not isinstance(pt, dict):
+        return out
+    for part in pt.get("partitions") or []:
+        if not isinstance(part, dict):
+            continue
+        node = str(part.get("node") or "").strip()
+        if not node:
+            continue
+        flags = []
+        if part.get("bootable"):
+            flags.append("boot")
+        attrs = str(part.get("attrs") or "").strip()
+        if attrs:
+            for tok in re.split(r"[\s,]+", attrs):
+                if tok and tok not in flags:
+                    flags.append(tok)
+        if flags:
+            out[node] = flags
+    return out
+
+
+def probe_all() -> dict:
+    blk_json = _run_json(["lsblk", "-J", "-b", "-o", LSBLK_COLS], timeout=3.0) or {}
+    vgs_json = _run_json(["vgs", "--reportformat", "json", "--units", "b"], timeout=2.5) if shutil.which("vgs") else None
+    lvs_json = _run_json(["lvs", "--reportformat", "json", "--units", "b"], timeout=2.5) if shutil.which("lvs") else None
+
+    disks_smart: dict[str, dict] = {}
+    part_flags: dict[str, list[str]] = {}
+    for dev in blk_json.get("blockdevices") or []:
+        if not isinstance(dev, dict):
+            continue
+        name = str(dev.get("name") or "")
+        path = str(dev.get("path") or f"/dev/{name}")
+        dtype = str(dev.get("type") or "")
+        sz = _parse_int(dev.get("size")) or 0
+        if dtype != "disk" or sz <= 0 or name.startswith(("zram", "loop", "ram")):
+            continue
+        disks_smart[path] = _extract_smart(path)
+        for pnode, flgs in _extract_sfdisk_flags(path).items():
+            part_flags[pnode] = flgs
+
+    payload = {
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": int(time.time()),
+        "disks": disks_smart,
+        "part_flags": part_flags,
+        "vgs": ((vgs_json or {}).get("report") or [{}])[0].get("vg", []) if isinstance(vgs_json, dict) else [],
+        "lvs": ((lvs_json or {}).get("report") or [{}])[0].get("lv", []) if isinstance(lvs_json, dict) else [],
+    }
+    return payload
+
+
+def write_cache_atomic(payload: dict, target: str) -> None:
+    d = os.path.dirname(target) or "/var/lib/ncui"
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".disks_smart_", dir=d)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        try:
+            os.chown(tmp, 0, 0)
+        except OSError:
+            pass
+        os.replace(tmp, target)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def main() -> int:
+    act = (sys.argv[1] if len(sys.argv) > 1 else "probe").strip().lower()
+    if act in ("-h", "--help", "help"):
+        print("Usage: sudo nc-disks [probe|status]")
+        return 0
+    if act in ("probe", "status", "probe-json"):
+        payload = probe_all()
+        if os.geteuid() == 0 or os.access(os.path.dirname(SMART_CACHE_PATH), os.W_OK):
+            write_cache_atomic(payload, SMART_CACHE_PATH)
+        if act == "probe-json":
+            print(json.dumps(payload))
+        else:
+            print(f"DISKS_OK|{len(payload['disks'])}")
+        return 0
+    print(f"Unknown action: {act}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

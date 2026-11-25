@@ -1,0 +1,653 @@
+# Catalogo Aiuto Azioni NC-UI — Display & Personalizzazione (Italiano)
+# Copre: cc_display_monitors.py, cc_personalization_theme.py, cc_personalization_wallpaper.py, wp_display.py
+
+# ==============================================================================
+# DISPLAY & MONITOR (`panels/cc_display_monitors.py`)
+# ==============================================================================
+["cc_desk:select_out:*"]
+title = "Seleziona Uscita Video"
+short = "Seleziona questo monitor Wayland per ispezionarne e modificarne risoluzione, frequenza, scala, posizione e rotazione."
+verbose = "Aggiorna la scheda di ispezione dell'uscita ed evidenzia il rettangolo corrispondente sulla mappa spaziale `NiriOutputMap` senza alterare lo stato live di `niri`."
+
+["cc_desk:power:*:*"]
+title = "Accendi / Spegni Uscita Monitor"
+short = "Abilita o spegne dal vivo questo monitor tramite `niri msg output` aggiornando il blocco `output` in `config.kdl`."
+verbose = "Lo spegnimento inserisce `off` nel blocco `output \"<nome>\"` di `~/.config/niri/config.kdl` e risincronizza Waybar e la geometria della shell; la riattivazione rimuove `off`."
+
+["cc_desk:res:*:*"]
+title = "Imposta Risoluzione e Frequenza"
+short = "Applica subito la modalità `LARGHEZZAxALTEZZA@HZ` con `niri msg output ... mode` e la salva in `config.kdl`."
+verbose = "Cambia la modalità video attiva in Niri, scrive `mode \"LxA@Hz\"` dentro `~/.config/niri/config.kdl` e aggiorna la geometria di Waybar e della shell."
+
+["cc_desk:res_max:*"]
+title = "Imposta Modalità Nativa Massima"
+short = "Seleziona automaticamente la risoluzione più alta e la frequenza massima supportate dall'EDID del monitor."
+verbose = "Individua la modalità che massimizza `(width * height, width, refresh_rate)` da `niri msg -j outputs`, la applica subito e la salva in `~/.config/niri/config.kdl`."
+
+["cc_desk:scale:*:*"]
+title = "Imposta Fattore di Scala Display"
+short = "Applica questo preset di scala Wayland (`1x`–`2x`) al monitor selezionato."
+verbose = "Esegue `niri msg output <nome> scale <val>` e salva `scale <val>` in `~/.config/niri/config.kdl`, ricalcolando le dimensioni logiche dello spazio di lavoro."
+
+["cc_desk:scale_inline:*"]
+title = "Scala Display Personalizzata.."
+short = "Apre l'inserimento inline per impostare un fattore di scala arbitrario tra `0.25` e `4.0` (es. `1.15` o `1.33`)."
+verbose = "Valida un numero decimale finito in `[0.25, 4.0]`, lo applica subito con `niri msg output <nome> scale` e aggiorna `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_inline:*"]
+title = "Imposta Coordinate Logiche.."
+short = "Apre l'inserimento inline per posizionare questo monitor alle coordinate logiche `X,Y` (oppure `auto`)."
+verbose = "Accetta `X,Y` (es. `1920,0`), esegue `niri msg output <nome> position set X Y` e salva `position x=X y=Y` in `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_auto:*"]
+title = "Posizionamento Automatico Uscita"
+short = "Lascia a `niri` il posizionamento automatico di questo monitor adiacente agli schermi attivi senza buchi né sovrapposizioni."
+verbose = "Esegue `niri msg output <nome> position auto` e rimuove eventuali coordinate `position` fisse dal blocco del connettore in `~/.config/niri/config.kdl`."
+
+["cc_desk:pos_auto_all"]
+title = "Allinea Automaticamente Tutti i Monitor"
+short = "Reimposta il posizionamento su `auto` per tutte le uscite rilevate in `niri` aggiornando `config.kdl`."
+verbose = "Scorre tutti i monitor restituiti da `niri msg -j outputs`, applica `position auto` e ripulisce le coordinate manuali dai rispettivi blocchi `output`."
+
+["cc_desk:transform:*:*"]
+title = "Imposta Rotazione / Ribaltamento"
+short = "Applica l'orientamento dello schermo (`normal`, `90`, `180`, `270`, o `flipped-*`) dal vivo in `niri` e lo salva in `config.kdl`."
+verbose = "Esegue `niri msg output <nome> transform <val>`, scrive `transform \"<val>\"` in `~/.config/niri/config.kdl` (omettendo `normal`) e risincronizza la shell."
+
+["cc_desk:open_tui"]
+title = "Apri TUI Desktop (`nc_util_desktop.sh`)"
+short = "Apre un terminale con `nc_util_desktop.sh -I` per la gestione CLI interattiva di monitor e sfondi."
+
+["cc_desk:nl:on"]
+title = "Attiva Luce Notturna (`nc-nightlight`)"
+short = "Avvia il demone di temperatura colore `nc-nightlight` con i gradi Kelvin e la pianificazione configurati."
+verbose = "Avvia `bin/nc-nightlight` (controllato via socket `/tmp/nc_ui_nightlight.sock`), sostituendo eventuali processi `wlsunset` residui per regolare il calore senza sfarfallii."
+
+["cc_desk:nl:off"]
+title = "Disattiva Luce Notturna"
+short = "Arresta `nc-nightlight` e `wlsunset`, ripristinando subito la calibrazione diurna neutra a 6500K."
+
+["cc_desk:nl_temp*"]
+title = "Temperatura Luce Notturna (1700K–6500K)"
+short = "Scorri con la rotella o usa `[-]`/`[+]` per regolare il calore dello schermo a passi di 250K a Luce Notturna attiva."
+verbose = "Salva `night_temp` nello stato UI e invia il nuovo valore Kelvin in tempo reale a `nc-nightlight` tramite `/tmp/nc_ui_nightlight.sock`."
+
+["cc_desk:nl_sched:always"]
+title = "Pianificazione Luce Notturna: Sempre Attiva"
+short = "Mantiene attiva la temperatura calda scelta a qualsiasi ora del giorno e della notte."
+
+["cc_desk:nl_sched:manual"]
+title = "Pianificazione Luce Notturna: Orari Manuali"
+short = "Attiva il filtro caldo solo nella fascia oraria `HH:MM-HH:MM` impostata dall'utente."
+
+["cc_desk:nl_sched:sunset"]
+title = "Pianificazione Luce Notturna: Tramonto Solare"
+short = "Calcola l'elevazione solare locale da latitudine e longitudine per attivare il filtro automaticamente dal tramonto all'alba."
+
+["cc_desk:nl_hours_inline"]
+title = "Modifica Orari Luce Notturna.."
+short = "Apre l'inserimento inline per impostare la finestra manuale `HH:MM-HH:MM` (es. `20:00-06:30`)."
+verbose = "Valida gli orari a 24 ore e aggiorna immediatamente la pianificazione sul demone `nc-nightlight` attivo."
+
+["cc_desk:nl_coords_inline"]
+title = "Modifica Coordinate Solari.."
+short = "Apre l'inserimento inline per inserire `lat,lon` decimali (es. `41.9,12.5`) per il calcolo astronomico di tramonto e alba."
+verbose = "Valida `lat` in `[-90, 90]` e `lon` in `[-180, 180]`, consentendo a `nc-nightlight` di calcolare tramonto e alba localmente offline."
+
+["cc_desk:dpms:*"]
+title = "Imposta Timeout Spegnimento Schermo (DPMS)"
+short = "Configura lo spegnimento automatico per inattività (`5m`, `10m`, `15m`, `30m`, o `Mai`) tramite `swayidle` e `niri`."
+verbose = "Riavvia `swayidle -w` con `timeout <N*60> \"niri msg action power-off-monitors\"` (oppure termina `swayidle` scegliendo `Mai`)."
+
+["cc_desk:dpms_now"]
+title = "Spegni Monitor Adesso (DPMS)"
+short = "Spegne immediatamente tutti i monitor con `niri msg action power-off-monitors`; muovi il mouse o premi un tasto per riaccenderli."
+
+# ==============================================================================
+# PERSONALIZZAZIONE -> TEMA (`panels/cc_personalization_theme.py`)
+# ==============================================================================
+["cc_pers:noop"]
+title = "Elemento Dimostrativo Sandbox"
+short = "Controllo di anteprima dal vivo per verificare stato attivo, morfologia dei delimitatori e colori semantici (`no-op`)."
+
+["cc_pers:inline_save_theme"]
+title = "Salva Profilo Tema.."
+short = "Salva colori, opacità, tipografia e glifi ASCII correnti di `theme.toml` come preset nominato in `~/.config/nc-ui/themes/`."
+
+["cc_pers:export_theme_prompt"]
+title = "Esporta Tema TOML.."
+short = "Richiede un percorso file per esportare la configurazione corrente di `theme.toml`."
+
+["cc_pers:import_theme_prompt"]
+title = "Importa Tema TOML.."
+short = "Richiede un file `.toml` di tema da importare, validare e applicare dal vivo su NC-UI."
+
+["cc_pers:reset_theme"]
+title = "Ripristina Tema Predefinito"
+short = "Ripristina tutti i 7 assi semantici, il colore di superficie, la tipografia e i glifi ASCII di `theme.toml` ai valori Nightcity predefiniti."
+
+["cc_pers:preset:*"]
+title = "Applica Preset Tema 1-Click"
+short = "Applica un profilo completo curato di palette, sfondo e glifi (`Nightcity`, `Arasaka`, `Ghost Net`, `RobCo`, `Amber Deck`, `Arctic Studio`)."
+verbose = "Aggiorna dal vivo `theme.toml` su tutti i 7 assi semantici (`structure`, `inactive`, `schema`, `focus`, `intent`, `vitality`, `attention`, `interrupt`, `fault`), rigenera il CSS e sincronizza Waybar se attivo."
+
+["cc_pers:wb_apply_preset_palette"]
+title = "Applica Palette Preset a Waybar"
+short = "Sincronizza i colori attivi di NC-UI nelle variabili di `style.css` di Waybar e ricarica la barra."
+
+["cc_pers:load_theme:*"]
+title = "Carica Profilo Tema Salvato"
+short = "Carica questo profilo `.toml` da `~/.config/nc-ui/themes/` e lo applica dal vivo."
+
+["cc_pers:del_theme:*"]
+title = "Elimina Profilo Tema Salvato"
+short = "Rimuove definitivamente questo file `.toml` personalizzato da `~/.config/nc-ui/themes/`."
+
+["cc:trans"]
+title = "Trasparenza Finestra"
+short = "Regola dal vivo l'opacità globale dello sfondo finestra NC-UI (`5%`–`100%`)."
+verbose = "Aggiorna l'alpha della superficie finestra in `theme.toml` e riapplica subito il CSS GTK senza riavviare NC-UI."
+
+["cc_pers:box_op*"]
+title = "Opacità Strato Box"
+short = "Regola l'opacità di riempimento interno dei `Box` (`0%`–`100%`) indipendentemente dallo sfondo finestra."
+verbose = "Controlla il contrasto visivo a doppio strato tra i riquadri `Box` e il livello di fondo della finestra Layer-Shell."
+
+["cc_pers:set_color:surface_bg:*"]
+title = "Seleziona Colore Base Superficie"
+short = "Imposta il colore esadecimale di sfondo base (`surface_bg`) e ricalcola automaticamente tutte le tinte di capsula `*_bg`."
+
+["cc_pers:inline_col:surface_bg"]
+title = "Colore Superficie Hex Personalizzato.."
+short = "Apre l'input hex inline (`#RRGGBB`) per personalizzare `surface_bg` aggiornando le tinte `*_bg` derivate."
+
+["cc_pers:wb_sync_op"]
+title = "Sincronizza Opacità con Waybar"
+short = "Quando è attivo, l'applicazione della trasparenza a Waybar replica l'opacità della finestra NC-UI dentro `style.css`."
+
+["cc_pers:wb_sync_col"]
+title = "Sincronizza Colori con Waybar"
+short = "Quando è attivo, il cambio di preset o palette aggiorna automaticamente anche le variabili colore di Waybar."
+
+["cc_pers:sys_notif_op*"]
+title = "Opacità Notifiche di Sistema"
+short = "Regola la trasparenza dello sfondo (`0%`–`100%`) dei popup di notifica desktop generati da `nc-notify-popup`."
+
+["cc_pers:toast_op*"]
+title = "Opacità Toast del Control Center"
+short = "Regola l'opacità (`0%`–`100%`) dei banner toast interni del Control Center mostrando un'anteprima immediata."
+
+["cc_pers:font:*"]
+title = "Seleziona Font Monospace"
+short = "Cambia la famiglia di font monospace di NC-UI (`Courier`, `JetBrainsMono`, `FiraCode`, `Iosevka`, o personalizzato) ricalcolando la griglia."
+verbose = "Scrive `[typography].font_family` in `theme.toml` e ricalcola le metriche di cella Pango/Cairo (`char_w`, `char_h`) su tutti i box."
+
+["cc_pers:font_pick_open"]
+title = "Sfoglia Font Monospace di Sistema.."
+short = "Apre il selettore inline con ricerca tra tutti i font monospace installati sul sistema."
+
+["cc_pers:font_pick_clear"]
+title = "Azzera Filtro Font"
+short = "Pulisce la query di ricerca nel selettore inline dei font monospace."
+
+["cc_pers:font_size:*"]
+title = "Imposta Dimensione Font (pt)"
+short = "Modifica la dimensione base del font monospace (`9pt`–`14pt`) in `theme.toml` scalando proporzionalmente l'intera griglia UI."
+
+["cc_pers:winrad:*"]
+title = "Imposta Raggio Bordi Finestra"
+short = "Imposta l'arrotondamento degli angoli (`0px`–`24px`) delle finestre Layer-Shell e dei popup NC-UI."
+
+["cc_pers:row_gap:*"]
+title = "Imposta Spazio Verticale Righe"
+short = "Regola la spaziatura verticale extra (`0px`, `2px`, `4px`) tra le righe interne ai riquadri `Box`."
+
+["cc_pers:kwidth:*"]
+title = "Imposta Larghezza Colonna Chiavi KV"
+short = "Definisce la larghezza predefinita in caratteri (`16c`–`28c`) riservata alle etichette sinistre delle righe `add_kv`."
+
+["cc_pers:spacing:*"]
+title = "Imposta Spaziatura tra Schede"
+short = "Regola il margine verticale (`2px`–`10px`) che separa i `Box` impilati."
+
+["cc_pers:inner_pad:*"]
+title = "Imposta Padding Interno Box"
+short = "Imposta il margine interno (`6px`–`18px`) dell'area contenuti nel Control Center."
+
+["cc_pers:inline_inner_pad"]
+title = "Padding Interno Personalizzato.."
+short = "Apre l'input numerico inline per inserire un valore esatto in pixel per il padding interno."
+
+["cc_pers:outer_mar:*"]
+title = "Imposta Margine Esterno Finestra"
+short = "Imposta il margine esterno Layer-Shell dai bordi dello schermo (`4px`–`16px`) attorno alle finestre NC-UI."
+
+["cc_pers:inline_outer_mar"]
+title = "Margine Esterno Personalizzato.."
+short = "Apre l'input numerico inline per impostare un margine esterno esatto in pixel."
+
+["cc_pers:set_color*"]
+title = "Imposta Colore Asse Semantico"
+short = "Imposta il colore dell'asse semantico (`structure`, `inactive`, `schema`, `focus`, `intent`, `vitality`, `attention`, `interrupt`, `fault`) derivando la tinta `*_bg`."
+verbose = "Esegue `derive_axis_companions()` rispetto a `surface_bg` per mantenere leggibilità calibrata e contrasto delle capsule retroilluminate in `theme.toml`."
+
+["cc_pers:inline_col*"]
+title = "Colore Asse Hex Personalizzato.."
+short = "Apre l'editor hex inline `#RRGGBB` per questo asse cromatico semantico aggiornando `theme.toml` dal vivo."
+
+["cc_pers:wb_sync_from_theme"]
+title = "Sincronizza Palette Waybar dal Tema NC-UI"
+short = "Deriva tutti i token colore di Waybar (`wb_bg`, `wb_pill_bg`, `wb_fg`, `wb_accent`, `wb_active`, `wb_warn`, `wb_crit`) dal tema NC-UI attivo."
+
+["cc_pers:wb_apply_palette"]
+title = "Applica Palette a Waybar (`style.css`)"
+short = "Scrive le variabili palette configurate nel file `style.css` di Waybar e ricarica il processo Waybar."
+
+["cc_pers:wb_color*"]
+title = "Imposta Colore Waybar"
+short = "Imposta questo token CSS di Waybar (`wb_bg`, `wb_pill_bg`, `wb_fg`, `wb_accent`, `wb_active`, `wb_warn`, `wb_crit`) sul preset esadecimale scelto."
+
+["cc_pers:inline_wb_col*"]
+title = "Colore Waybar Hex Personalizzato.."
+short = "Apre l'inserimento inline `#RRGGBB` per questo token cromatico di Waybar."
+
+["cc_pers:box_style:*"]
+title = "Imposta Stile Bordi Box"
+short = "Sceglie i caratteri della cornice dei riquadri (`Rounded`, `Single`, `Double`, `Heavy` o `ASCII`) disegnati su canvas."
+
+["cc_pers:tbrk:*"]
+title = "Imposta Delimitatori Titolo Box"
+short = "Sceglie i delimitatori laterali dei titoli (`[ Titolo ]`, `:: Titolo ::`, `‹ Titolo ›`, `« Titolo »`)."
+
+["cc_pers:pdots:*"]
+title = "Imposta Indicatori Stato SelectPill"
+short = "Sceglie la coppia di simboli attivo/inattivo (`● / ○`, `◆ / ◇`, `■ / □`) usata nei controlli `SelectPill`."
+
+["cc_pers:tcaps:*"]
+title = "Imposta Delimitatori Schede TabBar"
+short = "Sceglie i glifi verticali (`▏..▕`, `▐..▌`, `‹..›`) che incorniciano le schede attive `1.5x` nella `TabBar`."
+
+["cc_pers:cicons:*"]
+title = "Imposta Icone Sezioni Comprimibili"
+short = "Sceglie la coppia di icone espanso/compresso (`▼ / ▶`, chevron, o `⊟ / ⊞`) per i selettori `[▶ Expand]` / `[▼ Collapse]`."
+
+["cc_pers:slglyph:*"]
+title = "Imposta Glifi Pieno/Vuoto Slider"
+short = "Sceglie i caratteri di riempimento (`# / -`, `█ / ░`, `━ / ─`, `= / ·`) per `Slider` e `ProgressBar`."
+
+["cc_pers:inline_spark"]
+title = "Caratteri Sparkline Personalizzati.."
+short = "Apre l'input inline per personalizzare la scala Unicode a 8 livelli (`▁▂▃▄▅▆▇█`) dei grafici `Sparkline`."
+
+["cc_pers:sbrk:*"]
+title = "Imposta Parentesi Slider"
+short = "Sceglie i caratteri esterni (`[ ]` oppure `▐ ▌`) che racchiudono la traccia di `Slider` e `ProgressBar`."
+
+["cc_pers:trule:*"]
+title = "Imposta Carattere Righe Tabella"
+short = "Sceglie il carattere orizzontale usato sotto le intestazioni delle tabelle e nei separatori di sezione."
+
+["cc_pers:kvsep:*"]
+title = "Imposta Separatore Chiave-Valore"
+short = "Sceglie il glifo separatore visualizzato tra chiave e valore nelle righe `add_kv`."
+
+["cc_pers:sbox:*"]
+title = "Imposta Prefisso e Cursore Ricerca"
+short = "Sceglie il prefisso icona/prompt e il carattere cursore usati nelle barre di ricerca `InlineFilter`."
+
+# ==============================================================================
+# PERSONALIZZAZIONE -> SFONDO (`panels/cc_personalization_wallpaper.py`)
+# ==============================================================================
+["cc_desk:toggle_fps"]
+title = "Attiva/Disattiva Anteprima Live 15 FPS"
+short = "Alterna la mappa anteprima dei monitor tra miniature statiche e rendering animato dal vivo a 15 FPS."
+
+["cc_desk:apply_staged"]
+title = "Applica Modifiche Sfondo"
+short = "Applica dal vivo tramite il motore sfondi Wayland nativo di NC-UI (`swaybg` / `nc-video-wallpaper` / `nc-matrix`) tutte le modifiche staged di immagine, slideshow, colore o `nc-matrix`."
+verbose = "Esegue il motore desktop sui monitor modificati—incluso il renderer ASCII Pillow se Asciify è attivo—e azzera lo stato staged `PREVIEW *`."
+
+["cc_desk:reset_staged"]
+title = "Annulla Modifiche Sfondo Staged"
+short = "Ripristina le bozze non ancora applicate riportando ogni monitor allo stato reale `nc-desktop` attivo."
+
+["cc_desk:sel_all"]
+title = "Seleziona Tutti i Monitor"
+short = "Include tutte le uscite `niri` collegate in modo da preparare lo stesso sfondo su tutti gli schermi."
+
+["cc_desk:sel_mon:*"]
+title = "Includi / Escludi Monitor"
+short = "Aggiunge o rimuove questa uscita `niri` dall'insieme dei monitor destinatari delle modifiche sfondo."
+
+["cc_desk:mode:scene"]
+title = "Modalità Sfondo: Scena (Immagine / GIF / Video / YT)"
+short = "Imposta la modalità sfondo su immagine statica, GIF animata, video locale oppure video/playlist YouTube."
+
+["cc_desk:mode:slideshow"]
+title = "Modalità Sfondo: Slideshow Cartella"
+short = "Scorre automaticamente immagini, GIF o video presenti in una cartella con intervallo e transizioni configurabili."
+
+["cc_desk:mode:ncmatrix"]
+title = "Modalità Sfondo: Shader NC-Matrix"
+short = "Attiva lo sfondo nativo Wayland `nc-matrix` con pioggia di caratteri personalizzabile per alfabeto, colore, velocità e dimensione."
+
+["cc_desk:mode:solid"]
+title = "Modalità Sfondo: Colore Solido"
+short = "Riempie lo sfondo dei monitor selezionati con una tinta unita `#RRGGBB` da preset o personalizzata."
+
+["cc_desk:clear_scene"]
+title = "Svuota Scena Selezionata"
+short = "Rimuove l'immagine, il video o l'URL YouTube dalla bozza scena corrente."
+
+["cc_desk:pick_scene"]
+title = "Sfoglia File Scena (Yazi).."
+short = "Apre il file manager terminale Yazi integrato in NC-UI per scegliere un'immagine, GIF o video."
+
+["cc_desk:type_scene"]
+title = "Digita Percorso Scena.."
+short = "Apre un prompt con completamento file per inserire manualmente il percorso di un'immagine, GIF o video."
+
+["cc_desk:prompt_yt"]
+title = "Inserisci URL Video / Playlist YouTube.."
+short = "Richiede un URL YouTube (singolo video o playlist) da riprodurre in streaming o scaricare via `yt-dlp` come sfondo animato."
+
+["cc_desk:paste_yt"]
+title = "Incolla URL YouTube dagli Appunti"
+short = "Legge un link YouTube direttamente dagli appunti Wayland (`wl-paste`) e lo imposta nella bozza scena."
+
+["cc_desk:yt_deliv:stream"]
+title = "Modalità YouTube: Streaming Diretto"
+short = "Risolve lo stream YouTube via `yt-dlp` senza salvare l'intero file video su disco."
+
+["cc_desk:yt_deliv:download"]
+title = "Modalità YouTube: Download Locale"
+short = "Scarica prima il video YouTube in locale per una riproduzione offline fluida senza interruzioni di rete."
+
+["cc_desk:fit:fill"]
+title = "Adattamento: Riempi (Fill)"
+short = "Scala lo sfondo per coprire l'intero monitor mantenendo le proporzioni (ritagliando eventuali bordi eccedenti)."
+
+["cc_desk:fit:fit"]
+title = "Adattamento: Adatta (Fit)"
+short = "Mantiene l'intero fotogramma visibile dentro lo schermo preservandone le proporzioni."
+
+["cc_desk:fit:center"]
+title = "Adattamento: Centra (1:1)"
+short = "Mostra il media alla risoluzione nativa 1:1 centrato sullo schermo senza ridimensionamento."
+
+["cc_desk:fit:stretch"]
+title = "Adattamento: Estendi (Stretch)"
+short = "Deforma lo sfondo per riempire esattamente larghezza e altezza del monitor."
+
+["cc_desk:align:top"]
+title = "Allineamento Ritaglio: Alto"
+short = "Ancora il ritaglio del media eccedente verso il bordo superiore del monitor."
+
+["cc_desk:align:center"]
+title = "Allineamento Ritaglio: Centro"
+short = "Centra verticalmente il ritaglio del media sullo schermo."
+
+["cc_desk:align:bottom"]
+title = "Allineamento Ritaglio: Basso"
+short = "Ancora il ritaglio del media eccedente verso il bordo inferiore del monitor."
+
+["cc_desk:ascii_toggle:0"]
+title = "Stile Sfondo: Pixel Originali"
+short = "Mostra l'immagine o lo slideshow originale senza conversione in caratteri ASCII."
+
+["cc_desk:ascii_toggle:1"]
+title = "Stile Sfondo: Renderer Asciified"
+short = "Converte immagini statiche o diapositive in grafica ASCII/Unicode tramite il renderer Pillow di NC-UI con cache su disco."
+
+["cc_desk:ascii_defaults"]
+title = "Ripristina Parametri Asciify"
+short = "Riporta modalità colore, alfabeto, densità, tinta, scala, contrasto e luminosità ASCII ai valori predefiniti."
+
+["cc_desk:ascii_mode:*"]
+title = "Modalità Colore ASCII"
+short = "Sceglie la colorazione dei glifi ASCII (`color` reale, fosfori `green`, `cyan`, `amber`, o `mono`)."
+
+["cc_desk:ascii_chars:*"]
+title = "Preset Alfabeto ASCII"
+short = "Seleziona la rampa di caratteri per luminanza (`Standard`, `Binary`, `Katakana` o `Kanjis`)."
+
+["cc_desk:inline_ascii_chars"]
+title = "Alfabeto ASCII Personalizzato.."
+short = "Apre l'input inline per specificare una stringa personalizzata ordinata per luminanza (es. ` .:-=+*#%@`)."
+
+["cc_desk:ascii_density*"]
+title = "Densità Griglia ASCII"
+short = "Regola la densità della griglia caratteri (`0.25x`–`2.5x`) determinando finezza e dettaglio dello sfondo ASCII."
+
+["cc_desk:ascii_tint*"]
+title = "Tinta Sfondo ASCII"
+short = "Miscela la tinta cromatica dell'immagine originale (`0.0`–`1.0`) dietro i caratteri ASCII generati."
+
+["cc_desk:ascii_scale*"]
+title = "Scala Glifi Font ASCII"
+short = "Ridimensiona i glifi (`0.25x`–`1.5x`) rispetto a ciascuna cella della griglia nel renderer ASCII."
+
+["cc_desk:ascii_contrast*"]
+title = "Pre-Contrasto ASCII"
+short = "Regola il contrasto dell'immagine sorgente (`0.5`–`2.0`) prima della quantizzazione nei glifi ASCII."
+
+["cc_desk:ascii_brightness*"]
+title = "Pre-Luminosità ASCII"
+short = "Regola la luminosità sorgente (`0.5`–`2.0`) prima della mappatura nei caratteri ASCII."
+
+["cc_desk:ascii_invert:0"]
+title = "Luminanza ASCII: Normale"
+short = "Associa i pixel più luminosi ai caratteri più densi su sfondo scuro."
+
+["cc_desk:ascii_invert:1"]
+title = "Luminanza ASCII: Invertita"
+short = "Inverte la curva di luminanza assegnando i glifi più densi alle zone scure."
+
+["cc_desk:ascii_clear_cache"]
+title = "Svuota Cache Render ASCII"
+short = "Elimina da disco tutti i PNG pre-renderizzati della cache ASCII per liberare spazio o forzare il ricalcolo."
+
+["cc_desk:ascii_cancel"]
+title = "Annulla Render ASCII in Corso"
+short = "Interrompe il processo di conversione sfondo ASCII attualmente in esecuzione in background."
+
+["cc_desk:vid_loop:loop"]
+title = "Riproduzione Video: Ciclo Continuo"
+short = "Ripete senza interruzioni il video o lo stream YouTube usato come sfondo."
+
+["cc_desk:vid_loop:once"]
+title = "Riproduzione Video: Riproduci Una Volta"
+short = "Riproduce il video sfondo una sola volta senza riavviarlo al termine."
+
+["cc_desk:pl_ord:sequential"]
+title = "Ordine Playlist: Sequenziale"
+short = "Riproduce i video della playlist YouTube nell'ordine originale."
+
+["cc_desk:pl_ord:shuffle"]
+title = "Ordine Playlist: Casuale"
+short = "Mescola casualmente l'ordine dei brani/video nella playlist YouTube."
+
+["cc_desk:pl_prev"]
+title = "Traccia Playlist Precedente"
+short = "Torna al video precedente nella playlist YouTube impostata come sfondo."
+
+["cc_desk:pl_next"]
+title = "Traccia Playlist Successiva"
+short = "Passa subito al video successivo nella playlist YouTube impostata come sfondo."
+
+["cc_desk:vid_mute:1"]
+title = "Audio Video Sfondo: Muto"
+short = "Silenzia l'audio dei video e flussi YouTube impostati come sfondo (predefinito consigliato)."
+
+["cc_desk:vid_mute:0"]
+title = "Audio Video Sfondo: Attivo"
+short = "Abilita l'audio dei video sfondo utilizzando il livello percentuale selezionato."
+
+["cc_desk:vid_vol:*"]
+title = "Imposta Volume Video Sfondo"
+short = "Regola il volume (`20%`–`100%`) quando l'audio dei video sfondo è abilitato."
+
+["cc_desk:pick_folder"]
+title = "Sfoglia Cartella Slideshow (Yazi).."
+short = "Apre il browser integrato Yazi per selezionare la directory sorgente dello slideshow."
+
+["cc_desk:type_folder"]
+title = "Digita Percorso Cartella Slideshow.."
+short = "Apre un prompt con autocompletamento directory per inserire il percorso della cartella slideshow."
+
+["cc_desk:slide_int:*"]
+title = "Imposta Intervallo Slideshow"
+short = "Definisce ogni quanto tempo cambiare sfondo (`1m`, `5m`, `15m`, `30m`, o `1h`)."
+
+["cc_desk:inline_interval"]
+title = "Intervallo Slideshow Personalizzato.."
+short = "Apre l'input inline per impostare una durata personalizzata (es. `45s`, `10m` o `2h`)."
+
+["cc_desk:slide_ord:shuffle"]
+title = "Ordine Slideshow: Casuale"
+short = "Seleziona gli sfondi dalla cartella in ordine casuale."
+
+["cc_desk:slide_ord:sequential"]
+title = "Ordine Slideshow: Sequenziale"
+short = "Scorre gli sfondi della cartella in ordine alfabetico per nome file."
+
+["cc_desk:slide_tr:*"]
+title = "Imposta Effetto Transizione"
+short = "Sceglie lo shader di transizione Wayland (`fade`, `wipe`, `grow`, `wave` o `none`) tra uno sfondo e il successivo."
+
+["cc_desk:slide_spd:0.5s"]
+title = "Velocità Transizione: Rapida (0.5s)"
+short = "Esegue l'animazione di cambio sfondo in 0.5 secondi."
+
+["cc_desk:slide_spd:1.5s"]
+title = "Velocità Transizione: Normale (1.5s)"
+short = "Esegue l'animazione di cambio sfondo in 1.5 secondi."
+
+["cc_desk:slide_spd:3.0s"]
+title = "Velocità Transizione: Lenta (3.0s)"
+short = "Esegue l'animazione di cambio sfondo lentamente in 3.0 secondi."
+
+["cc_desk:prev"]
+title = "Sfondo Slideshow Precedente"
+short = "Torna immediatamente all'immagine precedente nella sequenza dello slideshow."
+
+["cc_desk:pause"]
+title = "Metti in Pausa Slideshow"
+short = "Sospende il timer automatico mantenendo fisso lo sfondo corrente."
+
+["cc_desk:resume"]
+title = "Riprendi Slideshow"
+short = "Riavvia il cambio automatico dello slideshow secondo l'intervallo configurato."
+
+["cc_desk:next"]
+title = "Sfondo Slideshow Successivo"
+short = "Passa subito allo sfondo successivo applicando la transizione selezionata."
+
+["cc_desk:inline_solid_hex"]
+title = "Colore Solido Hex Personalizzato.."
+short = "Apre l'input inline `#RRGGBB` per impostare un colore pieno personalizzato sul desktop."
+
+["cc_desk:solid_hex:*"]
+title = "Seleziona Preset Colore Solido"
+short = "Prepara questa tinta `#RRGGBB` classica o designer per i monitor selezionati."
+
+["cc_desk:cm_charset:*"]
+title = "Set Caratteri NC-Matrix"
+short = "Sceglie l'alfabeto della pioggia digitale `nc-matrix` (`Katakana`, `ASCII`, `Binary` o `Hex`)."
+
+["cc_desk:cm_col:*"]
+title = "Colore Shader NC-Matrix"
+short = "Imposta il colore della pioggia `nc-matrix` (`Verde`, `Ciano`, `Giallo`, `Bianco` o `Arcobaleno`)."
+
+["cc_desk:cm_col_custom"]
+title = "Colore NC-Matrix Hex Personalizzato.."
+short = "Apre l'input inline a 6 cifre hex per colorare la pioggia `nc-matrix` con un codice RGB arbitrario."
+
+["cc_desk:cm_head:*"]
+title = "Colore Testa Trail (Bianco / Shader / Sfumato)"
+short = "Sceglie il colore del primo carattere in testa a ogni scia `nc-matrix`: **Bianco** brillante, **Colore Shader** attivo oppure **Sfumato Random** per singola scia tra il colore dello shader e il bianco brillante (con range verso il bianco modulato da `Luminescenza Velocità` in base alla velocità della scia)."
+
+["cc_desk:cm_spd:*"]
+title = "Velocità Pioggia NC-Matrix (1–10)"
+short = "Regola la cadenza base di caduta su curva percettiva (`1` = `520 ms` minima, `5` = `200 ms` default equilibrato, fino a `10` = `20 ms` massima) per `nc-matrix`."
+
+["cc_desk:cm_spawn*"]
+title = "Frequenza Spawn Trail (0.0x–3.0x)"
+short = "Scorri o usa `[-]`/`[+]` per regolare la frequenza con cui `nc-matrix` genera nuove scie (`0.0x` = nessuna, `1.0x` = base, `1.5x` = default Matrix, `3.0x` = 3×)."
+verbose = "Scala l'intervallo di spawn delle scie per colonna tramite `nc-matrix --spawn-rate <0.0..3.0>` (con hot-reload da `/tmp/nc-matrix_<output>.conf`). `0.0x` ferma la generazione di nuove scie; `1.5x` bilancia densità e leggibilità."
+
+["cc_desk:cm_var*"]
+title = "Varianza Velocità per Trail (0.0–10.0)"
+short = "Definisce lo stacco geometrico di velocità attorno al `Livello Velocità` (`0.0` = flusso uniforme; `5.0` = default calibrato ~5.7×; `10.0` = contrasto estremo fino a ~32× tra scie sullo sfondo e in primo piano)."
+verbose = "Ogni trail estrae alla nascita un passo moltiplicativo `base_ms * spread^(-u)` (`spread = 2^(var/2)`) tramite `--speed-variance <0.0..10.0>`: scie lente e veloci convivono e si sorpassano nella stessa colonna."
+
+["cc_desk:cm_overlap:*"]
+title = "Modalità Sorpasso Trail (Ibrido / Parallasse / Intensità)"
+short = "Decide cosa succede quando una scia veloce ne attraversa una lenta sulla stessa colonna: **Ibrido** (glifo in primo piano + somma luminosità), **Parallasse** (la veloce copre e poi riscopre la lenta intatta) o **Intensità** (somma energetica con picco luminoso)."
+
+["cc_desk:cm_parallax*"]
+title = "Luminescenza Velocità (0%–100%)"
+short = "Regola quanto la lentezza di una trail ne riduce la luminescenza e il range verso il bianco della testa in `Sfumato Random` (`0%` = tutte al 100%; `50%` = profondità Matrix calibrata; `100%` = attenuazione estrema sullo sfondo con teste bianche riservate alle scie più veloci, live a schermo)."
+
+["cc_desk:cm_glow*"]
+title = "Alone Fosforo CRT (0%–100%)"
+short = "Regola l'intensità dell'alone luminoso pre-calcolato nell'atlas `RG8` (`0%` caratteri nitidi a taglio netto, fino a `100%` effetto fosforo CRT)."
+
+["cc_desk:cm_decay:*"]
+title = "Decadimento Luminosità Coda"
+short = "Sceglie tra la curva **Esponenziale CRT** (testa molto accesa con lunga scia scura di persistenza) oppure il decadimento **Lineare** classico."
+
+["cc_desk:cm_shimmer:*"]
+title = "Mutazione Viva Caratteri in Coda (0.5x–4x)"
+short = "Imposta quante mutazioni avvengono per ogni avanzamento della scia (`Spenta` = `0`, `Bassa` = `0.5/step`, `Media` = `1/step`, `Alta` = `2/step`, `Folle` = `4/step`)."
+
+["cc_desk:cm_mirror:*"]
+title = "Specchiatura Orizzontale Glifi"
+short = "Ribalta orizzontalmente i glifi nello shader (`Normale`, `Specchiata` come nel film originale o `Mista` per singolo carattere) a costo zero."
+
+["cc_desk:cm_tail:*"]
+title = "Lunghezza Media Coda"
+short = "Scala la lunghezza delle scie indipendentemente dalla frequenza di spawn (`Corta`, `Media`, `Lunga`)."
+
+["cc_desk:cm_density:*"]
+title = "Densità Griglia Colonne"
+short = "Alterna tra griglia **Classica** (una colonna attiva e una vuota) e **Densa** (tutte le colonne attive per un muro compatto di codice)."
+
+["cc_desk:cm_size:*"]
+title = "Dimensione Glifi NC-Matrix (pt)"
+short = "Imposta la dimensione in punti (`6pt`–`20pt`) delle colonne di testo `nc-matrix`."
+
+["cc_desk:cm_trans:*"]
+title = "Transizione NC-Matrix"
+short = "Sceglie lo stile di ingresso/uscita di `nc-matrix` (`Flow` graduale, `Drain` svuotamento o `Instant`)."
+
+["cc_desk:close_yazi"]
+title = "Chiudi Browser Yazi Integrato"
+short = "Termina la sessione PTY di Yazi integrata e chiude il riquadro di selezione file."
+
+# ==============================================================================
+# POPUP WAYBAR -> DISPLAY (`panels/wp_display.py`)
+# ==============================================================================
+["disp:next:*"]
+title = "Sfondo Successivo"
+short = "Avanza lo slideshow attivo su questo monitor allo sfondo successivo tramite `nc_util_desktop.sh --next`."
+
+["disp:pause:*"]
+title = "Pausa Slideshow"
+short = "Sospende la rotazione automatica dello sfondo su questo monitor (`nc_util_desktop.sh --pause`)."
+
+["disp:resume:*"]
+title = "Riprendi Slideshow"
+short = "Riprende la rotazione automatica dello sfondo su questo monitor (`nc_util_desktop.sh --resume`)."
+
+["disp:set_img:*"]
+title = "Imposta Immagine Sfondo.."
+short = "Chiede il percorso di un'immagine (con completamento file) e la applica subito su questo monitor."
+
+["disp:matrix:*"]
+title = "Avvia NC-Matrix (Verde)"
+short = "Avvia lo sfondo live ASCII `nc-matrix` verde su questo monitor (`nc_util_desktop.sh -o <out> -c -C green`)."
+
+["disp:matrix_jp:*"]
+title = "Avvia NC-Matrix JP (Katakana)"
+short = "Avvia lo sfondo live `nc-matrix` verde con caratteri Katakana giapponesi su questo monitor (`-c -C green -j`)."

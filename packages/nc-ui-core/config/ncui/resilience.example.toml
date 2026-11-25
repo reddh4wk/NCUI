@@ -1,0 +1,53 @@
+# ==============================================================================
+# NC-UI Resilience, Posture & Disaster Recovery Configuration
+# System target path: /etc/ncui/resilience.toml
+# ==============================================================================
+
+[identity]
+sys_alias = ""
+hostname = ""
+hw_uuid = ""
+sys_folder = ""
+
+[posture]
+ntsync = true
+proc_hidepid = true
+ptrace_relax = true
+vm_tuning = true
+suspend_audit = true
+nvidia_persistence = true
+cpu_governor = "performance"
+
+[snapshots]
+# Supported backends: "lvm_uki" (default) | "btrfs"
+backend = "lvm_uki"
+vg_name = "vg0"
+root_lv = "root"
+var_lv = "var"
+home_lv = ""
+esp_mount = "/boot"
+uki_prefix = ""
+primary_uki = ""
+snap_root_size = "15G"
+snap_var_size = "5G"
+snap_home_size = "15G"
+btrfs_subvol = "@"
+pacman_hook_auto = true
+
+[vault]
+# Supported protocols: "smb" | "nfs" | "ssh" | "local"
+protocol = "smb"
+host = ""
+mountpoint = "/nas"
+ssh_user = ""
+remote_path = ""
+smb_creds_file = "/etc/samba/nas-cred"
+shares = []
+backup_root_subdir = ""
+sync_paths = []
+pkglist_subdir = ""
+
+[recovery]
+uki_name = "nc-rescue.efi"
+sign_sbctl = true
+golden_subdir = "images"

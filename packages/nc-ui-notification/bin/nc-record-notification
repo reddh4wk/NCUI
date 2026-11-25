@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""NC-UI System Notification Ingestion Hook for SwayNC / D-Bus."""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+
+HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
+RULES_FILE = os.path.expanduser("~/.config/nc-ui/notifications_rules.json")
+ADDONS_CONF = os.path.expanduser("~/.config/nc-ui/nc-addons.conf")
+_BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+POPUP_BIN = shutil.which("nc-notify-popup") or os.path.join(_BIN_DIR, "nc-notify-popup")
+
+
+def _load_rules() -> dict:
+    base = {
+        "dnd": False,
+        "quiet_enabled": False,
+        "quiet_window": "23:00-07:00",
+        "min_urgency": "low",
+        "muted_apps": [],
+        "popup_enabled": False,
+        "popup_timeout": 5,
+        "popup_position": "top-right",
+        "popup_effect": "slide",
+    }
+    if os.path.exists(RULES_FILE):
+        try:
+            with open(RULES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    base.update(data)
+        except Exception:
+            pass
+    return base
+
+
+def _in_quiet_hours(rules: dict) -> bool:
+    if not rules.get("quiet_enabled"):
+        return False
+    m = re.match(r"^\s*(\d{2}):(\d{2})-(\d{2}):(\d{2})\s*$", str(rules.get("quiet_window") or ""))
+    if not m:
+        return False
+    sh, sm, eh, em = (int(x) for x in m.groups())
+    if sh > 23 or eh > 23 or sm > 59 or em > 59:
+        return False
+    now = datetime.datetime.now()
+    cur_m = now.hour * 60 + now.minute
+    start_m = sh * 60 + sm
+    end_m = eh * 60 + em
+    if start_m == end_m:
+        return True
+    if start_m > end_m:
+        return cur_m >= start_m or cur_m < end_m
+    return start_m <= cur_m < end_m
+
+
+def _get_max_notifications() -> int:
+    if os.path.exists(ADDONS_CONF):
+        try:
+            for ln in open(ADDONS_CONF, "r", encoding="utf-8", errors="ignore"):
+                m = re.match(r"^\s*max_notifications\s*=\s*(\d+)", ln)
+                if m:
+                    return int(m.group(1))
+        except Exception:
+            pass
+    return 50
+
+
+def _dispatch_popup(item: dict) -> None:
+    if shutil.which("swaync-client"):
+        try:
+            subprocess.Popen(
+                ["swaync-client", "--hide-latest"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+
+    raw = json.dumps(item, ensure_ascii=False)
+    sock_path = f"/tmp/nc_notify_popup_{os.getuid()}.sock"
+    if os.path.exists(sock_path):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(0.25)
+                s.connect(sock_path)
+                s.sendall((raw + "\n").encode("utf-8"))
+            return
+        except Exception:
+            pass
+
+    if os.path.exists(POPUP_BIN):
+        try:
+            subprocess.Popen(
+                [sys.executable, POPUP_BIN, "--payload", raw],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+
+
+def record_notification(app_name: str, summary: str, body: str, urgency: str = "normal", notif_id=None) -> None:
+    if not summary and not body:
+        return
+
+    rules = _load_rules()
+    muted = [a.lower() for a in rules.get("muted_apps", [])]
+    if (app_name or "").strip().lower() in muted:
+        return
+
+    urg_levels = {"low": 0, "normal": 1, "critical": 2}
+    min_urg = str(rules.get("min_urgency", "low")).lower()
+    notif_urg = str(urgency).lower()
+    if urg_levels.get(notif_urg, 1) < urg_levels.get(min_urg, 0):
+        return
+
+    now = datetime.datetime.now()
+    now_ts = int(now.timestamp() * 1000)
+    time_str = now.strftime("%H:%M")
+
+    # Clean app name
+    app_clean = (app_name or "System").strip()
+    if app_clean.lower() == "org.telegram.desktop":
+        app_clean = "Telegram Desktop"
+
+    new_item = {
+        "id": int(notif_id) if (notif_id and str(notif_id).isdigit()) else now_ts,
+        "app_name": app_clean,
+        "app": app_clean,
+        "title": summary.strip(),
+        "body": body.strip(),
+        "urgency": notif_urg,
+        "time": time_str,
+        "deleted": False,
+    }
+
+    max_n = _get_max_notifications()
+    notifs = []
+    if os.path.exists(HIST_FILE):
+        try:
+            with open(HIST_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    notifs = loaded
+        except Exception:
+            pass
+
+    # Avoid duplicate identical items within 1.5 seconds
+    if notifs:
+        latest = notifs[0]
+        if (
+            latest.get("title") == new_item["title"]
+            and latest.get("body") == new_item["body"]
+            and latest.get("app_name") == new_item["app_name"]
+            and abs(latest.get("id", 0) - new_item["id"]) < 1500
+        ):
+            return
+
+    notifs.insert(0, new_item)
+    notifs = notifs[:max_n]
+
+    try:
+        os.makedirs(os.path.dirname(HIST_FILE), exist_ok=True)
+        with open(HIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(notifs, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+    if rules.get("popup_enabled") and not rules.get("dnd") and not _in_quiet_hours(rules):
+        _dispatch_popup(new_item)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="NC-UI Notification Ingestion")
+    parser.add_argument("--app", default=os.environ.get("SWAYNC_APP_NAME", "System"))
+    parser.add_argument("--title", default=os.environ.get("SWAYNC_SUMMARY", ""))
+    parser.add_argument("--body", default=os.environ.get("SWAYNC_BODY", ""))
+    parser.add_argument("--urgency", default=os.environ.get("SWAYNC_URGENCY", "normal"))
+    parser.add_argument("--id", default=os.environ.get("SWAYNC_ID", None))
+    args, _ = parser.parse_known_args()
+
+    record_notification(
+        app_name=args.app,
+        summary=args.title,
+        body=args.body,
+        urgency=args.urgency,
+        notif_id=args.id,
+    )
+
+
+if __name__ == "__main__":
+    main()

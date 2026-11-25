@@ -1,0 +1,490 @@
+# NC-UI Action Help Catalog — Network, Wi-Fi, Bluetooth, VPN, Proxy & WAN (EN)
+
+# ==============================================================================
+# INTERFACES, VIRTUAL LINKS & TELEMETRY
+# ==============================================================================
+["net:if_filter:all"]
+title = "Show All Interfaces"
+short = "Displays physical Ethernet, Wi-Fi, VPN, bridge, and VLAN network interfaces in the telemetry table."
+
+["net:if_filter:wired"]
+title = "Filter Wired & Virtual Interfaces"
+short = "Filters the interface table to Ethernet, bridge, VLAN, and tunnel devices, hiding Wi-Fi radios."
+
+["net:if_filter:wifi"]
+title = "Filter Wi-Fi Interfaces"
+short = "Filters the interface table to wireless 802.11 interfaces only."
+
+["net:sel_iface:*"]
+title = "Inspect Interface & NM Profiles"
+short = "Selects this network interface in the Master-Detail inspector to edit its NetworkManager profiles, IP, and L1/L2 settings."
+verbose = "Switching the selected interface loads its associated `nmcli` profiles (`connection.id`, UUID, IPv4/IPv6, DNS, routes, MTU, MAC) and clears any unapplied staged `edit_buffer` for another device."
+
+["net:ifup:*"]
+title = "Bring Interface Up"
+short = "Marks the device managed and connects it via `nmcli device connect` (or `ip link set up` if NetworkManager is stopped)."
+verbose = "When NetworkManager is active, sets `nmcli device set <iface> managed yes` before bringing up the highest-priority autoconnect profile; otherwise raises the kernel link directly via `ip link`."
+
+["net:ifdown:*"]
+title = "Take Interface Down"
+short = "Disconnects the active NetworkManager session on this interface (or sets the kernel link down)."
+verbose = "Runs `nmcli device disconnect <iface>` so NetworkManager stops auto-reconnecting immediately, or `ip link set <iface> down` when NetworkManager is not running."
+
+["net:mon:*"]
+title = "Monitor Interface in Waybar"
+short = "Pins this interface as the live RX/TX throughput source displayed on the Waybar network pill."
+
+["net:toggle_unit"]
+title = "Toggle Speed Unit (B/s vs b/s)"
+short = "Switches live RX/TX throughput readouts between bytes per second (`B/s`) and bits per second (`b/s`)."
+
+["net:force_refresh"]
+title = "Force Network Resync"
+short = "Invalidates cached IP, NetworkManager, Wi-Fi, Bluetooth, and VPN state and polls all subsystems immediately."
+
+["net:inline_virtual"]
+title = "Create Bridge Interface.."
+short = "Opens inline input to create a persistent NetworkManager Linux bridge (`nmcli connection add type bridge`)."
+verbose = "Enter a bridge name (e.g., `br0`). Executes `nmcli connection add type bridge ifname <name> con-name <name>` so you can attach physical ports or VM tap interfaces."
+
+["net:inline_vlan"]
+title = "Create 802.1Q VLAN Interface.."
+short = "Opens inline input (`parent|vlan_id`) to create a tagged 802.1Q VLAN connection in NetworkManager."
+verbose = "Type `<parent_iface>|<1..4094>` (for example `enp5s0|10`). Runs `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` and refreshes the interface table."
+diagram = "network_stack"
+diagram_focus = "iface"
+
+["net:jump_wifi_tab"]
+title = "Open Wi-Fi Scanner Tab"
+short = "Jumps to the Wi-Fi & Bluetooth subtab to scan nearby 802.11 access points and manage wireless profiles."
+
+["net:open_cc_wifi"]
+title = "Open Wi-Fi & Bluetooth Settings"
+short = "Opens the Control Center directly on the Wi-Fi & Bluetooth subtab for scanning and radio tuning."
+
+["net:jump_iface:*"]
+title = "Inspect Wireless IP & Profiles"
+short = "Jumps to the Interfaces & Profiles subtab with this wireless device pre-selected for IP, DNS, and MTU tuning."
+
+["net:jump_wifi_prof:*:*"]
+title = "Edit Saved Wi-Fi Profile in Inspector"
+short = "Opens the Interfaces subtab with this Wi-Fi interface and saved NetworkManager profile UUID selected."
+
+["ui:copy:*"]
+title = "Copy to Clipboard"
+short = "Copies this IP address or MAC identifier to the Wayland clipboard."
+
+# ==============================================================================
+# NETWORKMANAGER PROFILES & STAGED EDIT BUFFER
+# ==============================================================================
+["net:nm_sel_prof:*:*"]
+title = "Select NM Profile for Editing"
+short = "Loads this NetworkManager connection UUID into the staged profile editor below and discards unsaved edits on the previous profile."
+
+["net:nm_create:*"]
+title = "Create Default NM Profile"
+short = "Creates and verifies a new persistent DHCP NetworkManager connection bound to this interface."
+
+["net:inline_new_prof:*"]
+title = "Create Named NM Profile.."
+short = "Opens inline input to create a new persistent NetworkManager connection profile for this interface."
+verbose = "Enter a profile name (e.g., `enp5s0-static`). Creates the connection via `nmcli`, verifies it in NetworkManager, and selects it for IPv4/IPv6/L2 configuration."
+
+["net:inline_rename_prof:*:*"]
+title = "Rename NM Profile.."
+short = "Opens inline input to rename `connection.id` for this NetworkManager profile via `nmcli connection modify`."
+
+["net:nm_clone_prof:*:*"]
+title = "Clone NM Profile"
+short = "Duplicates this NetworkManager profile with all IP, DNS, route, and L2 parameters under a new UUID."
+
+["net:nm_auto_prof:*:*:*"]
+title = "Toggle Profile Autoconnect"
+short = "Updates `connection.autoconnect` (`yes`/`no`) immediately on this NetworkManager profile UUID."
+
+["net:nm_up_prof:*:*"]
+title = "Activate NM Profile"
+short = "Marks the interface managed and activates this NetworkManager profile UUID (`nmcli connection up`)."
+
+["net:nm_down_prof:*:*"]
+title = "Deactivate NM Profile"
+short = "Brings down this active NetworkManager profile UUID (`nmcli connection down`) without deleting it."
+
+["net:nm_del_prof:*:*"]
+title = "Delete NM Profile"
+short = "Permanently deletes this saved NetworkManager connection UUID (`nmcli connection delete`)."
+
+["net:nm_apply:*:*"]
+title = "Apply & Verify Staged NM Edits"
+short = "Commits all staged `net:buf` edits to NetworkManager, reactivates the profile, and verifies kernel IP readback."
+verbose = "Runs `nmcli connection modify <uuid>` with every staged IPv4, IPv6, DNS, routing, firewalld zone, MTU, WoL, LLDP, and MAC field, checks saved values with `nmcli -g`, brings the profile `up`, and polls `ip -j addr show` to confirm kernel state matches."
+diagram = "network_stack"
+diagram_focus = "profile"
+
+["net:nm_reset:*"]
+title = "Discard Staged NM Edits"
+short = "Clears all unapplied changes in the staged edit buffer for this interface without touching NetworkManager."
+
+["net:buf:*:method:*"]
+title = "Stage IPv4 Addressing Method"
+short = "Stages `ipv4.method` (`auto` DHCP, `manual` static, `shared` NAT hotspot, or `disabled`) in the edit buffer until `[✓ Apply & Verify]`."
+verbose = "In `manual` mode, `[✓ Apply & Verify]` validates that a valid IPv4/CIDR address is provided; in `auto`, `shared`, or `disabled`, staged static addresses and gateway are cleared upon apply."
+
+["net:buf:*:autoconnect:yes"]
+title = "Stage Autoconnect ON"
+short = "Stages `connection.autoconnect = yes` in the edit buffer so this profile activates automatically when link carrier appears."
+
+["net:buf:*:autoconnect:no"]
+title = "Stage Autoconnect OFF"
+short = "Stages `connection.autoconnect = no` in the edit buffer so this profile only activates on manual request."
+
+["net:buf:*:gateway:"]
+title = "Clear Staged IPv4 Gateway"
+short = "Clears the custom `ipv4.gateway` field in the staged edit buffer so the link relies on DHCP or split routes."
+
+["net:buf:*:ignore_auto_dns:*"]
+title = "Toggle Ignore DHCP Auto DNS"
+short = "Stages `ipv4.ignore-auto-dns` so DHCP-advertised nameservers are ignored in favor of your custom DNS servers."
+
+["net:buf:*:never_default:no"]
+title = "Allow Default Route on Link"
+short = "Stages `ipv4.never-default = no` so this profile can install the system default gateway (`0.0.0.0/0`)."
+
+["net:buf:*:never_default:yes"]
+title = "Prevent Default Route (Split Link)"
+short = "Stages `ipv4.never-default = yes` so this interface serves only its local subnet and static routes without taking over WAN default routing."
+
+["net:buf:*:zone:*"]
+title = "Stage Firewalld Zone"
+short = "Stages `connection.zone` (`Default`, `trusted`, `home`, `work`, `public`, `drop`) in the edit buffer for firewall policy binding."
+
+["net:buf:*:metered:*"]
+title = "Stage Metered Link Hint"
+short = "Stages `connection.metered` (`unknown`/Auto, `yes`, `no`) so background updaters and daemons respect bandwidth limits."
+
+["net:buf:*:route_metric:-1"]
+title = "Reset Route Metric to Auto"
+short = "Stages `ipv4.route-metric = -1` so NetworkManager assigns default metric priority by interface type."
+
+["net:buf:*:ip6_method:*"]
+title = "Stage IPv6 Method"
+short = "Stages `ipv6.method` (`auto` SLAAC, `dhcp`, `link-local`, `ignore`, or `disabled`) in the edit buffer."
+
+["net:buf:*:ip6_privacy:*"]
+title = "Stage IPv6 Privacy Extensions"
+short = "Stages `ipv6.ip6-privacy` (`default`, `0` EUI-64, `1` prefer public, `2` RFC4941 temporary addresses)."
+
+["net:buf:*:mtu:auto"]
+title = "Stage Automatic MTU"
+short = "Stages MTU `auto` (`0`) so the driver or DHCP/RA negotiation selects the link frame size."
+
+["net:buf:*:mtu:1500"]
+title = "Stage Standard Ethernet MTU (1500)"
+short = "Stages standard 1500-byte L3 MTU in the edit buffer for Ethernet or Wi-Fi."
+
+["net:buf:*:mtu:1420"]
+title = "Stage WireGuard-Safe MTU (1420)"
+short = "Stages 1420-byte MTU to avoid outer UDP fragmentation when encapsulating traffic over WireGuard tunnels."
+
+["net:buf:*:mtu:9000"]
+title = "Stage Jumbo Frames MTU (9000)"
+short = "Stages 9000-byte Jumbo Frame MTU for high-throughput NAS/LAN links where switches and peers support 9K frames."
+
+["net:buf:*:mtu:*"]
+title = "Stage Interface MTU"
+short = "Stages custom L3 Maximum Transmission Unit in the NetworkManager profile buffer."
+
+["net:buf:*:cloned_mac:permanent"]
+title = "Use Permanent Hardware MAC"
+short = "Stages `cloned-mac-address = permanent` to always use the NIC factory burned-in MAC address."
+
+["net:buf:*:cloned_mac:preserve"]
+title = "Preserve Current MAC"
+short = "Stages `cloned-mac-address = preserve` so NetworkManager keeps whatever MAC is currently assigned on the interface."
+
+["net:buf:*:cloned_mac:stable"]
+title = "Use Stable Per-Profile MAC"
+short = "Stages `cloned-mac-address = stable` to generate a deterministic per-connection MAC hash across reconnects."
+
+["net:buf:*:cloned_mac:random"]
+title = "Randomize MAC per Connection"
+short = "Stages `cloned-mac-address = random` to generate a fresh random MAC address every time this profile connects."
+
+["net:buf:*:cloned_mac:"]
+title = "Clear Custom Cloned MAC"
+short = "Clears the staged `cloned-mac-address` override back to NetworkManager default behavior."
+
+["net:buf:*:wifi_band:*"]
+title = "Stage Preferred Wi-Fi Band"
+short = "Stages `802-11-wireless.band` (`auto`, `a` for 5 GHz only, or `bg` for 2.4 GHz only) in the profile buffer."
+
+["net:buf:*:wol:*"]
+title = "Stage Wake-on-LAN Policy"
+short = "Stages `802-3-ethernet.wake-on-lan` (`default`, `magic` MagicPacket, or `ignore` disabled) in the profile buffer."
+
+["net:buf:*:lldp:*"]
+title = "Stage LLDP Listener Policy"
+short = "Stages `connection.lldp` (`default`, `rx` listen for switch advertisements, or `disable`) in the profile buffer."
+
+["net:buf:*"]
+title = "Stage NM Profile Parameter"
+short = "Updates this parameter in the staged edit buffer until you click `[✓ Apply & Verify]`."
+
+["net:inline_field:net_prio:*"]
+title = "Edit Autoconnect Priority.."
+short = "Opens inline numeric entry (`-999..999`) to stage `connection.autoconnect-priority` (higher wins when multiple profiles match)."
+
+["net:inline_field:net_ip:*"]
+title = "Edit Static IPv4 / CIDR.."
+short = "Opens inline entry to stage `ipv4.addresses` (e.g., `10.10.0.10/24`) and automatically switches method to `manual`."
+
+["net:inline_field:net_gw:*"]
+title = "Edit IPv4 Gateway.."
+short = "Opens inline entry to stage `ipv4.gateway` (e.g., `10.10.0.1`) and automatically switches method to `manual`."
+
+["net:inline_field:net_dns:*"]
+title = "Edit IPv4 DNS Servers.."
+short = "Opens inline entry to stage `ipv4.dns` (space- or comma-separated IPv4 resolvers such as `1.1.1.1,9.9.9.9`)."
+
+["net:inline_field:net_search:*"]
+title = "Edit DNS Search Domains.."
+short = "Opens inline entry to stage `ipv4.dns-search` suffixes (e.g., `corp.lan home.arpa`)."
+
+["net:inline_field:net_metric:*"]
+title = "Edit IPv4 Route Metric.."
+short = "Opens inline numeric entry to stage `ipv4.route-metric` (lower metric takes routing precedence across multi-WAN links)."
+
+["net:inline_field:net_ip6_dns:*"]
+title = "Edit IPv6 DNS Servers.."
+short = "Opens inline entry to stage `ipv6.dns` resolvers (e.g., `2606:4700:4700::1111`)."
+
+["net:inline_field:net_mtu:*"]
+title = "Edit Custom MTU.."
+short = "Opens inline entry to stage a custom numeric L3 MTU byte size (`576..9216`) in the profile buffer."
+
+["net:inline_field:net_cmac:*"]
+title = "Edit Spoofed MAC Address.."
+short = "Opens inline entry to stage a custom MAC (`AA:BB:CC:DD:EE:FF`) or policy (`random`, `stable`, `preserve`, `permanent`)."
+
+["net:prompt_add_route:*"]
+title = "Add Static IPv4 Route.."
+short = "Prompts for a static route (`prefix/len gateway [metric]`) to stage in `ipv4.routes`."
+verbose = "Validates CIDR destination and next-hop gateway, then adds the route to the staged profile buffer until `[✓ Apply & Verify]` writes `ipv4.routes`."
+
+["net:del_route:*:*"]
+title = "Remove Staged Static Route"
+short = "Removes this static route entry from the staged `ipv4.routes` list in the edit buffer."
+
+# ==============================================================================
+# WI-FI (802.11 / NMCLI / IW)
+# ==============================================================================
+["wifi:radio:on"]
+title = "Enable Wi-Fi Radio"
+short = "Turns on the 802.11 wireless radio (`nmcli radio wifi on`) and scans available access points."
+
+["wifi:radio:off"]
+title = "Disable Wi-Fi Radio"
+short = "Turns off the 802.11 wireless radio (`nmcli radio wifi off`) and disconnects active Wi-Fi sessions."
+
+["wifi:rescan"]
+title = "Rescan Wi-Fi Networks"
+short = "Clears the scan cache and forces a fresh `nmcli dev wifi rescan` across 2.4/5/6 GHz channels."
+
+["wifi:prompt_hidden"]
+title = "Connect to Hidden SSID.."
+short = "Prompts for `SSID | password` to connect to a non-broadcasting Wi-Fi access point (`hidden yes`)."
+
+["wifi:prompt_hotspot"]
+title = "Start Wi-Fi Hotspot (AP).."
+short = "Prompts for `SSID | passphrase` to launch a shared NAT Wi-Fi access point (`nmcli dev wifi hotspot`)."
+
+["wifi:powersave:2"]
+title = "Disable Wi-Fi Power Save (Low Latency)"
+short = "Disables 802.11 power saving (`iw dev <iface> set power_save off`) to prevent latency spikes and micro-stutters."
+
+["wifi:powersave:3"]
+title = "Enable Wi-Fi Power Save"
+short = "Enables 802.11 power saving (`iw dev <iface> set power_save on`) to lower wireless radio idle draw."
+
+["wifi:band:*:auto"]
+title = "Set Wi-Fi Band: Auto (2.4 / 5 GHz)"
+short = "Clears band lock (`802-11-wireless.band \"\"`) on the active saved Wi-Fi profile so roaming picks either band."
+
+["wifi:band:*:a"]
+title = "Lock Wi-Fi Band: 5 GHz Only"
+short = "Sets `802-11-wireless.band a` on the active Wi-Fi profile to prefer higher-throughput 5 GHz channels."
+
+["wifi:band:*:bg"]
+title = "Lock Wi-Fi Band: 2.4 GHz Only"
+short = "Sets `802-11-wireless.band bg` on the active Wi-Fi profile for longer wall penetration or legacy AP compatibility."
+
+["wifi:mac_priv:*:permanent"]
+title = "Wi-Fi MAC: Permanent Hardware"
+short = "Sets `802-11-wireless.cloned-mac-address permanent` on the active Wi-Fi profile."
+
+["wifi:mac_priv:*:stable"]
+title = "Wi-Fi MAC: Stable Per-SSID"
+short = "Sets `802-11-wireless.cloned-mac-address stable` so each SSID gets a consistent private MAC."
+
+["wifi:mac_priv:*:random"]
+title = "Wi-Fi MAC: Random Per Connection"
+short = "Sets `802-11-wireless.cloned-mac-address random` to rotate the wireless MAC on every connection."
+
+["wifi:conn:*"]
+title = "Connect to Wi-Fi Network"
+short = "Activates a saved profile for this SSID, connects directly if open, or prompts for the WPA/WPA2/WPA3 passphrase."
+
+["wifi:disc:*"]
+title = "Disconnect Wi-Fi Network"
+short = "Brings down the active Wi-Fi connection (`nmcli connection down`) without forgetting its saved profile."
+
+["wifi:forget:*"]
+title = "Forget Wi-Fi Profile"
+short = "Deletes the saved NetworkManager profile and stored passphrase for this SSID (`nmcli connection delete`)."
+
+["wifi:prompt_pass:*"]
+title = "Enter Wi-Fi Passphrase.."
+short = "Prompts securely for a new passphrase (`nmcli dev wifi connect <ssid> password ...`) even if a profile already exists."
+
+["wifi:toggle_auto:*:*"]
+title = "Toggle Wi-Fi Autoconnect"
+short = "Sets `connection.autoconnect` (`yes`/`no`) on this saved Wi-Fi profile UUID."
+
+["wifi:up_uuid:*"]
+title = "Activate Saved Wi-Fi Profile"
+short = "Connects using this specific saved Wi-Fi profile UUID (`nmcli connection up`)."
+
+["wifi:del_uuid:*"]
+title = "Delete Saved Wi-Fi Profile"
+short = "Removes this saved Wi-Fi profile UUID from NetworkManager (`nmcli connection delete`)."
+
+# ==============================================================================
+# BLUETOOTH (BLUEZ / BLUETOOTHCTL)
+# ==============================================================================
+["bt:power:on"]
+title = "Power On Bluetooth Controller"
+short = "Powers up the BlueZ Bluetooth adapter (`bluetoothctl power on`) and refreshes paired devices."
+
+["bt:power:off"]
+title = "Power Off Bluetooth Controller"
+short = "Powers down the BlueZ Bluetooth adapter (`bluetoothctl power off`) and drops active links."
+
+["bt:scan"]
+title = "Scan Nearby Bluetooth Devices (15s)"
+short = "Runs a 15-second BlueZ discovery (`bluetoothctl --timeout 15 scan on`) and opens the discovered devices list."
+
+["bt:conn:*"]
+title = "Connect Bluetooth Device"
+short = "Connects to this paired BlueZ device MAC address (`bluetoothctl connect <mac>`)."
+
+["bt:disc:*"]
+title = "Disconnect Bluetooth Device"
+short = "Disconnects this active BlueZ device MAC address (`bluetoothctl disconnect <mac>`) while keeping it paired."
+
+["bt:pair:*"]
+title = "Pair, Trust & Connect Device"
+short = "Pairs with this discovered Bluetooth MAC (`bluetoothctl pair`), marks it trusted (`trust`), and connects immediately."
+
+["bt:remove:*"]
+title = "Unpair Bluetooth Device"
+short = "Removes pairing keys and forgets this Bluetooth device (`bluetoothctl remove <mac>`)."
+
+# ==============================================================================
+# VPN, WIREGUARD & SYSTEM PROXY
+# ==============================================================================
+["vpn:prompt_import:wireguard"]
+title = "Import WireGuard Profile (.conf).."
+short = "Prompts for a `.conf` file path with tab-completion and imports it via `nmcli connection import type wireguard`."
+verbose = "Validates and imports a WireGuard configuration file directly into NetworkManager so you can toggle `autoconnect`, `Split-Tunnel`, and tunnel DNS from the table."
+
+["vpn:prompt_import:openvpn"]
+title = "Import OpenVPN Profile (.ovpn).."
+short = "Prompts for an `.ovpn` / `.conf` file path and imports it via `nmcli connection import type openvpn`."
+
+["vpn:up:*"]
+title = "Activate VPN Tunnel"
+short = "Brings up this WireGuard or VPN connection UUID (`nmcli connection up`)."
+
+["vpn:down:*"]
+title = "Deactivate VPN Tunnel"
+short = "Tears down this active VPN/WireGuard tunnel (`nmcli connection down`)."
+
+["vpn:del:*"]
+title = "Delete VPN Profile"
+short = "Permanently deletes this imported VPN/WireGuard connection UUID (`nmcli connection delete`)."
+
+["vpn:toggle_auto:*:*"]
+title = "Toggle VPN Autoconnect"
+short = "Toggles `connection.autoconnect` (`yes`/`no`) so this tunnel starts automatically or only on demand."
+
+["vpn:toggle_split:*:*"]
+title = "Toggle Split-Tunnel vs Full-Tunnel"
+short = "Toggles `ipv4.never-default` (`yes` = Split-Tunnel for VPN subnets only, `no` = Full-Tunnel default route)."
+verbose = "Executes `nmcli connection modify <uuid> ipv4.never-default yes|no`. In Split-Tunnel mode, LAN and regular WAN traffic stay on your physical gateway while only `AllowedIPs` / pushed VPN routes traverse the tunnel."
+diagram = "network_stack"
+diagram_focus = "vpn"
+
+["vpn:inline_dns:*"]
+title = "Edit VPN Tunnel DNS.."
+short = "Opens inline entry to set `ipv4.dns` resolvers pushed when this VPN tunnel is active."
+
+["net:proxy_mode:none"]
+title = "Proxy Mode: Direct (No Proxy)"
+short = "Switches system shell proxy mode to `none` and writes `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY ...` into `proxy.env`."
+verbose = "Rewrites `~/.config/nc-ui/proxy.env` with `PROXY_MODE=\"none\"` and clears exported proxy environment variables for new shells and wrappers."
+
+["net:proxy_mode:manual"]
+title = "Proxy Mode: Manual HTTP / SOCKS5"
+short = "Switches `proxy.env` to `manual`, exporting `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5), and local `NO_PROXY` exclusions."
+verbose = "Writes `~/.config/nc-ui/proxy.env` with your configured HTTP/HTTPS and SOCKS5 endpoints plus `NO_PROXY` bypasses for `localhost`, `127.0.0.1`, and RFC1918 private subnets."
+
+["net:proxy_mode:auto"]
+title = "Proxy Mode: Automatic PAC URL"
+short = "Switches `proxy.env` to `auto` and exports `PAC_AUTOCONFIG_URL` for Proxy Auto-Config clients."
+
+["net:inline_proxy_http"]
+title = "Edit HTTP/HTTPS Proxy Endpoint.."
+short = "Opens inline input (`host:port`, default port `8080`) and updates `HTTP_PROXY`/`HTTPS_PROXY` in `proxy.env`."
+
+["net:inline_proxy_socks"]
+title = "Edit SOCKS5 Proxy Endpoint.."
+short = "Opens inline input (`host:port`, default port `1080`) and updates `ALL_PROXY=\"socks5://...\"` in `proxy.env`."
+
+["net:prompt_proxy_pac"]
+title = "Edit PAC Autoconfig URL.."
+short = "Prompts for the `http(s)://` PAC script URL and writes `PAC_AUTOCONFIG_URL` into `proxy.env`."
+
+# ==============================================================================
+# WAN FAILOVER, DNS, ICMP WATCHDOG & ARP
+# ==============================================================================
+["net:refresh_wan"]
+title = "Check Public WAN IP & Failover"
+short = "Clears the WAN IP cache and queries `ifconfig.me/ip` to verify primary vs failover exit line."
+verbose = "Compares the detected public exit IPv4 against `[network.wan].primary_ip` in `config.toml` and updates the Primary/Failover WAN status badge."
+diagram = "network_stack"
+diagram_focus = "wan"
+
+["net:flush_dns"]
+title = "Flush System DNS Caches"
+short = "Flushes `systemd-resolved` DNS caches (`resolvectl flush-caches`) and sends `SIGHUP` to `dnsmasq` if running."
+
+["net:inline_add_ping"]
+title = "Add ICMP Watchdog Target.."
+short = "Opens inline input (`Label | host` or IP/hostname) to add a target to the ICMP ping watchdog."
+verbose = "Persists custom watchdog hosts in `[network].custom_watchdog` so you can track latency to your NAS, gateway, tunnel endpoint, or public resolvers."
+
+["net:del_ping:*"]
+title = "Remove ICMP Watchdog Target"
+short = "Removes this host from the ICMP ping watchdog list (at least one target is always retained)."
+
+["net:refresh_ping"]
+title = "Run ICMP Ping Probe Now"
+short = "Clears cached ping results and runs immediate `ping -c 1 -W 1` RTT checks across all watchdog targets."
+
+["net:flush_arp"]
+title = "Flush Stale ARP Neighbors"
+short = "Purges stale entries from the kernel neighbor table (`ip neigh flush nud stale`) while keeping active `REACHABLE` peers."
+
+["net:toggle_sec:*"]
+title = "Expand / Collapse Section"
+short = "Shows or hides the contents of this section without changing any system setting."

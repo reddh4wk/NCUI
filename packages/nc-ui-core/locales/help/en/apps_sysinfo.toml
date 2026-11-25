@@ -1,0 +1,213 @@
+# NC-UI Action Help Catalog (EN) — Apps, Floating Rules, MIME Defaults & User Account
+
+# ==============================================================================
+# APPS -> AUTOSTART (`panels/cc_apps_autostart.py`)
+# ==============================================================================
+["cc_apps:prompt_spawn"]
+title = "Add Niri Startup Command"
+short = "Opens the prompt bar with command completion to append a new `spawn-at-startup` entry to `~/.config/niri/config.kdl`."
+verbose = "Accepts a binary name or full command line (e.g., `waybar` or `foot --server`), formats it as a quoted KDL `spawn-at-startup` directive, and appends it to your Niri config so it starts automatically on login."
+
+["cc_apps:toggle_spawn:*"]
+title = "Enable / Disable Startup Rule"
+short = "Toggles this `spawn-at-startup` line in `~/.config/niri/config.kdl` between active and commented (`//`) without deleting it."
+verbose = "Preserves the command arguments in `config.kdl` while disabling or re-enabling automatic launch on your next Niri session start."
+
+["cc_apps:del_spawn:*"]
+title = "Delete Startup Command"
+short = "Permanently removes this `spawn-at-startup` line from `~/.config/niri/config.kdl`."
+
+["cc_apps:svc_user:restart:*"]
+title = "Restart User Systemd Unit"
+short = "Runs `systemctl --user restart <unit>` to reload or recover this user-session background service."
+verbose = "Useful for applying updated configuration or recovering user daemons (such as `pipewire`, `wireplumber`, `waybar`, or `xdg-desktop-portal`) without logging out."
+
+["cc_apps:svc_user:stop:*"]
+title = "Stop User Systemd Unit"
+short = "Runs `systemctl --user stop <unit>` to stop this user-session service immediately."
+
+# ==============================================================================
+# APPS -> FLOATING WINDOWS (`panels/cc_apps_floating.py`)
+# ==============================================================================
+["cc_flt:open_tui"]
+title = "Open Floating Rules TUI"
+short = "Launches `nc_util_floater.sh` in the configured terminal to inspect live window `app-id`s and manage Niri floating rules interactively."
+
+["cc_flt:toggle:*"]
+title = "Toggle Niri Floating Rule"
+short = "Adds or removes an `open-floating true` `window-rule` block for this `app-id` in `~/.config/niri/config.kdl`."
+verbose = "In Niri, matching windows default to tiled columns unless an explicit `window-rule` with `match app-id=\"...\"` and `open-floating true` is present. Changes take effect immediately for newly opened windows."
+
+["cc_flt:pick_open"]
+title = "Search & Add Floating App ID"
+short = "Activates the inline `app-id` picker (`cc_flt_picker`) against open Niri windows and `.desktop` entries."
+verbose = "Type to filter candidate `app-id`s and click a result pill, or press `Enter` to add a custom raw `app-id` floating rule directly to `~/.config/niri/config.kdl`."
+
+["cc_flt:pick_clear"]
+title = "Clear Floating App Search"
+short = "Clears the current `app-id` search query and resets the candidate picker."
+
+["cc_flt:add_app:*"]
+title = "Add Floating Rule for App ID"
+short = "Appends a `window-rule { match app-id=\"...\"; open-floating true; }` block for the selected application to `~/.config/niri/config.kdl`."
+
+# ==============================================================================
+# APPS -> DEFAULT APPS & MIME (`panels/cc_apps_mime.py`)
+# ==============================================================================
+["cc_apps:refresh"]
+title = "Rescan Applications & MIME Types"
+short = "Invalidates cached `.desktop` and `mimeapps.list` data and rescans installed applications and MIME associations."
+
+["cc_apps:reset_all"]
+title = "Reset All User MIME Overrides"
+short = "Backs up `~/.config/mimeapps.list` to `.bak`, clears all `[Default Applications]` overrides, and restores system defaults."
+verbose = "Creates `~/.config/mimeapps.list.bak` before stripping user-level MIME overrides so system `/usr/share/applications/mimeinfo.cache` priorities take over again."
+
+["cc_apps:view:category"]
+title = "View Defaults by Category"
+short = "Groups common file types and URL schemes into functional categories (Web, Mail, Media, Text/Code, Docs, Images, Archives, Files)."
+
+["cc_apps:view:app"]
+title = "View Defaults by Application"
+short = "Lists installed `.desktop` applications with MIME coverage bars so you can assign or clear all types supported by a given app."
+
+["cc_apps:view:type"]
+title = "View Defaults by Extension / MIME"
+short = "Switches to the full extension and MIME type explorer covering file globs, `x-scheme-handler/*` links, and custom `text/x-ncui-ext-*` types."
+
+["cc_apps:qfind_open"]
+title = "Quick Find Extension, MIME or Handler"
+short = "Opens the inline Quick Find filter; typing switches to Type view and filters by extension (`.pdf`), MIME (`video/`), or app name."
+verbose = "Matches across MIME names, file extensions, and current handler `.desktop` IDs. If you type an unregistered extension like `.kdl`, an inline `[+ Register .kdl]` button appears automatically."
+
+["cc_apps:qfind_clear"]
+title = "Clear Quick Find Filter"
+short = "Clears the Quick Find query string and restores the full list for the active view."
+
+["cc_apps:add_ext_open:type|"]
+title = "Register Custom File Extension"
+short = "Opens the inline extension field to register a new file suffix (e.g., `.kdl`, `.log`) as a `text/x-ncui-ext-*` MIME type and pick its handler."
+verbose = "Registers an XDG user MIME definition (`~/.local/share/mime/packages/` + `update-mime-database`) so desktop launchers and file managers open the extension with your chosen `.desktop` app."
+
+["cc_apps:add_ext_open:app|*"]
+title = "Bind New Extension to This App"
+short = "Opens the inline extension field to register a custom extension (e.g., `.kdl`) and immediately bind it to the inspected `.desktop` app."
+verbose = "Creates the user MIME glob if missing and sets this application as its default handler in `~/.config/mimeapps.list`."
+
+["cc_apps:cat_sel:*"]
+title = "Select MIME Category"
+short = "Selects this functional category in the Master-Detail table to inspect its individual MIME types and bulk-assign its handler below."
+
+["cc_apps:cat_apply:*:*"]
+title = "Apply Handler to Entire Category"
+short = "Sets this `.desktop` application as the user default (`xdg-mime` / `~/.config/mimeapps.list`) for every MIME type in the selected category."
+verbose = "Writes `[Default Applications]` entries atomically to `~/.config/mimeapps.list` for all MIME types in the category, replacing mixed handlers with a single consistent app."
+
+["cc_apps:cat_reset:*"]
+title = "Reset Category Overrides"
+short = "Removes user `[Default Applications]` overrides from `~/.config/mimeapps.list` for all MIME types in the selected category."
+
+["cc_apps:pick_other:cat|*"]
+title = "Pick Any App for Category"
+short = "Opens the inline `.desktop` application picker to search all installed apps and assign one across the entire category."
+
+["cc_apps:pick_other:mime|*"]
+title = "Pick Any App for MIME Type"
+short = "Opens the inline `.desktop` application picker to choose any installed `.desktop` handler for this specific MIME type or URL scheme."
+
+["cc_apps:pick_other:*"]
+title = "Pick Other Application"
+short = "Opens the inline `.desktop` application search picker for the selected MIME target."
+
+["cc_apps:pick_other_clear"]
+title = "Clear Application Picker Query"
+short = "Clears the search text inside the inline `.desktop` application picker without closing it."
+
+["cc_apps:mime_set:*:*"]
+title = "Set Default MIME Handler"
+short = "Assigns this `.desktop` file as the default handler for the selected MIME type in `~/.config/mimeapps.list` and `xdg-mime`."
+
+["cc_apps:mime_reset:*"]
+title = "Reset MIME Override / Remove Extension"
+short = "Removes this MIME type's user override from `~/.config/mimeapps.list` (or deletes the custom `text/x-ncui-ext-*` extension definition)."
+
+["cc_apps:set_term:*"]
+title = "Set Default NC-UI Terminal"
+short = "Saves `[general].terminal` in `config.toml` so NC-UI terminal actions (`TUI`, `sudo`, `ssh-add`, `chsh`) launch in this emulator."
+
+["cc_apps:set_pkg_mgr:*"]
+title = "Set Preferred Package Manager"
+short = "Saves `[general].pkg_manager` in `config.toml` so Updates and package actions invoke this Arch/AUR tool (`paru`, `yay`, or `pacman`)."
+
+["cc_apps:app_flt_open"]
+title = "Filter Installed Applications"
+short = "Activates the inline filter to search `.desktop` apps by display name, desktop ID, supported MIME type, or file extension."
+
+["cc_apps:app_flt_clear"]
+title = "Clear Application Filter"
+short = "Clears the Application browser search query and shows all apps with declared MIME types."
+
+["cc_apps:app_sel:*"]
+title = "Inspect Application MIME Bindings"
+short = "Selects this `.desktop` application to inspect all MIME types it supports and which ones it currently owns as default."
+
+["cc_apps:app_set_all:*"]
+title = "Set App as Default for All Supported Types"
+short = "Assigns this `.desktop` application as the user default in `~/.config/mimeapps.list` for every MIME type declared in its desktop entry."
+verbose = "Applies `set_mime_default` across all `MimeType=` entries of the inspected `.desktop` file, giving it 100% default ownership for its supported formats."
+
+["cc_apps:app_clear:*"]
+title = "Clear App User Overrides"
+short = "Removes all user `[Default Applications]` entries in `~/.config/mimeapps.list` that currently point to this `.desktop` application."
+
+["cc_apps:app_subflt:all"]
+title = "Show All Supported MIME Types"
+short = "Displays every MIME type declared by or assigned to the inspected application."
+
+["cc_apps:app_subflt:owned"]
+title = "Show Owned MIME Types Only"
+short = "Filters the app inspector table to MIME types where this application is currently the active default handler."
+
+["cc_apps:app_subflt:other"]
+title = "Show Non-Owned MIME Types"
+short = "Filters the app inspector table to supported MIME types currently handled by a different app or left unset."
+
+["cc_apps:type_kind_cycle"]
+title = "Cycle Type Explorer Filter"
+short = "Cycles the Type browser filter between `ALL`, `FILES` (file extensions), `LINKS` (`x-scheme-handler/*`), and `OVERRIDES` (user `mimeapps.list`)."
+
+["cc_apps:register_ext:*"]
+title = "Register Typed Extension"
+short = "Registers the extension from Quick Find as a custom `text/x-ncui-ext-*` MIME entry and opens the handler picker for it."
+verbose = "Creates the user XDG MIME glob package, updates the local MIME database, selects the new entry in Type view, and opens the application chooser right away."
+
+["cc_apps:type_sel:*"]
+title = "Inspect Extension / MIME Type"
+short = "Selects this MIME type row in the Type browser to view all matching extensions, current default source, and recommended handlers."
+
+# ==============================================================================
+# SYSINFO -> OVERVIEW & USER ACCOUNT (`panels/cc_sysinfo_overview.py`)
+# ==============================================================================
+["cc_acc:passwd"]
+title = "Change Account Password"
+short = "Opens the configured terminal running `passwd` interactively to update your Linux login password."
+
+["cc_acc:chsh:*"]
+title = "Change Login Shell"
+short = "Opens a terminal running `chsh -s <shell>` to update your default login shell in `/etc/passwd`."
+verbose = "Invokes `chsh` with the chosen shell path from `/etc/shells` (e.g., `/bin/zsh`, `/bin/bash`, `/usr/bin/fish`). Takes effect on new login sessions."
+
+["cc_acc:gadd:*"]
+title = "Add User to System Group"
+short = "Opens a terminal running `sudo usermod -aG <group> <user> && id` to grant membership in this privilege group."
+verbose = "Modifies `/etc/group` cleanly via `usermod -aG` (appending without dropping existing groups). Re-login is required for active sessions to pick up new supplementary group tokens."
+
+["cc_acc:gdel:*"]
+title = "Remove User from System Group"
+short = "Opens a terminal running `sudo gpasswd -d <user> <group> && id` to revoke membership from this system group."
+verbose = "Removes the user from the selected supplementary group in `/etc/group`. Avoid removing yourself from `wheel` unless another administrative account remains active."
+
+["cc_acc:kill_sess:*"]
+title = "Terminate Logind Session"
+short = "Runs `loginctl terminate-session <sid>` to close another active `systemd-logind` session cleanly."
+verbose = "Sends termination to all processes belonging to the selected `loginctl` session ID. Disabled on your own active GUI session to prevent accidental self-logout."

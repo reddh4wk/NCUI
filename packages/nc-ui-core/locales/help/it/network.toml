@@ -1,0 +1,490 @@
+# Catalogo Aiuto Azioni NC-UI — Rete, Wi-Fi, Bluetooth, VPN, Proxy & WAN (IT)
+
+# ==============================================================================
+# INTERFACCE, LINK VIRTUALI & TELEMETRIA
+# ==============================================================================
+["net:if_filter:all"]
+title = "Mostra Tutte le Interfacce"
+short = "Visualizza nella tabella telemetrica interfacce Ethernet fisiche, Wi-Fi, VPN, bridge e VLAN."
+
+["net:if_filter:wired"]
+title = "Filtra Cablate e Virtuali"
+short = "Filtra la tabella mostrando solo Ethernet, bridge, VLAN e tunnel, nascondendo le schede Wi-Fi."
+
+["net:if_filter:wifi"]
+title = "Filtra Interfacce Wi-Fi"
+short = "Filtra la tabella mostrando esclusivamente le interfacce wireless 802.11."
+
+["net:sel_iface:*"]
+title = "Ispeziona Interfaccia e Profili NM"
+short = "Seleziona questa interfaccia nell'ispettore Master-Detail per modificarne profili NetworkManager, IP e parametri L1/L2."
+verbose = "Carica i profili `nmcli` associati (`connection.id`, UUID, IPv4/IPv6, DNS, rotte, MTU, MAC) e scarta eventuali modifiche non applicate nel buffer di un altro dispositivo."
+
+["net:ifup:*"]
+title = "Attiva Interfaccia (Up)"
+short = "Imposta il dispositivo come gestito e lo connette con `nmcli device connect` (oppure `ip link set up` se NM è fermo)."
+verbose = "Con NetworkManager attivo esegue `nmcli device set <iface> managed yes` prima di attivare il profilo automatico prioritario; altrimenti alza il link kernel con `ip link`."
+
+["net:ifdown:*"]
+title = "Disattiva Interfaccia (Down)"
+short = "Disconnette la sessione NetworkManager su questa interfaccia (o abbatte il link kernel)."
+verbose = "Esegue `nmcli device disconnect <iface>` impedendo la riconnessione automatica immediata di NetworkManager, oppure `ip link set <iface> down` se NM non è in esecuzione."
+
+["net:mon:*"]
+title = "Monitora Banda su Waybar"
+short = "Imposta questa interfaccia come sorgente RX/TX live mostrata nella pillola rete di Waybar."
+
+["net:toggle_unit"]
+title = "Cambia Unità Banda (B/s vs b/s)"
+short = "Alterna la lettura del traffico RX/TX tra byte al secondo (`B/s`) e bit al secondo (`b/s`)."
+
+["net:force_refresh"]
+title = "Forza Risincronizzazione Rete"
+short = "Invalida le cache IP, NetworkManager, Wi-Fi, Bluetooth e VPN e riesegue subito il polling completo."
+
+["net:inline_virtual"]
+title = "Crea Interfaccia Bridge.."
+short = "Apre l'input inline per creare un bridge Linux persistente in NetworkManager (`nmcli connection add type bridge`)."
+verbose = "Inserisci il nome del bridge (es. `br0`). Esegue `nmcli connection add type bridge ifname <nome> con-name <nome>` per aggregare porte fisiche o interfacce VM."
+
+["net:inline_vlan"]
+title = "Crea Interfaccia VLAN 802.1Q.."
+short = "Apre l'input inline (`padre|vlan_id`) per creare una connessione VLAN 802.1Q taggata in NetworkManager."
+verbose = "Digita `<interfaccia>|<1..4094>` (es. `enp5s0|10`). Esegue `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` e aggiorna la tabella."
+diagram = "network_stack"
+diagram_focus = "iface"
+
+["net:jump_wifi_tab"]
+title = "Apri Scheda Scanner Wi-Fi"
+short = "Passa alla sottoscheda Wi-Fi & Bluetooth per scansionare gli access point 802.11 e gestire i profili wireless."
+
+["net:open_cc_wifi"]
+title = "Apri Impostazioni Wi-Fi & Bluetooth"
+short = "Apre il Control Center direttamente sulla sottoscheda Wi-Fi & Bluetooth per scansione e tuning radio."
+
+["net:jump_iface:*"]
+title = "Ispeziona IP e Profili Wireless"
+short = "Passa alla sottoscheda Interfacce e Profili pre-selezionando questa scheda Wi-Fi per configurare IP, DNS e MTU."
+
+["net:jump_wifi_prof:*:*"]
+title = "Modifica Profilo Wi-Fi nell'Ispettore"
+short = "Apre la sottoscheda Interfacce con questa interfaccia Wi-Fi e questo UUID profilo NetworkManager già selezionati."
+
+["ui:copy:*"]
+title = "Copia negli Appunti"
+short = "Copia questo indirizzo IP o MAC negli appunti Wayland."
+
+# ==============================================================================
+# PROFILI NETWORKMANAGER & BUFFER DI MODIFICA (STAGED)
+# ==============================================================================
+["net:nm_sel_prof:*:*"]
+title = "Seleziona Profilo NM da Modificare"
+short = "Carica questo UUID NetworkManager nell'editor staged sottostante scartando eventuali bozze sul profilo precedente."
+
+["net:nm_create:*"]
+title = "Crea Profilo NM Predefinito"
+short = "Crea e verifica una nuova connessione NetworkManager DHCP persistente associata a questa interfaccia."
+
+["net:inline_new_prof:*"]
+title = "Crea Profilo NM con Nome.."
+short = "Apre l'input inline per creare un nuovo profilo di connessione NetworkManager persistente per questa interfaccia."
+verbose = "Inserisci il nome del profilo (es. `enp5s0-static`). Crea la connessione con `nmcli`, ne verifica la registrazione e la seleziona per configurare IPv4/IPv6/L2."
+
+["net:inline_rename_prof:*:*"]
+title = "Rinomina Profilo NM.."
+short = "Apre l'input inline per rinominare `connection.id` di questo profilo tramite `nmcli connection modify`."
+
+["net:nm_clone_prof:*:*"]
+title = "Clona Profilo NM"
+short = "Duplica questo profilo NetworkManager mantenendo IP, DNS, rotte e parametri L2 sotto un nuovo UUID."
+
+["net:nm_auto_prof:*:*:*"]
+title = "Attiva/Disattiva Autoconnect Profilo"
+short = "Aggiorna immediatamente `connection.autoconnect` (`yes`/`no`) su questo UUID NetworkManager."
+
+["net:nm_up_prof:*:*"]
+title = "Attiva Profilo NM"
+short = "Imposta l'interfaccia come gestita e attiva questo profilo NetworkManager (`nmcli connection up`)."
+
+["net:nm_down_prof:*:*"]
+title = "Disattiva Profilo NM"
+short = "Disconnette questo profilo NetworkManager attivo (`nmcli connection down`) senza eliminarlo."
+
+["net:nm_del_prof:*:*"]
+title = "Elimina Profilo NM"
+short = "Rimuove definitivamente questo profilo NetworkManager salvato (`nmcli connection delete`)."
+
+["net:nm_apply:*:*"]
+title = "Applica e Verifica Modifiche NM"
+short = "Salva tutte le modifiche in bozza (`net:buf`) in NetworkManager, riattiva il profilo e verifica l'IP reale nel kernel."
+verbose = "Esegue `nmcli connection modify <uuid>` con tutti i campi staged (IPv4, IPv6, DNS, rotte, zona firewalld, MTU, WoL, LLDP, MAC), ricontrolla con `nmcli -g`, riattiva il profilo e interroga `ip -j addr show` per verificare il kernel."
+diagram = "network_stack"
+diagram_focus = "profile"
+
+["net:nm_reset:*"]
+title = "Scarta Modifiche NM in Bozza"
+short = "Svuota tutte le modifiche non applicate nel buffer di questa interfaccia senza alterare NetworkManager."
+
+["net:buf:*:method:*"]
+title = "Imposta Metodo IPv4 in Bozza"
+short = "Mette in bozza `ipv4.method` (`auto` DHCP, `manual` statico, `shared` NAT o `disabled`) fino a `[✓ Apply & Verify]`."
+verbose = "In modalità `manual`, `[✓ Apply & Verify]` richiede un indirizzo IPv4/CIDR valido; con `auto`, `shared` o `disabled`, indirizzi statici e gateway vengono azzerati al salvataggio."
+
+["net:buf:*:autoconnect:yes"]
+title = "Metti in Bozza Autoconnect ON"
+short = "Imposta `connection.autoconnect = yes` in bozza per attivare automaticamente il profilo alla presenza del link."
+
+["net:buf:*:autoconnect:no"]
+title = "Metti in Bozza Autoconnect OFF"
+short = "Imposta `connection.autoconnect = no` in bozza per attivare questo profilo solo manualmente."
+
+["net:buf:*:gateway:"]
+title = "Svuota Gateway IPv4 in Bozza"
+short = "Rimuove il campo `ipv4.gateway` personalizzato dal buffer così il link usa DHCP o rotte specifiche."
+
+["net:buf:*:ignore_auto_dns:*"]
+title = "Ignora DNS Automatici DHCP"
+short = "Imposta in bozza `ipv4.ignore-auto-dns` per ignorare i resolver forniti dal DHCP e usare solo i tuoi DNS."
+
+["net:buf:*:never_default:no"]
+title = "Consenti Rotta Default su Link"
+short = "Imposta `ipv4.never-default = no` in bozza consentendo al profilo di installare il gateway predefinito (`0.0.0.0/0`)."
+
+["net:buf:*:never_default:yes"]
+title = "Impedisci Rotta Default (Link Split)"
+short = "Imposta `ipv4.never-default = yes` in bozza così l'interfaccia serve solo la sua subnet e rotte statiche senza deviare la WAN."
+
+["net:buf:*:zone:*"]
+title = "Imposta Zona Firewalld in Bozza"
+short = "Imposta `connection.zone` (`Default`, `trusted`, `home`, `work`, `public`, `drop`) nel buffer di modifica."
+
+["net:buf:*:metered:*"]
+title = "Imposta Link a Consumo (Metered)"
+short = "Imposta in bozza `connection.metered` (`unknown`/Auto, `yes`, `no`) per limitare aggiornamenti o sync su connessioni a consumo."
+
+["net:buf:*:route_metric:-1"]
+title = "Ripristina Metrica Rotta Automatica"
+short = "Imposta `ipv4.route-metric = -1` in bozza delegando a NetworkManager la priorità automatica per tipo di interfaccia."
+
+["net:buf:*:ip6_method:*"]
+title = "Imposta Metodo IPv6 in Bozza"
+short = "Imposta in bozza `ipv6.method` (`auto` SLAAC, `dhcp`, `link-local`, `ignore` o `disabled`)."
+
+["net:buf:*:ip6_privacy:*"]
+title = "Imposta Estensioni Privacy IPv6"
+short = "Imposta in bozza `ipv6.ip6-privacy` (`default`, `0` EUI-64, `1` preferisci pubblico, `2` indirizzi temporanei RFC4941)."
+
+["net:buf:*:mtu:auto"]
+title = "Imposta MTU Automatico"
+short = "Mette in bozza MTU `auto` (`0`) lasciando la dimensione frame a driver, DHCP o Router Advertisement."
+
+["net:buf:*:mtu:1500"]
+title = "Imposta MTU Ethernet Standard (1500)"
+short = "Mette in bozza l'MTU standard a 1500 byte per collegamenti Ethernet o Wi-Fi."
+
+["net:buf:*:mtu:1420"]
+title = "Imposta MTU Sicuro WireGuard (1420)"
+short = "Mette in bozza MTU a 1420 byte per evitare frammentazione UDP esterna su tunnel WireGuard."
+
+["net:buf:*:mtu:9000"]
+title = "Imposta MTU Jumbo Frames (9000)"
+short = "Mette in bozza MTU Jumbo da 9000 byte per reti NAS/LAN dedicate dove switch e peer supportano frame 9K."
+
+["net:buf:*:mtu:*"]
+title = "Imposta MTU Interfaccia in Bozza"
+short = "Mette in bozza una dimensione personalizzata del frame L3 nel profilo NetworkManager."
+
+["net:buf:*:cloned_mac:permanent"]
+title = "Usa MAC Hardware Permanente"
+short = "Imposta `cloned-mac-address = permanent` in bozza per usare sempre l'indirizzo MAC di fabbrica della scheda."
+
+["net:buf:*:cloned_mac:preserve"]
+title = "Preserva MAC Corrente"
+short = "Imposta `cloned-mac-address = preserve` lasciando invariato il MAC attualmente assegnato all'interfaccia."
+
+["net:buf:*:cloned_mac:stable"]
+title = "Usa MAC Stabile per Profilo"
+short = "Imposta `cloned-mac-address = stable` per generare un MAC privato deterministico e costante per questa connessione."
+
+["net:buf:*:cloned_mac:random"]
+title = "Randomizza MAC a Ogni Connessione"
+short = "Imposta `cloned-mac-address = random` per generare un nuovo indirizzo MAC casuale a ogni attivazione."
+
+["net:buf:*:cloned_mac:"]
+title = "Rimuovi Spoof MAC in Bozza"
+short = "Azzera l'override `cloned-mac-address` nel buffer riportando il comportamento predefinito di NetworkManager."
+
+["net:buf:*:wifi_band:*"]
+title = "Imposta Banda Wi-Fi Preferita"
+short = "Mette in bozza `802-11-wireless.band` (`auto`, `a` solo 5 GHz, oppure `bg` solo 2.4 GHz)."
+
+["net:buf:*:wol:*"]
+title = "Imposta Politica Wake-on-LAN"
+short = "Mette in bozza `802-3-ethernet.wake-on-lan` (`default`, `magic` MagicPacket oppure `ignore` disabilitato)."
+
+["net:buf:*:lldp:*"]
+title = "Imposta Listener LLDP"
+short = "Mette in bozza `connection.lldp` (`default`, `rx` ascolta annunci dallo switch oppure `disable`)."
+
+["net:buf:*"]
+title = "Metti in Bozza Parametro NM"
+short = "Aggiorna questo parametro nel buffer di modifica finché non premi `[✓ Apply & Verify]`."
+
+["net:inline_field:net_prio:*"]
+title = "Modifica Priorità Autoconnect.."
+short = "Apre l'input numerico (`-999..999`) per mettere in bozza `connection.autoconnect-priority` (valori più alti vincono)."
+
+["net:inline_field:net_ip:*"]
+title = "Modifica IPv4 / CIDR Statico.."
+short = "Apre l'input inline per `ipv4.addresses` (es. `10.10.0.10/24`) e commuta automaticamente il metodo in `manual`."
+
+["net:inline_field:net_gw:*"]
+title = "Modifica Gateway IPv4.."
+short = "Apre l'input inline per `ipv4.gateway` (es. `10.10.0.1`) e commuta automaticamente il metodo in `manual`."
+
+["net:inline_field:net_dns:*"]
+title = "Modifica Server DNS IPv4.."
+short = "Apre l'input inline per mettere in bozza `ipv4.dns` (resolver separati da spazio o virgola, es. `1.1.1.1,9.9.9.9`)."
+
+["net:inline_field:net_search:*"]
+title = "Modifica Domini di Ricerca DNS.."
+short = "Apre l'input inline per mettere in bozza `ipv4.dns-search` (es. `corp.lan home.arpa`)."
+
+["net:inline_field:net_metric:*"]
+title = "Modifica Metrica Rotta IPv4.."
+short = "Apre l'input numerico inline per mettere in bozza `ipv4.route-metric` (metrica minore ha precedenza su multi-WAN)."
+
+["net:inline_field:net_ip6_dns:*"]
+title = "Modifica Server DNS IPv6.."
+short = "Apre l'input inline per mettere in bozza `ipv6.dns` (es. `2606:4700:4700::1111`)."
+
+["net:inline_field:net_mtu:*"]
+title = "Modifica MTU Personalizzato.."
+short = "Apre l'input inline per mettere in bozza un valore numerico MTU L3 (`576..9216` byte)."
+
+["net:inline_field:net_cmac:*"]
+title = "Modifica Indirizzo MAC Spoof.."
+short = "Apre l'input inline per impostare in bozza un MAC custom (`AA:BB:CC:DD:EE:FF`) o politica (`random`, `stable`, `preserve`, `permanent`)."
+
+["net:prompt_add_route:*"]
+title = "Aggiungi Rotta Statica IPv4.."
+short = "Chiede una rotta statica (`prefisso/len gateway [metrica]`) da mettere in bozza in `ipv4.routes`."
+verbose = "Valida la subnet CIDR e il next-hop gateway, poi accoda la rotta nel buffer fino al salvataggio con `[✓ Apply & Verify]`."
+
+["net:del_route:*:*"]
+title = "Rimuovi Rotta Statica in Bozza"
+short = "Rimuove questa rotta statica dall'elenco `ipv4.routes` nel buffer di modifica."
+
+# ==============================================================================
+# WI-FI (802.11 / NMCLI / IW)
+# ==============================================================================
+["wifi:radio:on"]
+title = "Accendi Radio Wi-Fi"
+short = "Attiva la radio wireless 802.11 (`nmcli radio wifi on`) e avvia la scansione delle reti disponibili."
+
+["wifi:radio:off"]
+title = "Spegni Radio Wi-Fi"
+short = "Disattiva la radio wireless 802.11 (`nmcli radio wifi off`) disconnettendo le sessioni Wi-Fi attive."
+
+["wifi:rescan"]
+title = "Riesegui Scansione Wi-Fi"
+short = "Svuota la cache di scansione e forza un `nmcli dev wifi rescan` fresco sui canali 2.4/5/6 GHz."
+
+["wifi:prompt_hidden"]
+title = "Connetti a SSID Nascosto.."
+short = "Chiede `SSID | password` per connettersi a un access point che non trasmette il nome (`hidden yes`)."
+
+["wifi:prompt_hotspot"]
+title = "Avvia Hotspot Wi-Fi (AP).."
+short = "Chiede `SSID | passphrase` per avviare un access point Wi-Fi condiviso NAT (`nmcli dev wifi hotspot`)."
+
+["wifi:powersave:2"]
+title = "Disattiva Power Save Wi-Fi (Bassa Latenza)"
+short = "Disabilita il risparmio energetico 802.11 (`iw dev <iface> set power_save off`) evitando picchi di latenza."
+
+["wifi:powersave:3"]
+title = "Attiva Power Save Wi-Fi"
+short = "Abilita il risparmio energetico 802.11 (`iw dev <iface> set power_save on`) per ridurre i consumi radio a riposo."
+
+["wifi:band:*:auto"]
+title = "Banda Wi-Fi: Auto (2.4 / 5 GHz)"
+short = "Rimuove il vincolo di banda (`802-11-wireless.band \"\"`) sul profilo Wi-Fi attivo per il roaming automatico."
+
+["wifi:band:*:a"]
+title = "Blocca Banda Wi-Fi: Solo 5 GHz"
+short = "Imposta `802-11-wireless.band a` sul profilo Wi-Fi attivo privilegiando velocità e canali a 5 GHz."
+
+["wifi:band:*:bg"]
+title = "Blocca Banda Wi-Fi: Solo 2.4 GHz"
+short = "Imposta `802-11-wireless.band bg` sul profilo Wi-Fi attivo per maggiore portata attraverso i muri o compatibilità."
+
+["wifi:mac_priv:*:permanent"]
+title = "MAC Wi-Fi: Hardware Permanente"
+short = "Imposta `802-11-wireless.cloned-mac-address permanent` sul profilo Wi-Fi attivo."
+
+["wifi:mac_priv:*:stable"]
+title = "MAC Wi-Fi: Stabile per SSID"
+short = "Imposta `802-11-wireless.cloned-mac-address stable` assegnando un MAC privato costante per ciascun SSID."
+
+["wifi:mac_priv:*:random"]
+title = "MAC Wi-Fi: Casuale a Ogni Connessione"
+short = "Imposta `802-11-wireless.cloned-mac-address random` per ruotare il MAC wireless a ogni associazione."
+
+["wifi:conn:*"]
+title = "Connetti a Rete Wi-Fi"
+short = "Attiva un profilo salvato per questo SSID, connette direttamente se aperto, oppure chiede la passphrase WPA/WPA2/WPA3."
+
+["wifi:disc:*"]
+title = "Disconnetti Rete Wi-Fi"
+short = "Chiude la connessione Wi-Fi attiva (`nmcli connection down`) mantenendo memorizzato il profilo."
+
+["wifi:forget:*"]
+title = "Dimentica Profilo Wi-Fi"
+short = "Elimina il profilo NetworkManager salvato e la password memorizzata per questo SSID (`nmcli connection delete`)."
+
+["wifi:prompt_pass:*"]
+title = "Inserisci Passphrase Wi-Fi.."
+short = "Chiede in modo mascherato una nuova passphrase (`nmcli dev wifi connect <ssid> password ...`) anche se esiste un profilo."
+
+["wifi:toggle_auto:*:*"]
+title = "Attiva/Disattiva Autoconnect Wi-Fi"
+short = "Imposta `connection.autoconnect` (`yes`/`no`) su questo UUID profilo Wi-Fi salvato."
+
+["wifi:up_uuid:*"]
+title = "Attiva Profilo Wi-Fi Salvato"
+short = "Si connette usando questo specifico UUID di profilo Wi-Fi memorizzato (`nmcli connection up`)."
+
+["wifi:del_uuid:*"]
+title = "Elimina Profilo Wi-Fi Salvato"
+short = "Rimuove questo UUID profilo Wi-Fi da NetworkManager (`nmcli connection delete`)."
+
+# ==============================================================================
+# BLUETOOTH (BLUEZ / BLUETOOTHCTL)
+# ==============================================================================
+["bt:power:on"]
+title = "Accendi Controller Bluetooth"
+short = "Alimenta l'adattatore BlueZ (`bluetoothctl power on`) e aggiorna l'elenco dei dispositivi associati."
+
+["bt:power:off"]
+title = "Spegni Controller Bluetooth"
+short = "Spegne l'adattatore BlueZ (`bluetoothctl power off`) chiudendo tutti i collegamenti attivi."
+
+["bt:scan"]
+title = "Scansiona Dispositivi Bluetooth (15s)"
+short = "Avvia una ricerca BlueZ di 15 secondi (`bluetoothctl --timeout 15 scan on`) aprendo la sezione dispositivi vicini."
+
+["bt:conn:*"]
+title = "Connetti Dispositivo Bluetooth"
+short = "Stabilisce il collegamento verso questo indirizzo MAC associato (`bluetoothctl connect <mac>`)."
+
+["bt:disc:*"]
+title = "Disconnetti Dispositivo Bluetooth"
+short = "Disconnette questo dispositivo BlueZ attivo (`bluetoothctl disconnect <mac>`) mantenendo l'associazione."
+
+["bt:pair:*"]
+title = "Associa, Autorizza e Connetti"
+short = "Esegue pairing (`bluetoothctl pair`), aggiunge la fiducia (`trust`) e connette subito il dispositivo scoperto."
+
+["bt:remove:*"]
+title = "Rimuovi Associazione Bluetooth"
+short = "Elimina le chiavi di pairing e dimentica questo dispositivo Bluetooth (`bluetoothctl remove <mac>`)."
+
+# ==============================================================================
+# VPN, WIREGUARD & PROXY DI SISTEMA
+# ==============================================================================
+["vpn:prompt_import:wireguard"]
+title = "Importa Profilo WireGuard (.conf).."
+short = "Chiede il percorso del file `.conf` con completamento e lo importa tramite `nmcli connection import type wireguard`."
+verbose = "Valida e importa il file di configurazione WireGuard in NetworkManager consentendo di gestire `autoconnect`, `Split-Tunnel` e DNS del tunnel dalla tabella."
+
+["vpn:prompt_import:openvpn"]
+title = "Importa Profilo OpenVPN (.ovpn).."
+short = "Chiede il percorso di un file `.ovpn` / `.conf` e lo importa con `nmcli connection import type openvpn`."
+
+["vpn:up:*"]
+title = "Attiva Tunnel VPN"
+short = "Avvia questo tunnel WireGuard o VPN (`nmcli connection up`)."
+
+["vpn:down:*"]
+title = "Disattiva Tunnel VPN"
+short = "Chiude questo tunnel VPN/WireGuard attivo (`nmcli connection down`)."
+
+["vpn:del:*"]
+title = "Elimina Profilo VPN"
+short = "Elimina definitivamente questo profilo VPN/WireGuard importato (`nmcli connection delete`)."
+
+["vpn:toggle_auto:*:*"]
+title = "Attiva/Disattiva Autoconnect VPN"
+short = "Commuta `connection.autoconnect` (`yes`/`no`) per avviare il tunnel all'avvio o solo su richiesta."
+
+["vpn:toggle_split:*:*"]
+title = "Alterna Split-Tunnel vs Full-Tunnel"
+short = "Imposta `ipv4.never-default` (`yes` = Split-Tunnel solo per le subnet VPN, `no` = Full-Tunnel con rotta default)."
+verbose = "Esegue `nmcli connection modify <uuid> ipv4.never-default yes|no`. In Split-Tunnel il traffico LAN e WAN ordinario resta sul gateway fisico mentre solo le subnet del tunnel passano dalla VPN."
+diagram = "network_stack"
+diagram_focus = "vpn"
+
+["vpn:inline_dns:*"]
+title = "Modifica DNS del Tunnel VPN.."
+short = "Apre l'input inline per impostare i resolver `ipv4.dns` applicati quando questo tunnel VPN è attivo."
+
+["net:proxy_mode:none"]
+title = "Modalità Proxy: Diretto (Nessun Proxy)"
+short = "Imposta la modalità proxy su `none` e scrive `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY ...` in `proxy.env`."
+verbose = "Rigenera `~/.config/nc-ui/proxy.env` con `PROXY_MODE=\"none\"` rimuovendo le variabili d'ambiente proxy esportate per le nuove shell."
+
+["net:proxy_mode:manual"]
+title = "Modalità Proxy: Manuale HTTP / SOCKS5"
+short = "Imposta `proxy.env` su `manual` esportando `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5) ed esclusioni `NO_PROXY`."
+verbose = "Scrive `~/.config/nc-ui/proxy.env` con gli endpoint HTTP/HTTPS e SOCKS5 configurati più le esclusioni `NO_PROXY` per `localhost`, `127.0.0.1` e subnet private RFC1918."
+
+["net:proxy_mode:auto"]
+title = "Modalità Proxy: Automatico PAC URL"
+short = "Imposta `proxy.env` su `auto` ed esporta `PAC_AUTOCONFIG_URL` per i client compatibili con Proxy Auto-Config."
+
+["net:inline_proxy_http"]
+title = "Modifica Proxy HTTP/HTTPS.."
+short = "Apre l'input inline (`host:porta`, default `8080`) e aggiorna `HTTP_PROXY`/`HTTPS_PROXY` in `proxy.env`."
+
+["net:inline_proxy_socks"]
+title = "Modifica Proxy SOCKS5.."
+short = "Apre l'input inline (`host:porta`, default `1080`) e aggiorna `ALL_PROXY=\"socks5://...\"` in `proxy.env`."
+
+["net:prompt_proxy_pac"]
+title = "Modifica URL Autoconfig PAC.."
+short = "Chiede l'URL `http(s)://` dello script PAC e lo salva in `PAC_AUTOCONFIG_URL` dentro `proxy.env`."
+
+# ==============================================================================
+# FAILOVER WAN, DNS, WATCHDOG ICMP & ARP
+# ==============================================================================
+["net:refresh_wan"]
+title = "Verifica IP WAN Pubblico e Failover"
+short = "Svuota la cache WAN e interroga `ifconfig.me/ip` per verificare linea primaria o di failover."
+verbose = "Confronta l'IPv4 pubblico rilevato con `[network.wan].primary_ip` in `config.toml` aggiornando il badge Primary/Failover WAN."
+diagram = "network_stack"
+diagram_focus = "wan"
+
+["net:flush_dns"]
+title = "Svuota Cache DNS di Sistema"
+short = "Svuota le cache DNS di `systemd-resolved` (`resolvectl flush-caches`) e invia `SIGHUP` a `dnsmasq` se attivo."
+
+["net:inline_add_ping"]
+title = "Aggiungi Target Watchdog ICMP.."
+short = "Apre l'input inline (`Etichetta | host` o IP/hostname) per aggiungere un nodo al watchdog ping ICMP."
+verbose = "Salva gli host personalizzati in `[network].custom_watchdog` per monitorare latenza verso NAS, gateway, endpoint VPN o resolver esterni."
+
+["net:del_ping:*"]
+title = "Rimuovi Target Watchdog ICMP"
+short = "Rimuove questo host dalla lista del watchdog ICMP (viene mantenuto sempre almeno un target)."
+
+["net:refresh_ping"]
+title = "Esegui Test Ping ICMP Ora"
+short = "Invalida la cache RTT ed esegue subito sonde `ping -c 1 -W 1` verso tutti i target del watchdog."
+
+["net:flush_arp"]
+title = "Svuota Voci ARP Obsolete (Stale)"
+short = "Elimina i neighbor scaduti dalla tabella ARP del kernel (`ip neigh flush nud stale`) preservando i peer `REACHABLE`."
+
+["net:toggle_sec:*"]
+title = "Espandi / Comprimi Sezione"
+short = "Mostra o nasconde il contenuto di questa sezione senza modificare alcuna impostazione di sistema."

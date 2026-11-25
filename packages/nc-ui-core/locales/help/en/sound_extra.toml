@@ -1,0 +1,131 @@
+# NC-UI Action Help Catalog — Sound & PipeWire (English)
+# Covers: cc_sound_devices.py, cc_sound_input.py, cc_sound_mixer.py, cc_sound_output.py, wp_audio.py
+
+# ==============================================================================
+# SOUND -> OUTPUT, INPUT, MIXER & HARDWARE (`panels/cc_sound_*.py`)
+# ==============================================================================
+["cc_aud:max_vol:100"]
+title = "Cap Maximum Volume at 100%"
+short = "Restricts PipeWire volume sliders to 100% (0 dB nominal hardware ceiling) to prevent digital clipping."
+verbose = "Writes `max_volume = 100` to `[audio]` in `config.toml` and clamps output, input, and application sliders to 100%."
+
+["cc_aud:max_vol:150"]
+title = "Enable 150% Over-Amplification"
+short = "Unlocks PipeWire software gain up to 150% for quiet laptops, headphones, or low-level streams."
+verbose = "Writes `max_volume = 150` to `[audio]` in `config.toml`. Raising gain above 100% uses PipeWire digital amplification (`pactl`/PipeWire PulseAudio API) and may introduce clipping on loud peaks."
+
+["cc_aud:test_ch"]
+title = "Run Full Speaker Channel Sweep"
+short = "Plays sequential WAV voice probes across every channel of the default PipeWire output sink."
+verbose = "Stops any previous test process and runs `speaker-test -t wav -c <N> -l 1` against the active default sink channel map so you can verify stereo, quad, or 5.1/7.1 wiring."
+
+["cc_aud:test_pos:*"]
+title = "Test Single Speaker Channel"
+short = "Plays a single WAV identification tone on the chosen speaker position (FL, FR, C, LFE, RL, RR)."
+verbose = "Runs `speaker-test -t wav -c <N> -s <channel_index> -l 1` to isolate one physical speaker without cycling the entire layout."
+
+["cc_aud:alert:*"]
+title = "Select System Alert Sound"
+short = "Sets the freedesktop stereo notification sound in `config.toml` and previews it immediately via `pw-play`."
+verbose = "Persists `[audio].alert_sound` (`none`, `bell`, `complete`, `message`, or `dialog-warning`) and plays `/usr/share/sounds/freedesktop/stereo/<id>.oga` when `pw-play` is available."
+
+["cc_aud:spawn_ee"]
+title = "Launch EasyEffects DSP Rack"
+short = "Opens `easyeffects` to manage PipeWire noise suppression, echo cancellation, EQ, and compressor chains."
+verbose = "Spawns the `easyeffects` GUI in the background so you can toggle RNNoise microphone filtering or parametric output EQs on the PipeWire graph."
+
+["cc_aud:toggle_loopback"]
+title = "Toggle Microphone Loopback Test"
+short = "Routes the default microphone directly to the default output at 20 ms latency to test capture clarity."
+verbose = "Loads or unloads `module-loopback latency_msec=20` via `pactl` between `@DEFAULT_SOURCE@` and `@DEFAULT_SINK@`. Remember to turn loopback off after testing to avoid acoustic feedback."
+diagram = "pipewire_flow"
+diagram_focus = "source"
+
+["cc_aud:pw_q:*"]
+title = "Set PipeWire DSP Clock Quantum"
+short = "Forces PipeWire buffer size (`64`–`1024` samples) or restores `Auto` dynamic scaling via `pw-metadata`."
+verbose = "Executes `pw-metadata -n settings 0 clock.force-quantum <val>`. Lower values (`64`–`128`) minimize round-trip audio latency for DAWs/games; higher values (`512`–`1024`) prevent buffer underruns (xruns) under heavy CPU load."
+diagram = "pipewire_flow"
+diagram_focus = "vol"
+
+["cc_aud:pw_r:*"]
+title = "Set PipeWire Sample Rate"
+short = "Forces the global PipeWire graph clock rate (`44.1k`, `48k`, `96k`, `192k`) or resets to `Auto`."
+verbose = "Executes `pw-metadata -n settings 0 clock.force-rate <hz>` so hardware DACs/interfaces lock to a fixed sample rate without resampling, or `0` to let PipeWire match streams automatically."
+
+["cc_aud:card_prof:*:*"]
+title = "Switch Hardware Card Profile"
+short = "Applies the selected ALSA/Bluetooth profile (e.g., Analog Stereo, HDMI, Pro Audio, HFP/A2DP) via `pactl`."
+verbose = "Runs `pactl set-card-profile <card> <profile>`, switching which physical codecs, jacks, or Bluetooth transport codecs WirePlumber exposes for this audio card."
+
+["cc_aud:out:def:*"]
+title = "Set Default Output Sink"
+short = "Routes all new and active playback streams to this PipeWire output device via PipeWire (`pactl set-default-sink`)."
+verbose = "Marks this sink as the system default output (`pactl set-default-sink`) so desktop audio and media players switch to it."
+diagram = "pipewire_flow"
+diagram_focus = "default"
+
+["cc_aud:in:def:*"]
+title = "Set Default Input Source"
+short = "Routes desktop microphone capture and communication apps to this PipeWire input source."
+verbose = "Marks this source as the system default input (`pactl set-default-source`) for calls, recording, and voice chat."
+
+["cc_aud:*:def:*"]
+title = "Set Default Audio Device"
+short = "Selects this PipeWire node as the default WirePlumber route for its direction."
+
+["cc_aud:out:mute:*"]
+title = "Mute / Unmute Output Sink"
+short = "Toggles mute state on this PipeWire playback device."
+
+["cc_aud:in:mute:*"]
+title = "Mute / Unmute Input Source"
+short = "Toggles capture mute state on this PipeWire microphone or line input."
+
+["cc_aud:app:mute:*"]
+title = "Mute / Unmute Playback Stream"
+short = "Mutes or unmutes this individual application playback stream without affecting other apps."
+
+["cc_aud:rec:mute:*"]
+title = "Mute / Unmute Capture Stream"
+short = "Mutes or unmutes this application's active microphone recording stream."
+
+["cc_aud:*:mute:*"]
+title = "Toggle PipeWire Mute"
+short = "Toggles mute state on this PipeWire device or stream."
+
+["cc_aud:out:bal*"]
+title = "Adjust Left / Right Stereo Balance"
+short = "Shifts stereo gain between `front-left` and `front-right` channels (-100% left to +100% right)."
+verbose = "Scroll or click `[-]`/`[+]` to rebalance per-channel `pactl set-sink-volume` percentages while preserving your overall master output peak."
+
+["cc_aud:out:bal_scroll:*"]
+title = "Step Stereo Balance"
+short = "Shifts left/right stereo balance by 5% via mouse wheel or stepper buttons."
+
+["cc_aud:out:fade*"]
+title = "Adjust Front / Rear Surround Fade"
+short = "Balances gain between front and rear/side surround speakers (-100% rear to +100% front)."
+verbose = "Applies proportional channel attenuation across `front-*` vs `rear-*`/`side-*` channels on multi-channel PipeWire sinks."
+
+["cc_aud:out:fade_scroll:*"]
+title = "Step Surround Fade"
+short = "Shifts front/rear channel fade by 5% via mouse wheel or stepper buttons."
+
+["cc_aud:out:lfe*"]
+title = "Adjust Subwoofer (LFE) Gain"
+short = "Modulates the dedicated `lfe` low-frequency channel level independently of main speakers."
+verbose = "Adjusts only the `lfe` channel percentage on 2.1/5.1/7.1 PipeWire sinks without altering front or rear speaker levels."
+
+["cc_aud:out:lfe_scroll:*"]
+title = "Step Subwoofer (LFE) Gain"
+short = "Changes the `lfe` channel level by 5% via mouse wheel or stepper buttons."
+
+["cc_aud:*:vol*"]
+title = "Adjust PipeWire Volume"
+short = "Scroll or click `[-]`/`[+]` to adjust the volume level of this device or application stream."
+verbose = "Queues debounced `pactl` volume updates up to the configured 100% or 150% ceiling while keeping channel balance intact."
+
+["cc_aud:*:scroll:*"]
+title = "Step Volume Level"
+short = "Adjusts volume in 5% increments via mouse wheel or stepper controls."

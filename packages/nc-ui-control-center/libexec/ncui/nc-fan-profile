@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-fan-profile
+# Hardware Smart Fan IV profile & custom curve switcher for NCT6798D (fan2+fan5)
+# ==============================================================================
+
+readonly CHANNELS=(2 5)
+readonly CONF_FILE="/etc/ncui-fan-curve.conf"
+
+find_nct_hwmon() {
+    local d n
+    for d in /sys/class/hwmon/hwmon*; do
+        [[ -r "$d/name" ]] || continue
+        n="$(<"$d/name")"
+        if [[ "$n" == nct67* ]]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+    done
+    modprobe nct6775 >/dev/null 2>&1 || true
+    sleep 0.2
+    for d in /sys/class/hwmon/hwmon*; do
+        [[ -r "$d/name" ]] || continue
+        n="$(<"$d/name")"
+        if [[ "$n" == nct67* ]]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+detect_profile() {
+    local hw="$1" en t1 p1 t3 p5_1
+    [[ -r "$hw/pwm2_enable" ]] || { echo "unknown"; return; }
+    en="$(<"$hw/pwm2_enable")"
+    t1="$(<"$hw/pwm2_auto_point1_temp")"
+    p1="$(<"$hw/pwm2_auto_point1_pwm")"
+    t3="$(<"$hw/pwm2_auto_point3_temp")"
+    p5_1="$(<"$hw/pwm5_auto_point1_pwm")"
+    if [[ "$en" == "5" && "$t1" == "35000" && "$p1" == "64" && "$t3" == "74000" && "$p5_1" == "64" ]]; then
+        echo "silent"
+    elif [[ "$en" == "5" && "$t1" == "30000" && "$p1" == "89" && "$t3" == "70000" && "$p5_1" == "89" ]]; then
+        echo "balanced"
+    elif [[ "$en" == "5" && "$t1" == "25000" && "$p1" == "115" && "$t3" == "65000" && "$p5_1" == "115" ]]; then
+        echo "cool"
+    else
+        echo "custom"
+    fi
+}
+
+print_status() {
+    local hw="$1" chip prof f2 p2 f5 p5 pct2 pct5
+    chip="$(<"$hw/name")"
+    prof="$(detect_profile "$hw")"
+    f2="$(<"$hw/fan2_input")"
+    p2="$(<"$hw/pwm2")"
+    f5="$(<"$hw/fan5_input")"
+    p5="$(<"$hw/pwm5")"
+    pct2=$(( (p2 * 100 + 127) / 255 ))
+    pct5=$(( (p5 * 100 + 127) / 255 ))
+    printf 'profile=%s hwmon=%s fan2=%s pwm2=%s%% fan5=%s pwm5=%s%%\n' \
+        "$prof" "$chip" "$f2" "$pct2" "$f5" "$pct5"
+}
+
+write_raw_curve() {
+    local hw="$1"
+    shift
+    local -a pts=("$@")
+    local ch idx pair tmp pwm got_t got_p
+
+    for ch in "${CHANNELS[@]}"; do
+        [[ -w "$hw/pwm${ch}_enable" ]] || { echo "Missing writable $hw/pwm${ch}_enable" >&2; exit 1; }
+        [[ -w "$hw/pwm${ch}_mode" ]] && printf '1' > "$hw/pwm${ch}_mode"
+        printf '5' > "$hw/pwm${ch}_enable"
+
+        # Two-pass temp write guarantees monotonicity temp1<=...<=temp5 regardless of previous curve
+        for idx in 5 4 3 2 1; do
+            tmp="${pts[$((idx-1))]%%:*}"
+            printf '%s' "$tmp" > "$hw/pwm${ch}_auto_point${idx}_temp" 2>/dev/null || true
+        done
+        for idx in 1 2 3 4 5; do
+            pair="${pts[$((idx-1))]}"
+            tmp="${pair%%:*}"
+            pwm="${pair##*:}"
+            printf '%s' "$tmp" > "$hw/pwm${ch}_auto_point${idx}_temp"
+            printf '%s' "$pwm" > "$hw/pwm${ch}_auto_point${idx}_pwm"
+        done
+
+        [[ "$(<"$hw/pwm${ch}_enable")" == "5" ]] || { echo "Failed to keep Smart Fan IV active on pwm${ch}" >&2; exit 1; }
+        for idx in 1 2 3 4 5; do
+            pair="${pts[$((idx-1))]}"
+            tmp="${pair%%:*}"
+            pwm="${pair##*:}"
+            got_t="$(<"$hw/pwm${ch}_auto_point${idx}_temp")"
+            got_p="$(<"$hw/pwm${ch}_auto_point${idx}_pwm")"
+            if [[ "$got_t" != "$tmp" || "$got_p" != "$pwm" ]]; then
+                echo "Readback mismatch on pwm${ch} point${idx}: expected ${tmp}:${pwm}, got ${got_t}:${got_p}" >&2
+                exit 1
+            fi
+        done
+    done
+}
+
+save_conf_line() {
+    local line="$1"
+    printf '%s\n' "$line" > "$CONF_FILE"
+    chmod 0644 "$CONF_FILE"
+}
+
+apply_curve() {
+    local hw="$1" prof="$2"
+    local -a pts=()
+    local pct_line=""
+    case "$prof" in
+        silent)
+            pts=(35000:64  62000:97  74000:148 82000:209 88000:255)
+            pct_line="35:25,62:38,74:58,82:82,88:100"
+            ;;
+        balanced)
+            pts=(30000:89  55000:128 70000:184 78000:230 85000:255)
+            pct_line="30:35,55:50,70:72,78:90,85:100"
+            ;;
+        cool)
+            pts=(25000:115 50000:166 65000:217 72000:255 85000:255)
+            pct_line="25:45,50:65,65:85,72:100,85:100"
+            ;;
+        *) echo "Invalid profile: $prof" >&2; exit 2 ;;
+    esac
+
+    write_raw_curve "$hw" "${pts[@]}"
+    local cur_prof
+    cur_prof="$(detect_profile "$hw")"
+    [[ "$cur_prof" == "$prof" ]] || { echo "Verification mismatch: expected $prof, got $cur_prof" >&2; exit 1; }
+    save_conf_line "$pct_line"
+    print_status "$hw"
+}
+
+apply_pairs_line() {
+    local hw="$1" raw_line="$2"
+    raw_line="${raw_line//$'\r'/}"
+    raw_line="$(printf '%s' "$raw_line" | tr -d '[:space:]')"
+    if [[ ! "$raw_line" =~ ^[0-9]{2,3}:[0-9]{2,3}(,[0-9]{2,3}:[0-9]{2,3}){4}$ ]]; then
+        echo "Invalid curve format: expected 5 comma-separated TEMP_C:PWM_PCT pairs" >&2
+        exit 2
+    fi
+
+    local -a tokens=() raw_pts=()
+    local IFS=','
+    read -r -a tokens <<< "$raw_line"
+    if [[ "${#tokens[@]}" -ne 5 ]]; then
+        echo "Expected 5 points, got ${#tokens[@]}" >&2
+        exit 2
+    fi
+
+    local prev_t=0 prev_p=0 idx=0 tok tc pp tm pr
+    for tok in "${tokens[@]}"; do
+        idx=$((idx + 1))
+        tc="${tok%%:*}"
+        pp="${tok##*:}"
+        tc=$((10#$tc))
+        pp=$((10#$pp))
+        if (( tc < 20 || tc > 95 )); then
+            echo "Point $idx temperature out of bounds (20..95°C): $tc" >&2
+            exit 2
+        fi
+        if (( pp < 20 || pp > 100 )); then
+            echo "Point $idx PWM out of bounds (20..100%): $pp" >&2
+            exit 2
+        fi
+        if (( idx > 1 && (tc < prev_t || pp < prev_p) )); then
+            echo "Point $idx must be non-decreasing (${prev_t}:${prev_p} -> ${tc}:${pp})" >&2
+            exit 2
+        fi
+        if (( idx == 5 && pp < 80 )); then
+            echo "Safety check failed: point 5 PWM must be >= 80% (got $pp%)" >&2
+            exit 2
+        fi
+        prev_t=$tc
+        prev_p=$pp
+        tm=$(( tc * 1000 ))
+        pr=$(( (pp * 255 + 50) / 100 ))
+        raw_pts+=("${tm}:${pr}")
+    done
+
+    write_raw_curve "$hw" "${raw_pts[@]}"
+    save_conf_line "$raw_line"
+    print_status "$hw"
+}
+
+ACTION="${1:-status}"
+HWMON_DIR="$(find_nct_hwmon)" || { echo "No nct67* hwmon device found" >&2; exit 1; }
+
+case "$ACTION" in
+    status)
+        print_status "$HWMON_DIR"
+        ;;
+    silent|balanced|cool)
+        apply_curve "$HWMON_DIR" "$ACTION"
+        ;;
+    apply-stdin)
+        INPUT_LINE=""
+        IFS= read -r INPUT_LINE || true
+        apply_pairs_line "$HWMON_DIR" "$INPUT_LINE"
+        ;;
+    restore)
+        if [[ -r "$CONF_FILE" ]]; then
+            CONF_LINE=""
+            IFS= read -r CONF_LINE < "$CONF_FILE" || true
+            [[ -n "$CONF_LINE" ]] && apply_pairs_line "$HWMON_DIR" "$CONF_LINE"
+        fi
+        ;;
+    *)
+        echo "Usage: ${0##*/} {silent|balanced|cool|apply-stdin|restore|status}" >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,716 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# /usr/lib/ncui/sbin/nc-chroot
+# Generalized LUKS + LVM/Btrfs/Ext4 Chroot Engine (NC-UI / Duskcity)
+# ==============================================================================
+
+CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+VG_NAME="${NC_VG_NAME:-}"
+BTRFS_SUBVOL="@"
+MAPPER_NAME="nightcity_crypt"
+MNT_BASE="${DC_CHROOT_MNT_BASE:-/run/nightcity-chroot}"
+STATE_FILE="${DC_CHROOT_STATE_FILE:-/run/dc-arch-chroot.state}"
+LOCK_FILE="${DC_CHROOT_LOCK_FILE:-/run/dc-arch-chroot.lock}"
+
+load_chroot_resilience_config() {
+    if [[ -r "$CONF_FILE" ]]; then
+        local sec="" line k v
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [[ -n "$line" ]] || continue
+            if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\]$ ]]; then
+                sec="${BASH_REMATCH[1]}"
+                continue
+            fi
+            if [[ "$sec" == "snapshots" && "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*\"([^\"]*)\"$ ]]; then
+                k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+                case "$k" in
+                    vg_name)      [[ -z "$VG_NAME" && -n "$v" ]] && VG_NAME="$v" ;;
+                    btrfs_subvol) [[ -n "$v" ]] && BTRFS_SUBVOL="$v" ;;
+                esac
+            fi
+        done < "$CONF_FILE"
+    fi
+    return 0
+}
+
+C_RESET="\033[0m"
+C_BOLD="\033[1m"
+C_SLATE="\033[38;5;110m"
+C_MINT="\033[38;5;114m"
+C_PEACH="\033[38;5;216m"
+C_ROSE="\033[38;5;203m"
+C_LAVENDER="\033[38;5;146m"
+C_MUTED="\033[38;5;245m"
+
+log_info() { echo -e " ${C_SLATE}[*]${C_RESET} $1"; }
+log_ok()   { echo -e " ${C_MINT}[+]${C_RESET} $1"; }
+log_warn() { echo -e " ${C_PEACH}[!]${C_RESET} $1"; }
+log_err()  { echo -e " ${C_ROSE}[-]${C_RESET} $1" >&2; }
+
+show_help() {
+    local bin_name="${0##*/}"
+    cat <<EOF
+${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
+  ${bin_name} [OPZIONI]
+  ${bin_name} [OPZIONI] [COMANDO [ARGOMENTI...]]
+
+${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
+  Gestore per ambiente chroot su Nightcity / Duskcity. Rileva dinamicamente
+  le partizioni LUKS, la relativa ESP e il nome del Volume Group LVM ospitato
+  (es. vg0, vg1), gestendo lo sblocco crittografico (no-keyring) e l'albero di mount.
+
+${C_BOLD}${C_SLATE}OPZIONI:${C_RESET}
+  ${C_MINT}-h, --help${C_RESET}                  Mostra questo messaggio di aiuto ed esce.
+  ${C_MINT}-d, --device <dev>${C_RESET}          Specifica esplicitamente il dispositivo LUKS (es. /dev/nvme1n1p2).
+  ${C_MINT}-g, --vg <vg_name>${C_RESET}          Specifica esplicitamente il Volume Group LVM (altrimenti auto-rilevato).
+  ${C_MINT}-m, --mount, --onlymount${C_RESET}    Prepara e monta l'albero in ${MNT_BASE} senza entrare in chroot.
+  ${C_MINT}-u, --umount${C_RESET}                Smonta l'albero, disattiva dinamicamente il VG e chiude LUKS.
+
+${C_BOLD}${C_SLATE}MODALITÀ OPERATIVE:${C_RESET}
+  ${C_LAVENDER}${bin_name}${C_RESET}                     Apre una shell interattiva (zsh/bash) ed esegue il teardown all'uscita.
+  ${C_LAVENDER}${bin_name} [comando...]${C_RESET}        Esegue il comando isolato dentro al chroot e smonta all'uscita.
+  ${C_LAVENDER}${bin_name} --onlymount${C_RESET}         Prepara solo lo storage/mountpoint; il teardown va invocato con -u.
+
+${C_BOLD}${C_SLATE}VARIABILI D'AMBIENTE (OVERRIDE):${C_RESET}
+  ${C_PEACH}NC_LUKS_DEV${C_RESET}    Dispositivo LUKS esplicito (salta il discovery automatico)
+  ${C_PEACH}NC_ESP_DEV${C_RESET}     Partizione EFI/ESP esplicita (salta il binding automatico)
+  ${C_PEACH}NC_VG_NAME${C_RESET}     Nome Volume Group LVM (default: auto-rilevato dal PV LUKS)
+EOF
+}
+
+MOUNT_ONLY=0
+DO_TEARDOWN=0
+DO_STATUS_ENV=0
+DO_CANDS_TSV=0
+CLI_LUKS_DEV=""
+CLI_VG_NAME=""
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        status-env)
+            DO_STATUS_ENV=1
+            shift
+            break
+            ;;
+        candidates-tsv)
+            DO_CANDS_TSV=1
+            shift
+            break
+            ;;
+        -u|--umount|umount)
+            DO_TEARDOWN=1
+            shift
+            break
+            ;;
+        --onlymount|-m|--mount|--mount-only)
+            MOUNT_ONLY=1
+            shift
+            ;;
+        -d|--device)
+            [[ -n "${2:-}" ]] || { log_err "L'opzione $1 richiede il percorso di un dispositivo (es. /dev/nvme1n1p2)."; exit 1; }
+            CLI_LUKS_DEV="$2"
+            shift 2
+            ;;
+        -g|--vg)
+            [[ -n "${2:-}" ]] || { log_err "L'opzione $1 richiede il nome di un Volume Group (es. vg1)."; exit 1; }
+            CLI_VG_NAME="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            POSITIONAL_ARGS+=("$@")
+            break
+            ;;
+        -*)
+            log_err "Opzione sconosciuta: $1. Usa -h per l'aiuto."
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+load_chroot_resilience_config
+[[ -n "$CLI_VG_NAME" ]] && VG_NAME="$CLI_VG_NAME"
+
+if [[ "${DC_CHROOT_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
+    exec sudo "$0" "$@"
+fi
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log_err "Un'altra istanza di ${0##*/} è già in esecuzione."
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Protezione Sistema Live & Persistenza Stato Sessione
+# ------------------------------------------------------------------------------
+STATE_LUKS_DEV=""
+STATE_MAPPER_NAME="$MAPPER_NAME"
+STATE_VG_NAME="$VG_NAME"
+STATE_WE_OPENED_LUKS=0
+STATE_WE_ACTIVATED_VG=0
+
+write_state_file() {
+    mkdir -p "$(dirname "$STATE_FILE")"
+    local tmp="${STATE_FILE}.tmp.$$"
+    (
+        umask 0077
+        cat > "$tmp" <<EOF
+STATE_LUKS_DEV=${STATE_LUKS_DEV}
+STATE_MAPPER_NAME=${STATE_MAPPER_NAME}
+STATE_VG_NAME=${STATE_VG_NAME}
+STATE_WE_OPENED_LUKS=${STATE_WE_OPENED_LUKS}
+STATE_WE_ACTIVATED_VG=${STATE_WE_ACTIVATED_VG}
+EOF
+    )
+    mv -f "$tmp" "$STATE_FILE"
+}
+
+load_state_file() {
+    [[ -r "$STATE_FILE" ]] || return 0
+    local k v
+    while IFS='=' read -r k v || [[ -n "$k" ]]; do
+        [[ -z "$k" || "$k" == \#* ]] && continue
+        case "$k" in
+            STATE_LUKS_DEV)        STATE_LUKS_DEV="$v" ;;
+            STATE_MAPPER_NAME)     [[ -n "$v" ]] && STATE_MAPPER_NAME="$v" ;;
+            STATE_VG_NAME)         [[ -n "$v" ]] && STATE_VG_NAME="$v" ;;
+            STATE_WE_OPENED_LUKS)  STATE_WE_OPENED_LUKS="$v" ;;
+            STATE_WE_ACTIVATED_VG) STATE_WE_ACTIVATED_VG="$v" ;;
+        esac
+    done < "$STATE_FILE"
+}
+
+is_live_host_target() {
+    local check_luks="${1:-}" check_vg="${2:-}"
+    local mp src live_srcs=() lv_name
+    for mp in / /usr /var /home /run/recovery-ram/sqfs; do
+        src=$(findmnt -n -o SOURCE "$mp" 2>/dev/null || true)
+        [[ -n "$src" ]] && live_srcs+=("$src")
+    done
+    (( ${#live_srcs[@]} > 0 )) || return 1
+
+    local s real_s lv_vg
+    for s in "${live_srcs[@]}"; do
+        [[ -b "$s" ]] || continue
+        real_s=$(readlink -f "$s" 2>/dev/null || printf '%s' "$s")
+        if [[ -n "$check_luks" ]]; then
+            local check_real
+            check_real=$(readlink -f "$check_luks" 2>/dev/null || printf '%s' "$check_luks")
+            if [[ "$real_s" == "$check_real" ]]; then
+                return 0
+            fi
+            if lsblk -rnpo NAME "$check_luks" 2>/dev/null | grep -Fxq "$s"; then
+                return 0
+            fi
+        fi
+        if [[ -n "$check_vg" ]]; then
+            lv_vg=$(lvs --noheadings -o vg_name "$s" 2>/dev/null | tr -d ' ' || true)
+            [[ -n "$lv_vg" && "$lv_vg" == "$check_vg" ]] && return 0
+        fi
+    done
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# Motore di Smontaggio & Chiusura Mapper (Safe: rmdir, mai rm -rf su mountpoint)
+# ------------------------------------------------------------------------------
+teardown_environment() {
+    load_state_file
+    local active_mapper="${STATE_MAPPER_NAME:-$MAPPER_NAME}"
+    local active_luks="${STATE_LUKS_DEV:-}"
+    local vgs_to_close=()
+
+    [[ -n "$VG_NAME" ]] && vgs_to_close+=("$VG_NAME")
+    [[ -n "${STATE_VG_NAME:-}" ]] && vgs_to_close+=("$STATE_VG_NAME")
+    if [[ -e "/dev/mapper/${active_mapper}" ]]; then
+        local pv_vg
+        pv_vg="$(pvs --noheadings -o vg_name "/dev/mapper/${active_mapper}" 2>/dev/null | tr -d ' ' || true)"
+        [[ -n "$pv_vg" ]] && vgs_to_close+=("$pv_vg")
+    fi
+
+    log_info "Avvio teardown e messa in sicurezza dell'albero di sistema..."
+    sync 2>/dev/null || true
+
+    # 1. Smontaggio in ordine esattamente inverso di montaggio (mountinfo + tac)
+    if [[ -d "$MNT_BASE" ]]; then
+        local submounts=() _id _pid _majmin _root _mp _rest
+        while read -r _id _pid _majmin _root _mp _rest; do
+            [[ -n "$_mp" ]] || continue
+            _mp="${_mp//\\040/ }"
+            _mp="${_mp//\\011/$'\t'}"
+            _mp="${_mp//\\134/\\}"
+            if [[ "$_mp" == "$MNT_BASE" || "$_mp" == "${MNT_BASE}/"* ]]; then
+                submounts+=("$_mp")
+            fi
+        done < /proc/self/mountinfo
+
+        if (( ${#submounts[@]} > 0 )); then
+            local rev_mnts=() mnt
+            mapfile -t rev_mnts < <(printf '%s\n' "${submounts[@]}" | tac)
+            for mnt in "${rev_mnts[@]}"; do
+                [[ -n "$mnt" ]] || continue
+                umount "$mnt" 2>/dev/null || umount -l "$mnt" 2>/dev/null || true
+            done
+        fi
+
+        if mountpoint -q "$MNT_BASE" 2>/dev/null; then
+            log_err "Impossibile smontare completamente ${MNT_BASE}: directory non rimossa per sicurezza."
+        else
+            find "$MNT_BASE" -depth -type d -empty -exec rmdir {} + 2>/dev/null || true
+            rmdir "$MNT_BASE" 2>/dev/null || true
+            log_ok "Mountpoint rilasciati."
+        fi
+    fi
+
+    # 2. Chiusura VG/LUKS solo se richiesta (-u) o aperta da questa sessione, MAI su disco host vivo
+    local close_storage=0
+    if (( DO_TEARDOWN == 1 || STATE_WE_OPENED_LUKS == 1 || STATE_WE_ACTIVATED_VG == 1 )); then
+        if is_live_host_target "$active_luks" "${vgs_to_close[0]:-}"; then
+            log_warn "Il mapper/VG appartiene al sistema host in esecuzione: chiusura LVM/LUKS bloccata."
+        else
+            close_storage=1
+        fi
+    fi
+
+    if (( close_storage == 1 )); then
+        if [[ -e "/dev/mapper/${active_mapper}" ]]; then
+            local child_dev mp
+            while read -r child_dev; do
+                [[ -z "$child_dev" || "$child_dev" == "/dev/mapper/${active_mapper}" ]] && continue
+                while read -r mp; do
+                    [[ -n "$mp" && "$mp" != "/" ]] && umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+                done < <(findmnt -rn -S "$child_dev" -o TARGET 2>/dev/null || true)
+            done < <(lsblk -rnpo NAME "/dev/mapper/${active_mapper}" 2>/dev/null | tac)
+        fi
+
+        if (( ${#vgs_to_close[@]} > 0 )); then
+            local unique_vgs=() vg
+            mapfile -t unique_vgs < <(printf "%s\n" "${vgs_to_close[@]}" | awk 'NF' | sort -u)
+            for vg in "${unique_vgs[@]}"; do
+                is_live_host_target "" "$vg" && continue
+                if vgs "$vg" &>/dev/null; then
+                    if vgchange -an "$vg" &>/dev/null; then
+                        log_ok "Volume Group '${vg}' disattivato."
+                    else
+                        log_warn "Alcuni LV di '${vg}' risultano occupati: rilascio device-mapper..."
+                        local lv_dev lv_type
+                        while read -r lv_dev lv_type; do
+                            [[ "$lv_type" == "lvm" ]] && dmsetup remove --force "$lv_dev" 2>/dev/null || true
+                        done < <(lsblk -rnpo NAME,TYPE "/dev/mapper/${active_mapper}" 2>/dev/null | tac)
+                    fi
+                fi
+            done
+        fi
+
+        if (( DO_TEARDOWN == 1 || STATE_WE_OPENED_LUKS == 1 )) && cryptsetup status "$active_mapper" &>/dev/null; then
+            udevadm settle 2>/dev/null || true
+            if cryptsetup close "$active_mapper" 2>/dev/null; then
+                log_ok "Container LUKS chiuso (${active_mapper}). Zero tracce in memoria."
+            else
+                log_err "Chiusura mapper ${active_mapper} non riuscita. Verificare con: lsof /dev/mapper/${active_mapper}"
+            fi
+        fi
+    else
+        log_info "Container LUKS/VG preesistente preservato aperto."
+    fi
+
+    rm -f "$STATE_FILE" 2>/dev/null || true
+}
+
+if [[ "$DO_STATUS_ENV" -eq 1 ]]; then
+    load_state_file
+    ch_act=0
+    mountpoint -q "$MNT_BASE" 2>/dev/null && ch_act=1
+    printf 'CHROOT_ACTIVE=%s\nCHROOT_MNT=%s\nSTATE_LUKS_DEV=%s\nSTATE_MAPPER_NAME=%s\nSTATE_VG_NAME=%s\n' \
+        "$ch_act" "$MNT_BASE" "${STATE_LUKS_DEV:-}" "${STATE_MAPPER_NAME:-$MAPPER_NAME}" "${STATE_VG_NAME:-}"
+    exit 0
+fi
+
+if [[ "$DO_TEARDOWN" -eq 1 ]]; then
+    teardown_environment
+    exit 0
+fi
+
+if [[ "$DO_CANDS_TSV" -eq 1 ]]; then
+    while IFS= read -r part; do
+        [[ -b "$part" ]] || continue
+        fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+        if [[ "$fstype" == "crypto_LUKS" ]] || cryptsetup isLuks "$part" 2>/dev/null; then
+            sz="$(lsblk -dno SIZE "$part" 2>/dev/null | tr -d ' ' || echo "-")"
+            pk="$(lsblk -dno PKNAME "$part" 2>/dev/null | tr -d ' ' || true)"
+            mod="Block Device"
+            if [[ -n "$pk" ]]; then
+                mod="$(lsblk -dno MODEL "/dev/$pk" 2>/dev/null | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | tr '\t' ' ' || true)"
+            fi
+            [[ -n "$mod" ]] || mod="Block Device"
+            esp_d=""
+            if [[ -n "$pk" ]]; then
+                esp_d="$(lsblk -pnro PATH,PARTTYPE "/dev/$pk" 2>/dev/null | awk 'tolower($2)=="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" {print $1; exit}' || true)"
+            fi
+            [[ -n "$esp_d" ]] || esp_d="-"
+            ac="$(lsblk -lnpo NAME,TYPE "$part" 2>/dev/null | awk '$2=="crypt" {print $1; exit}' || true)"
+            mname="${ac:+$(basename "$ac")}"
+            [[ -n "$mname" ]] || mname="-"
+            scope="EXTERNAL"
+            if is_live_host_target "$part" ""; then
+                scope="HOST"
+            fi
+            printf 'CAND\t%s\t%s\t%s\t%s\t%s\t%s\n' "$part" "$sz" "$mod" "$esp_d" "$mname" "$scope"
+        fi
+    done < <(lsblk -pnro PATH,TYPE 2>/dev/null | awk '$2=="part" {print $1}' | sort -u)
+    exit 0
+fi
+
+REQUIRED_TOOLS=(cryptsetup vgchange lvs vgs pvs mount umount findmnt arch-chroot lsblk blkid dmsetup)
+for tool in "${REQUIRED_TOOLS[@]}"; do
+    if ! command -v "$tool" &>/dev/null; then
+        log_err "Tool necessario assente: '$tool'."
+        [[ "$tool" == "arch-chroot" ]] && echo -e "  Installa con: ${C_BOLD}sudo pacman -S --needed arch-install-scripts${C_RESET}" >&2
+        exit 1
+    fi
+done
+
+CLEANUP_ON_EXIT=0
+cleanup_handler() {
+    local exit_code=$?
+    trap - EXIT INT TERM HUP
+    if [[ "$CLEANUP_ON_EXIT" -eq 1 ]]; then
+        teardown_environment
+    fi
+    exit "$exit_code"
+}
+trap cleanup_handler EXIT INT TERM HUP
+
+# ------------------------------------------------------------------------------
+# Discovery Hardware e Risoluzione Dispositivi
+# ------------------------------------------------------------------------------
+get_device_desc() {
+    local dev="$1" size parent model="" active_crypt active_vg
+    size="$(lsblk -dno SIZE "$dev" 2>/dev/null | tr -d ' ' || echo "N/A")"
+    parent="$(lsblk -dno PKNAME "$dev" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -n "$parent" ]]; then
+        model="$(lsblk -dno MODEL "/dev/$parent" 2>/dev/null | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' || true)"
+    fi
+    [[ -z "$model" ]] && model="$(lsblk -dno MODEL "$dev" 2>/dev/null | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' || true)"
+    [[ -z "$model" ]] && model="Block Device"
+
+    active_crypt="$(lsblk -lnpo NAME,TYPE "$dev" 2>/dev/null | awk '$2=="crypt" {print $1; exit}' || true)"
+    if [[ -n "$active_crypt" ]]; then
+        active_vg="$(pvs --noheadings -o vg_name "$active_crypt" 2>/dev/null | tr -d ' ' || true)"
+        echo "${size} - ${model} [Aperto: $(basename "$active_crypt")${active_vg:+ | VG: $active_vg}]"
+    else
+        echo "${size} - ${model}"
+    fi
+}
+
+find_luks_candidates() {
+    local candidates=() part fstype
+    while read -r part; do
+        [[ -b "$part" ]] || continue
+        fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+        if [[ "$fstype" == "crypto_LUKS" ]] || cryptsetup isLuks "$part" 2>/dev/null; then
+            candidates+=("$part")
+        fi
+    done < <(lsblk -pnro PATH,TYPE 2>/dev/null | awk '$2=="part" {print $1}')
+
+    (( ${#candidates[@]} > 0 )) && printf "%s\n" "${candidates[@]}" | sort -u
+}
+
+resolve_esp_device() {
+    local luks_target="$1" parent
+    parent="$(lsblk -dno PKNAME "$luks_target" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -z "$parent" ]]; then
+        parent="${luks_target%p[0-9]*}"
+        [[ "$parent" == "$luks_target" ]] && parent="${luks_target%[0-9]*}"
+    else
+        parent="/dev/$parent"
+    fi
+
+    local part fstype parttype vfat_fallback="" esp_gpt=""
+    while read -r part; do
+        [[ -b "$part" ]] || continue
+        parttype="$(lsblk -dno PARTTYPE "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d ' ' || true)"
+        if [[ "$parttype" == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]]; then
+            esp_gpt="$part"
+            break
+        fi
+        if [[ -z "$vfat_fallback" ]]; then
+            fstype="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+            [[ "$fstype" == "vfat" ]] && vfat_fallback="$part"
+        fi
+    done < <(lsblk -pnro PATH,TYPE "$parent" 2>/dev/null | awk '$2=="part" {print $1}')
+
+    if [[ -n "$esp_gpt" ]]; then
+        echo "$esp_gpt"
+    elif [[ -n "$vfat_fallback" ]]; then
+        echo "$vfat_fallback"
+    elif [[ "$parent" =~ [0-9]$ ]]; then
+        echo "${parent}p1"
+    else
+        echo "${parent}1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# Fase 1: Identificazione e Selezione Dispositivo LUKS
+# ------------------------------------------------------------------------------
+SELECTED_LUKS=""
+if [[ -n "$CLI_LUKS_DEV" ]]; then
+    [[ -b "$CLI_LUKS_DEV" ]] || { log_err "Dispositivo passato da CLI non valido: ${CLI_LUKS_DEV}"; exit 1; }
+    SELECTED_LUKS="$CLI_LUKS_DEV"
+    log_info "Utilizzo dispositivo specificato da CLI: ${C_BOLD}${SELECTED_LUKS}${C_RESET}"
+elif [[ -n "${NC_LUKS_DEV:-}" && -b "${NC_LUKS_DEV}" ]]; then
+    SELECTED_LUKS="$NC_LUKS_DEV"
+    log_info "Utilizzo dispositivo da NC_LUKS_DEV: ${C_BOLD}${SELECTED_LUKS}${C_RESET}"
+fi
+
+if [[ -z "$SELECTED_LUKS" ]]; then
+    log_info "Ricerca candidati LUKS attivi nel sistema..."
+    mapfile -t CANDIDATES < <(find_luks_candidates)
+    TOTAL_CANDIDATES=${#CANDIDATES[@]}
+
+    if (( TOTAL_CANDIDATES > 1 )); then
+        log_warn "Rilevati molteplici candidati LUKS:"
+        for i in "${!CANDIDATES[@]}"; do
+            c_dev="${CANDIDATES[$i]}"
+            printf "   ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}\n" "$((i + 1))" "$c_dev" "$(get_device_desc "$c_dev")"
+        done
+        echo
+        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Seleziona un indice (1-${TOTAL_CANDIDATES}) o inserisci il percorso del dispositivo: ")" USER_CHOICE </dev/tty || true
+        if [[ -z "$USER_CHOICE" ]]; then
+            log_err "Nessuna selezione effettuata. Operazione annullata."; exit 1
+        elif [[ "$USER_CHOICE" =~ ^[0-9]+$ ]] && (( USER_CHOICE >= 1 && USER_CHOICE <= TOTAL_CANDIDATES )); then
+            SELECTED_LUKS="${CANDIDATES[$((USER_CHOICE - 1))]}"
+        elif [[ -b "$USER_CHOICE" ]]; then
+            SELECTED_LUKS="$USER_CHOICE"
+        else
+            log_err "Selezione o percorso non valido: '$USER_CHOICE'."; exit 1
+        fi
+    elif (( TOTAL_CANDIDATES == 1 )); then
+        SINGLE_DEV="${CANDIDATES[0]}"
+        log_ok "Candidato LUKS individuato: ${C_BOLD}${SINGLE_DEV}${C_RESET} ($(get_device_desc "$SINGLE_DEV"))"
+        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Premi INVIO per confermare o digita un dispositivo alternativo: ")" USER_CONFIRM </dev/tty || true
+        if [[ -z "$USER_CONFIRM" ]]; then
+            SELECTED_LUKS="$SINGLE_DEV"
+        elif [[ -b "$USER_CONFIRM" ]]; then
+            SELECTED_LUKS="$USER_CONFIRM"
+        else
+            log_err "Dispositivo specificato non valido: '$USER_CONFIRM'."; exit 1
+        fi
+    else
+        log_warn "Nessun dispositivo LUKS rilevato automaticamente nel sistema."
+        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Inserisci il percorso del dispositivo LUKS (es. /dev/sdd2) [INVIO per annullare]: ")" USER_DEV </dev/tty || true
+        if [[ -z "$USER_DEV" ]]; then
+            log_err "Operazione annullata dall'utente."; exit 0
+        elif [[ -b "$USER_DEV" ]]; then
+            SELECTED_LUKS="$USER_DEV"
+        else
+            log_err "Dispositivo specificato non esistente o non valido: '$USER_DEV'."; exit 1
+        fi
+    fi
+fi
+
+LUKS_DEV="$SELECTED_LUKS"
+if is_live_host_target "$LUKS_DEV" "$VG_NAME"; then
+    log_err "Il dispositivo ${LUKS_DEV} appartiene al sistema host attualmente in esecuzione!"
+    log_err "Impossibile aprire un arch-chroot/teardown su volumi montati su / o /var."
+    exit 1
+fi
+
+if [[ -n "${NC_ESP_DEV:-}" && -b "$NC_ESP_DEV" ]]; then
+    ESP_DEV="$NC_ESP_DEV"
+    log_info "Partizione ESP configurata manualmente: ${C_BOLD}${ESP_DEV}${C_RESET}"
+else
+    ESP_DEV="$(resolve_esp_device "$LUKS_DEV")"
+    if [[ -b "$ESP_DEV" ]]; then
+        log_info "Partizione ESP associata rilevata: ${C_BOLD}${ESP_DEV}${C_RESET} ($(get_device_desc "$ESP_DEV"))"
+    else
+        log_warn "Partizione ESP non rilevata automaticamente (${ESP_DEV}). Il mount di /boot potrebbe fallire."
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# Fase 2: Sblocco LUKS Diretto su TTY
+# ------------------------------------------------------------------------------
+CLEANUP_ON_EXIT=1
+STATE_LUKS_DEV="$LUKS_DEV"
+
+EXISTING_CRYPT_ON_PART="$(lsblk -lnpo NAME,TYPE "$LUKS_DEV" 2>/dev/null | awk '$2=="crypt" {print $1; exit}' || true)"
+if [[ -n "$EXISTING_CRYPT_ON_PART" ]]; then
+    MAPPER_NAME="$(basename "$EXISTING_CRYPT_ON_PART")"
+    STATE_WE_OPENED_LUKS=0
+    log_info "Partizione ${C_BOLD}${LUKS_DEV}${C_RESET} già sbloccata su ${C_BOLD}/dev/mapper/${MAPPER_NAME}${C_RESET}."
+else
+    if cryptsetup status "$MAPPER_NAME" &>/dev/null; then
+        log_err "Il mapper '${MAPPER_NAME}' è già impegnato su un altro dispositivo."
+        log_err "Chiudilo prima oppure libera la sessione precedente con: ${0##*/} -u"
+        CLEANUP_ON_EXIT=0
+        exit 1
+    fi
+
+    log_info "Richiesta sblocco partizione ${C_BOLD}${LUKS_DEV}${C_RESET} (modalità no-keyring)..."
+    if ! cryptsetup open --tries 3 --disable-external-tokens --disable-keyring "$LUKS_DEV" "$MAPPER_NAME"; then
+        log_err "Sblocco crittografico fallito o interrotto."
+        CLEANUP_ON_EXIT=0
+        exit 1
+    fi
+    STATE_WE_OPENED_LUKS=1
+    log_ok "Container LUKS aperto su /dev/mapper/${MAPPER_NAME}"
+fi
+
+STATE_MAPPER_NAME="$MAPPER_NAME"
+udevadm settle 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# Fase 3: Rilevamento Dinamico LVM / Btrfs / Ext4
+# ------------------------------------------------------------------------------
+FS_LAYOUT="lvm"
+if [[ -z "$VG_NAME" ]]; then
+    pvscan --cache "/dev/mapper/${MAPPER_NAME}" >/dev/null 2>&1 || true
+    DETECTED_VG="$(pvs --noheadings -o vg_name "/dev/mapper/${MAPPER_NAME}" 2>/dev/null | tr -d ' ' | head -n1 || true)"
+    if [[ -n "$DETECTED_VG" ]]; then
+        VG_NAME="$DETECTED_VG"
+        log_ok "Volume Group rilevato automaticamente nel container: ${C_BOLD}${VG_NAME}${C_RESET}"
+    else
+        MAPPER_FSTYPE="$(blkid -s TYPE -o value "/dev/mapper/${MAPPER_NAME}" 2>/dev/null || true)"
+        if [[ "$MAPPER_FSTYPE" == "btrfs" || "$MAPPER_FSTYPE" == "ext4" ]]; then
+            FS_LAYOUT="$MAPPER_FSTYPE"
+            log_ok "Container diretto '${FS_LAYOUT}' rilevato dentro /dev/mapper/${MAPPER_NAME}."
+        else
+            log_err "Nessun Volume Group LVM o filesystem Btrfs/Ext4 trovato dentro /dev/mapper/${MAPPER_NAME}."
+            exit 1
+        fi
+    fi
+else
+    pvscan --cache "/dev/mapper/${MAPPER_NAME}" >/dev/null 2>&1 || true
+    MAPPER_FSTYPE="$(blkid -s TYPE -o value "/dev/mapper/${MAPPER_NAME}" 2>/dev/null || true)"
+    if [[ "$MAPPER_FSTYPE" == "btrfs" || "$MAPPER_FSTYPE" == "ext4" ]]; then
+        FS_LAYOUT="$MAPPER_FSTYPE"
+    else
+        log_info "Utilizzo Volume Group specificato: ${C_BOLD}${VG_NAME}${C_RESET}"
+    fi
+fi
+
+if [[ "$FS_LAYOUT" == "lvm" ]]; then
+    if is_live_host_target "$LUKS_DEV" "$VG_NAME"; then
+        log_err "Il Volume Group '${VG_NAME}' è quello del sistema host in esecuzione. Operazione bloccata."
+        exit 1
+    fi
+
+    STATE_VG_NAME="$VG_NAME"
+    STATE_WE_ACTIVATED_VG=1
+    write_state_file
+
+    log_info "Attivazione Volume Group ${C_BOLD}${VG_NAME}${C_RESET}..."
+    vgchange -ay "$VG_NAME" >/dev/null
+    udevadm settle 2>/dev/null || true
+
+    if [[ ! -b "/dev/${VG_NAME}/root" ]]; then
+        log_err "Volume logico '/dev/${VG_NAME}/root' assente nel Volume Group '${VG_NAME}'."
+        exit 1
+    fi
+
+    # --------------------------------------------------------------------------
+    # Fase 4: Assemblaggio Gerarchico dell'Albero di Mount (LVM)
+    # --------------------------------------------------------------------------
+    mkdir -p "$MNT_BASE"
+    if ! mountpoint -q "$MNT_BASE"; then
+        mount "/dev/${VG_NAME}/root" "$MNT_BASE"
+        log_ok "Montato root: /dev/${VG_NAME}/root -> ${MNT_BASE}"
+    fi
+
+    declare -A LV_MOUNTS=(
+        ["boot"]="$ESP_DEV"
+        ["var"]="/dev/${VG_NAME}/var"
+        ["home"]="/dev/${VG_NAME}/home"
+        ["tmp"]="/dev/${VG_NAME}/tmp"
+    )
+
+    for rel_path in var home tmp boot; do
+        target_dir="${MNT_BASE}/${rel_path}"
+        mkdir -p "$target_dir"
+        dev_src="${LV_MOUNTS[$rel_path]}"
+        if [[ -b "$dev_src" ]] && ! mountpoint -q "$target_dir"; then
+            mount "$dev_src" "$target_dir"
+            log_ok "Montato: ${dev_src} -> ${target_dir}"
+        fi
+    done
+
+    declare -A VAR_SUB_LVS=(
+        ["var/log"]="/dev/${VG_NAME}/log"
+        ["var/log/audit"]="/dev/${VG_NAME}/audit"
+        ["var/tmp"]="/dev/${VG_NAME}/vartmp"
+        ["var/cache/pacman"]="/dev/${VG_NAME}/pacmancache"
+    )
+
+    for rel_path in "var/log" "var/log/audit" "var/tmp" "var/cache/pacman"; do
+        target_dir="${MNT_BASE}/${rel_path}"
+        mkdir -p "$target_dir"
+        dev_src="${VAR_SUB_LVS[$rel_path]}"
+        if [[ -b "$dev_src" ]] && ! mountpoint -q "$target_dir"; then
+            mount "$dev_src" "$target_dir"
+            log_ok "Montato: ${dev_src} -> ${target_dir}"
+        fi
+    done
+else
+    STATE_VG_NAME=""
+    STATE_WE_ACTIVATED_VG=0
+    write_state_file
+    mkdir -p "$MNT_BASE"
+    if ! mountpoint -q "$MNT_BASE"; then
+        if [[ "$FS_LAYOUT" == "btrfs" ]]; then
+            mount -o "subvol=${BTRFS_SUBVOL}" "/dev/mapper/${MAPPER_NAME}" "$MNT_BASE" 2>/dev/null \
+                || mount "/dev/mapper/${MAPPER_NAME}" "$MNT_BASE"
+        else
+            mount "/dev/mapper/${MAPPER_NAME}" "$MNT_BASE"
+        fi
+        log_ok "Montato ${FS_LAYOUT} root: /dev/mapper/${MAPPER_NAME} -> ${MNT_BASE}"
+    fi
+    if [[ -b "$ESP_DEV" ]] && ! mountpoint -q "${MNT_BASE}/boot"; then
+        mkdir -p "${MNT_BASE}/boot"
+        mount "$ESP_DEV" "${MNT_BASE}/boot"
+        log_ok "Montato boot: ${ESP_DEV} -> ${MNT_BASE}/boot"
+    fi
+fi
+
+if [[ "$MOUNT_ONLY" -eq 1 ]]; then
+    CLEANUP_ON_EXIT=0
+    log_ok "Ambiente montato con successo [VG: ${C_BOLD}${VG_NAME}${C_RESET}] su: ${C_BOLD}${MNT_BASE}${C_RESET}"
+    log_info "Per accedere manualmente: ${C_BOLD}arch-chroot ${MNT_BASE}${C_RESET}"
+    log_info "Per smontare e chiudere il mapper: ${C_BOLD}${0##*/} -u${C_RESET}"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Fase 5: Ingresso in Arch-Chroot
+# ------------------------------------------------------------------------------
+echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
+echo -e "${C_BOLD}${C_MINT} INGRESSO IN ARCH-CHROOT [VG: ${VG_NAME} | Dev: ${LUKS_DEV}] ${C_RESET}"
+echo -e "${C_SLATE}==============================================================================${C_RESET}"
+log_info "Digita 'exit' o premi Ctrl+D per uscire e avviare il cleanup automatico.\n"
+
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+    arch-chroot "$MNT_BASE" "${POSITIONAL_ARGS[@]}"
+else
+    CHROOT_SHELL="/bin/bash"
+    [[ -x "${MNT_BASE}/bin/zsh" ]] && CHROOT_SHELL="/bin/zsh"
+    arch-chroot "$MNT_BASE" "$CHROOT_SHELL"
+fi
+
+echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
+log_info "Sessione chroot terminata. Procedo con la chiusura sicura..."

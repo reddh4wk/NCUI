@@ -1,0 +1,108 @@
+# NC-UI Action Help Catalog — Idle/Wakeup & NUT UPS Extra Controls (EN)
+
+# ==============================================================================
+# POWER -> IDLE, LOCK, DPMS & SUSPEND (`panels/cc_power_idle.py`)
+# ==============================================================================
+["cc_pwr:dim_idle:1"]
+title = "Enable Idle Screen Dimming"
+short = "Dims display brightness to 10% (`brightnessctl -s set 10%`) before auto-lock and restores it on activity."
+verbose = "Calculates the dim timer at half of the auto-lock timeout (minimum 60s, or 150s when auto-lock is disabled) and regenerates the running `swayidle` or `~/.config/hypr/hypridle.conf` configuration."
+
+["cc_pwr:dim_idle:0"]
+title = "Disable Idle Screen Dimming"
+short = "Keeps screen brightness unchanged until DPMS monitor power-off or session lock triggers."
+verbose = "Removes the `brightnessctl` dim listener from `swayidle` / `hypridle` and restarts the idle daemon immediately."
+
+["cc_pwr:idle_min:*"]
+title = "Set Auto-Lock Timeout"
+short = "Sets inactivity minutes before running the configured screen lock command (`0` / `Off` disables auto-lock)."
+verbose = "Persists `idle_lock_min` in state and restarts `swayidle` (or rewrites `~/.config/hypr/hypridle.conf` and restarts `hypridle`) with the configured screen locker."
+
+["cc_pwr:dpms_min:*"]
+title = "Set DPMS Screen-Off Timeout"
+short = "Sets inactivity minutes before powering off Wayland monitors (`niri msg action power-off-monitors`, `0` = Off)."
+verbose = "Configures `swayidle` / `hypridle` to cut monitor output after the chosen delay and immediately call `niri msg action power-on-monitors` on keyboard or pointer resume."
+
+["cc_pwr:caffeine:on"]
+title = "Enable Caffeine Mode (Keep Awake)"
+short = "Acquires a `systemd-inhibit --what=idle` lock (`ncui-caffeine` user unit) to block auto-lock, DPMS, and idle sleep."
+verbose = "Starts a transient `systemd-run --user --unit=ncui-caffeine` inhibitor (falling back to background `systemd-inhibit`) so presentations, builds, or media playback stay awake until disabled."
+
+["cc_pwr:caffeine:off"]
+title = "Disable Caffeine Mode (Allow Idle)"
+short = "Stops the `ncui-caffeine` `systemd-inhibit` lock so normal idle dim, lock, DPMS, and suspend timers resume."
+
+["cc_pwr:lock_now"]
+title = "Lock Screen Now"
+short = "Immediately launches the configured screen locker command (e.g., `swaylock` or `hyprlock`)."
+
+["cc_pwr:susp_ac:*"]
+title = "Set AC Auto-Suspend Timeout"
+short = "Sets inactivity minutes before suspending (`systemd-ac-power && systemctl suspend`) while on AC mains (`0` = Never)."
+verbose = "Updates the AC-conditioned listener in `swayidle` / `hypridle` so the system only auto-suspends after this interval when external AC power is connected."
+
+["cc_pwr:susp_bat:*"]
+title = "Set Battery Auto-Suspend Timeout"
+short = "Sets inactivity minutes before suspending (`systemd-ac-power || systemctl suspend`) while on battery (`0` = Never)."
+verbose = "Updates the battery-conditioned listener in `swayidle` / `hypridle` so the system only triggers auto-suspend on battery or when both AC/battery timeouts match."
+
+["cc_pwr:pwr_btn:*"]
+title = "Configure Hardware Power Button"
+short = "Sets `HandlePowerKey=` (`poweroff`, `suspend`, `hibernate`, or `ignore`) in `/etc/systemd/logind.conf.d/ncui.conf`."
+verbose = "Writes the drop-in override via the `power_logind` sudoers helper (or `pkexec`) and verifies the stored `HandlePowerKey` directive on disk."
+
+# ==============================================================================
+# POWER -> UPS / NUT (`panels/cc_power_ups.py`, `panels/wp_ups.py`)
+# ==============================================================================
+["cc_pwr:nut_en:1"]
+title = "Enable NUT UPS Monitor"
+short = "Enables `upsc` polling for the configured UPS target and signals Waybar (`SIGUSR2`) to show the UPS bar pill."
+
+["cc_pwr:nut_en:0"]
+title = "Disable NUT UPS Monitor"
+short = "Disables `upsc` polling and signals Waybar (`SIGUSR2`) to hide the UPS bar module."
+
+["cc_pwr:inline_host"]
+title = "Edit NUT Server Host / IP.."
+short = "Opens inline entry for the Network UPS Tools `upsd` hostname or IP address (default `127.0.0.1`)."
+
+["cc_pwr:inline_port"]
+title = "Edit NUT Server TCP Port.."
+short = "Opens inline numeric entry (`1..65535`) for the NUT `upsd` TCP port (standard NUT port is `3493`)."
+
+["cc_pwr:inline_ups"]
+title = "Edit UPS Target Name.."
+short = "Opens inline entry for the NUT UPS identifier (accepts `name` or `name@host:port`, such as `ecoflow`)."
+
+["cc_pwr:discover"]
+title = "Auto-Discover NUT UPS Devices"
+short = "Queries `upsc -l <host>:<port>` asynchronously to list all UPS units exposed by the NUT daemon."
+verbose = "Runs `upsc -l` against the configured NUT endpoint, caches discovered unit names as quick-select pills, and selects the first unit automatically if none is set yet."
+
+["cc_pwr:sel_ups:*"]
+title = "Select Discovered UPS Unit"
+short = "Sets this discovered NUT UPS identifier as the active telemetry target for Control Center and Waybar."
+
+["cc_pwr:poll:*"]
+title = "Set UPS Polling Interval"
+short = "Sets how often NC-UI and the Waybar UPS pill poll `upsc` (`2s`, `5s`, `10s`, `15s`, or `30s`)."
+
+["cc_pwr:inline_poll"]
+title = "Edit Custom Polling Interval.."
+short = "Opens inline numeric entry (`1..3600` seconds) for a custom `upsc` polling interval."
+
+["cc_pwr:wb_fld:*"]
+title = "Toggle Waybar UPS Popup Row"
+short = "Shows or hides this telemetry field (`status`, `charge`, `runtime`, `load`, `power`, `voltage`, `model`, `mfr`, `serial`, `temp`) in the Waybar UPS popup."
+
+["cc_pwr:ups_low:*"]
+title = "Set Low Battery Alert Threshold"
+short = "Sets the UPS battery percentage (`10%..50%`) below which NC-UI highlights low-battery alerts and critical status."
+
+["cc_pwr:ups_test_notify"]
+title = "Send Test UPS Alert"
+short = "Triggers a test desktop notification via `notify-send` to verify UPS critical alert delivery."
+
+["ups:refresh"]
+title = "Refresh UPS Telemetry Now"
+short = "Invalidates the cached `upsc` readout and triggers an immediate fresh query in the Waybar UPS popup."

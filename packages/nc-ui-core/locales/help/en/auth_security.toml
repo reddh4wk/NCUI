@@ -1,0 +1,134 @@
+# NC-UI Action Help Catalog (EN) — Auth, Security, Keys, TPM2, Sudoers & USBGuard
+
+# ==============================================================================
+# AUTH -> KEYS & TOKENS (`panels/cc_auth_keys.py`)
+# ==============================================================================
+["cc_auth:ssh_add"]
+title = "Unlock & Load Keys into SSH Agent"
+short = "Opens a terminal running `ssh-add; ssh-add -l` to unlock your private SSH keys into the active `ssh-agent` socket."
+verbose = "Prompts for your SSH key passphrase (or FIDO2/SK hardware token touch) so loaded identities remain cached in `SSH_AUTH_SOCK` for passwordless SSH and Git operations."
+
+["cc_auth:copy_pub:*"]
+title = "Copy SSH Public Key"
+short = "Reads `~/.ssh/<key>.pub` and copies the OpenSSH public key line directly to the Wayland clipboard (`wl-copy`)."
+
+# ==============================================================================
+# AUTH -> POLKIT & PAM (`panels/cc_auth_polkit.py`)
+# ==============================================================================
+["cc_auth:sudo_term"]
+title = "Audit Sudo Rules & Validate Syntax"
+short = "Opens a terminal running `sudo -l` and `sudo visudo -c` to inspect active sudo permissions and verify `/etc/sudoers` syntax."
+verbose = "Lists every command your account is authorized to run via `sudo` (including `/etc/sudoers.d/ncui-*` least-privilege rules) and runs `visudo -c` syntax checks."
+
+["cc_auth:usbguard_term"]
+title = "Inspect USBGuard Devices in Terminal"
+short = "Opens a terminal running `sudo nc-usbguard list` (or `sudo usbguard list-devices`) to audit USB rules live."
+verbose = "Displays raw USBGuard device IDs, rule targets (`allow`/`block`/`reject`), `VID:PID` hashes, and interface descriptors directly from the daemon."
+
+# ==============================================================================
+# AUTH -> SUDOERS & PRIVILEGED HELPERS (`panels/cc_auth_sudoers.py`)
+# ==============================================================================
+["cc_auth:priv_inspect:*"]
+title = "Inspect Privileged Sudoers Rule"
+short = "Selects this action in the Master-Detail registry to inspect its `/etc/sudoers.d/ncui-*` target path, purpose, and exact `NOPASSWD` lines."
+verbose = "NC-UI isolates elevated tasks into discrete, wildcard-free `/etc/sudoers.d/ncui-*` files (`0440 root:root`). Selecting a row previews the exact rule lines before you authorize or run it."
+
+["priv:exec:*"]
+title = "Execute Privileged Helper"
+short = "Runs the selected privileged action via its authorized `/etc/sudoers.d/ncui-*` rule (or opens the authorization modal if locked)."
+verbose = "Executes only the exact pre-audited helper binary or subcommand bound to this action ID. If the sudoers rule is not yet installed, NC-UI opens the explicit review prompt first."
+
+["priv:revoke:*"]
+title = "Revoke Sudoers Rule"
+short = "Removes the dedicated `/etc/sudoers.d/ncui-*` rule file for this action, locking it back behind explicit authorization."
+verbose = "Deletes the `0440 root:root` drop-in file from `/etc/sudoers.d/` using your unlocked sudo session, Polkit, or an explicit password prompt."
+
+["priv:sync_helpers"]
+title = "Sync Bundled Root Helpers to /usr/lib/ncui/sbin"
+short = "Installs or updates bundled Nightcity `nc-*` helpers into `/usr/lib/ncui/sbin` (`0755 root:root`) and verifies SHA-256 parity."
+verbose = "Copies bundled privileged helpers (`nc-usbguard`, `nc-posture`, `nc-fan-profile`, `nc-snap`, `nc-vault`, `nc-hanoi`, `nc-rescue`, `nc-chroot`, `nc-golden`, `nc-disks`) into root-owned `/usr/lib/ncui/sbin` so sudoers rules never execute user-writable scripts."
+diagram = "security_trust"
+diagram_focus = "sudoers"
+
+["priv:unlock"]
+title = "Unlock Admin Sudo Session"
+short = "Prompts for your sudo password once (kept briefly in memory via `sudo -S`) so authorizing or revoking `/etc/sudoers.d/ncui-*` rules works smoothly without Polkit popups."
+verbose = "Opens the secure `NcPromptBar` password input to validate `sudo` credentials for rule installation, revocation, and `/usr/lib/ncui/sbin` helper synchronization during the current session."
+
+# ==============================================================================
+# AUTH -> TPM2, SECURE BOOT & LUKS2 (`panels/cc_auth_tpm.py`)
+# ==============================================================================
+["cc_auth:sbctl_verify"]
+title = "Verify Secure Boot & UKI Signatures"
+short = "Opens a terminal running `sudo sbctl status && sudo sbctl verify` to check UEFI Secure Boot and ESP binary signatures."
+verbose = "Audits Setup/User Mode state, enrolled PK/KEK/db keys, and confirms every Unified Kernel Image (`.efi`) and Limine EFI binary on the ESP is validly signed."
+diagram = "security_trust"
+diagram_focus = "sbctl"
+
+["cc_auth:luks_term"]
+title = "Inspect LUKS2 Header & Keyslots"
+short = "Opens a terminal running `sudo cryptsetup luksDump <device>` to inspect LUKS2 cipher metadata, passphrases, and TPM2 token slots."
+verbose = "Displays the full LUKS2 JSON header, PBKDF/Argon2id keyslots, recovery slots, and `systemd-tpm2` token bindings for the root encrypted container."
+diagram = "security_trust"
+diagram_focus = "luks"
+
+["cc_auth:tpm_enroll"]
+title = "Inspect / Enroll TPM2 in LUKS2"
+short = "Opens a terminal running `sudo systemd-cryptenroll <device> --tpm2-device=list` to verify TPM 2.0 devices and manage PCR-bound slots."
+verbose = "Lists available TPM 2.0 hardware nodes (`/dev/tpmrm0`) in the context of your LUKS2 container so you can inspect or re-enroll PCR-sealed auto-unlock slots safely."
+diagram = "security_trust"
+diagram_focus = "tpm"
+
+# ==============================================================================
+# AUTH -> USBGUARD FIREWALL (`panels/cc_auth_usbguard.py`)
+# ==============================================================================
+["cc_auth:usb_auth"]
+title = "Authorize USBGuard Inspection & Control"
+short = "Opens the privilege review card for `usbguard_inspect` (`/etc/sudoers.d/ncui-usbguard`) so NC-UI can query and toggle USB devices."
+verbose = "Installs the least-privilege `/etc/sudoers.d/ncui-usbguard` rule validated by `visudo -cf` for `/usr/lib/ncui/sbin/nc-usbguard`, avoiding repeated password prompts."
+diagram = "security_trust"
+diagram_focus = "usb"
+
+["cc_auth:usb_refresh"]
+title = "Refresh USBGuard Device List"
+short = "Re-queries `usbguard list-devices` (via `nc-usbguard`) to update connected USB ports, classes, and allow/block verdicts."
+
+["cc_auth:usb_q_open"]
+title = "Filter USB Devices"
+short = "Activates the inline USB filter (`cc_auth_usb_q`) to search devices by USBGuard ID, product name, `VID:PID`, class, or port."
+
+["cc_auth:usb_q_clear"]
+title = "Clear USB Device Filter"
+short = "Clears the USB device search query and restores the full matching device table."
+
+["cc_auth:usb_status_cycle"]
+title = "Cycle USB Status Filter"
+short = "Cycles the device list filter pill between `ALL`, `ALLOWED`, and `BLOCKED` USBGuard verdicts."
+
+["cc_auth:usb_scope:periph"]
+title = "Show External Peripherals Only"
+short = "Hides USB root hubs and intermediate hubs (`09:*`) so only endpoint peripherals (HID, storage, audio, tokens) are listed."
+
+["cc_auth:usb_scope:all"]
+title = "Show All USB Devices & Hubs"
+short = "Includes USB root hubs and internal/external hubs alongside endpoint peripherals in the USBGuard table."
+
+["cc_auth:usb_persist:perm"]
+title = "Set Rule Mode: Permanent"
+short = "Configures `Allow` and `Block` actions to persist across reboots (`--permanent` in `/etc/usbguard/rules.conf`)."
+verbose = "When Permanent is selected, toggling a USB device updates both the live `usbguard-daemon` policy and the persistent rule table on disk."
+
+["cc_auth:usb_persist:temp"]
+title = "Set Rule Mode: Temporary (Session)"
+short = "Configures `Allow` and `Block` actions to apply only in live memory until reboot or unplug, leaving `/etc/usbguard/rules.conf` untouched."
+verbose = "Ideal for testing untrusted USB sticks or temporary guest peripherals without permanently whitelisting their `VID:PID` and serial in `/etc/usbguard/rules.conf`."
+
+["cc_auth:usb_act:allow:*"]
+title = "Allow USB Device"
+short = "Authorizes this USB device in `usbguard-daemon` (`allow-device`) permanently or temporarily according to the active Persistence pill."
+verbose = "Unblocks the device's USB interfaces and binds its kernel drivers. Uses `--permanent` if Persistence is set to Permanent, or runtime-only if Temporary."
+
+["cc_auth:usb_act:block:*"]
+title = "Block USB Device"
+short = "Blocks this USB device in `usbguard-daemon` (`block-device`) permanently or temporarily according to the active Persistence pill."
+verbose = "Deauthorizes the USB device immediately in the kernel and updates `/etc/usbguard/rules.conf` when Persistence is set to Permanent."
