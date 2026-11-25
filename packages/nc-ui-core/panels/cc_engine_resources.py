@@ -2,6 +2,7 @@
 """NC-UI System Resources & Embedded Terminal TUI Engine (`panels/cc_engine_resources.py`)."""
 
 import atexit
+from collections import deque
 import ctypes
 import fcntl
 import glob
@@ -516,6 +517,73 @@ class _VTermScreenCell(ctypes.Structure):
     ]
 
 
+class _VTermRect(ctypes.Structure):
+    _fields_ = [
+        ("start_row", ctypes.c_int),
+        ("end_row", ctypes.c_int),
+        ("start_col", ctypes.c_int),
+        ("end_col", ctypes.c_int),
+    ]
+
+
+_VTERM_SB_PUSH_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.POINTER(_VTermScreenCell), ctypes.c_void_p)
+_VTERM_SB_CLEAR_CB = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)
+
+
+class _VTermScreenCallbacks(ctypes.Structure):
+    _fields_ = [
+        ("damage", ctypes.c_void_p),
+        ("moverect", ctypes.c_void_p),
+        ("movecursor", ctypes.c_void_p),
+        ("settermprop", ctypes.c_void_p),
+        ("bell", ctypes.c_void_p),
+        ("resize", ctypes.c_void_p),
+        ("sb_pushline", _VTERM_SB_PUSH_CB),
+        ("sb_popline", ctypes.c_void_p),
+        ("sb_clear", _VTERM_SB_CLEAR_CB),
+    ]
+
+
+VTERM_MOD_NONE = 0x00
+VTERM_MOD_SHIFT = 0x01
+VTERM_MOD_ALT = 0x02
+VTERM_MOD_CTRL = 0x04
+
+VTERM_KEY_ENTER = 1
+VTERM_KEY_TAB = 2
+VTERM_KEY_BACKSPACE = 3
+VTERM_KEY_ESCAPE = 4
+VTERM_KEY_UP = 5
+VTERM_KEY_DOWN = 6
+VTERM_KEY_LEFT = 7
+VTERM_KEY_RIGHT = 8
+VTERM_KEY_INS = 9
+VTERM_KEY_DEL = 10
+VTERM_KEY_HOME = 11
+VTERM_KEY_END = 12
+VTERM_KEY_PAGEUP = 13
+VTERM_KEY_PAGEDOWN = 14
+VTERM_KEY_FUNCTION_0 = 256
+VTERM_KEY_KP_0 = 512
+VTERM_KEY_KP_1 = 513
+VTERM_KEY_KP_2 = 514
+VTERM_KEY_KP_3 = 515
+VTERM_KEY_KP_4 = 516
+VTERM_KEY_KP_5 = 517
+VTERM_KEY_KP_6 = 518
+VTERM_KEY_KP_7 = 519
+VTERM_KEY_KP_8 = 520
+VTERM_KEY_KP_9 = 521
+VTERM_KEY_KP_MULT = 522
+VTERM_KEY_KP_PLUS = 523
+VTERM_KEY_KP_COMMA = 524
+VTERM_KEY_KP_MINUS = 525
+VTERM_KEY_KP_PERIOD = 526
+VTERM_KEY_KP_DIVIDE = 527
+VTERM_KEY_KP_ENTER = 528
+VTERM_KEY_KP_EQUAL = 529
+
+
 _LIBVTERM = None
 
 
@@ -531,12 +599,24 @@ def _get_libvterm():
     lib.vterm_set_utf8.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.vterm_obtain_screen.argtypes = [ctypes.c_void_p]
     lib.vterm_obtain_screen.restype = ctypes.c_void_p
+    lib.vterm_obtain_state.argtypes = [ctypes.c_void_p]
+    lib.vterm_obtain_state.restype = ctypes.c_void_p
+    lib.vterm_state_get_cursorpos.argtypes = [ctypes.c_void_p, ctypes.POINTER(_VTermPos)]
+    lib.vterm_screen_set_callbacks.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_VTermScreenCallbacks),
+        ctypes.c_void_p,
+    ]
     lib.vterm_screen_enable_altscreen.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.vterm_screen_reset.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.vterm_input_write.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
     lib.vterm_input_write.restype = ctypes.c_size_t
     lib.vterm_output_read.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
     lib.vterm_output_read.restype = ctypes.c_size_t
+    lib.vterm_keyboard_unichar.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int]
+    lib.vterm_keyboard_key.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    lib.vterm_keyboard_start_paste.argtypes = [ctypes.c_void_p]
+    lib.vterm_keyboard_end_paste.argtypes = [ctypes.c_void_p]
     lib.vterm_screen_get_cell.argtypes = [ctypes.c_void_p, _VTermPos, ctypes.POINTER(_VTermScreenCell)]
     lib.vterm_screen_get_cell.restype = ctypes.c_int
     lib.vterm_screen_convert_color_to_rgb.argtypes = [ctypes.c_void_p, ctypes.POINTER(_VTermColor)]
@@ -544,7 +624,40 @@ def _get_libvterm():
     return lib
 
 
+def _decode_vterm_cell(lib, scr, cell) -> tuple:
+    cp = cell.chars[0]
+    if 0 < cp <= 0x10FFFF:
+        ch = chr(cp)
+        for k in range(1, 6):
+            ck = cell.chars[k]
+            if 0 < ck <= 0x10FFFF:
+                ch += chr(ck)
+            else:
+                break
+    elif cp == 0xFFFFFFFF:
+        ch = ""
+    else:
+        ch = " "
+    fg = None
+    if not (cell.fg.type & 0x02):
+        fg_c = _VTermColor(cell.fg.type, cell.fg.r, cell.fg.g, cell.fg.b)
+        lib.vterm_screen_convert_color_to_rgb(scr, ctypes.byref(fg_c))
+        fg = (fg_c.r / 255.0, fg_c.g / 255.0, fg_c.b / 255.0)
+    bg = None
+    if not (cell.bg.type & 0x04):
+        bg_c = _VTermColor(cell.bg.type, cell.bg.r, cell.bg.g, cell.bg.b)
+        lib.vterm_screen_convert_color_to_rgb(scr, ctypes.byref(bg_c))
+        bg = (bg_c.r / 255.0, bg_c.g / 255.0, bg_c.b / 255.0)
+    bold = bool(cell.attrs & 0x01)
+    rev = bool(cell.attrs & 0x20)
+    return (ch, fg, bg, bold, rev)
+
+
 def _tui_child_preexec() -> None:
+    try:
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    except Exception:
+        pass
     try:
         ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)
     except Exception:
@@ -583,6 +696,11 @@ def _reap_orphan_btop() -> None:
 
 
 _TUI_SESSIONS: dict = {}
+_ACTIVE_TUI_ID: str = ""
+
+
+def get_active_tui() -> str:
+    return _ACTIVE_TUI_ID
 
 
 def _ensure_btop_config() -> str:
@@ -678,24 +796,72 @@ class EmbeddedTuiSession:
         self.rows = max(8, int(rows))
         self.cols = max(40, int(cols))
         self.cc_panel = cc_panel
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.grid = self._empty_grid(self.rows, self.cols)
+        self.scrollback = deque(maxlen=4000)
+        self.scroll_offset = 0
+        self.sel_anchor = None
+        self.sel_end = None
+        self.sel_active = False
+        self._press_anchor = None
+        self._sel_dragged = False
         self.master_fd = -1
         self.proc = None
         self.alive = False
         self.stopped = False
+        self.exit_code = None
         self.on_redraw = None
+        self.on_exit = None
         self._redraw_pending = False
+        self._outbuf = ctypes.create_string_buffer(4096)
         self._lib = _get_libvterm()
         self._vt = self._lib.vterm_new(self.rows, self.cols)
         self._lib.vterm_set_utf8(self._vt, 1)
         self._scr = self._lib.vterm_obtain_screen(self._vt)
+        self._state = self._lib.vterm_obtain_state(self._vt)
+        self.cursor_pos = (0, 0)
+        self._sb_push_cb = _VTERM_SB_PUSH_CB(self._on_sb_pushline)
+        self._sb_clear_cb = _VTERM_SB_CLEAR_CB(self._on_sb_clear)
+        self._cb_struct = _VTermScreenCallbacks(
+            sb_pushline=self._sb_push_cb,
+            sb_clear=self._sb_clear_cb,
+        )
+        self._lib.vterm_screen_set_callbacks(self._scr, ctypes.byref(self._cb_struct), None)
         self._lib.vterm_screen_enable_altscreen(self._scr, 1)
         self._lib.vterm_screen_reset(self._scr, 1)
 
     @staticmethod
     def _empty_grid(rows: int, cols: int) -> list:
         return [[(" ", None, None, False, False) for _ in range(cols)] for _ in range(rows)]
+
+    def _on_sb_pushline(self, cols: int, cells_ptr, _user) -> int:
+        if not self._scr or cols <= 0 or not cells_ptr:
+            return 1
+        row_cells = [_decode_vterm_cell(self._lib, self._scr, cells_ptr[c]) for c in range(cols)]
+        dropped = self.scrollback.maxlen is not None and len(self.scrollback) >= self.scrollback.maxlen
+        self.scrollback.append(row_cells)
+        if dropped:
+            if self.sel_anchor is not None:
+                self.sel_anchor = (self.sel_anchor[0] - 1, self.sel_anchor[1])
+            if self.sel_end is not None:
+                self.sel_end = (self.sel_end[0] - 1, self.sel_end[1])
+            if self._press_anchor is not None:
+                self._press_anchor = (self._press_anchor[0] - 1, self._press_anchor[1])
+            if (self.sel_anchor and self.sel_anchor[0] < 0) or (self.sel_end and self.sel_end[0] < 0):
+                self.sel_anchor = None
+                self.sel_end = None
+        elif self.scroll_offset > 0:
+            self.scroll_offset = min(len(self.scrollback), self.scroll_offset + 1)
+        return 1
+
+    def _on_sb_clear(self, _user) -> int:
+        self.scrollback.clear()
+        self.scroll_offset = 0
+        self.sel_anchor = None
+        self.sel_end = None
+        self._press_anchor = None
+        self._sel_dragged = False
+        return 1
 
     def _snapshot_locked(self) -> None:
         if not self._vt:
@@ -711,34 +877,14 @@ class EmbeddedTuiSession:
             for c in range(self.cols):
                 pos.col = c
                 if lib.vterm_screen_get_cell(scr, pos, ctypes.byref(cell)):
-                    cp = cell.chars[0]
-                    if 0 < cp <= 0x10FFFF:
-                        ch = chr(cp)
-                        for k in range(1, 6):
-                            ck = cell.chars[k]
-                            if 0 < ck <= 0x10FFFF:
-                                ch += chr(ck)
-                            else:
-                                break
-                    elif cp == 0xFFFFFFFF:
-                        ch = ""
-                    else:
-                        ch = " "
-                    fg = None
-                    if not (cell.fg.type & 0x02):
-                        lib.vterm_screen_convert_color_to_rgb(scr, ctypes.byref(cell.fg))
-                        fg = (cell.fg.r / 255.0, cell.fg.g / 255.0, cell.fg.b / 255.0)
-                    bg = None
-                    if not (cell.bg.type & 0x04):
-                        lib.vterm_screen_convert_color_to_rgb(scr, ctypes.byref(cell.bg))
-                        bg = (cell.bg.r / 255.0, cell.bg.g / 255.0, cell.bg.b / 255.0)
-                    bold = bool(cell.attrs & 0x01)
-                    rev = bool(cell.attrs & 0x20)
-                    row_cells.append((ch, fg, bg, bold, rev))
+                    row_cells.append(_decode_vterm_cell(lib, scr, cell))
                 else:
                     row_cells.append((" ", None, None, False, False))
             new_grid.append(row_cells)
         self.grid = new_grid
+        cpos = _VTermPos()
+        lib.vterm_state_get_cursorpos(self._state, ctypes.byref(cpos))
+        self.cursor_pos = (int(cpos.row), int(cpos.col))
 
     def start(self) -> None:
         master, slave = pty.openpty()
@@ -869,7 +1015,21 @@ class EmbeddedTuiSession:
                     self._snapshot_locked()
                 self._request_redraw()
         finally:
+            if self.proc is not None and self.exit_code is None:
+                try:
+                    self.exit_code = self.proc.wait(timeout=0.5)
+                except Exception:
+                    rc = self.proc.poll()
+                    self.exit_code = 0 if rc is None else rc
             self.alive = False
+            if not self.stopped:
+                self._request_redraw()
+                if _ACTIVE_TUI_ID == self.tui_id:
+                    from gi.repository import GLib
+                    GLib.idle_add(lambda: (set_active_tui("", shell=getattr(self.cc_panel, "shell", None)), False)[1])
+                if self.on_exit is not None:
+                    from gi.repository import GLib
+                    GLib.idle_add(self.on_exit)
 
     def _write_btop_fallback_frame(self) -> None:
         tele = get_cpu_telemetry({})
@@ -996,12 +1156,285 @@ class EmbeddedTuiSession:
         elif self.proc is None and self.alive and self.tui_id == "btop":
             self._write_btop_fallback_frame()
 
+    def _flush_vterm_output_locked(self) -> None:
+        if not self._vt or self.master_fd < 0 or not self.alive:
+            return
+        while True:
+            n = self._lib.vterm_output_read(self._vt, self._outbuf, 4096)
+            if n <= 0:
+                break
+            try:
+                os.write(self.master_fd, self._outbuf.raw[:n])
+            except OSError:
+                break
+
+    def _fit_row_locked(self, row: list, cols: int) -> list:
+        if len(row) == cols:
+            return list(row)
+        if len(row) > cols:
+            return list(row[:cols])
+        return list(row) + [(" ", None, None, False, False) for _ in range(cols - len(row))]
+
+    def _norm_selection_locked(self):
+        if self.sel_anchor is None or self.sel_end is None:
+            return None
+        a = (int(self.sel_anchor[0]), int(self.sel_anchor[1]))
+        b = (int(self.sel_end[0]), int(self.sel_end[1]))
+        if a <= b:
+            return (a[0], a[1], b[0], b[1])
+        return (b[0], b[1], a[0], a[1])
+
+    def has_selection(self) -> bool:
+        with self.lock:
+            return self.sel_anchor is not None and self.sel_end is not None
+
+    def clear_selection(self) -> None:
+        with self.lock:
+            changed = self.sel_anchor is not None or self.sel_end is not None or self.sel_active
+            self.sel_anchor = None
+            self.sel_end = None
+            self.sel_active = False
+            self._press_anchor = None
+            self._sel_dragged = False
+        if changed:
+            self._request_redraw()
+
+    def _view_to_abs_locked(self, view_row: int, col: int) -> tuple[int, int]:
+        vr = max(0, min(self.rows - 1, int(view_row)))
+        vc = max(0, min(self.cols - 1, int(col)))
+        sb_len = len(self.scrollback)
+        off = max(0, min(sb_len, int(self.scroll_offset)))
+        abs_row = max(0, (sb_len - off) + vr)
+        return abs_row, vc
+
+    def begin_selection(self, view_row: int, col: int) -> None:
+        with self.lock:
+            changed = self.sel_anchor is not None or self.sel_end is not None
+            self.sel_anchor = None
+            self.sel_end = None
+            self._press_anchor = self._view_to_abs_locked(view_row, col)
+            self._sel_dragged = False
+            self.sel_active = True
+        if changed:
+            self._request_redraw()
+
+    def update_selection(self, view_row: int, col: int) -> None:
+        with self.lock:
+            if not self.sel_active or self._press_anchor is None:
+                return
+            cur = self._view_to_abs_locked(view_row, col)
+            if cur != self._press_anchor:
+                self._sel_dragged = True
+            if self._sel_dragged:
+                self.sel_anchor = self._press_anchor
+                self.sel_end = cur
+            else:
+                return
+        self._request_redraw()
+
+    def end_selection(self) -> None:
+        with self.lock:
+            self.sel_active = False
+            if not self._sel_dragged:
+                self.sel_anchor = None
+                self.sel_end = None
+            self._press_anchor = None
+        self._request_redraw()
+
+    def _all_rows_locked(self) -> list:
+        return list(self.scrollback) + list(self.grid)
+
+    def select_word_at(self, view_row: int, col: int) -> None:
+        word_re = re.compile(r"[A-Za-z0-9_./:~+\-@%&=?!#]")
+        with self.lock:
+            abs_r, vc = self._view_to_abs_locked(view_row, col)
+            all_rows = self._all_rows_locked()
+            if not (0 <= abs_r < len(all_rows)):
+                return
+            row = all_rows[abs_r]
+            if not row:
+                return
+            vc = max(0, min(len(row) - 1, vc))
+            ch0 = row[vc][0] or " "
+            if ch0 == " ":
+                c0 = c1 = vc
+                while c0 > 0 and (row[c0 - 1][0] or " ") == " ":
+                    c0 -= 1
+                while c1 + 1 < len(row) and (row[c1 + 1][0] or " ") == " ":
+                    c1 += 1
+            elif word_re.match(ch0):
+                c0 = c1 = vc
+                while c0 > 0 and word_re.match(row[c0 - 1][0] or " "):
+                    c0 -= 1
+                while c1 + 1 < len(row) and word_re.match(row[c1 + 1][0] or " "):
+                    c1 += 1
+            else:
+                c0 = c1 = vc
+            self.sel_anchor = (abs_r, c0)
+            self.sel_end = (abs_r, c1)
+            self.sel_active = False
+            self._sel_dragged = True
+        self._request_redraw()
+
+    def select_line_at(self, view_row: int) -> None:
+        with self.lock:
+            abs_r, _ = self._view_to_abs_locked(view_row, 0)
+            all_rows = self._all_rows_locked()
+            if not (0 <= abs_r < len(all_rows)):
+                return
+            row = all_rows[abs_r]
+            last_non_empty = -1
+            for idx, cell in enumerate(row):
+                if cell[0] and cell[0] != " ":
+                    last_non_empty = idx
+            end_c = last_non_empty if last_non_empty >= 0 else max(0, self.cols - 1)
+            self.sel_anchor = (abs_r, 0)
+            self.sel_end = (abs_r, end_c)
+            self.sel_active = False
+            self._sel_dragged = True
+        self._request_redraw()
+
+    def select_all(self) -> None:
+        with self.lock:
+            all_rows = self._all_rows_locked()
+            if not all_rows:
+                return
+            last_r = len(all_rows) - 1
+            while last_r > 0 and not any(cell[0] and cell[0] != " " for cell in all_rows[last_r]):
+                last_r -= 1
+            self.sel_anchor = (0, 0)
+            self.sel_end = (last_r, max(0, len(all_rows[last_r]) - 1))
+            self.sel_active = False
+            self._sel_dragged = True
+        self._request_redraw()
+
+    def get_selected_text(self) -> str:
+        with self.lock:
+            bounds = self._norm_selection_locked()
+            if bounds is None:
+                return ""
+            sr, sc, er, ec = bounds
+            all_rows = self._all_rows_locked()
+            if not all_rows:
+                return ""
+            sr = max(0, min(len(all_rows) - 1, sr))
+            er = max(sr, min(len(all_rows) - 1, er))
+            lines = []
+            for r in range(sr, er + 1):
+                row = all_rows[r]
+                r_len = len(row)
+                c_start = sc if r == sr else 0
+                c_end = min(r_len - 1, ec) if r == er else (r_len - 1)
+                if c_start > c_end or c_start >= r_len:
+                    lines.append("")
+                    continue
+                chars = []
+                for c in range(c_start, c_end + 1):
+                    txt = row[c][0]
+                    chars.append(txt if txt else "")
+                lines.append("".join(chars).rstrip())
+            return "\n".join(lines)
+
+    def scroll_by(self, delta: int) -> None:
+        with self.lock:
+            sb_len = len(self.scrollback)
+            new_off = max(0, min(sb_len, int(self.scroll_offset) + int(delta)))
+            if new_off == self.scroll_offset:
+                return
+            self.scroll_offset = new_off
+        self._request_redraw()
+
+    def scroll_to_top(self) -> None:
+        with self.lock:
+            sb_len = len(self.scrollback)
+            if self.scroll_offset == sb_len:
+                return
+            self.scroll_offset = sb_len
+        self._request_redraw()
+
+    def scroll_to_bottom(self) -> None:
+        with self.lock:
+            if self.scroll_offset == 0:
+                return
+            self.scroll_offset = 0
+        self._request_redraw()
+
+    def get_viewport_snapshot(self) -> tuple:
+        with self.lock:
+            rows = self.rows
+            cols = self.cols
+            sb_len = len(self.scrollback)
+            off = max(0, min(sb_len, int(self.scroll_offset)))
+            self.scroll_offset = off
+            if off == 0:
+                vis = [list(r) for r in self.grid]
+            else:
+                all_rows = self._all_rows_locked()
+                start_idx = max(0, sb_len - off)
+                slice_rows = all_rows[start_idx : start_idx + rows]
+                vis = [self._fit_row_locked(r, cols) for r in slice_rows]
+                while len(vis) < rows:
+                    vis.append([(" ", None, None, False, False) for _ in range(cols)])
+            cur_pos = getattr(self, "cursor_pos", (0, 0))
+            sel_bounds = self._norm_selection_locked()
+            return rows, cols, vis, cur_pos, off, sb_len, sel_bounds
+
     def send_bytes(self, data: bytes) -> None:
         if self.master_fd >= 0 and self.alive and data:
+            with self.lock:
+                self.scroll_offset = 0
+                if self.sel_anchor is not None or self.sel_end is not None:
+                    self.sel_anchor = None
+                    self.sel_end = None
             try:
                 os.write(self.master_fd, data)
             except OSError:
                 pass
+            self._request_redraw()
+
+    def send_vterm_key(self, vkey: int, vmod: int = 0) -> None:
+        if self.master_fd >= 0 and self.alive:
+            with self.lock:
+                self.scroll_offset = 0
+                if self.sel_anchor is not None or self.sel_end is not None:
+                    self.sel_anchor = None
+                    self.sel_end = None
+                if self._vt:
+                    self._lib.vterm_keyboard_key(self._vt, int(vkey), int(vmod))
+                    self._flush_vterm_output_locked()
+            self._request_redraw()
+
+    def send_vterm_unichar(self, uc: int, vmod: int = 0) -> None:
+        if self.master_fd >= 0 and self.alive and uc >= 0:
+            with self.lock:
+                self.scroll_offset = 0
+                if self.sel_anchor is not None or self.sel_end is not None:
+                    self.sel_anchor = None
+                    self.sel_end = None
+                if self._vt:
+                    self._lib.vterm_keyboard_unichar(self._vt, int(uc), int(vmod))
+                    self._flush_vterm_output_locked()
+            self._request_redraw()
+
+    def paste_text(self, text: str) -> None:
+        if self.master_fd >= 0 and self.alive and text:
+            norm = text.replace("\r\n", "\r").replace("\n", "\r")
+            payload = norm.encode("utf-8", errors="ignore")
+            with self.lock:
+                self.scroll_offset = 0
+                if self.sel_anchor is not None or self.sel_end is not None:
+                    self.sel_anchor = None
+                    self.sel_end = None
+                if self._vt:
+                    self._lib.vterm_keyboard_start_paste(self._vt)
+                    self._flush_vterm_output_locked()
+                    try:
+                        os.write(self.master_fd, payload)
+                    except OSError:
+                        pass
+                    self._lib.vterm_keyboard_end_paste(self._vt)
+                    self._flush_vterm_output_locked()
+            self._request_redraw()
 
     def _request_redraw(self) -> None:
         if not self._redraw_pending:
@@ -1012,7 +1445,7 @@ class EmbeddedTuiSession:
     def _emit_redraw(self) -> bool:
         self._redraw_pending = False
         cb = self.on_redraw
-        if cb and self.alive and not self.stopped:
+        if cb and not self.stopped:
             cb()
         return False
 
@@ -1048,11 +1481,43 @@ class EmbeddedTuiSession:
             except Exception:
                 pass
         with self.lock:
+            if self._scr:
+                try:
+                    self._lib.vterm_screen_set_callbacks(self._scr, None, None)
+                except Exception:
+                    pass
             vt = self._vt
             self._vt = None
             self._scr = None
+            self._sb_push_cb = None
+            self._sb_clear_cb = None
+            self._cb_struct = None
             if vt:
                 self._lib.vterm_free(vt)
+
+
+def get_tui_session(tui_id: str) -> EmbeddedTuiSession | None:
+    return _TUI_SESSIONS.get(str(tui_id))
+
+
+def start_tui_session(
+    tui_id: str,
+    cmd: list[str],
+    rows: int,
+    cols: int,
+    cc_panel=None,
+    on_exit=None,
+) -> EmbeddedTuiSession:
+    tid = str(tui_id)
+    old = _TUI_SESSIONS.pop(tid, None)
+    if old is not None:
+        old.terminate()
+    sess = EmbeddedTuiSession(tid, cmd, rows=rows, cols=cols, cc_panel=cc_panel)
+    sess.on_exit = on_exit
+    _TUI_SESSIONS[tid] = sess
+    sess.start()
+    set_active_tui(tid, shell=getattr(cc_panel, "shell", None))
+    return sess
 
 
 def get_or_start_tui_session(tui_id: str, cmd: list[str], rows: int, cols: int, cc_panel=None) -> EmbeddedTuiSession:
@@ -1075,19 +1540,26 @@ def get_or_start_tui_session(tui_id: str, cmd: list[str], rows: int, cols: int, 
 
 def close_embedded_tui(tui_id: str) -> None:
     sess = _TUI_SESSIONS.pop(tui_id, None)
+    sess_shell = getattr(getattr(sess, "cc_panel", None), "shell", None) if sess is not None else None
     if sess is not None:
         sess.terminate()
-    if STATE.get("system", "active_tui", "") == tui_id:
-        STATE.set("system", "active_tui", "")
+    if _ACTIVE_TUI_ID == tui_id:
+        set_active_tui("", shell=sess_shell)
 
 
 def close_embedded_tuis() -> None:
+    if not _TUI_SESSIONS and not _ACTIVE_TUI_ID:
+        return
+    sess_shell = None
     for tid in list(_TUI_SESSIONS.keys()):
         sess = _TUI_SESSIONS.pop(tid, None)
         if sess is not None:
+            if sess_shell is None:
+                sess_shell = getattr(getattr(sess, "cc_panel", None), "shell", None)
             sess.terminate()
     _reap_orphan_btop()
-    STATE.set("system", "active_tui", "")
+    if _ACTIVE_TUI_ID:
+        set_active_tui("", shell=sess_shell)
 
 
 def restart_tui_session(tui_id: str, cc_panel=None) -> None:
@@ -1096,10 +1568,11 @@ def restart_tui_session(tui_id: str, cc_panel=None) -> None:
         cc_panel.shell.refresh_view()
 
 
-def set_active_tui(tui_id: str) -> None:
+def set_active_tui(tui_id: str, shell=None) -> None:
+    global _ACTIVE_TUI_ID
     tid = str(tui_id or "")
-    prev = STATE.get("system", "active_tui", "")
-    STATE.set("system", "active_tui", tid)
+    prev = _ACTIVE_TUI_ID
+    _ACTIVE_TUI_ID = tid
     if tid != prev:
         for s in list(_TUI_SESSIONS.values()):
             s._request_redraw()
@@ -1108,82 +1581,213 @@ def set_active_tui(tui_id: str) -> None:
 atexit.register(close_embedded_tuis)
 
 
+def _tui_copy_text(text: str, primary: bool = False) -> None:
+    if not text:
+        return
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gtk
+        sel_atom = Gdk.SELECTION_PRIMARY if primary else Gdk.SELECTION_CLIPBOARD
+        cb = Gtk.Clipboard.get(sel_atom)
+        if cb is not None:
+            cb.set_text(text, -1)
+            cb.store()
+    except Exception:
+        pass
+    if not primary:
+        probe.copy_clipboard(text)
+
+
+def _tui_read_clipboard(primary: bool = False) -> str:
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gtk
+        sel_atom = Gdk.SELECTION_PRIMARY if primary else Gdk.SELECTION_CLIPBOARD
+        cb = Gtk.Clipboard.get(sel_atom)
+        if cb is not None:
+            txt = cb.wait_for_text()
+            if txt:
+                return txt
+    except Exception:
+        pass
+    cmd = ["wl-paste", "--no-newline"] + (["--primary"] if primary else [])
+    ok, out = probe.run_cmd(cmd, timeout=1.0)
+    return out if ok and out else ""
+
+
 def handle_cc_resources_key_press(cc_panel, event) -> bool:
     if get_active_inline_entry():
         if handle_inline_entry_key_press(event, shell=cc_panel.shell):
             return True
-    active_id = str(STATE.get("system", "active_tui", "") or "")
-    if active_id not in ("btop", "nvtop"):
+    active_id = get_active_tui()
+    if not active_id or active_id not in _TUI_SESSIONS:
         return False
     import gi
     gi.require_version("Gdk", "3.0")
     from gi.repository import Gdk
-    if event.keyval == Gdk.KEY_Escape:
-        set_active_tui("")
-        return True
-    sess = _TUI_SESSIONS.get(active_id)
-    if sess is None or not sess.alive:
-        return False
 
     kv = event.keyval
     state = event.state
+    is_shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
     is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
     is_alt = bool(state & Gdk.ModifierType.MOD1_MASK)
 
-    special = {
-        Gdk.KEY_Up: b"\x1b[A",
-        Gdk.KEY_KP_Up: b"\x1b[A",
-        Gdk.KEY_Down: b"\x1b[B",
-        Gdk.KEY_KP_Down: b"\x1b[B",
-        Gdk.KEY_Right: b"\x1b[C",
-        Gdk.KEY_KP_Right: b"\x1b[C",
-        Gdk.KEY_Left: b"\x1b[D",
-        Gdk.KEY_KP_Left: b"\x1b[D",
-        Gdk.KEY_Return: b"\r",
-        Gdk.KEY_KP_Enter: b"\r",
-        Gdk.KEY_BackSpace: b"\x7f",
-        Gdk.KEY_Delete: b"\x1b[3~",
-        Gdk.KEY_KP_Delete: b"\x1b[3~",
-        Gdk.KEY_Tab: b"\t",
-        Gdk.KEY_KP_Tab: b"\t",
-        Gdk.KEY_ISO_Left_Tab: b"\x1b[Z",
-        Gdk.KEY_Home: b"\x1b[H",
-        Gdk.KEY_KP_Home: b"\x1b[H",
-        Gdk.KEY_End: b"\x1b[F",
-        Gdk.KEY_KP_End: b"\x1b[F",
-        Gdk.KEY_Page_Up: b"\x1b[5~",
-        Gdk.KEY_KP_Page_Up: b"\x1b[5~",
-        Gdk.KEY_Page_Down: b"\x1b[6~",
-        Gdk.KEY_KP_Page_Down: b"\x1b[6~",
-        Gdk.KEY_F1: b"\x1bOP",
-        Gdk.KEY_F2: b"\x1bOQ",
-        Gdk.KEY_F3: b"\x1bOR",
-        Gdk.KEY_F4: b"\x1bOS",
-        Gdk.KEY_F5: b"\x1b[15~",
-        Gdk.KEY_F6: b"\x1b[17~",
-        Gdk.KEY_F7: b"\x1b[18~",
-        Gdk.KEY_F8: b"\x1b[19~",
-        Gdk.KEY_F9: b"\x1b[20~",
-        Gdk.KEY_F10: b"\x1b[21~",
-        Gdk.KEY_F11: b"\x1b[23~",
-        Gdk.KEY_F12: b"\x1b[24~",
+    if kv in (
+        Gdk.KEY_Shift_L,
+        Gdk.KEY_Shift_R,
+        Gdk.KEY_Control_L,
+        Gdk.KEY_Control_R,
+        Gdk.KEY_Alt_L,
+        Gdk.KEY_Alt_R,
+        Gdk.KEY_Meta_L,
+        Gdk.KEY_Meta_R,
+        Gdk.KEY_Super_L,
+        Gdk.KEY_Super_R,
+        Gdk.KEY_ISO_Level3_Shift,
+        Gdk.KEY_Caps_Lock,
+        Gdk.KEY_Num_Lock,
+    ):
+        return False
+
+    sess = _TUI_SESSIONS.get(active_id)
+    if sess is None:
+        return False
+
+    if kv == Gdk.KEY_Escape:
+        if sess.has_selection():
+            sess.clear_selection()
+            return True
+        set_active_tui("", shell=getattr(cc_panel, "shell", None))
+        return True
+
+    # Copy shortcuts (work even after command exit)
+    if is_ctrl and is_shift and kv in (Gdk.KEY_c, Gdk.KEY_C):
+        sel_txt = sess.get_selected_text()
+        if sel_txt:
+            _tui_copy_text(sel_txt, primary=False)
+        return True
+    if is_ctrl and kv == Gdk.KEY_Insert:
+        sel_txt = sess.get_selected_text()
+        if sel_txt:
+            _tui_copy_text(sel_txt, primary=False)
+        return True
+    if is_ctrl and not is_shift and not is_alt and kv in (Gdk.KEY_c, Gdk.KEY_C) and sess.has_selection():
+        sel_txt = sess.get_selected_text()
+        if sel_txt:
+            _tui_copy_text(sel_txt, primary=False)
+        sess.clear_selection()
+        return True
+
+    # Select all (Ctrl+Shift+A)
+    if is_ctrl and is_shift and kv in (Gdk.KEY_a, Gdk.KEY_A):
+        sess.select_all()
+        return True
+
+    # Scrollback navigation (work even after command exit)
+    if is_shift and kv in (Gdk.KEY_Page_Up, Gdk.KEY_KP_Page_Up):
+        sess.scroll_by(max(3, sess.rows // 2))
+        return True
+    if is_shift and kv in (Gdk.KEY_Page_Down, Gdk.KEY_KP_Page_Down):
+        sess.scroll_by(-max(3, sess.rows // 2))
+        return True
+    if is_shift and kv in (Gdk.KEY_Home, Gdk.KEY_KP_Home):
+        sess.scroll_to_top()
+        return True
+    if is_shift and kv in (Gdk.KEY_End, Gdk.KEY_KP_End):
+        sess.scroll_to_bottom()
+        return True
+
+    if not sess.alive:
+        return True
+
+    # Paste shortcuts (Ctrl+Shift+V, Shift+Insert)
+    if (is_ctrl and is_shift and kv in (Gdk.KEY_v, Gdk.KEY_V)) or (is_shift and kv in (Gdk.KEY_Insert, Gdk.KEY_KP_Insert)):
+        clip = _tui_read_clipboard(primary=False)
+        if clip:
+            sess.paste_text(clip)
+        return True
+
+    vmod = (VTERM_MOD_SHIFT if is_shift else 0) | (VTERM_MOD_ALT if is_alt else 0) | (VTERM_MOD_CTRL if is_ctrl else 0)
+    if kv == Gdk.KEY_ISO_Left_Tab:
+        sess.send_vterm_key(VTERM_KEY_TAB, vmod | VTERM_MOD_SHIFT)
+        return True
+
+    key_map = {
+        Gdk.KEY_Return: VTERM_KEY_ENTER,
+        Gdk.KEY_KP_Enter: VTERM_KEY_ENTER,
+        Gdk.KEY_Tab: VTERM_KEY_TAB,
+        Gdk.KEY_KP_Tab: VTERM_KEY_TAB,
+        Gdk.KEY_BackSpace: VTERM_KEY_BACKSPACE,
+        Gdk.KEY_Up: VTERM_KEY_UP,
+        Gdk.KEY_KP_Up: VTERM_KEY_UP,
+        Gdk.KEY_Down: VTERM_KEY_DOWN,
+        Gdk.KEY_KP_Down: VTERM_KEY_DOWN,
+        Gdk.KEY_Left: VTERM_KEY_LEFT,
+        Gdk.KEY_KP_Left: VTERM_KEY_LEFT,
+        Gdk.KEY_Right: VTERM_KEY_RIGHT,
+        Gdk.KEY_KP_Right: VTERM_KEY_RIGHT,
+        Gdk.KEY_Insert: VTERM_KEY_INS,
+        Gdk.KEY_KP_Insert: VTERM_KEY_INS,
+        Gdk.KEY_Delete: VTERM_KEY_DEL,
+        Gdk.KEY_KP_Delete: VTERM_KEY_DEL,
+        Gdk.KEY_Home: VTERM_KEY_HOME,
+        Gdk.KEY_KP_Home: VTERM_KEY_HOME,
+        Gdk.KEY_End: VTERM_KEY_END,
+        Gdk.KEY_KP_End: VTERM_KEY_END,
+        Gdk.KEY_Page_Up: VTERM_KEY_PAGEUP,
+        Gdk.KEY_KP_Page_Up: VTERM_KEY_PAGEUP,
+        Gdk.KEY_Page_Down: VTERM_KEY_PAGEDOWN,
+        Gdk.KEY_KP_Page_Down: VTERM_KEY_PAGEDOWN,
+        Gdk.KEY_F1: VTERM_KEY_FUNCTION_0 + 1,
+        Gdk.KEY_F2: VTERM_KEY_FUNCTION_0 + 2,
+        Gdk.KEY_F3: VTERM_KEY_FUNCTION_0 + 3,
+        Gdk.KEY_F4: VTERM_KEY_FUNCTION_0 + 4,
+        Gdk.KEY_F5: VTERM_KEY_FUNCTION_0 + 5,
+        Gdk.KEY_F6: VTERM_KEY_FUNCTION_0 + 6,
+        Gdk.KEY_F7: VTERM_KEY_FUNCTION_0 + 7,
+        Gdk.KEY_F8: VTERM_KEY_FUNCTION_0 + 8,
+        Gdk.KEY_F9: VTERM_KEY_FUNCTION_0 + 9,
+        Gdk.KEY_F10: VTERM_KEY_FUNCTION_0 + 10,
+        Gdk.KEY_F11: VTERM_KEY_FUNCTION_0 + 11,
+        Gdk.KEY_F12: VTERM_KEY_FUNCTION_0 + 12,
     }
-    seq = special.get(kv)
-    if seq is not None:
-        sess.send_bytes(seq)
+    vkey = key_map.get(kv)
+    if vkey is not None:
+        sess.send_vterm_key(vkey, vmod)
         return True
 
     uc = Gdk.keyval_to_unicode(kv)
-    if is_ctrl and 1 <= uc <= 127:
-        ch = chr(uc).lower()
-        if "a" <= ch <= "z":
-            sess.send_bytes(bytes([ord(ch) - 96]))
+    if is_ctrl:
+        ctrl_special = {
+            Gdk.KEY_space: b"\x00",
+            Gdk.KEY_bracketleft: b"\x1b",
+            Gdk.KEY_backslash: b"\x1c",
+            Gdk.KEY_bracketright: b"\x1d",
+            Gdk.KEY_asciicircum: b"\x1e",
+            Gdk.KEY_6: b"\x1e",
+            Gdk.KEY_underscore: b"\x1f",
+        }
+        if kv in ctrl_special:
+            sess.send_bytes(ctrl_special[kv])
             return True
+        if 1 <= uc <= 127:
+            ch = chr(uc).lower()
+            if "a" <= ch <= "z":
+                sess.send_bytes(bytes([ord(ch) - 96]))
+                return True
     if uc >= 32:
-        data = chr(uc).encode("utf-8")
+        sess.send_vterm_unichar(uc, VTERM_MOD_ALT if is_alt else VTERM_MOD_NONE)
+        return True
+    ev_str = getattr(event, "string", "") or ""
+    if ev_str and (ord(ev_str[0]) >= 32 or len(ev_str) > 1):
+        data = ev_str.encode("utf-8")
         sess.send_bytes((b"\x1b" + data) if is_alt else data)
         return True
-    return False
+    return True
 
 
 
@@ -1205,7 +1809,7 @@ def handle_cc_resources_link(cc_panel, uri: str) -> bool:
         restart_tui_session(tui_id, cc_panel=cc_panel)
     elif act.startswith("tui_focus:"):
         tui_id = act.split(":", 1)[1]
-        set_active_tui(tui_id)
+        set_active_tui(tui_id, shell=getattr(cc_panel, "shell", None))
         return True
     elif act.startswith("proc_sort:"):
         STATE.set("system", "cc_proc_sort", act.split(":", 1)[1])

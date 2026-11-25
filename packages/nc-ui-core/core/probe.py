@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -168,6 +170,43 @@ def open_terminal(args: list) -> None:
     candidates = ([pref] if pref != "auto" else []) + list_installed_terminals()
     term = next((shutil.which(c) for c in candidates if shutil.which(c)), "kitty")
     spawn_bg([term, "-e"] + list(args))
+
+
+def resolve_user_editor() -> str:
+    """Resolve `$VISUAL` / `$EDITOR` from environment or `/etc/profile.d/editor.sh` (never falls back to nano)."""
+    for key in ("VISUAL", "EDITOR"):
+        val = str(os.environ.get(key, "") or "").strip()
+        if val:
+            return val
+    prof_path = "/etc/profile.d/editor.sh"
+    if os.path.isfile(prof_path):
+        try:
+            raw = open(prof_path, "r", encoding="utf-8", errors="ignore").read()
+            found: dict[str, str] = {}
+            for m in re.finditer(r'(?m)^[ \t]*(?:export[ \t]+)?(VISUAL|EDITOR)\s*=\s*["\']?([^"\'\n#]+)["\']?', raw):
+                found.setdefault(m.group(1), m.group(2).strip())
+            for key in ("VISUAL", "EDITOR"):
+                if found.get(key):
+                    return found[key]
+        except Exception:
+            pass
+    return ""
+
+
+def open_in_editor(path: str, *, sudo: bool = False) -> tuple[bool, str]:
+    """Open `path` in the configured `$VISUAL`/`$EDITOR`; return `(False, reason)` if undefined or missing."""
+    ed = resolve_user_editor()
+    if not ed:
+        return False, "unset"
+    try:
+        parts = shlex.split(ed)
+    except ValueError:
+        parts = [ed]
+    if not parts or not has_bin(parts[0]):
+        return False, f"missing:{parts[0] if parts else ed}"
+    prefix = "sudo " if sudo else ""
+    open_terminal(["bash", "-c", f"{prefix}{shlex.join(parts)} {shlex.quote(path)} || read -p 'Press Enter to close...'"])
+    return True, parts[0]
 
 
 KNOWN_PKG_MANAGERS = ("paru", "yay", "pikaur", "trizen", "pacman", "apt", "dnf", "zypper", "apk", "xbps-query")

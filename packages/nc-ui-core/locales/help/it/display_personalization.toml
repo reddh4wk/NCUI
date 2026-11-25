@@ -54,10 +54,6 @@ title = "Imposta Rotazione / Ribaltamento"
 short = "Applica l'orientamento dello schermo (`normal`, `90`, `180`, `270`, o `flipped-*`) dal vivo in `niri` e lo salva in `config.kdl`."
 verbose = "Esegue `niri msg output <nome> transform <val>`, scrive `transform \"<val>\"` in `~/.config/niri/config.kdl` (omettendo `normal`) e risincronizza la shell."
 
-["cc_desk:open_tui"]
-title = "Apri TUI Desktop (`nc_util_desktop.sh`)"
-short = "Apre un terminale con `nc_util_desktop.sh -I` per la gestione CLI interattiva di monitor e sfondi."
-
 ["cc_desk:nl:on"]
 title = "Attiva Luce Notturna (`nc-nightlight`)"
 short = "Avvia il demone di temperatura colore `nc-nightlight` con i gradi Kelvin e la pianificazione configurati."

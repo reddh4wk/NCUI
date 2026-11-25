@@ -146,8 +146,7 @@ def load_panel(panel_id: str, shell=None, mode: str = "popup") -> BasePanel:
     raw_name = pid[3:] if pid.startswith(("wp_", "ww_")) else pid
     base_mod_name = "wp_system" if raw_name in ("cpu", "ram", "gpu", "system") else f"wp_{raw_name}"
 
-    user_plugin = os.path.join(CONFIG_DIR, "plugins", f"{base_mod_name}.py")
-    target_path = user_plugin if os.path.exists(user_plugin) else find_panel_file(f"{base_mod_name}.py")
+    target_path = find_panel_file(f"{base_mod_name}.py")
 
     if target_path and os.path.exists(target_path):
         try:

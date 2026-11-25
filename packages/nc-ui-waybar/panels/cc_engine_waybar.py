@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from core.config import (
     _update_toml_key_in_section,
     _unique_existing_paths,
 )
-from core.paths import find_all_package_files, find_package_file
+from core.paths import find_all_package_files, find_package_file, iter_user_plugin_dirs
 from core.state import STATE
 from core.i18n import get_active_language, t
 from ui.canvas import Canvas
@@ -49,11 +50,52 @@ KNOWN_WAYBAR_PLUGINS = {
 
 
 
+def _discover_user_waybar_plugins() -> dict[str, dict]:
+    """Discover external user Waybar plugins via AST inspection of PLUGIN_META."""
+    out: dict[str, dict] = {}
+    for d in iter_user_plugin_dirs():
+        if not os.path.isdir(d):
+            continue
+        try:
+            fnames = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for fname in fnames:
+            if not (fname.startswith("wp_") and fname.endswith(".py")):
+                continue
+            fpath = os.path.join(d, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    tree = ast.parse(f.read(), filename=fpath)
+                for node in tree.body:
+                    if isinstance(node, ast.Assign) and any(
+                        isinstance(tgt, ast.Name) and tgt.id == "PLUGIN_META"
+                        for tgt in node.targets
+                    ):
+                        meta = ast.literal_eval(node.value)
+                        if isinstance(meta, dict):
+                            mod_id = str(meta.get("module_id") or "").strip()
+                            if mod_id.startswith("custom/") and mod_id not in out:
+                                out[mod_id] = meta
+                        break
+            except Exception:
+                continue
+    return out
+
+
 def _wb_plugin_meta(m_id: str) -> tuple[str, str, str]:
     slug = m_id.replace("/", "_")
     icon = KNOWN_WAYBAR_PLUGINS.get(m_id, {}).get("icon", "\uf12e")
     if m_id in KNOWN_WAYBAR_PLUGINS:
         return icon, t(f"cc_waybar.p_{slug}_lbl"), t(f"cc_waybar.p_{slug}_desc")
+    user_meta = _discover_user_waybar_plugins().get(m_id)
+    if user_meta:
+        u_icon = str(user_meta.get("icon") or "\uf12e")
+        u_lbl = t(user_meta["label_key"]) if user_meta.get("label_key") else str(user_meta.get("label") or m_id)
+        u_desc = t(user_meta["desc_key"]) if user_meta.get("desc_key") else str(user_meta.get("desc") or m_id)
+        return u_icon, u_lbl, u_desc
     return icon, m_id, m_id
 
 
@@ -85,6 +127,23 @@ def _backfill_wb_modules(data: dict) -> dict:
                 for sub_k, sub_v in v.items():
                     if sub_k != "max-length":
                         data[k][sub_k] = sub_v
+    active_mods = set(
+        (data.get("modules-left") or [])
+        + (data.get("modules-center") or [])
+        + (data.get("modules-right") or [])
+    )
+    for mod_id, meta in _discover_user_waybar_plugins().items():
+        wb_def = meta.get("waybar")
+        if mod_id in active_mods and isinstance(wb_def, dict):
+            if not isinstance(data.get(mod_id), dict):
+                data[mod_id] = dict(wb_def)
+            else:
+                for sub_k, sub_v in wb_def.items():
+                    if sub_k != "max-length":
+                        data[mod_id][sub_k] = sub_v
+            data[mod_id]["tooltip"] = False
+        elif mod_id not in active_mods and mod_id in data:
+            data.pop(mod_id, None)
     return data
 
 

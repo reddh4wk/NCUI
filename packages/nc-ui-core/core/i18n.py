@@ -17,7 +17,7 @@ def _candidate_dirs() -> list[str]:
     for d in (
         [SYS_LOCALES_DIR]
         + find_all_package_files("locales")
-        + ["/usr/share/ncui/locales", USER_LOCALES_DIR]
+        + ["/usr/share/ncui/locales", USER_LOCALES_DIR, os.path.expanduser("~/.local/share/nc-ui/locales")]
     ):
         rp = os.path.realpath(d)
         if rp not in seen:

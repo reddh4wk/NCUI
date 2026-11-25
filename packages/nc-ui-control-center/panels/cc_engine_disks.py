@@ -311,7 +311,9 @@ def handle_cc_disks_link(cc_panel, uri: str) -> bool:
     elif act.startswith("disk_smart_term:"):
         dp = act.split(":", 1)[1]
         if re.match(r"^/dev/[a-zA-Z0-9._-]+$", dp):
-            probe.open_terminal(["bash", "-c", f"sudo smartctl -a {shlex.quote(dp)}; echo; read -p 'Press Enter...'"])
+            from ui.embedded_tui import start_panel_terminal
+
+            start_panel_terminal(cc_panel, t("common.term_title", p0=f"SMART {dp}"), ["sudo", "smartctl", "-a", dp])
         return True
     else:
         return False

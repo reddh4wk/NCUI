@@ -205,17 +205,33 @@ def handle_cc_sysinfo_link(cc_panel, uri: str) -> bool:
     user = _probe_profile()["user"]
 
     if cmd == "passwd":
-        probe.open_terminal(["bash", "-c", "passwd; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_accounts.opened_passwd_prompt_in_terminal")
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(cc_panel, t("common.term_title", p0="passwd"), ["passwd"])
+        return True
     elif cmd == "chsh" and arg:
-        probe.open_terminal(["bash", "-c", f"chsh -s {shlex.quote(arg)}; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_accounts.opened_chsh_s_in_terminal", p0=arg)
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(cc_panel, t("common.term_title", p0=f"chsh -s {arg}"), ["chsh", "-s", arg])
+        return True
     elif cmd == "gadd" and arg:
-        probe.open_terminal(["bash", "-c", f"sudo usermod -aG {shlex.quote(arg)} {shlex.quote(user)} && id; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_accounts.opened_usermod_ag_for_in_terminal", p0=arg, p1=user)
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0=f"usermod + {arg}"),
+            ["bash", "-c", f"sudo usermod -aG {shlex.quote(arg)} {shlex.quote(user)} && id"],
+        )
+        return True
     elif cmd == "gdel" and arg:
-        probe.open_terminal(["bash", "-c", f"sudo gpasswd -d {shlex.quote(user)} {shlex.quote(arg)} && id; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_accounts.opened_gpasswd_d_in_terminal", p0=user, p1=arg)
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0=f"gpasswd - {arg}"),
+            ["bash", "-c", f"sudo gpasswd -d {shlex.quote(user)} {shlex.quote(arg)} && id"],
+        )
+        return True
     elif cmd == "kill_sess" and arg:
         ok, _, err = probe.run_cmd_full(["loginctl", "terminate-session", arg], timeout=2.0)
         _MSG = f"Terminated session {arg}." if ok else ""

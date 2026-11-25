@@ -1120,7 +1120,7 @@ def _build_gpu_standard(cc_panel, canvas: Canvas) -> list:
     cards.append(_build_gpu_summary_box(canvas, gpu))
 
     cols, rows, target_widget_h = _compute_single_tui_size(
-        cc_panel, canvas, cards, t("cc_system.nvtop_box_title"), "\uf2db", min_rows=12
+        cc_panel, canvas, cards, t("cc_system.nvtop_box_title"), "\uf2db", min_rows=12, flush=True, has_footer=False
     )
     cards.append(
         _build_tui_ncbox(

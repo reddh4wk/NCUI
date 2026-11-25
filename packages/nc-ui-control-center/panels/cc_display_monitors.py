@@ -251,7 +251,6 @@ def _build_layout_standard(cc_panel, canvas: Canvas, outputs_data: dict) -> list
         icon="\uf108",
         actions=[
             ActionBtn(t("cc_display.auto_pos_all"), "cc_desk:pos_auto_all", tone="neutral"),
-            ActionBtn(t("cc_display.tui"), "cc_desk:open_tui", tone="neutral"),
         ],
         highlighted=False,
     )

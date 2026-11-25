@@ -29,10 +29,6 @@ short = "Esegue `systemctl --user stop <unit>` per arrestare subito questo servi
 # ==============================================================================
 # APPS -> FINESTRE FLOATING (`panels/cc_apps_floating.py`)
 # ==============================================================================
-["cc_flt:open_tui"]
-title = "Apri TUI Regole Floating"
-short = "Avvia `nc_util_floater.sh` nel terminale configurato per ispezionare gli `app-id` attivi e gestire interattivamente le regole Niri."
-
 ["cc_flt:toggle:*"]
 title = "Attiva / Rimuovi Regola Floating"
 short = "Aggiunge o rimuove una `window-rule` con `open-floating true` per questo `app-id` in `~/.config/niri/config.kdl`."

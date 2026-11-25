@@ -29,10 +29,6 @@ short = "Runs `systemctl --user stop <unit>` to stop this user-session service i
 # ==============================================================================
 # APPS -> FLOATING WINDOWS (`panels/cc_apps_floating.py`)
 # ==============================================================================
-["cc_flt:open_tui"]
-title = "Open Floating Rules TUI"
-short = "Launches `nc_util_floater.sh` in the configured terminal to inspect live window `app-id`s and manage Niri floating rules interactively."
-
 ["cc_flt:toggle:*"]
 title = "Toggle Niri Floating Rule"
 short = "Adds or removes an `open-floating true` `window-rule` block for this `app-id` in `~/.config/niri/config.kdl`."

@@ -181,11 +181,17 @@ class ControlCenterPanel(BasePanel):
     def get_refresh_ms(self) -> int:
         return int(_CC_LIVE_REFRESH_MS.get((self.section, self.get_subtab()), 0))
 
+    @staticmethod
+    def _get_active_tui() -> str:
+        mod = sys.modules.get("panels.cc_engine_resources")
+        return mod.get_active_tui() if (mod is not None and hasattr(mod, "get_active_tui")) else ""
+
     def is_busy(self) -> bool:
         if (
             STATE.get("keyboard", "capture_mode", "")
             or STATE.get("desktop", "yazi_open", False)
             or STATE.get("privileges", "pending_action", "")
+            or self._get_active_tui()
         ):
             return True
         if self.section == "sound":
@@ -275,15 +281,23 @@ class ControlCenterPanel(BasePanel):
         else:
             close_embedded_tuis()
 
+    def _clear_active_tui_focus(self) -> None:
+        if self._get_active_tui():
+            from panels.cc_engine_resources import set_active_tui
+            set_active_tui("", shell=self.shell)
+
     def set_section(self, sec_id: str) -> None:
         self._clear_capture()
         self._clear_yazi()
+        if getattr(self, "_ready", False):
+            self._clear_active_tui_focus()
         bps = discover_section_blueprints()
         if sec_id not in bps:
             raise ValueError(f"Unknown Control Center section: {sec_id!r}")
         if getattr(self, "_ready", False) and sec_id != self.section:
             if self.section == "power":
-                self._clear_resource_tuis()
+                self._clear_resource_tuis("btop")
+                self._clear_resource_tuis("nvtop")
             elif self.section == "personalization":
                 from panels.cc_engine_personalization import reset_ncmatrix_cpu_telemetry
                 reset_ncmatrix_cpu_telemetry()
@@ -308,6 +322,8 @@ class ControlCenterPanel(BasePanel):
     def set_subtab(self, sub_id: str) -> None:
         self._clear_capture()
         self._clear_yazi()
+        if getattr(self, "_ready", False):
+            self._clear_active_tui_focus()
         if self.section == "telemetry" and sub_id in ("resources", "power_tools", "cpu_ram_procs"):
             self.set_section("power")
             self.set_subtab("cpu_ram")
@@ -392,6 +408,11 @@ class ControlCenterPanel(BasePanel):
                     importlib.reload(sys.modules[sub_mod_name])
                 mod = importlib.import_module(sub_mod_name)
             cards = [hdr_box] + mod.build_cards(self, canvas)
+            from ui.embedded_tui import build_panel_terminal_card
+
+            term_card = build_panel_terminal_card(self, canvas, cards[1:])
+            if term_card is not None:
+                cards.append(term_card)
             if (self.section, active_sub) in (("input", "controllers"), ("display", "monitors"), ("input", "macros"), ("power", "profiles")):
                 self._last_tick_sig = self._compute_gated_tick_sig(self.section, active_sub, force=False)
             return cards
@@ -429,6 +450,11 @@ class ControlCenterPanel(BasePanel):
                     break
 
     def on_link(self, uri: str) -> None:
+        if uri == "cc_term:close":
+            from ui.embedded_tui import close_panel_terminal
+
+            close_panel_terminal(self)
+            return
         if handle_privilege_link(self, uri):
             return
         for sec, lnk_fn, _prm_fn in _ENGINES:
@@ -475,15 +501,16 @@ class ControlCenterPanel(BasePanel):
             from panels.cc_engine_personalization import handle_cc_personalization_key_press
             if handle_cc_personalization_key_press(self, event):
                 return True
+        if self._get_active_tui() or (self.section == "power" and self.get_subtab() in ("cpu_ram", "gpu")):
+            from panels.cc_engine_resources import handle_cc_resources_key_press
+            if handle_cc_resources_key_press(self, event):
+                return True
         if self.section == "input":
             from panels.cc_engine_input import handle_cc_input_key_press
             return handle_cc_input_key_press(self, event)
         if self.section == "personalization":
             from panels.cc_engine_personalization import handle_cc_personalization_key_press
             return handle_cc_personalization_key_press(self, event)
-        if self.section == "power" and self.get_subtab() in ("cpu_ram", "gpu"):
-            from panels.cc_engine_resources import handle_cc_resources_key_press
-            return handle_cc_resources_key_press(self, event)
         return False
 
     def on_key_release(self, event) -> bool:

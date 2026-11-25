@@ -12,7 +12,7 @@ import time
 from core import probe
 from core.i18n import t
 from core.state import STATE
-from core.paths import find_bin, resolve_script_path
+from core.paths import find_bin
 from ui.kit import FeedbackBox, start_inline_input
 
 NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
@@ -401,9 +401,6 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
         return False
     act = uri[len("cc_desk:"):]
 
-    if act == "open_tui":
-        probe.open_terminal(["bash", resolve_script_path("nc_util_desktop.sh"), "-I"])
-        return True
     if act == "pos_auto_all":
         outs = list(get_niri_outputs_data().keys())
         all_ok = bool(outs)

@@ -54,10 +54,6 @@ title = "Set Rotation / Flip Transform"
 short = "Applies display orientation (`normal`, `90`, `180`, `270`, or `flipped-*`) live in `niri` and persists it in `config.kdl`."
 verbose = "Executes `niri msg output <name> transform <val>`, writes `transform \"<val>\"` to `~/.config/niri/config.kdl` (omitting `normal`), and resyncs shell geometry."
 
-["cc_desk:open_tui"]
-title = "Open Desktop TUI (`nc_util_desktop.sh`)"
-short = "Opens a terminal running `nc_util_desktop.sh -I` for interactive CLI display and wallpaper management."
-
 ["cc_desk:nl:on"]
 title = "Enable Night Light (`nc-nightlight`)"
 short = "Starts the `nc-nightlight` color-temperature daemon using your configured Kelvin target and schedule."

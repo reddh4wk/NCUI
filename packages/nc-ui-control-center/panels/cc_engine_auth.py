@@ -5,6 +5,7 @@ import glob
 import os
 import re
 import shlex
+import stat
 import subprocess
 from core import probe
 from core.i18n import get_active_language, t
@@ -89,6 +90,30 @@ def _probe_tpm_luks() -> dict:
     }
 
 
+def _resolve_ssh_auth_sock() -> str:
+    """Resolve active `SSH_AUTH_SOCK` from env or standard systemd/desktop runtime sockets."""
+    env_sock = str(os.environ.get("SSH_AUTH_SOCK", "") or "").strip()
+    if env_sock:
+        try:
+            if stat.S_ISSOCK(os.stat(env_sock).st_mode):
+                return env_sock
+        except OSError:
+            pass
+    rt = str(os.environ.get("XDG_RUNTIME_DIR", "") or "").strip() or f"/run/user/{os.getuid()}"
+    for cand in (
+        f"{rt}/ssh-agent.socket",
+        f"{rt}/gcr/ssh",
+        f"{rt}/keyring/ssh",
+        f"{rt}/gnupg/S.gpg-agent.ssh",
+    ):
+        try:
+            if stat.S_ISSOCK(os.stat(cand).st_mode):
+                return cand
+        except OSError:
+            continue
+    return ""
+
+
 def _probe_keys() -> dict:
     ssh_pubs = []
     for p in sorted(glob.glob(os.path.expanduser("~/.ssh/*.pub"))):
@@ -102,8 +127,9 @@ def _probe_keys() -> dict:
             pass
 
     agent_keys = []
-    if os.environ.get("SSH_AUTH_SOCK") and probe.has_bin("ssh-add"):
-        ok, out, _ = probe.run_cmd_full(["ssh-add", "-l"], timeout=1.5)
+    sock = _resolve_ssh_auth_sock()
+    if sock and probe.has_bin("ssh-add"):
+        ok, out, _ = probe.run_cmd_full(["env", f"SSH_AUTH_SOCK={sock}", "ssh-add", "-l"], timeout=1.5)
         if ok and out:
             agent_keys = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
 
@@ -314,18 +340,36 @@ def handle_cc_auth_link(cc_panel, uri: str) -> bool:
     arg = parts[2] if len(parts) > 2 else ""
 
     if cmd == "sbctl_verify":
-        probe.open_terminal(["bash", "-c", "sudo sbctl status; echo; sudo sbctl verify; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_sbctl_verification_in_termi")
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="sbctl verify"),
+            ["bash", "-c", "sudo sbctl status; echo; sudo sbctl verify"],
+        )
+        return True
     elif cmd == "luks_term":
+        from ui.embedded_tui import start_panel_terminal
+
         d = _probe_tpm_luks()
         dev = d["luks_devs"][0][0] if d["luks_devs"] else "/dev/nvme0n1p3"
-        probe.open_terminal(["bash", "-c", f"sudo cryptsetup luksDump {shlex.quote(dev)}; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_cryptsetup_luksdump_for", p0=dev)
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0=f"luksDump {os.path.basename(dev)}"),
+            ["sudo", "cryptsetup", "luksDump", dev],
+        )
+        return True
     elif cmd == "tpm_enroll":
+        from ui.embedded_tui import start_panel_terminal
+
         d = _probe_tpm_luks()
         dev = d["luks_devs"][0][0] if d["luks_devs"] else "/dev/nvme0n1p3"
-        probe.open_terminal(["bash", "-c", f"echo 'Inspect or wipe/enroll TPM2 slots:'; sudo systemd-cryptenroll {shlex.quote(dev)} --tpm2-device=list; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_systemd_cryptenroll_inspect")
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0=f"TPM2 {os.path.basename(dev)}"),
+            ["bash", "-c", f"echo 'Inspect or wipe/enroll TPM2 slots:'; sudo systemd-cryptenroll {shlex.quote(dev)} --tpm2-device=list"],
+        )
+        return True
     elif cmd == "copy_pub" and arg:
         p = os.path.expanduser(f"~/.ssh/{os.path.basename(arg)}")
         if os.path.isfile(p):
@@ -334,16 +378,72 @@ def handle_cc_auth_link(cc_panel, uri: str) -> bool:
         else:
             _ERR = t("cc_auth.not_found", p0=arg)
     elif cmd == "ssh_add":
-        probe.open_terminal(["bash", "-c", "ssh-add; ssh-add -l; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_ssh_add_terminal")
+        from ui.embedded_tui import start_panel_terminal
+
+        sock = _resolve_ssh_auth_sock()
+        if not sock:
+            probe.run_cmd(["systemctl", "--user", "start", "ssh-agent.socket"], timeout=2.0)
+            sock = _resolve_ssh_auth_sock()
+
+        if not sock:
+            bash_cmd = (
+                "echo 'No active SSH authentication agent socket found.'; "
+                "echo 'Enable it with: systemctl --user enable --now ssh-agent.socket'; "
+                "exit 1"
+            )
+        else:
+            loaded_set: set[tuple[str, str]] = set()
+            ok_l, out_l, _ = probe.run_cmd_full(["env", f"SSH_AUTH_SOCK={sock}", "ssh-add", "-L"], timeout=1.5)
+            if ok_l and out_l:
+                for ln in out_l.splitlines():
+                    flds = ln.strip().split()
+                    if len(flds) >= 2:
+                        loaded_set.add((flds[0], flds[1]))
+
+            priv_keys: list[str] = []
+            unloaded_privs: list[str] = []
+            for pub_p in sorted(glob.glob(os.path.expanduser("~/.ssh/*.pub"))):
+                priv_p = pub_p[:-4]
+                if not os.path.isfile(priv_p):
+                    continue
+                priv_keys.append(priv_p)
+                try:
+                    pub_flds = open(pub_p, "r", encoding="utf-8", errors="ignore").read().strip().split()
+                except Exception:
+                    pub_flds = []
+                if len(pub_flds) < 2 or (pub_flds[0], pub_flds[1]) not in loaded_set:
+                    unloaded_privs.append(priv_p)
+
+            env_prefix = f"export SSH_AUTH_SOCK={shlex.quote(sock)}; "
+            if unloaded_privs:
+                bash_cmd = f"{env_prefix}ssh-add {shlex.join(unloaded_privs)} && echo && ssh-add -l"
+            elif priv_keys:
+                bash_cmd = f"{env_prefix}echo 'All ~/.ssh keys are already loaded in ssh-agent:'; echo; ssh-add -l"
+            else:
+                bash_cmd = f"{env_prefix}ssh-add; echo && ssh-add -l"
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="ssh-add"),
+            ["bash", "-c", bash_cmd],
+        )
+        return True
     elif cmd == "sudo_term":
-        probe.open_terminal(["bash", "-c", "sudo -l; echo; sudo visudo -c; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_sudoers_verification_in_ter")
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="sudo -l / visudo"),
+            ["bash", "-c", "sudo -l; echo; sudo visudo -c"],
+        )
+        return True
     elif cmd == "usbguard_term":
+        from ui.embedded_tui import start_panel_terminal
+
         helper = resolve_sbin_helper("nc-usbguard")
-        cmd_s = f"sudo {shlex.quote(helper)} list" if os.path.exists(helper) else "sudo usbguard list-devices"
-        probe.open_terminal(["bash", "-c", f"{cmd_s}; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_auth.opened_usbguard_terminal")
+        term_cmd = ["sudo", helper, "list"] if os.path.exists(helper) else ["sudo", "usbguard", "list-devices"]
+        start_panel_terminal(cc_panel, t("common.term_title", p0="usbguard"), term_cmd)
+        return True
     elif cmd == "usb_refresh":
         pass
     elif cmd == "usb_auth":

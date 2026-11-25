@@ -8,8 +8,7 @@ from core.config import (
     apply_waybar_transparency,
 )
 from core.i18n import t
-from core import probe
-from core.paths import resolve_script_path, run_desktop_cli
+from core.paths import run_desktop_cli
 from ui.canvas import Canvas
 from ui.kit import Box, Slider, Txt, ActionBtn, StateBadge, sync_boxes_width
 from ui.output_map import NiriOutputMap
@@ -128,16 +127,6 @@ class Panel(BasePanel):
                 from gi.repository import GLib
                 GLib.timeout_add(350, lambda: not self.shell.refresh_view())
             return
-        if action_id == "disp_custom_cmd":
-            import shlex
-            try:
-                args = shlex.split(val)
-            except ValueError:
-                args = val.split()
-            run_desktop_cli(args)
-            if self.shell:
-                from gi.repository import GLib
-                GLib.timeout_add(350, lambda: not self.shell.refresh_view())
 
     def on_link(self, uri: str) -> None:
         if not uri.startswith("disp:"):
@@ -170,20 +159,6 @@ class Panel(BasePanel):
             run_desktop_cli(["--swap", "1", "2"])
         elif act == "restore":
             run_desktop_cli(["--restore"])
-        elif act == "open_tui":
-            script = resolve_script_path()
-            probe.open_terminal(["bash", script, "-I"])
-            if self.shell:
-                self.shell.dispatch_uri("ui:close")
-            return
-        elif act == "prompt_cmd":
-            self.request_prompt(
-                "disp_custom_cmd",
-                t("display.custom_cmd_prompt"),
-                "",
-                title="nc_util_desktop.sh",
-            )
-            return
         elif act.startswith("set_img:"):
             out_name = act.split(":", 1)[1]
             ph = t("display.enter_image_path")

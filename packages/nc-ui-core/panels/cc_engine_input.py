@@ -1152,7 +1152,13 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         probe.open_terminal(["bash", "-c", "wev || read -p 'wev not installed. Enter...'"])
         return True
     elif act == "launch_libinput":
-        probe.open_terminal(["bash", "-c", "sudo libinput debug-events || read -p 'Enter...'"])
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="libinput debug-events"),
+            ["sudo", "libinput", "debug-events"],
+        )
         return True
     elif act == "launch_xkbcli":
         probe.open_terminal(["bash", "-c", "xkbcli interactive-wayland || read -p 'Enter...'"])

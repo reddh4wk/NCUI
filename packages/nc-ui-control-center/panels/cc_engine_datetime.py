@@ -143,8 +143,14 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
     if cmd == "tz_search_clear":
         STATE.set("datetime", "tz_query", "")
     elif cmd == "sync_now":
-        probe.open_terminal(["bash", "-c", "sudo systemctl restart systemd-timesyncd && timedatectl status; echo; read -p 'Press Enter to close...'"])
-        _MSG = t("cc_datetime.triggered_systemd_timesyncd_resync")
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="systemd-timesyncd"),
+            ["bash", "-c", "sudo systemctl restart systemd-timesyncd && timedatectl status"],
+        )
+        return True
     elif cmd == "ntp" and arg in ("true", "false"):
         ok, _, err = probe.run_cmd_full(["timedatectl", "set-ntp", arg], timeout=3.0)
         _MSG = f"timedatectl set-ntp {arg}" if ok else ""
@@ -154,8 +160,13 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
         _MSG = f"Set LocalRTC={arg}" if ok else ""
         _ERR = "" if ok else (err or "timedatectl set-local-rtc failed")
     elif cmd == "ntp_term":
-        probe.open_terminal(["bash", "-c", "${EDITOR:-nano} /etc/systemd/timesyncd.conf"])
-        _MSG = t("cc_datetime.opened_timesyncd_conf_in_editor")
+        ok_ed, ed_info = probe.open_in_editor("/etc/systemd/timesyncd.conf", sudo=True)
+        if ok_ed:
+            _MSG = t("cc_datetime.opened_timesyncd_conf_in_editor")
+        elif ed_info == "unset":
+            _ERR = t("common.editor_not_configured")
+        else:
+            _ERR = t("common.editor_not_found", p0=ed_info.split(":", 1)[-1])
     elif cmd == "set_tz" and arg:
         ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", arg], timeout=3.0)
         _MSG = f"Timezone set to {arg}" if ok else ""

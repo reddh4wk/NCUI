@@ -11,7 +11,6 @@ from core.completion import _scan_desktop_entries, invalidate_desktop_cache, nor
 from core.config import CONFIG, _update_toml_key_in_section
 from core.i18n import t
 from core.state import STATE
-from core.paths import resolve_script_path
 from ui.kit import FeedbackBox, start_inline_input
 
 NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
@@ -714,9 +713,6 @@ def _cat_mimes(cid: str) -> list[str]:
 def handle_cc_apps_link(cc_panel, uri: str) -> bool:
     if uri.startswith("cc_flt:"):
         act = uri[len("cc_flt:"):]
-        if act == "open_tui":
-            probe.open_terminal(["bash", resolve_script_path("nc_util_floater.sh")])
-            return True
         if act == "pick_open":
             cur_q = str(STATE.get("apps", "flt_query", "") or "")
 

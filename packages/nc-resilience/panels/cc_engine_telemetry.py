@@ -9,6 +9,7 @@ import re
 import shlex
 import time
 from core import probe
+from core.config import THEME
 from core.i18n import get_active_language, t
 from core.paths import find_all_package_files
 from core.privileges import get_privileged_action
@@ -37,6 +38,34 @@ from ui.kit import (
     start_inline_input,
 )
 from ui.markup import format_bytes_short
+
+
+def _start_recovery_embedded_shell(cc_panel, title_key: str, cmd: list[str]) -> None:
+    """Launch an interactive Recovery / Chroot / Golden CLI directly inside the Control Center."""
+    from ui.embedded_tui import start_panel_terminal
+
+    def _on_exit() -> bool:
+        try:
+            def _probe_and_refresh():
+                rb = resolve_sbin_helper("nc-rescue")
+                if rb and os.path.isfile(rb):
+                    probe.run_cmd([rb, "status-env"], timeout=8.0)
+
+            def _ui_refresh(_res=None):
+                if cc_panel and getattr(cc_panel, "shell", None):
+                    cc_panel.shell.refresh_view()
+
+            probe.run_async(_probe_and_refresh, on_done=_ui_refresh)
+        except Exception:
+            pass
+        return False
+
+    start_panel_terminal(
+        cc_panel,
+        t("cc_system.rescue_term_title", p0=t(title_key)),
+        cmd,
+        on_exit=_on_exit,
+    )
 
 
 def _set_sys_fb(ok: bool, msg: str) -> None:
@@ -867,10 +896,12 @@ def _build_guide_box(
     prefix: str,
     mode: str,
     status_right: str = "",
+    text_prefix: str = "",
 ) -> list:
     """Build a collapsible Cairo Tactical Vector Blueprint + legend card (open by default)."""
     from ui.widgets import AsciiCard
 
+    tpfx = text_prefix or prefix
     is_open, fold_btn = FoldToggle(cc_panel, state_key, default=True, uri_prefix="ui:state")
     if not is_open:
         box = Box(
@@ -880,7 +911,7 @@ def _build_guide_box(
             highlighted=False,
         )
         box.add_row(" ")
-        box.add_row(f"  {Txt(t(f'cc_system.{prefix}_sum'), role='schema')}")
+        box.add_row(f"  {Txt(t(f'cc_system.{tpfx}_sum'), role='schema')}")
         box.add_row(" ")
         return [box]
 
@@ -892,15 +923,15 @@ def _build_guide_box(
         open_bottom=True,
     )
     box_top.add_row(" ")
-    box_top.add_row(f"  {Txt(t(f'cc_system.{prefix}_intro'), role='schema')}")
+    box_top.add_row(f"  {Txt(t(f'cc_system.{tpfx}_intro'), role='schema')}")
     box_top.add_row(" ")
 
     foot = Box("", highlighted=False, open_top=True)
     foot.add_row(" ")
     for idx in range(1, 4):
         foot.add_kv(
-            t(f"cc_system.{prefix}_k{idx}"),
-            Txt(t(f"cc_system.{prefix}_v{idx}"), role="schema"),
+            t(f"cc_system.{tpfx}_k{idx}"),
+            Txt(t(f"cc_system.{tpfx}_v{idx}"), role="schema"),
         )
     foot.add_row(" ")
 
@@ -1048,8 +1079,17 @@ def _probe_duskcity_env() -> dict:
     chroot_bin = resolve_sbin_helper("nc-chroot")
     golden_bin = resolve_sbin_helper("nc-golden")
     r_env = _read_env_kv("/var/lib/ncui/rescue-status.env")
+    origin_env = _read_env_kv(os.environ.get("NC_RECOVERY_ORIGIN_FILE", "/etc/ncui/recovery-origin.env"))
+    is_live = (
+        os.path.isdir("/run/recovery-ram/upper")
+        or r_env.get("LIVE_RAM_ACTIVE") == "1"
+        or r_env.get("NC_RECOVERY_IMAGE") == "1"
+        or origin_env.get("NC_RECOVERY_IMAGE") == "1"
+    )
     return {
-        "is_live": os.path.isdir("/run/recovery-ram/upper") or r_env.get("LIVE_RAM_ACTIVE") == "1",
+        "is_live": is_live,
+        "origin_host": origin_env.get("NC_ORIGIN_HOSTNAME") or r_env.get("ORIGIN_HOSTNAME", ""),
+        "origin_luks_uuid": origin_env.get("NC_ORIGIN_LUKS_UUID", ""),
         "has_commit": os.path.isfile(rescue_bin),
         "has_chroot": os.path.isfile(chroot_bin),
         "has_golden": os.path.isfile(golden_bin),
@@ -1454,12 +1494,20 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         cc_panel.request_prompt("cc_sys_pkglist", t("cc_system.pkglist_prompt_lbl"), "", title=t("cc_system.pkglist_prompt_title"))
         return True
     elif act == "usbguard_list":
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(resolve_sbin_helper('nc-usbguard'))} list; echo; read -p 'Press Enter...'"])
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="nc-usbguard list"),
+            ["sudo", resolve_sbin_helper("nc-usbguard"), "list"],
+        )
         return True
     elif act.startswith("run_script:"):
+        from ui.embedded_tui import start_panel_terminal
+
         sp = act.split(":", 1)[1]
-        prefix = "sudo " if sp.startswith(SBIN_DST_DIR + "/") else ""
-        probe.open_terminal(["bash", "-c", f"{prefix}{shlex.quote(sp)}; echo; read -p 'Done. Press Enter...'"])
+        cmd = ["sudo", sp] if sp.startswith(SBIN_DST_DIR + "/") else [sp]
+        start_panel_terminal(cc_panel, t("common.term_title", p0=os.path.basename(sp)), cmd)
         return True
     elif act.startswith("prompt_script:"):
         sp = act.split(":", 1)[1]
@@ -1517,7 +1565,13 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
 
         _run_helper_async(cc_panel, "vault_busy", "UMOUNT", "nc-vault", "vault_mount", ["umount"], timeout=25.0, on_done=_on_umount)
     elif act == "smart_check":
-        probe.open_terminal(["bash", "-c", "for d in /dev/nvme*n1; do echo \"=== $d ===\"; sudo smartctl -H \"$d\"; done; read -p 'Press Enter...'"])
+        from ui.embedded_tui import start_panel_terminal
+
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0="NVMe SMART"),
+            ["bash", "-c", 'for d in /dev/nvme*n1; do echo "=== $d ==="; sudo smartctl -H "$d"; done'],
+        )
         return True
     elif act == "snap_auth":
         request_privilege_modal(cc_panel, "snapshot_manage")
@@ -1674,7 +1728,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             if not _is_nas_mounted():
                 _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
             else:
-                probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(h_bin)} {flag}; read -p 'Press Enter...'"])
+                from ui.embedded_tui import start_panel_terminal
+
+                start_panel_terminal(cc_panel, t("common.term_title", p0=f"nc-hanoi {flag}"), ["sudo", h_bin, flag])
                 return True
         elif not _is_nas_mounted():
             _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
@@ -1843,26 +1899,25 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         return True
     elif act == "dc_commit":
         rb = resolve_sbin_helper("nc-rescue")
-        arg = "commit" if os.path.basename(rb) == "nc-rescue" else ""
-        cmd_s = f"sudo {shlex.quote(rb)} {arg}".strip()
-        probe.open_terminal(["bash", "-c", f"{cmd_s}; echo; read -p 'Press Enter...'"])
+        arg = ["commit"] if os.path.basename(rb) == "nc-rescue" else []
+        _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_commit", ["sudo", rb, *arg])
         return True
     elif act == "dc_commit_rebuild":
         rb = resolve_sbin_helper("nc-rescue")
         arg = "commit-rebuild" if os.path.basename(rb) == "nc-rescue" else "--rebuild"
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(rb)} {arg}; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_commit_rebuild", ["sudo", rb, arg])
         return True
     elif act == "dc_chroot":
         cb = resolve_sbin_helper("nc-chroot")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(cb)}; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_chroot_term_btn", ["sudo", cb])
         return True
     elif act == "dc_golden_save":
         gb = resolve_sbin_helper("nc-golden")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(gb)} --save; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_save_img", ["sudo", gb, "--save"])
         return True
     elif act == "dc_golden_restore":
         gb = resolve_sbin_helper("nc-golden")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(gb)} --restore; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_restore_img", ["sudo", gb, "--restore"])
         return True
     elif act == "rescue_refresh":
         def _on_ref(opened: bool, rc: int, out: str):
@@ -2039,11 +2094,24 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         return True
     elif act == "rescue_build_full_term":
         rb = resolve_sbin_helper("nc-rescue")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(rb)} --build-recovery; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_build_sq_btn", ["sudo", rb, "--build-recovery"])
+        return True
+    elif act == "rescue_edit_term":
+        rb = resolve_sbin_helper("nc-rescue")
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_edit_sq_btn", ["sudo", rb, "edit"])
+        return True
+    elif act == "rescue_manage_term":
+        rb = resolve_sbin_helper("nc-rescue")
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_manage_btn", ["sudo", rb, "--manage"])
         return True
     elif act == "rescue_sync_ncui_term":
         rb = resolve_sbin_helper("nc-rescue")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(rb)} --sync-ncui; echo; read -p 'Press Enter...'"])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_sync_ncui_btn", ["sudo", rb, "--sync-ncui"])
+        return True
+    elif act == "recovery_term_close":
+        from ui.embedded_tui import close_panel_terminal
+
+        close_panel_terminal(cc_panel)
         return True
     elif act == "rescue_reg_limine":
         def _on_reg(opened: bool, rc: int, out: str):
@@ -2058,8 +2126,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
     elif act in ("snap_select:auto", "snap_select:stable"):
         STATE.set("system", "snap_selected_slot", act.split(":", 1)[1])
     elif act == "hanoi_term_menu":
+        from ui.embedded_tui import start_panel_terminal
+
         h_bin = resolve_sbin_helper("nc-hanoi")
-        probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(h_bin)}; echo; read -p 'Press Enter...'"])
+        start_panel_terminal(cc_panel, t("common.term_title", p0="nc-hanoi"), ["sudo", h_bin])
         return True
     elif act.startswith("hanoi_view:"):
         vw = act.split(":", 1)[1]
@@ -2232,8 +2302,14 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
     elif act == "hanoi_diff_term":
         sel_p = str(STATE.get("system", "hanoi_selected_path", "") or "").strip()
         if sel_p.startswith("/") and ".." not in sel_p:
+            from ui.embedded_tui import start_panel_terminal
+
             h_bin = resolve_sbin_helper("nc-hanoi")
-            probe.open_terminal(["bash", "-c", f"sudo {shlex.quote(h_bin)} --diff {shlex.quote(sel_p)}; echo; read -p 'Press Enter...'"])
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0=f"diff {os.path.basename(sel_p)}"),
+                ["sudo", h_bin, "--diff", sel_p],
+            )
         return True
     elif act.startswith("hanoi_ver_diff:"):
         v_idx = act.split(":", 1)[1].strip()
@@ -2241,12 +2317,14 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         vlist = (STATE.get("system", "hanoi_versions_map", {}) or {}).get(sel_p, [])
         match = next((v for v in vlist if str(v.get("idx")) == v_idx), None)
         if match and sel_p.startswith("/") and ".." not in sel_p:
+            from ui.embedded_tui import start_panel_terminal
+
             h_bin = resolve_sbin_helper("nc-hanoi")
-            probe.open_terminal([
-                "bash",
-                "-c",
-                f"sudo {shlex.quote(h_bin)} --diff-bak {shlex.quote(match['bak_path'])} {shlex.quote(sel_p)}; echo; read -p 'Press Enter...'",
-            ])
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0=f"diff {os.path.basename(sel_p)} #{v_idx}"),
+                ["sudo", h_bin, "--diff-bak", match["bak_path"], sel_p],
+            )
         return True
     elif act.startswith("hanoi_ver_restore_ask:"):
         STATE.set("system", "hanoi_confirm_ver_restore", act.split(":", 1)[1].strip())
@@ -2316,9 +2394,15 @@ def handle_cc_telemetry_link(cc_panel, uri: str) -> bool:
 
 def handle_cc_telemetry_prompt(cc_panel, action_id: str, text: str) -> bool:
     if action_id.startswith("cc_sys_args|"):
+        from ui.embedded_tui import start_panel_terminal
+
         sp = action_id.split("|", 1)[1]
         prefix = "sudo " if sp.startswith(SBIN_DST_DIR + "/") else ""
-        probe.open_terminal(["bash", "-c", f"{prefix}{shlex.quote(sp)} {text}; echo; read -p 'Press Enter...'"])
+        start_panel_terminal(
+            cc_panel,
+            t("common.term_title", p0=os.path.basename(sp)),
+            ["bash", "-c", f"{prefix}{shlex.quote(sp)} {text}"],
+        )
         return True
     if action_id == "cc_sys_pkglist":
         nm = str(text or "").strip() or "snapshot"

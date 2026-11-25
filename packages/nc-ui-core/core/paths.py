@@ -124,11 +124,20 @@ def find_all_package_files(*rel_parts: str) -> list[str]:
     return out
 
 
+def iter_user_plugin_dirs() -> list[str]:
+    """Return user plugin directories outside/alongside config in priority order."""
+    return [
+        os.path.expanduser("~/.local/share/nc-ui/plugins"),
+        os.path.expanduser("~/.config/nc-ui/plugins"),
+    ]
+
+
 def find_panel_file(filename: str) -> str:
     """Locate a panel module file across user plugins, /usr/lib/ncui/panels, and packages/."""
-    user_plugin = os.path.expanduser(f"~/.config/nc-ui/plugins/{filename}")
-    if os.path.isfile(user_plugin):
-        return user_plugin
+    for d in iter_user_plugin_dirs():
+        user_plugin = os.path.join(d, filename)
+        if os.path.isfile(user_plugin):
+            return user_plugin
     hit = find_package_file("panels", filename)
     return hit if (hit and os.path.isfile(hit)) else ""
 

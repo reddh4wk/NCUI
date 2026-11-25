@@ -7,6 +7,7 @@ set -euo pipefail
 # ==============================================================================
 
 CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
 CFG_VAULT_MP="/nas"
 CFG_BACKUP_SUBDIR="ncui-vault"
 CFG_GOLDEN_SUBDIR="images"
@@ -113,7 +114,7 @@ show_help() {
     local bin_name="${0##*/}"
     cat <<EOF
 ${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
-  sudo ${bin_name} [OPZIONI]
+  ${bin_name} [OPZIONI]
 
 ${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
   Motore unificato di salvataggio, ripristino e re-keying per Golden Image di
@@ -413,7 +414,7 @@ prompt_yes_no() {
     local prompt_msg="$1" default_ans="${2:-n}" hint="[y/N]" ans
     [[ "${default_ans,,}" == "y" ]] && hint="[Y/n]"
     while true; do
-        read -r -p "$(echo -e "${prompt_msg} ${hint}: ")" ans </dev/tty || return 1
+        read -r -e -p "$(echo -e "\001${C_PEACH}\002[?]\001${C_RESET}\002 ${prompt_msg} ${hint}: ")" ans </dev/tty || return 1
         ans=$(trim "${ans,,}")
         [[ -z "$ans" ]] && ans="${default_ans,,}"
         case "$ans" in
@@ -599,7 +600,7 @@ ensure_nas_mounted() {
         local st_env="" mnt_flag="0" act_base=""
         st_env="$(/usr/lib/ncui/sbin/nc-vault status-env 2>/dev/null || true)"
         mnt_flag="$(printf '%s\n' "$st_env" | awk -F'=' '/^MOUNTED=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
-        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^ACTIVE_BASE=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^EFFECTIVE_MP=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
         if [[ "$mnt_flag" == "1" ]]; then
             if [[ -n "$act_base" && "$act_base" != "$CFG_VAULT_MP" && "$target_path" == "${CFG_VAULT_MP}"/* ]]; then
                 RESOLVED_NAS_DIR="${act_base}/${target_path#${CFG_VAULT_MP}/}"
@@ -613,7 +614,7 @@ ensure_nas_mounted() {
         /usr/lib/ncui/sbin/nc-vault mount || { log_err "nc-vault mount fallito."; return 1; }
         st_env="$(/usr/lib/ncui/sbin/nc-vault status-env 2>/dev/null || true)"
         mnt_flag="$(printf '%s\n' "$st_env" | awk -F'=' '/^MOUNTED=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
-        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^ACTIVE_BASE=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+        act_base="$(printf '%s\n' "$st_env" | awk -F'=' '/^EFFECTIVE_MP=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
         if [[ "$mnt_flag" == "1" ]]; then
             if [[ -n "$act_base" && "$act_base" != "$CFG_VAULT_MP" && "$target_path" == "${CFG_VAULT_MP}"/* ]]; then
                 RESOLVED_NAS_DIR="${act_base}/${target_path#${CFG_VAULT_MP}/}"
@@ -842,9 +843,59 @@ resolve_esp_device() {
     else echo "${parent}1"; fi
 }
 
+ORIGIN_HOSTNAME=""
+ORIGIN_VG_NAME=""
+ORIGIN_LUKS_UUID=""
+ORIGIN_LUKS_PARTUUID=""
+ORIGIN_ESP_UUID=""
+ORIGIN_ESP_PARTUUID=""
+ORIGIN_LUKS_DEV=""
+ORIGIN_ESP_DEV=""
+
+resolve_recovery_origin() {
+    ORIGIN_HOSTNAME=""; ORIGIN_VG_NAME=""; ORIGIN_LUKS_UUID=""; ORIGIN_LUKS_PARTUUID=""
+    ORIGIN_ESP_UUID=""; ORIGIN_ESP_PARTUUID=""; ORIGIN_LUKS_DEV=""; ORIGIN_ESP_DEV=""
+    [[ -r "$RECOVERY_ORIGIN_FILE" ]] || return 0
+    local line k v
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ "$line" =~ ^([A-Z0-9_]+)=(.*)$ ]] || continue
+        k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+        v="${v#\"}"; v="${v%\"}"
+        case "$k" in
+            NC_ORIGIN_HOSTNAME)      ORIGIN_HOSTNAME="$v" ;;
+            NC_ORIGIN_VG_NAME)       ORIGIN_VG_NAME="$v" ;;
+            NC_ORIGIN_LUKS_UUID)     ORIGIN_LUKS_UUID="${v,,}" ;;
+            NC_ORIGIN_LUKS_PARTUUID) ORIGIN_LUKS_PARTUUID="${v,,}" ;;
+            NC_ORIGIN_ESP_UUID)      ORIGIN_ESP_UUID="$v" ;;
+            NC_ORIGIN_ESP_PARTUUID)  ORIGIN_ESP_PARTUUID="${v,,}" ;;
+        esac
+    done < "$RECOVERY_ORIGIN_FILE"
+
+    if [[ -n "$ORIGIN_LUKS_UUID" ]]; then
+        ORIGIN_LUKS_DEV="$(blkid -U "$ORIGIN_LUKS_UUID" 2>/dev/null || true)"
+    fi
+    if [[ -z "$ORIGIN_LUKS_DEV" && -n "$ORIGIN_LUKS_PARTUUID" ]]; then
+        ORIGIN_LUKS_DEV="$(blkid -t "PARTUUID=${ORIGIN_LUKS_PARTUUID}" -o device 2>/dev/null | head -n1 || true)"
+    fi
+    [[ -n "$ORIGIN_LUKS_DEV" && -b "$ORIGIN_LUKS_DEV" ]] || ORIGIN_LUKS_DEV=""
+
+    if [[ -n "$ORIGIN_ESP_UUID" ]]; then
+        ORIGIN_ESP_DEV="$(blkid -U "$ORIGIN_ESP_UUID" 2>/dev/null || true)"
+    fi
+    if [[ -z "$ORIGIN_ESP_DEV" && -n "$ORIGIN_ESP_PARTUUID" ]]; then
+        ORIGIN_ESP_DEV="$(blkid -t "PARTUUID=${ORIGIN_ESP_PARTUUID}" -o device 2>/dev/null | head -n1 || true)"
+    fi
+    [[ -n "$ORIGIN_ESP_DEV" && -b "$ORIGIN_ESP_DEV" ]] || ORIGIN_ESP_DEV=""
+    return 0
+}
+
 discover_source_system() {
     ui_section "INDIVIDUAZIONE DISPOSITIVO SORGENTE (LUKS & ESP)"
-    local selected_luks=""
+    resolve_recovery_origin
+    local selected_luks="" origin_real="" origin_c_desc=""
+    [[ -n "$ORIGIN_LUKS_DEV" ]] && origin_real="$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")"
 
     if [[ -n "$CLI_LUKS_DEV" ]]; then
         [[ -b "$CLI_LUKS_DEV" ]] || { log_err "Dispositivo passato da CLI non valido: ${CLI_LUKS_DEV}"; exit 1; }
@@ -861,33 +912,58 @@ discover_source_system() {
         local total=${#CANDIDATES[@]}
         if (( total > 1 )); then
             log_warn "Rilevati molteplici candidati LUKS:"
+            local c_real origin_tag
             for i in "${!CANDIDATES[@]}"; do
-                printf "    ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}\n" "$((i + 1))" "${CANDIDATES[$i]}" "$(get_device_desc "${CANDIDATES[$i]}")"
+                c_real="$(readlink -f "${CANDIDATES[$i]}" 2>/dev/null || printf '%s' "${CANDIDATES[$i]}")"
+                origin_tag=""
+                if [[ -n "$origin_real" && "$c_real" == "$origin_real" ]]; then
+                    origin_tag=" ${C_MINT}[Origin: ${ORIGIN_HOSTNAME:-host}]${C_RESET}"
+                    origin_c_desc="${CANDIDATES[$i]}"
+                fi
+                printf "    ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}%b\n" "$((i + 1))" "${CANDIDATES[$i]}" "$(get_device_desc "${CANDIDATES[$i]}")" "$origin_tag"
             done
             echo ""
-            local uc
-            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Seleziona un indice (1-${total}) o inserisci il percorso del dispositivo: ")" uc </dev/tty || true
+            local uc prompt_luks
+            if [[ -n "$origin_c_desc" ]]; then
+                prompt_luks="  \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per il sistema di origine (${ORIGIN_HOSTNAME:-host}: ${origin_c_desc}), oppure seleziona indice/dispositivo: "
+            else
+                prompt_luks="  \001${C_PEACH}\002[?]\001${C_RESET}\002 Seleziona un indice (1-${total}) o inserisci il percorso del dispositivo: "
+            fi
+            read -r -e -p "$(echo -e "$prompt_luks")" uc </dev/tty || true
             uc=$(trim "$uc")
-            if [[ -z "$uc" ]]; then log_err "Nessuna selezione."; exit 1
+            if [[ -z "$uc" ]]; then
+                if [[ -n "$origin_c_desc" ]]; then selected_luks="$origin_c_desc"
+                else log_err "Nessuna selezione."; exit 1; fi
             elif [[ "$uc" =~ ^[0-9]+$ ]] && (( uc >= 1 && uc <= total )); then selected_luks="${CANDIDATES[$((uc - 1))]}"
             elif [[ -b "$uc" ]]; then selected_luks="$uc"
             else log_err "Selezione non valida: '$uc'."; exit 1; fi
         elif (( total == 1 )); then
-            local sd="${CANDIDATES[0]}" uc
-            log_ok "Candidato LUKS individuato: ${C_BOLD}${sd}${C_RESET} ($(get_device_desc "$sd"))"
-            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Premi INVIO per confermare o digita un dispositivo alternativo: ")" uc </dev/tty || true
+            local sd="${CANDIDATES[0]}" uc s_real s_origin_tag=""
+            s_real="$(readlink -f "$sd" 2>/dev/null || printf '%s' "$sd")"
+            [[ -n "$origin_real" && "$s_real" == "$origin_real" ]] && s_origin_tag=" [Origin: ${ORIGIN_HOSTNAME:-host}]"
+            log_ok "Candidato LUKS individuato: ${C_BOLD}${sd}${C_RESET} ($(get_device_desc "$sd"))${s_origin_tag}"
+            read -r -e -p "$(echo -e "  \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o digita un dispositivo alternativo: ")" uc </dev/tty || true
             uc=$(trim "$uc")
             if [[ -z "$uc" ]]; then selected_luks="$sd"
             elif [[ -b "$uc" ]]; then selected_luks="$uc"
             else log_err "Dispositivo non valido: '$uc'."; exit 1; fi
         else
             local ud
-            log_warn "Nessun dispositivo LUKS rilevato automaticamente."
-            read -r -p "$(echo -e "  ${C_PEACH}[?]${C_RESET} Inserisci percorso dispositivo LUKS [INVIO per annullare]: ")" ud </dev/tty || true
-            ud=$(trim "$ud")
-            [[ -n "$ud" ]] || exit 0
-            [[ -b "$ud" ]] || { log_err "Dispositivo non valido: '$ud'."; exit 1; }
-            selected_luks="$ud"
+            if [[ -n "$ORIGIN_LUKS_DEV" && -b "$ORIGIN_LUKS_DEV" ]]; then
+                log_ok "Dispositivo LUKS di origine individuato: ${C_BOLD}${ORIGIN_LUKS_DEV}${C_RESET} (${ORIGIN_HOSTNAME:-host})"
+                read -r -e -p "$(echo -e "  \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o inserisci un percorso alternativo: ")" ud </dev/tty || true
+                ud=$(trim "$ud")
+                [[ -z "$ud" ]] && ud="$ORIGIN_LUKS_DEV"
+                [[ -b "$ud" ]] || { log_err "Dispositivo non valido: '$ud'."; exit 1; }
+                selected_luks="$ud"
+            else
+                log_warn "Nessun dispositivo LUKS rilevato automaticamente."
+                read -r -e -p "$(echo -e "  \001${C_PEACH}\002[?]\001${C_RESET}\002 Inserisci percorso dispositivo LUKS [INVIO per annullare]: ")" ud </dev/tty || true
+                ud=$(trim "$ud")
+                [[ -n "$ud" ]] || exit 0
+                [[ -b "$ud" ]] || { log_err "Dispositivo non valido: '$ud'."; exit 1; }
+                selected_luks="$ud"
+            fi
         fi
     fi
 
@@ -903,12 +979,14 @@ discover_source_system() {
 
     if [[ -n "${NC_ESP_DEV:-}" && -b "${NC_ESP_DEV}" ]]; then
         PART_EFI="$NC_ESP_DEV"
+    elif [[ -n "$origin_real" && -n "$ORIGIN_ESP_DEV" && -b "$ORIGIN_ESP_DEV" && "$(readlink -f "$PART_LUKS" 2>/dev/null || printf '%s' "$PART_LUKS")" == "$origin_real" ]]; then
+        PART_EFI="$ORIGIN_ESP_DEV"
     else
         PART_EFI="$(resolve_esp_device "$PART_LUKS")"
     fi
     if [[ ! -b "$PART_EFI" ]]; then
         log_warn "Impossibile dedurre la ESP (${PART_EFI})."
-        read -r -p "  Inserisci partizione EFI (es. /dev/nvme0n1p1): " PART_EFI </dev/tty
+        read -r -e -p "  Inserisci partizione EFI (es. /dev/nvme0n1p1): " PART_EFI </dev/tty
         PART_EFI=$(trim "$PART_EFI")
         [[ -b "$PART_EFI" ]] || { log_err "Partizione EFI non valida: ${PART_EFI}"; exit 1; }
     fi
@@ -925,7 +1003,11 @@ discover_source_system() {
 
     local detected_vg
     detected_vg="$(pvs --noheadings -o vg_name "$crypt_child" 2>/dev/null | tr -d ' ' | head -n1 || true)"
-    [[ -n "$detected_vg" ]] && VG_NAME="$detected_vg"
+    if [[ -n "$detected_vg" ]]; then
+        VG_NAME="$detected_vg"
+    elif [[ -n "$ORIGIN_VG_NAME" && -n "$origin_real" && "$(readlink -f "$PART_LUKS" 2>/dev/null || printf '%s' "$PART_LUKS")" == "$origin_real" ]]; then
+        VG_NAME="$ORIGIN_VG_NAME"
+    fi
     (( AUTO_UNLOCKED == 1 )) && SOURCE_UNLOCKED_VG="$VG_NAME"
 
     vgchange -ay "$VG_NAME" >/dev/null 2>&1 || true
@@ -1468,7 +1550,7 @@ do_save() {
 
     ui_section "METADATI E DESTINAZIONE GOLDEN IMAGE"
     local input_base_dir BASE_SAVE_DIR
-    read -r -p "Cartella base di destinazione [INVIO per default: ${DEFAULT_DIR}]: " input_base_dir </dev/tty
+    read -r -e -p "Cartella base di destinazione [INVIO per default: ${DEFAULT_DIR}]: " input_base_dir </dev/tty
     input_base_dir=$(trim "$input_base_dir")
     BASE_SAVE_DIR=$(realpath -m "${input_base_dir:-$DEFAULT_DIR}")
 
@@ -1477,7 +1559,7 @@ do_save() {
 
     local raw_desc IMAGE_DESCRIPTION=""
     while true; do
-        read -r -p "Fornisci una descrizione breve per questa Golden Image: " raw_desc </dev/tty
+        read -r -e -p "Fornisci una descrizione breve per questa Golden Image: " raw_desc </dev/tty
         raw_desc=$(trim "$raw_desc")
         [[ -n "$raw_desc" ]] || { log_warn "La descrizione non può essere vuota."; continue; }
         IMAGE_DESCRIPTION=$(sanitize_desc "$raw_desc")
@@ -1486,7 +1568,7 @@ do_save() {
 
     local raw_title IMAGE_TITLE BACKUP_DIR overwrite_existing=0
     while true; do
-        read -r -p "Inserisci un titolo senza spazi per la Golden Image (es. hardened-no-gui): " raw_title </dev/tty
+        read -r -e -p "Inserisci un titolo senza spazi per la Golden Image (es. hardened-no-gui): " raw_title </dev/tty
         raw_title=$(trim "$raw_title")
         [[ -n "$raw_title" ]] || { log_warn "Il titolo non può essere vuoto."; continue; }
         [[ "$raw_title" =~ [[:space:]] ]] && { log_warn "Il titolo non può contenere spazi."; continue; }
@@ -1530,7 +1612,7 @@ do_save() {
     echo -e " Hardware rilevato : ${C_BOLD}${mem_total_gib} GiB RAM${C_RESET} (${mem_avail_gib} GiB liberi) | ${C_BOLD}${cpu_threads} Thread CPU${C_RESET}"
     echo -e " Profilo suggerito : ${C_MINT}[${rec_profile}] ${rec_desc}${C_RESET}"
     local chosen_prof zstd_opts
-    read -r -p "Seleziona profilo [1-4] o premi INVIO per [${rec_profile}]: " chosen_prof </dev/tty
+    read -r -e -p "Seleziona profilo [1-4] o premi INVIO per [${rec_profile}]: " chosen_prof </dev/tty
     chosen_prof=$(trim "${chosen_prof:-$rec_profile}")
     case "$chosen_prof" in
         1) zstd_opts="--ultra -22 -T0 --long" ;;
@@ -1752,9 +1834,9 @@ do_restore() {
     local user_sel BACKUP_DIR=""
     while true; do
         if (( num_images > 0 )); then
-            read -r -p "Seleziona numero [1-${num_images}] o inserisci percorso custom: " user_sel </dev/tty
+            read -r -e -p "Seleziona numero [1-${num_images}] o inserisci percorso custom: " user_sel </dev/tty
         else
-            read -r -p "Inserisci percorso cartella Golden Image da ripristinare: " user_sel </dev/tty
+            read -r -e -p "Inserisci percorso cartella Golden Image da ripristinare: " user_sel </dev/tty
         fi
         user_sel=$(trim "$user_sel")
         [[ -n "$user_sel" ]] || continue
@@ -1848,7 +1930,7 @@ do_restore() {
     backup_src_dev=$(df --output=source "$BACKUP_DIR" 2>/dev/null | tail -n1 || true)
     while true; do
         local disk_sel=""
-        read -r -p "Seleziona disco [1-${num_disks}] o percorso (es. /dev/sdf): " disk_sel </dev/tty
+        read -r -e -p "Seleziona disco [1-${num_disks}] o percorso (es. /dev/sdf): " disk_sel </dev/tty
         disk_sel=$(trim "$disk_sel")
         [[ -n "$disk_sel" ]] || continue
         if (( num_disks > 0 )) && [[ "$disk_sel" =~ ^[0-9]+$ ]]; then
@@ -1876,7 +1958,7 @@ do_restore() {
     echo -e "  ${C_PEACH}2) Clonazione 1:1 Esatta${C_RESET}"
     local mode_choice RESTORE_MODE="rekey" TARGET_VG="$ORIG_CAPTURED_VG" CONFLICT_DISK="" CLOAK_CONFLICT="n"
     while true; do
-        read -r -p "Seleziona modalità [1-2]: " mode_choice </dev/tty
+        read -r -e -p "Seleziona modalità [1-2]: " mode_choice </dev/tty
         mode_choice=$(trim "$mode_choice")
         [[ "$mode_choice" == "1" || "$mode_choice" == "2" ]] && break
         log_warn "Inserisci 1 o 2."
@@ -1896,7 +1978,7 @@ do_restore() {
         RESTORE_MODE="rekey"
         while true; do
             local input_vg
-            read -r -p "Inserisci nome nuovo Volume Group LVM (es. vg1): " input_vg </dev/tty
+            read -r -e -p "Inserisci nome nuovo Volume Group LVM (es. vg1): " input_vg </dev/tty
             TARGET_VG=$(trim "$input_vg")
             [[ -n "$TARGET_VG" && "$TARGET_VG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_-]*$ && ! "$TARGET_VG" =~ -$ ]] || { log_warn "Nome non valido."; continue; }
             [[ ! "${TARGET_VG,,}" =~ ^(root|dev|proc|sys|run|mapper|dm|lvm|snapshot|mirror)$ ]] || { log_warn "Nome riservato."; continue; }
@@ -2024,7 +2106,7 @@ do_restore() {
     echo -e "  Golden Image: ${C_BOLD}${IMAGE_TITLE}${C_RESET} | Modalità: ${C_BOLD}${RESTORE_MODE^^}${C_RESET} | Target: ${C_BOLD}${TARGET_DISK}${C_RESET}"
     echo -e "  EFI: ${EFI_SIZE} | LUKS: ${LUKS_DESC} | VG: ${C_BOLD}${TARGET_VG}${C_RESET} (${total_lv_gib}G / ${usable_luks_gib}G)"
     echo -e "${C_ROSE}ATTENZIONE: TUTTI I DATI SU ${TARGET_DISK} VERRANNO DISTRUTTI.${C_RESET}"
-    local confirm; read -r -p "Digita 'DESTROY' per confermare: " confirm </dev/tty
+    local confirm; read -r -e -p "Digita 'DESTROY' per confermare: " confirm </dev/tty
     [[ "$(trim "$confirm")" == "DESTROY" ]] || { echo "Operazione annullata."; exit 0; }
 
     RESTORE_IN_PROGRESS=1
@@ -2311,6 +2393,7 @@ do_verify_stdin() {
 }
 
 main() {
+    local orig_args=("$@")
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -h|--help)    show_help; exit 0 ;;
@@ -2328,7 +2411,7 @@ main() {
     done
 
     if [[ -z "$MODE_ACTION" ]]; then
-        echo -e "${C_BOLD}Uso:${C_RESET} sudo ${0##*/} {-s|--save | -r|--restore | list-tsv | verify-stdin | -h|--help} [-d <luks_dev>]" >&2
+        echo -e "${C_BOLD}Uso:${C_RESET} ${0##*/} {-s|--save | -r|--restore | list-tsv | verify-stdin | -h|--help} [-d <luks_dev>]" >&2
         exit 1
     fi
     if [[ "$MODE_ACTION" == "list_tsv" ]]; then
@@ -2340,6 +2423,11 @@ main() {
         exit 0
     fi
     if [[ $EUID -ne 0 ]]; then
+        if [[ -t 0 || -t 1 ]]; then
+            local self_bin
+            self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
+            exec sudo "$self_bin" "${orig_args[@]}"
+        fi
         log_err "Eseguire lo script come root (sudo)."
         exit 1
     fi

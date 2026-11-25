@@ -220,7 +220,7 @@ trap on_interrupt INT TERM
 # ==============================================================================
 usage() {
     echo -e "${C_SLATE}┌──────────────────────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_SLATE}│${C_RESET} ${C_BOLD}nc-nas-conf${C_RESET} — Gestore Configurazioni e Backup Multi-Sistema (Source <-> NAS) ${C_SLATE}│${C_RESET}"
+    echo -e "${C_SLATE}│${C_RESET} ${C_BOLD}nc-hanoi${C_RESET} — Gestore Configurazioni e Backup Multi-Sistema (Source <-> NAS)    ${C_SLATE}│${C_RESET}"
     echo -e "${C_SLATE}└──────────────────────────────────────────────────────────────────────────────┘${C_RESET}"
     echo
     echo -e " ${C_BOLD}SINTASSI:${C_RESET}"
@@ -260,15 +260,15 @@ usage() {
     echo
     echo -e " ${C_BOLD}ESEMPI:${C_RESET}"
     echo -e "   ${C_MUTED}# Aggiungi zshrc da 'nc' (sorgente) e genera i placeholder in 'dc' e 'wsl':${C_RESET}"
-    echo -e "   sudo /usr/lib/ncui/sbin/nc-hanoi -a /etc/zsh/zshrc -S dc,wsl"
+    echo -e "   nc-hanoi -a /etc/zsh/zshrc -S dc,wsl"
     echo
     echo -e "   ${C_MUTED}# Sincronizza verso il NAS (o dal NAS al locale post-golden image con --reverse / --reverse-forced):${C_RESET}"
-    echo -e "   sudo /usr/lib/ncui/sbin/nc-hanoi -s"
-    echo -e "   sudo /usr/lib/ncui/sbin/nc-hanoi -s --reverse"
-    echo -e "   sudo /usr/lib/ncui/sbin/nc-hanoi -s --reverse-forced"
+    echo -e "   nc-hanoi -s"
+    echo -e "   nc-hanoi -s --reverse"
+    echo -e "   nc-hanoi -s --reverse-forced"
     echo
     echo -e "   ${C_MUTED}# Esplora e revisiona le versioni storiche Hanoi di zshrc:${C_RESET}"
-    echo -e "   sudo /usr/lib/ncui/sbin/nc-hanoi -H zshrc"
+    echo -e "   nc-hanoi -H zshrc"
     echo
     exit 0
 }
@@ -2693,7 +2693,7 @@ encrypt_payload() {
 
         if ! extract_master_pub "$pub_tmp"; then
             echo -e "${C_RED}[-]${C_RESET} Errore: master_key non valida o assente ($MASTER_KEY_FILE)." >&2
-            echo -e "${C_MUTED}    Esegui 'sudo nc-nas-conf --init' per inizializzarla.${C_RESET}" >&2
+            echo -e "${C_MUTED}    Esegui 'nc-hanoi --init' per inizializzarla.${C_RESET}" >&2
             exit 1
         fi
 
@@ -3672,7 +3672,7 @@ run_add_mode() {
             existing_owner=$(find_existing_source_owner "$rel_path")
             if [[ -n "$existing_owner" && "$existing_owner" != "$ACTIVE_ALIAS" ]]; then
                 echo -e "${C_RED}[-]${C_RESET} BLOCCO: '$abs_path' è un file condiviso la cui sorgente è '${C_BOLD}$existing_owner${C_RESET}'." >&2
-                echo -e "    ${C_MUTED}Aggiornalo con '-s', oppure trasferisci la sorgente con: sudo /usr/lib/ncui/sbin/nc-hanoi -S ${ACTIVE_ALIAS}:... $abs_path${C_RESET}" >&2
+                echo -e "    ${C_MUTED}Aggiornalo con '-s', oppure trasferisci la sorgente con: nc-hanoi -S ${ACTIVE_ALIAS}:... $abs_path${C_RESET}" >&2
                 continue
             fi
         fi
@@ -3810,7 +3810,7 @@ run_add_mode() {
 run_share_mode() {
     if [[ -z "$SHARE_TARGETS_ARG" || ${#POSITIONAL_ARGS[@]} -eq 0 ]]; then
         echo -e "${C_RED}[-]${C_RESET} Errore: Specifica i target di condivisione e almeno un percorso." >&2
-        echo -e "${C_MUTED}    Esempio: sudo /usr/lib/ncui/sbin/nc-hanoi -S dc,wsl /etc/zsh/zshrc  oppure  -S dc:nc,wsl /percorso/file${C_RESET}" >&2
+        echo -e "${C_MUTED}    Esempio: nc-hanoi -S dc,wsl /etc/zsh/zshrc  oppure  -S dc:nc,wsl /percorso/file${C_RESET}" >&2
         exit 1
     fi
 
@@ -3859,7 +3859,7 @@ run_share_mode() {
 
         if [[ -z "$real_item" ]]; then
             echo -e "${C_RED}[-]${C_RESET} Elemento reale non trovato nei delta del NAS per: /$rel_clean" >&2
-            echo -e "${C_MUTED}    Aggiungilo prima dal sistema sorgente con: sudo /usr/lib/ncui/sbin/nc-hanoi -a /$rel_clean -S $target_list_spec${C_RESET}" >&2
+            echo -e "${C_MUTED}    Aggiungilo prima dal sistema sorgente con: nc-hanoi -a /$rel_clean -S $target_list_spec${C_RESET}" >&2
             continue
         fi
 
@@ -4216,10 +4216,10 @@ run_sync_mode() {
                 LOC_MTIME["$source_file"]="$sh_note"
                 ;;
             SKIP_PEER_UPDATED)
-                echo -e "${C_MUTED}[i] Aggiornato sul NAS da '${owner_alias}': $source_file (salto invio -> usa '${C_MUTED_CMD}sudo /usr/lib/ncui/sbin/nc-hanoi -r $source_file${C_MUTED}' per allinearlo)${C_RESET}"
+                echo -e "${C_MUTED}[i] Aggiornato sul NAS da '${owner_alias}': $source_file (salto invio -> usa '${C_MUTED_CMD}nc-hanoi -r $source_file${C_MUTED}' per allinearlo)${C_RESET}"
                 ;;
             SKIP_SHARED_MISSING_LOC)
-                echo -e "${C_MUTED}[i] Condiviso assente in locale: $source_file (sorgente: $owner_alias -> usa '${C_MUTED_CMD}sudo /usr/lib/ncui/sbin/nc-hanoi -r $source_file${C_MUTED}' per installarlo)${C_RESET}"
+                echo -e "${C_MUTED}[i] Condiviso assente in locale: $source_file (sorgente: $owner_alias -> usa '${C_MUTED_CMD}nc-hanoi -r $source_file${C_MUTED}' per installarlo)${C_RESET}"
                 ;;
             CONFLICT_SYNC)
                 ensure_local_stat "$source_file" || true
@@ -4261,7 +4261,7 @@ run_sync_mode() {
                 if [[ -n "$sh_note" ]]; then
                     echo -e "\n${C_YELLOW}[!]${C_RESET} Il file sorgente '${C_BOLD}$source_file${C_RESET}' non esiste più localmente, ma è condiviso con: ${C_BOLD}$sh_note${C_RESET}"
                     if ! confirm_double "Vuoi rimuoverlo dal NAS e pulire i placeholder in '$sh_note'?" "Eliminare definitivamente '$source_file' dal delta e rimuovere i placeholder da '$sh_note'?"; then
-                        echo -e "${C_MUTED}[*] Rimozione annullata (usa '${C_MUTED_CMD}sudo /usr/lib/ncui/sbin/nc-hanoi -r $source_file${C_MUTED}' se vuoi ripristinarlo).${C_RESET}"
+                        echo -e "${C_MUTED}[*] Rimozione annullata (usa '${C_MUTED_CMD}nc-hanoi -r $source_file${C_MUTED}' se vuoi ripristinarlo).${C_RESET}"
                         continue
                     fi
                     remove_all_placeholders_for_item "$del_rel" "$ACTIVE_ALIAS"
@@ -5641,10 +5641,10 @@ nc_nas_conf_shell_notify() {
     local c_reset="\033[0m" c_cyan="\033[38;5;109m" c_yellow="\033[38;5;222m" c_muted="\033[38;5;244m"
     printf "\n%b[*] nc-nas-conf (%s)%b %b— Allineamento configurazioni:%b\n" "$c_cyan" "${NC_STATUS_SYS:-local}" "$c_reset" "$c_muted" "$c_reset"
     if [ "${NC_PUSH_TOTAL:-0}" -gt 0 ]; then
-        printf "    %b↑%b %d file da sincronizzare sul NAS %b(di cui %d condivisi) -> usa 'sudo /usr/lib/ncui/sbin/nc-hanoi -s'%b\n" "$c_yellow" "$c_reset" "$NC_PUSH_TOTAL" "$c_muted" "${NC_PUSH_SHARED:-0}" "$c_reset"
+        printf "    %b↑%b %d file da sincronizzare sul NAS %b(di cui %d condivisi) -> usa 'nc-hanoi -s'%b\n" "$c_yellow" "$c_reset" "$NC_PUSH_TOTAL" "$c_muted" "${NC_PUSH_SHARED:-0}" "$c_reset"
     fi
     if [ "${NC_PULL_TOTAL:-0}" -gt 0 ]; then
-        printf "    %b↓%b %d file condivisi aggiornati dalla sorgente %b-> usa 'sudo /usr/lib/ncui/sbin/nc-hanoi -l' o '-r'%b\n" "$c_cyan" "$c_reset" "$NC_PULL_TOTAL" "$c_muted" "$c_reset"
+        printf "    %b↓%b %d file condivisi aggiornati dalla sorgente %b-> usa 'nc-hanoi -l' o '-r'%b\n" "$c_cyan" "$c_reset" "$NC_PULL_TOTAL" "$c_muted" "$c_reset"
     fi
     printf "\n"
     return 0
@@ -6345,13 +6345,15 @@ main() {
 
     # Auto-elevation trasparente (in --check solo non-interattiva se possibile, salvo test sandbox)
     if [[ $EUID -ne 0 && "${NC_TEST_LOCAL_NAS:-0}" != "1" ]]; then
+        local self_bin
+        self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
         if [[ "$MODE" == "check" ]]; then
             if sudo -n true 2>/dev/null; then
-                exec sudo -n "$0" "${orig_args[@]}"
+                exec sudo -n "$self_bin" "${orig_args[@]}"
             fi
             exit 0
         fi
-        exec sudo "$0" "${orig_args[@]}"
+        exec sudo "$self_bin" "${orig_args[@]}"
     fi
 
     detect_local_environment

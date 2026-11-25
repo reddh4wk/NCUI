@@ -449,8 +449,13 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
         arg = parts[2] if len(parts) > 2 else ""
         if cmd == "limine_edit":
             cp = _probe_limine()["conf_path"]
-            probe.open_terminal(["bash", "-c", f"sudo ${{EDITOR:-nano}} {shlex.quote(cp)}; echo; read -p 'Press Enter to close...'"])
-            _set_sys_fb(True, t("cc_settings.opened_in_terminal_editor", p0=cp))
+            ok_ed, ed_info = probe.open_in_editor(cp, sudo=True)
+            if ok_ed:
+                _set_sys_fb(True, t("cc_settings.opened_in_terminal_editor", p0=cp))
+            elif ed_info == "unset":
+                _set_sys_fb(False, t("common.editor_not_configured"))
+            else:
+                _set_sys_fb(False, t("common.editor_not_found", p0=ed_info.split(":", 1)[-1]))
         elif cmd in ("limine_to", "limine_def") and arg.isdigit():
             lkey = "timeout" if cmd == "limine_to" else "default_entry"
             _stage_limine_draft(lambda m, k=lkey, v=str(int(arg)): m.__setitem__(k, v))

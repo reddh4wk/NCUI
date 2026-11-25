@@ -72,6 +72,11 @@ from ui.widgets import AsciiCard, CustomWidgetCard, NcPromptBar, _unpack_transla
 from panels.base import load_panel
 
 
+def _get_active_tui_id() -> str:
+    mod = sys.modules.get("panels.cc_engine_resources")
+    return mod.get_active_tui() if (mod is not None and hasattr(mod, "get_active_tui")) else ""
+
+
 def _get_cc_sections() -> list:
     try:
         from panels.control_center import get_control_center_sections
@@ -215,12 +220,16 @@ class ShellWindow(Gtk.Window):
             | Gdk.EventMask.BUTTON_RELEASE_MASK
             | Gdk.EventMask.KEY_PRESS_MASK
             | Gdk.EventMask.KEY_RELEASE_MASK
+            | Gdk.EventMask.FOCUS_CHANGE_MASK
             | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.SMOOTH_SCROLL_MASK
         )
         self.connect("enter-notify-event", self._on_window_enter)
         self.connect("motion-notify-event", self._on_window_motion)
         self.connect("leave-notify-event", self._on_leave)
+        self.connect("button-press-event", self._on_window_button_press)
+        self.connect("focus-out-event", self._on_window_focus_out)
+        self.connect("notify::is-active", self._on_window_active_notify)
         self.connect("key-press-event", self._on_key_press)
         self.connect("key-release-event", self._on_key_release)
         self.connect("scroll-event", self._on_scrolled_window_scroll)
@@ -425,6 +434,23 @@ class ShellWindow(Gtk.Window):
         self._cancel_leave_close()
         self._check_help_missed_leave()
         return False
+
+    def _on_window_button_press(self, _widget, _event) -> bool:
+        if _get_active_tui_id():
+            from panels.cc_engine_resources import set_active_tui
+            set_active_tui("")
+        return False
+
+    def _on_window_focus_out(self, _widget, _event) -> bool:
+        if _get_active_tui_id():
+            from panels.cc_engine_resources import set_active_tui
+            set_active_tui("")
+        return False
+
+    def _on_window_active_notify(self, _widget, _pspec) -> None:
+        if not self.is_active() and _get_active_tui_id():
+            from panels.cc_engine_resources import set_active_tui
+            set_active_tui("")
 
     def is_pointer_busy(self) -> bool:
         for c in self._all_card_widgets():
@@ -944,7 +970,15 @@ class ShellWindow(Gtk.Window):
 
     def set_key_capture_grab(self, active: bool) -> None:
         if HAS_LAYER_SHELL and os.environ.get("NC_UI_OFFSCREEN") != "1":
-            mode = GtkLayerShell.KeyboardMode.EXCLUSIVE if active else GtkLayerShell.KeyboardMode.ON_DEMAND
+            if active:
+                mode = GtkLayerShell.KeyboardMode.EXCLUSIVE
+            else:
+                still_busy = (
+                    self.prompt_bar.get_visible()
+                    or bool(get_active_inline_entry())
+                    or bool(STATE.get("keyboard", "capture_mode", ""))
+                )
+                mode = GtkLayerShell.KeyboardMode.EXCLUSIVE if still_busy else self._default_keyboard_mode()
             GtkLayerShell.set_keyboard_mode(self, mode)
 
     def _apply_css(self) -> None:
@@ -1021,6 +1055,7 @@ class ShellWindow(Gtk.Window):
         )
         self.main_box.connect("enter-notify-event", self._on_window_enter)
         self.main_box.connect("motion-notify-event", self._on_window_motion)
+        self.main_box.connect("button-press-event", self._on_window_button_press)
         self.main_box.connect("scroll-event", self._on_scrolled_window_scroll)
         self.add(self.main_box)
 
@@ -2221,6 +2256,9 @@ class ShellWindow(Gtk.Window):
             return
         self.dismiss_hover_help()
         cancel_inline_entry(refresh=False)
+        if _get_active_tui_id():
+            from panels.cc_engine_resources import set_active_tui
+            set_active_tui("", shell=self)
         if not self._is_nav_only_uri(uri):
             self._mark_action_dispatched()
         if uri.startswith("cc:search_jump:"):
@@ -2245,7 +2283,6 @@ class ShellWindow(Gtk.Window):
             else:
                 sec_id, sub_id = rest, ""
             if sec_id and sub_id:
-                from core.state import STATE
                 STATE.set("control_center", f"subtab_{sec_id}", sub_id)
             if self.mode == "settings" and hasattr(self.panel, "set_section"):
                 if sec_id:
@@ -3090,7 +3127,7 @@ class ShellWindow(Gtk.Window):
     def _on_key_press(self, _widget, event) -> bool:
         state = event.state
         is_ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
-        if is_ctrl and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
+        if is_ctrl and event.keyval in (Gdk.KEY_f, Gdk.KEY_F) and not _get_active_tui_id():
             if self.mode == "settings":
                 self.open_cc_global_search()
                 return True

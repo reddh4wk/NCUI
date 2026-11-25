@@ -1045,8 +1045,14 @@ class AsciiCard(Gtk.ListBoxRow):
             x_right = max(x_left + 2.0, total_px - (char_w * 0.5))
 
         y_top = top_off_y if getattr(self.box_model, "open_top", False) else (top_off_y + line_0_h * 0.5)
-        is_open_bot = getattr(self.box_model, "open_bottom", False) and (self.footer_lbl is None)
-        y_bot = total_h if is_open_bot else max(y_top + 2.0, total_h - (last_line_h * 0.5))
+        cairo_close_bot = bool(getattr(self.box_model, "cairo_close_bottom", False))
+        is_open_bot = getattr(self.box_model, "open_bottom", False) and (self.footer_lbl is None) and not cairo_close_bot
+        if cairo_close_bot:
+            y_bot = max(y_top + 2.0, total_h - 1.0)
+        elif is_open_bot:
+            y_bot = total_h
+        else:
+            y_bot = max(y_top + 2.0, total_h - (last_line_h * 0.5))
 
         bs = str(THEME.get("ascii", {}).get("box_style", "rounded"))
         rad = min(char_w * 0.65, line_0_h * 0.45, (x_right - x_left) * 0.25, (y_bot - y_top) * 0.25) if bs in ("rounded", "dashed") else 0.0

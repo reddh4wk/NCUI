@@ -1357,6 +1357,7 @@ cmd_hook_off() {
 # ==============================================================================
 # ROUTING
 # ==============================================================================
+ORIG_ARGS=("$@")
 ACTION="${1:-status}"
 case "$ACTION" in
     -h|--help) show_help ;;
@@ -1376,6 +1377,10 @@ case "$ACTION" in
 esac
 
 if [[ "${NC_SNAP_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
+    if [[ -t 0 || -t 1 ]]; then
+        self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
+        exec sudo "$self_bin" "${ORIG_ARGS[@]}"
+    fi
     log_err "Root privileges required."
     exit 1
 fi

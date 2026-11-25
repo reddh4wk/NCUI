@@ -8,7 +8,6 @@ from core.completion import catalog_window_app_ids, rank_candidates
 from core.config import CONFIG, _update_toml_key_in_section
 from core.i18n import t
 from core.state import STATE
-from core.paths import resolve_script_path
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, Divider, SelectPill, StateBadge, Txt, get_active_inline_entry
 from panels.cc_engine_apps import (
@@ -27,7 +26,6 @@ def _build_floating_standard(cc_panel, canvas: Canvas) -> list:
     hdr = Box(
         t("cc_apps.niri_floating_window_rules_nc_util"),
         icon="\uf2d2",
-        actions=[ActionBtn(t("cc_apps.tui"), "cc_flt:open_tui", tone="neutral")],
         highlighted=False,
     )
     hdr.add_row(" ")

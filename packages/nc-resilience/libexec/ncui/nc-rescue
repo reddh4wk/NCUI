@@ -16,6 +16,7 @@ MKINIT_CONF="${NC_RESCUE_MKINIT_CONF:-/etc/mkinitcpio-recovery.conf}"
 ROLLBACK_BIN="${NC_RESCUE_ROLLBACK_BIN:-/usr/bin/dc-rollback}"
 UKI_STATE_FILE="${NC_RESCUE_UKI_STATE:-/etc/initcpio/.uki-state.sha256}"
 BOOT_COMMIT_FLAG="/run/recovery-committed-this-boot"
+RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
 
 if [[ -t 1 ]]; then
     CLR_RESET=$'\033[0m' CLR_INFO=$'\033[38;5;152m' CLR_STEP=$'\033[38;5;116m'
@@ -37,9 +38,14 @@ show_help() {
 ${CLR_BOLD}${prog}${CLR_RESET} — NC-UI Recovery UKI, Live RAM SquashFS & Limine Manager
 
 Usage:
-  sudo ${prog} <ACTION>
+  ${prog} <ACTION>
 
 Actions:
+  manage, --manage          Interactive Recovery Manager (create, chroot-edit, sync, UKI, delete)
+  edit, chroot              Chroot into existing recovery.squashfs via OverlayFS & commit changes
+  delete, --delete          Delete .old or active recovery artifacts (double confirmation for last copy)
+  --build-recovery          Build a new Live RAM Recovery SquashFS + signed UKI on ESP
+  --sync-ncui               Update NC-UI inside existing recovery.squashfs & rebuild UKI
   status                    Human-readable recovery & ESP artifact summary
   status-env                Print machine-readable KEY=VALUE rescue telemetry
   check-health              Refresh ${STATE_DIR}/rescue-status.env and print it
@@ -646,8 +652,15 @@ collect_and_write_status() {
         fi
     fi
 
+    local nc_recovery_img=0 origin_host=""
+    if [[ -r "$RECOVERY_ORIGIN_FILE" ]]; then
+        nc_recovery_img="$(awk -F'=' '/^NC_RECOVERY_IMAGE=/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' "$RECOVERY_ORIGIN_FILE" 2>/dev/null || echo 0)"
+        [[ "$nc_recovery_img" == "1" ]] || nc_recovery_img=0
+        origin_host="$(awk -F'=' '/^NC_ORIGIN_HOSTNAME=/ {gsub(/"/, "", $2); gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' "$RECOVERY_ORIGIN_FILE" 2>/dev/null || true)"
+    fi
+
     local live_ram=0 booted_img="" uki_needs_rebuild=0
-    if [[ -d "$UPPER_DIR" ]]; then
+    if [[ -d "$UPPER_DIR" || "$nc_recovery_img" == "1" ]]; then
         live_ram=1
         [[ -f /run/recovery-ram/booted-image ]] && booted_img="$(tr -d '[:space:]' < /run/recovery-ram/booted-image || true)"
         if detect_kernel && [[ -f "$uki_path" ]]; then
@@ -697,6 +710,8 @@ ESP_DEV="${ESP_DEV}"
 ESP_FREE_HUMAN="${esp_free_h}"
 ESP_FREE_BYTES="${esp_free_b}"
 LIVE_RAM_ACTIVE="${live_ram}"
+NC_RECOVERY_IMAGE="${nc_recovery_img}"
+ORIGIN_HOSTNAME="${origin_host}"
 BOOTED_IMAGE="${booted_img}"
 UKI_NEEDS_REBUILD="${uki_needs_rebuild}"
 CHROOT_ACTIVE="${chroot_active}"
@@ -1111,9 +1126,18 @@ do_register_limine() {
 }
 
 _resolve_ncui_source_dir() {
-    local cand
-    for cand in "${NCUI_SRC_DIR:-}" "/opt/ncui" /home/*/Projects/ncui; do
-        if [[ -n "$cand" && -f "${cand}/panels/control_center.py" && -d "${cand}/ui" ]]; then
+    local self_repo="" cand
+    self_repo="$(realpath -e "$0" 2>/dev/null || true)"
+    if [[ -n "$self_repo" ]]; then
+        self_repo="${self_repo%/*/*/*/*/*}"
+    fi
+    for cand in "${NCUI_SRC_DIR:-}" "$self_repo" "/opt/ncui" /home/*/Projects/ncui; do
+        [[ -n "$cand" ]] || continue
+        if [[ -f "${cand}/packages/nc-ui-control-center/panels/control_center.py" && -d "${cand}/packages/nc-ui-core/ui" ]]; then
+            printf '%s' "$cand"
+            return 0
+        fi
+        if [[ -f "${cand}/panels/control_center.py" && -d "${cand}/ui" ]]; then
             printf '%s' "$cand"
             return 0
         fi
@@ -1121,27 +1145,127 @@ _resolve_ncui_source_dir() {
     return 1
 }
 
+_write_recovery_origin_manifest() {
+    local root_dir="$1"
+    local dst_manifest="${root_dir}/etc/ncui/recovery-origin.env"
+    if [[ -d "$UPPER_DIR" || -f "$RECOVERY_ORIGIN_FILE" ]]; then
+        if [[ -f "$RECOVERY_ORIGIN_FILE" && ! -f "$dst_manifest" ]]; then
+            install -m 0644 "$RECOVERY_ORIGIN_FILE" "$dst_manifest"
+        fi
+        return 0
+    fi
+
+    local orig_host="" orig_uuid="" root_src="" orig_vg="$CFG_VG_NAME"
+    local orig_luks="" orig_luks_uuid="" orig_luks_partuuid=""
+    local orig_esp="" orig_esp_uuid="" orig_esp_partuuid="" orig_created=""
+
+    if [[ -r /etc/hostname ]]; then
+        orig_host="$(tr -d '[:space:]' < /etc/hostname 2>/dev/null || true)"
+    fi
+    [[ -n "$orig_host" ]] || orig_host="$(uname -n 2>/dev/null | cut -d. -f1 || echo "linux")"
+    if [[ -r /sys/class/dmi/id/product_uuid ]]; then
+        orig_uuid="$(tr -d '[:space:]' < /sys/class/dmi/id/product_uuid 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+
+    root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    if [[ -n "$root_src" && -b "$root_src" ]]; then
+        local det_vg=""
+        det_vg="$(lvs --noheadings -o vg_name "$root_src" 2>/dev/null | tr -d '[:space:]' || true)"
+        [[ -n "$det_vg" ]] && orig_vg="$det_vg"
+        local anc_path anc_type anc_fs
+        while read -r anc_path anc_type; do
+            [[ -b "$anc_path" ]] || continue
+            anc_fs="$(blkid -s TYPE -o value "$anc_path" 2>/dev/null || true)"
+            if [[ "$anc_fs" == "crypto_LUKS" ]] || cryptsetup isLuks "$anc_path" 2>/dev/null; then
+                orig_luks="$anc_path"
+                break
+            fi
+        done < <(lsblk -snro PATH,TYPE "$root_src" 2>/dev/null || true)
+    fi
+
+    if [[ -n "$orig_luks" && -b "$orig_luks" ]]; then
+        orig_luks_uuid="$(blkid -s UUID -o value "$orig_luks" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+        orig_luks_partuuid="$(blkid -s PARTUUID -o value "$orig_luks" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+
+    if [[ -n "${ESP_DEV:-}" && -b "${ESP_DEV}" ]]; then
+        orig_esp="$ESP_DEV"
+    else
+        orig_esp="$(findmnt -n -o SOURCE "${CFG_ESP_MOUNT:-/boot}" 2>/dev/null || findmnt -n -o SOURCE /efi 2>/dev/null || findmnt -n -o SOURCE /boot 2>/dev/null || true)"
+    fi
+    if [[ -n "$orig_esp" && -b "$orig_esp" ]]; then
+        orig_esp_uuid="$(blkid -s UUID -o value "$orig_esp" 2>/dev/null || true)"
+        orig_esp_partuuid="$(blkid -s PARTUUID -o value "$orig_esp" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+
+    orig_created="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    cat > "$dst_manifest" <<EOF
+# Auto-generated by NC-UI nc-rescue (identifies this rootfs as an NC-UI recovery image and records its host origin)
+NC_RECOVERY_IMAGE="1"
+NC_ORIGIN_HOSTNAME="${orig_host}"
+NC_ORIGIN_HW_UUID="${orig_uuid}"
+NC_ORIGIN_VG_NAME="${orig_vg}"
+NC_ORIGIN_LUKS_UUID="${orig_luks_uuid}"
+NC_ORIGIN_LUKS_PARTUUID="${orig_luks_partuuid}"
+NC_ORIGIN_ESP_UUID="${orig_esp_uuid}"
+NC_ORIGIN_ESP_PARTUUID="${orig_esp_partuuid}"
+NC_ORIGIN_CREATED="${orig_created}"
+EOF
+    chmod 0644 "$dst_manifest"
+}
+
 _inject_ncui_into_rootfs() {
     local root_dir="$1" src_dir="$2"
     msg_step "Installing NC-UI & bundled resilience helpers into ${root_dir}/opt/ncui..."
-    mkdir -p "${root_dir}/opt/ncui" "${root_dir}/usr/local/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
-    rsync -a --delete --exclude='.git' --exclude='.gnome-panels' --exclude='__pycache__' --exclude='*.pyc' "${src_dir}/" "${root_dir}/opt/ncui/"
+    mkdir -p "${root_dir}/opt/ncui" "${root_dir}/usr/local/bin" "${root_dir}/usr/local/lib/nc-ui/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
+    rsync -a --delete \
+        --exclude='.git' --exclude='.gnome-panels' --exclude='.media' \
+        --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pkg.tar*' \
+        "${src_dir}/" "${root_dir}/opt/ncui/"
     local h
-    for h in "${src_dir}"/libexec/ncui/nc-*; do
+    for h in \
+        "${src_dir}"/libexec/ncui/nc-* \
+        "${src_dir}"/packages/nc-resilience/libexec/ncui/nc-* \
+        "${src_dir}"/packages/nc-ui-control-center/libexec/ncui/nc-*; do
         [[ -f "$h" ]] || continue
         install -m 0755 "$h" "${root_dir}/usr/lib/ncui/sbin/$(basename "$h")"
+    done
+    for cli in nc-chroot nc-rescue nc-golden nc-hanoi nc-vault nc-snap; do
+        if [[ -f "${root_dir}/usr/lib/ncui/sbin/${cli}" ]]; then
+            ln -sfn "/usr/lib/ncui/sbin/${cli}" "${root_dir}/usr/local/bin/${cli}"
+        fi
+    done
+    local -A _wb_bins=(
+        [nc-ctl]="/opt/ncui/packages/nc-ui-core/bin/nc-ctl"
+        [nc-bar-agent]="/opt/ncui/packages/nc-ui-waybar/bin/nc-bar-agent"
+        [nc-telegram-status]="/opt/ncui/packages/nc-ui-waybar/bin/nc-telegram-status"
+        [nc-record-notification]="/opt/ncui/packages/nc-ui-notification/bin/nc-record-notification"
+    )
+    local wb_name wb_tgt
+    for wb_name in "${!_wb_bins[@]}"; do
+        wb_tgt="${_wb_bins[$wb_name]}"
+        if [[ -f "${root_dir}${wb_tgt}" ]]; then
+            ln -sfn "$wb_tgt" "${root_dir}/usr/local/lib/nc-ui/bin/${wb_name}"
+        fi
     done
     if [[ -f "$CONF_FILE" ]]; then
         install -m 0644 "$CONF_FILE" "${root_dir}/etc/ncui/resilience.toml"
     fi
-    cat <<'EOF_BIN' > "${root_dir}/usr/local/bin/ncui"
-#!/usr/bin/env bash
-exec python3 /opt/ncui/ncui.py "$@"
-EOF_BIN
+    _write_recovery_origin_manifest "$root_dir"
     cat <<'EOF_CTL' > "${root_dir}/usr/local/bin/nc-ctl"
 #!/usr/bin/env bash
+if [[ -x /opt/ncui/packages/nc-ui-core/bin/nc-ctl ]]; then
+    exec python3 /opt/ncui/packages/nc-ui-core/bin/nc-ctl "$@"
+fi
 exec python3 /opt/ncui/bin/nc-ctl "$@"
 EOF_CTL
+    cat <<'EOF_BIN' > "${root_dir}/usr/local/bin/ncui"
+#!/usr/bin/env bash
+if [[ $# -eq 0 ]]; then
+    exec /usr/local/bin/nc-ctl settings
+fi
+exec /usr/local/bin/nc-ctl "$@"
+EOF_BIN
     chmod 0755 "${root_dir}/usr/local/bin/ncui" "${root_dir}/usr/local/bin/nc-ctl"
     if [[ ! -f "${root_dir}/etc/sudoers.d/ncui-recovery" ]]; then
         mkdir -p -m 0750 "${root_dir}/etc/sudoers.d"
@@ -1150,11 +1274,19 @@ EOF_CTL
 EOF_SUD
         chmod 0440 "${root_dir}/etc/sudoers.d/ncui-recovery"
     fi
+    if [[ ! -f "${root_dir}/etc/profile.d/editor.sh" ]]; then
+        mkdir -p "${root_dir}/etc/profile.d"
+        cat <<'EOF_ED' > "${root_dir}/etc/profile.d/editor.sh"
+export EDITOR="nvim"
+export VISUAL="nvim"
+EOF_ED
+        chmod 0644 "${root_dir}/etc/profile.d/editor.sh"
+    fi
     cat <<'EOF_DESK' > "${root_dir}/usr/share/applications/ncui.desktop"
 [Desktop Entry]
 Type=Application
 Name=NC-UI Control Center
-Exec=ncui --control-center
+Exec=nc-ctl settings
 Terminal=false
 Categories=System;Settings;
 EOF_DESK
@@ -1169,15 +1301,27 @@ do_sync_ncui_squashfs() {
     local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     [[ -s "$cur_sq" ]] || { msg_err "No existing ${cur_sq} on ESP. Run --build-recovery first."; exit 1; }
 
+    local cur_sz esp_free_b req_b cur_h esp_h req_h
+    cur_sz="$(stat -c%s "$cur_sq" 2>/dev/null || echo 0)"
+    esp_free_b="$(df -PB1 "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    req_b=$(( cur_sz + 367001600 )) # current squashfs size + ~350 MiB UKI/headroom
+    if (( esp_free_b < req_b )); then
+        cur_h="$(numfmt --to=iec-i --suffix=B "$cur_sz" 2>/dev/null || echo "${cur_sz}B")"
+        esp_h="$(numfmt --to=iec-i --suffix=B "$esp_free_b" 2>/dev/null || echo "${esp_free_b}B")"
+        req_h="$(numfmt --to=iec-i --suffix=B "$req_b" 2>/dev/null || echo "${req_b}B")"
+        msg_err "Insufficient free space on ESP (${TARGET_MNT}) for safe atomic sync: free=${esp_h}, needed≈${req_h} (existing=${cur_h})."
+        exit 1
+    fi
+
     local work_dir="/var/tmp/ncui-sqfs-sync.$$"
     trap 'rm -rf "'"$work_dir"'" 2>/dev/null || true; cleanup_rescue' EXIT INT TERM HUP
     msg_step "Unpacking ${cur_sq} into ${work_dir}..."
     rm -rf "$work_dir"
     unsquashfs -d "$work_dir" "$cur_sq"
 
-    if ! chroot "$work_dir" python3 -c "import gi; gi.require_version('Gtk','3.0'); import ctypes; ctypes.CDLL('libvterm.so.0')" >/dev/null 2>&1; then
-        msg_step "Installing missing NC-UI GTK3/libvterm dependencies inside recovery rootfs..."
-        pacman --noconfirm --needed -S --root "$work_dir" --cachedir /var/cache/pacman/pkg python python-gobject gtk3 cairo pango gdk-pixbuf2 libvterm rsync || true
+    if ! chroot "$work_dir" python3 -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('GtkLayerShell','0.1'); import ctypes; ctypes.CDLL('libvterm.so.0')" >/dev/null 2>&1; then
+        msg_step "Installing missing NC-UI GTK3/LayerShell/libvterm dependencies inside recovery rootfs..."
+        pacman --noconfirm --needed -S --root "$work_dir" --cachedir /var/cache/pacman/pkg python python-gobject gtk3 gtk-layer-shell cairo pango gdk-pixbuf2 libvterm rsync || true
     fi
     _inject_ncui_into_rootfs "$work_dir" "$src_dir"
 
@@ -1199,22 +1343,148 @@ do_sync_ncui_squashfs() {
     return 0
 }
 
+_filter_repo_pkgs() {
+    local p
+    for p in "$@"; do
+        [[ -n "$p" ]] || continue
+        if pacman -Si "$p" >/dev/null 2>&1; then
+            printf '%s\n' "$p"
+        fi
+    done
+}
+
 do_build_recovery_squashfs() {
     load_rescue_config
     resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
     local src_dir
     src_dir="$(_resolve_ncui_source_dir)" || { msg_err "NC-UI repository not found."; exit 1; }
     command -v pacstrap >/dev/null 2>&1 || { msg_err "pacstrap not found (install arch-install-scripts)."; exit 1; }
+    command -v mksquashfs >/dev/null 2>&1 || { msg_err "mksquashfs not found (install squashfs-tools)."; exit 1; }
 
-    local mode_sel="1"
+    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
+    local esp_free_b esp_free_h
+    esp_free_b="$(df -PB1 "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    esp_free_h="$(numfmt --to=iec-i --suffix=B "$esp_free_b" 2>/dev/null || echo "${esp_free_b}B")"
+
     printf "\n%s=== NC-UI LIVE RECOVERY SQUASHFS + SIGNED UKI BUILDER ===%s\n" "$CLR_BOLD" "$CLR_RESET"
-    printf "  Target ESP   : %s (%s)\n" "$TARGET_MNT" "${ESP_DEV:-unknown}"
+    printf "  Target ESP   : %s (%s) — Free: %s\n" "$TARGET_MNT" "${ESP_DEV:-unknown}" "$esp_free_h"
     printf "  Target UKI   : %s/EFI/Linux/%s (sbctl=%s)\n" "$TARGET_MNT" "$CFG_UKI_NAME" "$CFG_SIGN_SBCTL"
     printf "  NC-UI Source : %s\n\n" "$src_dir"
-    printf "  [1] Wayland Desktop (niri + waybar + foot) + NC-UI + DR Tools (Recommended)\n"
-    printf "  [2] Minimal Rescue Console + NC-UI + DR Tools\n"
-    read -r -p "Select profile [1/2] (Enter=1, Ctrl+C to cancel): " mode_sel </dev/tty || mode_sel="1"
+
+    if [[ -f "$cur_sq" ]]; then
+        local cur_sz cur_h cur_mt bak_info="none"
+        cur_sz="$(stat -c%s "$cur_sq" 2>/dev/null || echo 0)"
+        cur_h="$(numfmt --to=iec-i --suffix=B "$cur_sz" 2>/dev/null || echo "${cur_sz}B")"
+        cur_mt="$(date -r "$cur_sq" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '-')"
+        if [[ -f "$bak_sq" ]]; then
+            local b_sz b_h b_mt
+            b_sz="$(stat -c%s "$bak_sq" 2>/dev/null || echo 0)"
+            b_h="$(numfmt --to=iec-i --suffix=B "$b_sz" 2>/dev/null || echo "${b_sz}B")"
+            b_mt="$(date -r "$bak_sq" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '-')"
+            bak_info="${b_h} (${b_mt})"
+        fi
+        msg_warn "Existing recovery image found on ESP:"
+        printf "      Current : %s (%s, %s)\n" "$cur_sq" "$cur_h" "$cur_mt"
+        printf "      Fallback: %s (%s)\n" "$bak_sq" "$bak_info"
+        msg_warn "Proceeding will demote current recovery.squashfs to recovery.squashfs.old (overwriting any existing .old)."
+        local rot_ans=""
+        read -r -e -p "Continue and rotate existing recovery to .old? [y/N]: " rot_ans </dev/tty || rot_ans="n"
+        case "${rot_ans,,}" in
+            y|yes|s|si) ;;
+            *) msg_info "Build cancelled by user."; return 0 ;;
+        esac
+        echo ""
+    else
+        msg_info "First-time build: no existing recovery.squashfs found on ESP."
+        echo ""
+    fi
+
+    local mode_sel="1"
+    printf "  [1] Wayland Desktop (niri + waybar + ghostty) + NC-UI + Troubleshooting & Browser\n"
+    printf "  [2] Minimal Rescue Console + NC-UI + Troubleshooting\n"
+    read -r -e -p "Select profile [1/2] (Enter=1, Ctrl+C to cancel): " mode_sel </dev/tty || mode_sel="1"
     mode_sel="${mode_sel:-1}"
+
+    local browser_pkg=""
+    if [[ "$mode_sel" == "1" ]]; then
+        local brave_cand="" has_ff=0 has_chr=0 def_br="2" br_ans=""
+        if pacman -Si brave-bin >/dev/null 2>&1; then
+            brave_cand="brave-bin"
+        elif pacman -Si brave >/dev/null 2>&1; then
+            brave_cand="brave"
+        fi
+        pacman -Si firefox >/dev/null 2>&1 && has_ff=1
+        pacman -Si chromium >/dev/null 2>&1 && has_chr=1
+        [[ -n "$brave_cand" ]] && def_br="1"
+
+        echo ""
+        printf "  %sBrowser selection (for internet troubleshooting / docs):%s\n" "$CLR_BOLD" "$CLR_RESET"
+        if [[ -n "$brave_cand" ]]; then
+            printf "    [1] Brave (%s)\n" "$brave_cand"
+        else
+            printf "    [1] Brave (not found in configured pacman repos)\n"
+        fi
+        printf "    [2] Firefox%s\n" "$( (( has_ff )) || printf ' (unavailable)' )"
+        printf "    [3] Chromium%s\n" "$( (( has_chr )) || printf ' (unavailable)' )"
+        printf "    [4] None (skip browser — smaller image)\n"
+        read -r -e -p "Select browser [1-4 or custom pkg] (Enter=${def_br}): " br_ans </dev/tty || br_ans=""
+        br_ans="${br_ans:-$def_br}"
+        case "$br_ans" in
+            1)
+                if [[ -n "$brave_cand" ]]; then
+                    browser_pkg="$brave_cand"
+                else
+                    msg_err "Brave package not available in configured pacman repos."
+                    exit 1
+                fi
+                ;;
+            2) browser_pkg="firefox" ;;
+            3) browser_pkg="chromium" ;;
+            4|none|no) browser_pkg="" ;;
+            *)
+                if pacman -Si "$br_ans" >/dev/null 2>&1; then
+                    browser_pkg="$br_ans"
+                else
+                    msg_err "Browser package '${br_ans}' not found in configured pacman repos."
+                    exit 1
+                fi
+                ;;
+        esac
+    fi
+
+    # Pre-flight ESP and /var/tmp space check (recovery.squashfs.new coexists with existing until swap)
+    local req_esp_b=1677721600 # ~1.56 GiB console
+    if [[ "$mode_sel" == "1" ]]; then
+        if [[ -n "$browser_pkg" ]]; then
+            req_esp_b=2936012800 # ~2.73 GiB desktop + browser + UKI headroom
+        else
+            req_esp_b=2411724800 # ~2.25 GiB desktop + UKI headroom
+        fi
+    fi
+    local req_esp_h
+    req_esp_h="$(numfmt --to=iec-i --suffix=B "$req_esp_b" 2>/dev/null || echo "${req_esp_b}B")"
+    msg_info "ESP space check: free=${esp_free_h} | estimated needed=${req_esp_h}"
+    if (( esp_free_b < req_esp_b )); then
+        msg_err "Insufficient free space on ESP (${TARGET_MNT}). Free: ${esp_free_h}, estimated needed: ${req_esp_h}."
+        msg_err "Free up ESP space or choose Minimal Console / None browser profile."
+        exit 1
+    fi
+
+    local tmp_free_b tmp_free_h
+    tmp_free_b="$(df -PB1 /var/tmp 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    tmp_free_h="$(numfmt --to=iec-i --suffix=B "$tmp_free_b" 2>/dev/null || echo "${tmp_free_b}B")"
+    if (( tmp_free_b < 3221225472 )); then
+        msg_err "Insufficient free space in /var/tmp for rootfs build (${tmp_free_h}; at least 3 GiB required)."
+        exit 1
+    elif (( tmp_free_b < 6442450944 )); then
+        msg_warn "Low free space in /var/tmp (${tmp_free_h}; >= 6 GiB recommended)."
+        local tmp_ans=""
+        read -r -e -p "Continue anyway? [y/N]: " tmp_ans </dev/tty || tmp_ans="n"
+        case "${tmp_ans,,}" in
+            y|yes|s|si) ;;
+            *) msg_info "Build cancelled."; return 0 ;;
+        esac
+    fi
 
     local kern_pkg="linux-cachyos" ucode_pkg=""
     if pacman -Q linux-cachyos-hardened >/dev/null 2>&1; then
@@ -1226,13 +1496,26 @@ do_build_recovery_squashfs() {
 
     local pkgs=(
         base "$kern_pkg" $ucode_pkg linux-firmware mkinitcpio
-        cryptsetup lvm2 btrfs-progs dosfstools gptfdisk parted efibootmgr sbctl
-        arch-install-scripts pv zstd rsync cifs-utils nfs-utils openssh
-        smartmontools nvme-cli networkmanager sudo polkit zsh btop nvtop
-        python python-gobject gtk3 cairo pango gdk-pixbuf2 libvterm
+        cryptsetup lvm2 btrfs-progs dosfstools e2fsprogs gptfdisk parted efibootmgr sbctl
+        arch-install-scripts squashfs-tools pv zstd rsync cifs-utils nfs-utils openssh
+        smartmontools nvme-cli networkmanager sudo polkit zsh btop neovim
+        python python-gobject gtk3 gtk-layer-shell cairo pango gdk-pixbuf2 libvterm
     )
+    local -a opt_pkgs=()
+    mapfile -t opt_pkgs < <(_filter_repo_pkgs \
+        hdparm ddrescue testdisk iwd iproute2 iputils bind curl wget ethtool tcpdump \
+        lsof pciutils usbutils strace tmux vim less jq git nvtop \
+        nftables pipewire wireplumber pipewire-pulse wl-clipboard grim slurp \
+    )
+    (( ${#opt_pkgs[@]} > 0 )) && pkgs+=("${opt_pkgs[@]}")
+
     if [[ "$mode_sel" == "1" ]]; then
-        pkgs+=(niri waybar foot fuzzel polkit-gnome ttf-jetbrains-mono-nerd noto-fonts)
+        local -a desk_pkgs=()
+        mapfile -t desk_pkgs < <(_filter_repo_pkgs \
+            niri waybar ghostty fuzzel polkit-gnome ttf-jetbrains-mono-nerd noto-fonts xdg-utils \
+        )
+        (( ${#desk_pkgs[@]} > 0 )) && pkgs+=("${desk_pkgs[@]}")
+        [[ -n "$browser_pkg" ]] && pkgs+=("$browser_pkg")
     fi
 
     local build_dir="/var/tmp/ncui-sqfs-build.$$"
@@ -1240,7 +1523,7 @@ do_build_recovery_squashfs() {
     rm -rf "$build_dir"
     mkdir -p "$build_dir"
 
-    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (${kern_pkg})..."
+    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (${kern_pkg}${browser_pkg:+, browser=${browser_pkg}})..."
     pacstrap -c "$build_dir" "${pkgs[@]}"
 
     printf '%s-recovery\n' "${CFG_HOSTNAME:-nightcity}" > "${build_dir}/etc/hostname"
@@ -1251,7 +1534,6 @@ do_build_recovery_squashfs() {
     _inject_ncui_into_rootfs "$build_dir" "$src_dir"
     rm -rf "${build_dir}/var/cache/pacman/pkg"/* "${build_dir}/var/log/journal"/* 2>/dev/null || true
 
-    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
     msg_step "Compressing ${NEW_SQUASHFS} (zstd -19)..."
     mksquashfs "$build_dir" "$NEW_SQUASHFS" -comp zstd -Xcompression-level 19 -b 1M -noappend
@@ -1267,6 +1549,238 @@ do_build_recovery_squashfs() {
     rm -rf "$build_dir"
     build_uki_standalone
     msg_ok "Live Recovery SquashFS + Signed UKI built successfully on ESP!"
+    return 0
+}
+
+_umount_edit_tree() {
+    local work_dir="$1"
+    [[ -n "$work_dir" && -d "$work_dir" ]] || return 0
+    local submounts=() _id _pid _maj _rt _mp _rest
+    while read -r _id _pid _maj _rt _mp _rest; do
+        [[ -n "$_mp" ]] || continue
+        _mp="${_mp//\\040/ }"; _mp="${_mp//\\011/$'\t'}"; _mp="${_mp//\\134/\\}"
+        if [[ "$_mp" == "$work_dir" || "$_mp" == "${work_dir}/"* ]]; then
+            submounts+=("$_mp")
+        fi
+    done < /proc/self/mountinfo
+    if (( ${#submounts[@]} > 0 )); then
+        local rev=() m
+        mapfile -t rev < <(printf '%s\n' "${submounts[@]}" | tac)
+        for m in "${rev[@]}"; do
+            umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
+        done
+    fi
+    if ! grep -qF " ${work_dir}/" /proc/self/mountinfo 2>/dev/null; then
+        rm -rf "$work_dir" 2>/dev/null || true
+    fi
+}
+
+do_edit_recovery_squashfs() {
+    if [[ -d "$UPPER_DIR" ]]; then
+        msg_info "Already running inside Live RAM Recovery (${UPPER_DIR})."
+        msg_info "Make any edits directly in this session, then run: nc-rescue commit"
+        return 0
+    fi
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
+    [[ -s "$cur_sq" ]] || { msg_err "No recovery image found at ${cur_sq}. Run 'nc-rescue --build-recovery' first."; exit 1; }
+    command -v arch-chroot >/dev/null 2>&1 || { msg_err "arch-chroot not found (install arch-install-scripts)."; exit 1; }
+    command -v mksquashfs >/dev/null 2>&1 || { msg_err "mksquashfs not found (install squashfs-tools)."; exit 1; }
+
+    local work_dir="/var/tmp/ncui-sqfs-edit.$$"
+    mkdir -p "${work_dir}/lower" "${work_dir}/upper" "${work_dir}/work" "${work_dir}/merged"
+    _edit_cleanup() {
+        _umount_edit_tree "$work_dir"
+        cleanup_rescue
+    }
+    trap _edit_cleanup EXIT INT TERM HUP
+
+    msg_step "Mounting ${cur_sq} read-only + OverlayFS..."
+    mount -t squashfs -o ro,loop "$cur_sq" "${work_dir}/lower"
+    mount -t overlay overlay -o "lowerdir=${work_dir}/lower,upperdir=${work_dir}/upper,workdir=${work_dir}/work" "${work_dir}/merged"
+
+    local shell_bin="/bin/bash"
+    [[ -x "${work_dir}/merged/bin/zsh" ]] && shell_bin="/bin/zsh"
+    printf "\n%s=== NC-UI RECOVERY IMAGE CHROOT (OverlayFS) ===%s\n" "$CLR_BOLD" "$CLR_RESET"
+    printf "  Target : %s\n" "$cur_sq"
+    printf "  Exit the shell ('exit' / Ctrl+D) when done to commit or discard changes.\n\n"
+    local chroot_rc=0
+    arch-chroot "${work_dir}/merged" "$shell_bin" </dev/tty >/dev/tty 2>/dev/tty || chroot_rc=$?
+    (( chroot_rc != 0 )) && msg_warn "Chroot shell exited with status ${chroot_rc}."
+
+    local has_changes=""
+    has_changes="$(find "${work_dir}/upper" -mindepth 1 -print -quit 2>/dev/null || true)"
+    if [[ -z "$has_changes" ]]; then
+        msg_info "No changes made inside recovery chroot; closing cleanly."
+        _umount_edit_tree "$work_dir"
+        trap cleanup_rescue EXIT INT TERM HUP
+        return 0
+    fi
+
+    local ans=""
+    read -r -e -p "Changes detected inside recovery chroot. Commit to recovery.squashfs (rotating current to .old)? [y/N]: " ans </dev/tty || ans="n"
+    case "${ans,,}" in
+        y|yes|s|si) ;;
+        *)
+            msg_info "Changes discarded cleanly."
+            _umount_edit_tree "$work_dir"
+            trap cleanup_rescue EXIT INT TERM HUP
+            return 0
+            ;;
+    esac
+
+    local cur_sz esp_free_b req_b cur_h esp_h req_h
+    cur_sz="$(stat -c%s "$cur_sq" 2>/dev/null || echo 0)"
+    esp_free_b="$(df -PB1 "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    req_b=$(( cur_sz + 367001600 ))
+    if (( esp_free_b < req_b )); then
+        cur_h="$(numfmt --to=iec-i --suffix=B "$cur_sz" 2>/dev/null || echo "${cur_sz}B")"
+        esp_h="$(numfmt --to=iec-i --suffix=B "$esp_free_b" 2>/dev/null || echo "${esp_free_b}B")"
+        req_h="$(numfmt --to=iec-i --suffix=B "$req_b" 2>/dev/null || echo "${req_b}B")"
+        msg_err "Insufficient free space on ESP (${TARGET_MNT}): free=${esp_h}, needed≈${req_h} (current=${cur_h})."
+        exit 1
+    fi
+
+    local kern_touched=0
+    if [[ -d "${work_dir}/upper/usr/lib/modules" || -d "${work_dir}/upper/etc/initcpio" || -d "${work_dir}/upper/boot" ]]; then
+        kern_touched=1
+    fi
+
+    NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
+    msg_step "Packing edited recovery into ${NEW_SQUASHFS} (zstd -19)..."
+    mksquashfs "${work_dir}/merged" "$NEW_SQUASHFS" -comp zstd -Xcompression-level 19 -b 1M -noappend
+    unsquashfs -s "$NEW_SQUASHFS" >/dev/null 2>&1 || { msg_err "SquashFS integrity check failed."; exit 1; }
+    local nsz
+    nsz="$(stat -c%s "$NEW_SQUASHFS")"
+    (( nsz < 4294967295 )) || { msg_err "SquashFS exceeds 4 GiB FAT32 limit (${nsz} bytes)."; exit 1; }
+
+    IN_FINAL_SWAP=1
+    swap_pair_safe "$NEW_SQUASHFS" "$cur_sq" "$bak_sq" 1
+    sync
+    COMMIT_COMPLETED=1
+
+    _umount_edit_tree "$work_dir"
+    trap cleanup_rescue EXIT INT TERM HUP
+
+    local uki_path="" alt
+    for alt in "$CFG_UKI_NAME" "nightcity-recovery.efi" "nc-rescue.efi"; do
+        [[ -n "$alt" && -f "${TARGET_MNT}/EFI/Linux/${alt}" ]] && { uki_path="${TARGET_MNT}/EFI/Linux/${alt}"; break; }
+    done
+    if (( kern_touched == 1 )) || [[ -z "$uki_path" ]]; then
+        build_uki_standalone
+    else
+        collect_and_write_status >/dev/null
+    fi
+    msg_ok "Edited Recovery SquashFS committed atomically (previous saved as .old)."
+    return 0
+}
+
+do_delete_recovery_artifacts() {
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
+
+    local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
+    local cur_uki="${TARGET_MNT}/EFI/Linux/${CFG_UKI_NAME}"
+    if [[ ! -f "$cur_uki" && -f "${TARGET_MNT}/EFI/Linux/nightcity-recovery.efi" ]]; then
+        cur_uki="${TARGET_MNT}/EFI/Linux/nightcity-recovery.efi"
+    fi
+    local bak_uki="${cur_uki}.old"
+
+    if [[ ! -f "$cur_sq" && ! -f "$bak_sq" && ! -f "$cur_uki" && ! -f "$bak_uki" ]]; then
+        msg_info "No recovery artifacts found on ESP (${TARGET_MNT})."
+        return 0
+    fi
+
+    printf "\n%s=== DELETE RECOVERY ARTIFACTS (%s) ===%s\n" "$CLR_BOLD" "$TARGET_MNT" "$CLR_RESET"
+    local p szh
+    for p in "$cur_sq" "$bak_sq" "$cur_uki" "$bak_uki"; do
+        if [[ -f "$p" ]]; then
+            szh="$(numfmt --to=iec-i --suffix=B "$(stat -c%s "$p" 2>/dev/null || echo 0)" 2>/dev/null || echo '?')"
+            printf "  - %-48s (%s)\n" "$p" "$szh"
+        fi
+    done
+    echo ""
+    [[ -f "$bak_sq" || -f "$bak_uki" ]] && printf "  [1] Delete only .old backup copy\n"
+    [[ -f "$cur_sq" || -f "$cur_uki" ]] && printf "  [2] Delete active recovery image & UKI\n"
+    [[ ( -f "$cur_sq" || -f "$cur_uki" ) && ( -f "$bak_sq" || -f "$bak_uki" ) ]] && printf "  [3] Delete ALL recovery copies (active + .old)\n"
+    printf "  [0] Cancel\n"
+
+    local sel=""
+    read -r -e -p "Select option: " sel </dev/tty || sel="0"
+    local del_cur=0 del_bak=0
+    case "$sel" in
+        1) [[ -f "$bak_sq" || -f "$bak_uki" ]] && del_bak=1 ;;
+        2) [[ -f "$cur_sq" || -f "$cur_uki" ]] && del_cur=1 ;;
+        3) [[ -f "$cur_sq" || -f "$cur_uki" ]] && del_cur=1; [[ -f "$bak_sq" || -f "$bak_uki" ]] && del_bak=1 ;;
+        *) msg_info "Cancelled."; return 0 ;;
+    esac
+    (( del_cur == 1 || del_bak == 1 )) || { msg_info "Nothing selected."; return 0; }
+
+    local removes_last=0
+    if (( del_cur == 1 )) && [[ ! -f "$bak_sq" || "$del_bak" -eq 1 ]]; then
+        removes_last=1
+    fi
+
+    local c1="" c2=""
+    if (( removes_last == 1 )); then
+        msg_warn "WARNING: This will leave ZERO bootable recovery SquashFS images on your ESP!"
+        read -r -e -p "Are you sure you want to delete the last recovery copy? [y/N]: " c1 </dev/tty || c1="n"
+        [[ "${c1,,}" =~ ^(y|yes|s|si)$ ]] || { msg_info "Deletion cancelled."; return 0; }
+        read -r -e -p "Type 'DELETE' to confirm permanent removal: " c2 </dev/tty || c2=""
+        [[ "$c2" == "DELETE" ]] || { msg_info "Confirmation mismatch; deletion cancelled."; return 0; }
+    else
+        read -r -e -p "Confirm deletion of selected recovery artifact(s)? [y/N]: " c1 </dev/tty || c1="n"
+        [[ "${c1,,}" =~ ^(y|yes|s|si)$ ]] || { msg_info "Deletion cancelled."; return 0; }
+    fi
+
+    (( del_cur == 1 )) && rm -f "$cur_sq" "$cur_uki"
+    (( del_bak == 1 )) && rm -f "$bak_sq" "$bak_uki"
+    sync
+    collect_and_write_status >/dev/null
+    msg_ok "Selected recovery artifact(s) removed from ESP."
+    return 0
+}
+
+do_manage_recovery() {
+    while true; do
+        load_rescue_config
+        resolve_esp_mnt 0 || true
+        local esp_free="-" sq_st="MISSING" old_st="NONE" uki_st="MISSING"
+        if [[ -n "$TARGET_MNT" ]]; then
+            esp_free="$(df -h "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || echo '-')"
+            [[ -f "${TARGET_MNT}/recovery.squashfs" ]] && sq_st="$(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/recovery.squashfs" 2>/dev/null || echo 0)")"
+            [[ -f "${TARGET_MNT}/recovery.squashfs.old" ]] && old_st="$(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/recovery.squashfs.old" 2>/dev/null || echo 0)")"
+            for alt in "$CFG_UKI_NAME" "nightcity-recovery.efi" "nc-rescue.efi"; do
+                if [[ -n "$alt" && -f "${TARGET_MNT}/EFI/Linux/${alt}" ]]; then
+                    uki_st="${alt} ($(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/EFI/Linux/${alt}" 2>/dev/null || echo 0)"))"
+                    break
+                fi
+            done
+        fi
+
+        printf "\n%s=== NC-UI RECOVERY IMAGE MANAGER ===%s\n" "$CLR_BOLD" "$CLR_RESET"
+        printf "  ESP (%s): Free %s | SquashFS: %s | .old: %s | UKI: %s\n\n" "${TARGET_MNT:-/boot}" "$esp_free" "$sq_st" "$old_st" "$uki_st"
+        printf "  [1] Build new Recovery Image (--build-recovery)\n"
+        printf "  [2] Edit existing Recovery Image in chroot (edit)\n"
+        printf "  [3] Sync NC-UI into existing Recovery Image (--sync-ncui)\n"
+        printf "  [4] Rebuild & sign Recovery UKI (build-uki)\n"
+        printf "  [5] Rollback to .old backup (rollback-esp)\n"
+        printf "  [6] Delete Recovery Image / .old backup (delete)\n"
+        printf "  [0] Exit\n"
+        local ch=""
+        read -r -e -p "Select action [0-6]: " ch </dev/tty || break
+        case "$ch" in
+            1) ( do_build_recovery_squashfs ) || true ;;
+            2) ( do_edit_recovery_squashfs ) || true ;;
+            3) ( do_sync_ncui_squashfs ) || true ;;
+            4) ( build_uki_standalone ) || true ;;
+            5) ( do_rollback_esp ) || true ;;
+            6) ( do_delete_recovery_artifacts ) || true ;;
+            0|q|Q|"") break ;;
+            *) msg_warn "Invalid choice: ${ch}" ;;
+        esac
+    done
     return 0
 }
 
@@ -1355,6 +1869,18 @@ EOF_SEED
     return 0
 }
 
+ORIG_ARGS=("$@")
+require_root() {
+    [[ $EUID -eq 0 ]] && return 0
+    if [[ -t 0 || -t 1 ]]; then
+        local self_bin
+        self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
+        exec sudo "$self_bin" "${ORIG_ARGS[@]}"
+    fi
+    msg_err "Root privileges required."
+    exit 1
+}
+
 ACTION="${1:-status}"
 case "$ACTION" in
     -h|--help)
@@ -1369,58 +1895,70 @@ case "$ACTION" in
         collect_and_write_status
         ;;
     install-hooks)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         load_rescue_config
         resolve_esp_mnt 1 || true
         write_recovery_hook_files
         msg_ok "Installed recovery-ram hooks and ${ROLLBACK_BIN}."
         ;;
     build-uki)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         build_uki_standalone
         ;;
     commit|-c)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_live_commit 0 0 0
         ;;
     commit-rebuild|-r|--rebuild)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_live_commit 1 0 0
         ;;
     commit-skip-uki|-s|--skip-uki)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_live_commit 0 0 1
         ;;
     rollback-esp)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_rollback_esp
         ;;
     limine-set-stdin)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_limine_set_stdin
         ;;
     limine-apply-stdin)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_limine_apply_stdin
         ;;
     limine-wallpaper-stdin)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_limine_wallpaper_stdin
         ;;
     register-limine)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_register_limine
         ;;
     --sync-ncui)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_sync_ncui_squashfs
         ;;
     --build-recovery)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         do_build_recovery_squashfs
         ;;
+    manage|--manage)
+        require_root
+        do_manage_recovery
+        ;;
+    edit|chroot|--edit|--chroot)
+        require_root
+        do_edit_recovery_squashfs
+        ;;
+    delete|--delete)
+        require_root
+        do_delete_recovery_artifacts
+        ;;
     config-stdin)
-        [[ $EUID -eq 0 ]] || { msg_err "Root privileges required."; exit 1; }
+        require_root
         load_rescue_config
         do_config_stdin
         ;;

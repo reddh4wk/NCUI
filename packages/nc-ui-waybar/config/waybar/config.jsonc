@@ -13,6 +13,7 @@
     ],
     "modules-center": [
         "custom/media",
+        "custom/spotify",
         "custom/settings",
         "custom/calendar",
         "custom/notifications",
@@ -42,7 +43,7 @@
     },
     "niri/window": {
         "format": "{title}",
-        "max-length": 161,
+        "max-length": 158,
         "tooltip": false
     },
     "custom/settings": {
@@ -193,5 +194,13 @@
         "tooltip": false,
         "on-click": "/usr/local/lib/nc-ui/bin/nc-ctl popup session",
         "on-click-right": "/usr/local/lib/nc-ui/bin/nc-ctl settings waybar options"
+    },
+    "custom/spotify": {
+        "class": "module-nc",
+        "exec": "/usr/local/lib/nc-ui/bin/nc-bar-agent spdl",
+        "return-type": "json",
+        "interval": 2,
+        "tooltip": false,
+        "on-click": "/usr/local/lib/nc-ui/bin/nc-ctl popup spdl"
     }
 }

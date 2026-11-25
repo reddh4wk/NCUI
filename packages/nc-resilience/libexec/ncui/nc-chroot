@@ -7,6 +7,7 @@ set -euo pipefail
 # ==============================================================================
 
 CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
+RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
 VG_NAME="${NC_VG_NAME:-}"
 BTRFS_SUBVOL="@"
 MAPPER_NAME="nightcity_crypt"
@@ -89,6 +90,7 @@ DO_CANDS_TSV=0
 CLI_LUKS_DEV=""
 CLI_VG_NAME=""
 POSITIONAL_ARGS=()
+ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -142,10 +144,61 @@ while [[ $# -gt 0 ]]; do
 done
 
 load_chroot_resilience_config
+ORIGIN_HOSTNAME=""
+ORIGIN_VG_NAME=""
+ORIGIN_LUKS_UUID=""
+ORIGIN_LUKS_PARTUUID=""
+ORIGIN_ESP_UUID=""
+ORIGIN_ESP_PARTUUID=""
+ORIGIN_LUKS_DEV=""
+ORIGIN_ESP_DEV=""
+
+resolve_recovery_origin() {
+    [[ -r "$RECOVERY_ORIGIN_FILE" ]] || return 0
+    local line k v
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        line="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        [[ "$line" =~ ^([A-Z0-9_]+)=(.*)$ ]] || continue
+        k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
+        v="${v#\"}"; v="${v%\"}"
+        case "$k" in
+            NC_ORIGIN_HOSTNAME)      ORIGIN_HOSTNAME="$v" ;;
+            NC_ORIGIN_VG_NAME)       ORIGIN_VG_NAME="$v" ;;
+            NC_ORIGIN_LUKS_UUID)     ORIGIN_LUKS_UUID="${v,,}" ;;
+            NC_ORIGIN_LUKS_PARTUUID) ORIGIN_LUKS_PARTUUID="${v,,}" ;;
+            NC_ORIGIN_ESP_UUID)      ORIGIN_ESP_UUID="$v" ;;
+            NC_ORIGIN_ESP_PARTUUID)  ORIGIN_ESP_PARTUUID="${v,,}" ;;
+        esac
+    done < "$RECOVERY_ORIGIN_FILE"
+
+    if [[ -n "$ORIGIN_LUKS_UUID" ]]; then
+        ORIGIN_LUKS_DEV="$(blkid -U "$ORIGIN_LUKS_UUID" 2>/dev/null || true)"
+    fi
+    if [[ -z "$ORIGIN_LUKS_DEV" && -n "$ORIGIN_LUKS_PARTUUID" ]]; then
+        ORIGIN_LUKS_DEV="$(blkid -t "PARTUUID=${ORIGIN_LUKS_PARTUUID}" -o device 2>/dev/null | head -n1 || true)"
+    fi
+    [[ -n "$ORIGIN_LUKS_DEV" && -b "$ORIGIN_LUKS_DEV" ]] || ORIGIN_LUKS_DEV=""
+
+    if [[ -n "$ORIGIN_ESP_UUID" ]]; then
+        ORIGIN_ESP_DEV="$(blkid -U "$ORIGIN_ESP_UUID" 2>/dev/null || true)"
+    fi
+    if [[ -z "$ORIGIN_ESP_DEV" && -n "$ORIGIN_ESP_PARTUUID" ]]; then
+        ORIGIN_ESP_DEV="$(blkid -t "PARTUUID=${ORIGIN_ESP_PARTUUID}" -o device 2>/dev/null | head -n1 || true)"
+    fi
+    [[ -n "$ORIGIN_ESP_DEV" && -b "$ORIGIN_ESP_DEV" ]] || ORIGIN_ESP_DEV=""
+    return 0
+}
+resolve_recovery_origin
 [[ -n "$CLI_VG_NAME" ]] && VG_NAME="$CLI_VG_NAME"
 
 if [[ "${DC_CHROOT_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
-    exec sudo "$0" "$@"
+    if [[ -t 0 || -t 1 ]]; then
+        self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
+        exec sudo "$self_bin" "${ORIG_ARGS[@]}"
+    fi
+    log_err "Privilegi di root richiesti."
+    exit 1
 fi
 
 mkdir -p "$(dirname "$LOCK_FILE")"
@@ -369,6 +422,8 @@ if [[ "$DO_CANDS_TSV" -eq 1 ]]; then
             scope="EXTERNAL"
             if is_live_host_target "$part" ""; then
                 scope="HOST"
+            elif [[ -n "$ORIGIN_LUKS_DEV" ]] && [[ "$(readlink -f "$part" 2>/dev/null || printf '%s' "$part")" == "$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")" ]]; then
+                scope="ORIGIN"
             fi
             printf 'CAND\t%s\t%s\t%s\t%s\t%s\t%s\n' "$part" "$sz" "$mod" "$esp_d" "$mname" "$scope"
         fi
@@ -484,16 +539,34 @@ if [[ -z "$SELECTED_LUKS" ]]; then
     mapfile -t CANDIDATES < <(find_luks_candidates)
     TOTAL_CANDIDATES=${#CANDIDATES[@]}
 
+    local origin_real="" origin_c_desc=""
+    [[ -n "$ORIGIN_LUKS_DEV" ]] && origin_real="$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")"
     if (( TOTAL_CANDIDATES > 1 )); then
         log_warn "Rilevati molteplici candidati LUKS:"
         for i in "${!CANDIDATES[@]}"; do
             c_dev="${CANDIDATES[$i]}"
-            printf "   ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}\n" "$((i + 1))" "$c_dev" "$(get_device_desc "$c_dev")"
+            c_real="$(readlink -f "$c_dev" 2>/dev/null || printf '%s' "$c_dev")"
+            origin_tag=""
+            if [[ -n "$origin_real" && "$c_real" == "$origin_real" ]]; then
+                origin_tag=" ${C_MINT}[Origin: ${ORIGIN_HOSTNAME:-host}]${C_RESET}"
+                origin_c_desc="$c_dev"
+            fi
+            printf "   ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}%b\n" "$((i + 1))" "$c_dev" "$(get_device_desc "$c_dev")" "$origin_tag"
         done
         echo
-        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Seleziona un indice (1-${TOTAL_CANDIDATES}) o inserisci il percorso del dispositivo: ")" USER_CHOICE </dev/tty || true
+        local prompt_luks
+        if [[ -n "$origin_c_desc" ]]; then
+            prompt_luks=" \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per il sistema di origine (${ORIGIN_HOSTNAME:-host}: ${origin_c_desc}), oppure seleziona indice/dispositivo: "
+        else
+            prompt_luks=" \001${C_PEACH}\002[?]\001${C_RESET}\002 Seleziona un indice (1-${TOTAL_CANDIDATES}) o inserisci il percorso del dispositivo: "
+        fi
+        read -r -e -p "$(echo -e "$prompt_luks")" USER_CHOICE </dev/tty || true
         if [[ -z "$USER_CHOICE" ]]; then
-            log_err "Nessuna selezione effettuata. Operazione annullata."; exit 1
+            if [[ -n "$origin_c_desc" ]]; then
+                SELECTED_LUKS="$origin_c_desc"
+            else
+                log_err "Nessuna selezione effettuata. Operazione annullata."; exit 1
+            fi
         elif [[ "$USER_CHOICE" =~ ^[0-9]+$ ]] && (( USER_CHOICE >= 1 && USER_CHOICE <= TOTAL_CANDIDATES )); then
             SELECTED_LUKS="${CANDIDATES[$((USER_CHOICE - 1))]}"
         elif [[ -b "$USER_CHOICE" ]]; then
@@ -503,8 +576,11 @@ if [[ -z "$SELECTED_LUKS" ]]; then
         fi
     elif (( TOTAL_CANDIDATES == 1 )); then
         SINGLE_DEV="${CANDIDATES[0]}"
-        log_ok "Candidato LUKS individuato: ${C_BOLD}${SINGLE_DEV}${C_RESET} ($(get_device_desc "$SINGLE_DEV"))"
-        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Premi INVIO per confermare o digita un dispositivo alternativo: ")" USER_CONFIRM </dev/tty || true
+        local s_real s_origin_tag=""
+        s_real="$(readlink -f "$SINGLE_DEV" 2>/dev/null || printf '%s' "$SINGLE_DEV")"
+        [[ -n "$origin_real" && "$s_real" == "$origin_real" ]] && s_origin_tag=" [Origin: ${ORIGIN_HOSTNAME:-host}]"
+        log_ok "Candidato LUKS individuato: ${C_BOLD}${SINGLE_DEV}${C_RESET} ($(get_device_desc "$SINGLE_DEV"))${s_origin_tag}"
+        read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o digita un dispositivo alternativo: ")" USER_CONFIRM </dev/tty || true
         if [[ -z "$USER_CONFIRM" ]]; then
             SELECTED_LUKS="$SINGLE_DEV"
         elif [[ -b "$USER_CONFIRM" ]]; then
@@ -513,14 +589,26 @@ if [[ -z "$SELECTED_LUKS" ]]; then
             log_err "Dispositivo specificato non valido: '$USER_CONFIRM'."; exit 1
         fi
     else
-        log_warn "Nessun dispositivo LUKS rilevato automaticamente nel sistema."
-        read -r -p "$(echo -e " ${C_PEACH}[?]${C_RESET} Inserisci il percorso del dispositivo LUKS (es. /dev/sdd2) [INVIO per annullare]: ")" USER_DEV </dev/tty || true
-        if [[ -z "$USER_DEV" ]]; then
-            log_err "Operazione annullata dall'utente."; exit 0
-        elif [[ -b "$USER_DEV" ]]; then
-            SELECTED_LUKS="$USER_DEV"
+        if [[ -n "$ORIGIN_LUKS_DEV" && -b "$ORIGIN_LUKS_DEV" ]]; then
+            log_ok "Dispositivo LUKS di origine individuato: ${C_BOLD}${ORIGIN_LUKS_DEV}${C_RESET} (${ORIGIN_HOSTNAME:-host})"
+            read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o inserisci un percorso alternativo: ")" USER_DEV </dev/tty || true
+            if [[ -z "$USER_DEV" ]]; then
+                SELECTED_LUKS="$ORIGIN_LUKS_DEV"
+            elif [[ -b "$USER_DEV" ]]; then
+                SELECTED_LUKS="$USER_DEV"
+            else
+                log_err "Dispositivo specificato non esistente o non valido: '$USER_DEV'."; exit 1
+            fi
         else
-            log_err "Dispositivo specificato non esistente o non valido: '$USER_DEV'."; exit 1
+            log_warn "Nessun dispositivo LUKS rilevato automaticamente nel sistema."
+            read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Inserisci il percorso del dispositivo LUKS (es. /dev/sdd2) [INVIO per annullare]: ")" USER_DEV </dev/tty || true
+            if [[ -z "$USER_DEV" ]]; then
+                log_err "Operazione annullata dall'utente."; exit 0
+            elif [[ -b "$USER_DEV" ]]; then
+                SELECTED_LUKS="$USER_DEV"
+            else
+                log_err "Dispositivo specificato non esistente o non valido: '$USER_DEV'."; exit 1
+            fi
         fi
     fi
 fi
@@ -535,6 +623,9 @@ fi
 if [[ -n "${NC_ESP_DEV:-}" && -b "$NC_ESP_DEV" ]]; then
     ESP_DEV="$NC_ESP_DEV"
     log_info "Partizione ESP configurata manualmente: ${C_BOLD}${ESP_DEV}${C_RESET}"
+elif [[ -n "$ORIGIN_LUKS_DEV" && -n "$ORIGIN_ESP_DEV" && -b "$ORIGIN_ESP_DEV" && "$(readlink -f "$LUKS_DEV" 2>/dev/null || printf '%s' "$LUKS_DEV")" == "$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")" ]]; then
+    ESP_DEV="$ORIGIN_ESP_DEV"
+    log_info "Partizione ESP di origine rilevata: ${C_BOLD}${ESP_DEV}${C_RESET} ($(get_device_desc "$ESP_DEV"))"
 else
     ESP_DEV="$(resolve_esp_device "$LUKS_DEV")"
     if [[ -b "$ESP_DEV" ]]; then

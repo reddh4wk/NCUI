@@ -28,7 +28,7 @@ log_err()  { printf " %b[-]%b %s\n" "$C_ROSE"  "$C_RESET" "$*" >&2; }
 usage() {
     local prog="${0##*/}"
     cat <<EOF
-Usage: sudo ${prog} <ACTION>
+Usage: ${prog} <ACTION>
 
 Actions:
   status, --status      Human-readable vault status
@@ -38,6 +38,7 @@ Actions:
   umount, -u            Unmount vault backend (auto-pushes SSH staging if active)
   creds-stdin           Read 'user\\npass\\npersist(0|1)' on stdin, verify & mount SMB
   ssh-push              Push staged local SSH vault directory back to remote
+  pkglist [label]       Export pacman -Qqe (+ -Qqm) to vault pkglists (default: snapshot)
   pkglist-stdin         Export pacman -Qqe (+ -Qqm) to vault pkglists using stdin label
   pkglist-tsv           List saved pkglists as TSV
   config-stdin          Update [vault] / [identity] in ${CONF_FILE} and sync /etc/nc.profile
@@ -210,7 +211,7 @@ detect_hardware_trust() {
     SYS_TRUST="TRUSTED"
     if [[ -n "$CFG_HW_UUID" && -n "$CURRENT_UUID" && "$CURRENT_UUID" != "$CFG_HW_UUID" ]]; then
         SYS_TRUST="UNTRUSTED"
-    elif [[ "$live_host" == "duskcity"* ]]; then
+    elif [[ -d "/run/recovery-ram/upper" ]] || grep -Eq '^NC_RECOVERY_IMAGE="?1"?$' "${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}" 2>/dev/null; then
         SYS_TRUST="RECOVERY"
     fi
     if [[ "$SYS_TRUST" == "UNTRUSTED" && ( "$CFG_PROTOCOL" == "smb" || "$CFG_PROTOCOL" == "nfs" ) ]]; then
@@ -911,6 +912,7 @@ EOF
 # ==============================================================================
 # ROUTING
 # ==============================================================================
+ORIG_ARGS=("$@")
 ACTION="${1:-status}"
 case "$ACTION" in
     -h|--help) usage ;;
@@ -927,6 +929,10 @@ case "$ACTION" in
 esac
 
 if [[ "${NC_VAULT_ALLOW_NONROOT:-0}" != "1" && $EUID -ne 0 ]]; then
+    if [[ -t 0 || -t 1 ]]; then
+        self_bin="$(realpath -e "$0" 2>/dev/null || printf '%s' "$0")"
+        exec sudo "$self_bin" "${ORIG_ARGS[@]}"
+    fi
     log_err "Root privileges required."
     exit 1
 fi
@@ -942,6 +948,7 @@ case "$ACTION" in
     umount|-u)      cmd_umount ;;
     creds-stdin)    cmd_creds_stdin ;;
     ssh-push)       cmd_ssh_push ;;
+    pkglist)        cmd_pkglist_stdin <<< "${2:-snapshot}" ;;
     pkglist-stdin)  cmd_pkglist_stdin ;;
     config-stdin)   cmd_config_stdin ;;
     *)              log_err "Unknown action: $ACTION"; exit 1 ;;
