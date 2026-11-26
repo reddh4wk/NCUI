@@ -480,10 +480,15 @@ class ControlCenterPanel(BasePanel):
             apply_waybar_transparency()
             return True
         if uri.startswith("cc:section:"):
-            sec = uri.split(":", 2)[2].strip()
+            rest = uri[len("cc:section:"):].strip()
+            sec, _, sub = rest.partition(":")
+            sec = sec.strip()
+            sub = sub.strip()
             if not sec or sec not in discover_section_blueprints():
                 return False
             self.set_section(sec)
+            if sub:
+                self.set_subtab(sub)
             if self.shell:
                 self.shell.refresh_view()
             return True

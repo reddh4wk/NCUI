@@ -2,6 +2,7 @@
 """Reusable Cairo + libvterm Embedded Terminal Widget for NC-UI (`ui/embedded_tui.py`)."""
 
 import math
+import time
 import cairo
 import gi
 
@@ -13,7 +14,7 @@ from core.config import THEME, get_layout_margins  # noqa: E402
 from core.i18n import t  # noqa: E402
 from ui.canvas import Canvas  # noqa: E402
 from ui.kit import ActionBtn, Badge, Box, Divider, FoldIconBtn, StateBadge, Txt, get_semantic_palette, hex_to_rgba_f, rounded_rect_path as _rounded_rect  # noqa: E402
-from ui.widgets import AsciiCard, _NO_LIGA_SPAN_OPEN, _extract_and_strip_bg_spans  # noqa: E402
+from ui.widgets import AsciiCard, _NO_LIGA_SPAN_OPEN, _extract_and_strip_bg_spans, _is_mouse_wheel_smooth_event  # noqa: E402
 from panels.cc_engine_resources import (  # noqa: E402
     _tui_copy_text,
     _tui_read_clipboard,
@@ -90,6 +91,7 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         self.show_cursor = bool(show_cursor)
         self.font_size_pt = max(7.0, float(font_size_pt or 9.0))
         self.flush = bool(flush)
+        self._last_discrete_scroll_ts = 0.0
         self._no_liga_attrs = Pango.AttrList()
         self._no_liga_attrs.insert(Pango.AttrFontFeatures.new("liga=0, clig=0, dlig=0, hlig=0"))
         self._metrics_sig = None
@@ -345,6 +347,11 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         return True
 
     def _on_scroll(self, _w, ev) -> bool:
+        now = time.monotonic()
+        if ev.direction == Gdk.ScrollDirection.SMOOTH and _is_mouse_wheel_smooth_event(ev, self._last_discrete_scroll_ts, now):
+            return True
+        if ev.direction in (Gdk.ScrollDirection.UP, Gdk.ScrollDirection.DOWN):
+            self._last_discrete_scroll_ts = now
         sel_mode = (not self.mouse_reporting) or bool(ev.state & Gdk.ModifierType.SHIFT_MASK)
         if sel_mode:
             step = 0
@@ -357,6 +364,9 @@ class EmbeddedTuiWidget(Gtk.EventBox):
                 if ok_d and abs(dy) >= 0.05:
                     step = 3 if dy < 0 else -3
             if step != 0:
+                _, _, _, _, cur_off, sb_len, _ = self.session.get_viewport_snapshot()
+                if (step > 0 and cur_off >= sb_len) or (step < 0 and cur_off <= 0):
+                    return False
                 self.session.scroll_by(step)
                 self.da.queue_draw()
                 return True

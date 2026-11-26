@@ -19,6 +19,11 @@ title = "Theme & Wallpaper"
 short = "Opens NC-UI semantic color themes, typography, opacity layers, cursor theme, and live wallpaper engine."
 verbose = "Lets you customize `theme.toml` palette axes, window/box/toast transparency, font family/size, Waybar synchronization, and Niri workspace wallpapers or shader/matrix backgrounds."
 
+["cc:section:personalization:theme"]
+title = "Theme & Colors"
+short = "Opens NC-UI parametric semantic color palette, typography, opacity layers, and cursor configuration."
+verbose = "Jumps directly to the Theme & Colors tab (`theme.toml`) where you tune the 7 semantic color axes, fonts, window/box/toast opacity layers, and Waybar style sync."
+
 ["cc:section:waybar"]
 title = "Waybar Layout & Modules"
 short = "Opens Waybar bar module placement, ordering, separators, and popup behavior settings."

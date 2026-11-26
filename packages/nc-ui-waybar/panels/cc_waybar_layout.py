@@ -3,14 +3,21 @@ import re
 from core.i18n import t, t_list
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, FoldToggle, SelectPill, Txt
+from ui.kit import (
+    ActionBtn,
+    Box,
+    FoldToggle,
+    SelectPill,
+    Txt,
+    compute_fit_scroll_rows,
+    set_scroll_viewport_max_off,
+)
 from panels.cc_engine_waybar import (
     KNOWN_WAYBAR_PLUGINS,
     _discover_user_waybar_plugins,
     _read_wb_config,
     _wb_plugin_meta,
     get_wb_feedback_cards,
-    set_guide_scroll_max_off,
 )
 
 _GUIDE_ROLE_PREFIXES = {
@@ -81,7 +88,7 @@ def _format_guide_line(raw: str, canvas: Canvas, max_cols: int) -> str:
 def _build_plugin_guide_box(cc_panel, canvas: Canvas, prior_cards: list) -> Box:
     is_open, fold_btn = FoldToggle(cc_panel, "wb_plugin_guide_open", default=True, uri_prefix="ui:state")
     if not is_open:
-        set_guide_scroll_max_off(0)
+        set_scroll_viewport_max_off("cc_wb:guide_scroll", 0)
         guide_box = Box(
             t("cc_waybar.plugin_guide_title"),
             icon="\uf02d",
@@ -95,60 +102,30 @@ def _build_plugin_guide_box(cc_panel, canvas: Canvas, prior_cards: list) -> Box:
 
     raw_lines = [str(ln) for ln in t_list("cc_waybar.plugin_guide_lines", default=[])]
     tot_lines = len(raw_lines)
-
-    from gi.repository import Pango
-    sh = getattr(cc_panel, "shell", None) if cc_panel else None
-    avail_h = sh.get_cc_avail_body_height_px(extra_top_cards=prior_cards) if (sh and hasattr(sh, "get_cc_avail_body_height_px")) else 420
-    std_row_h = getattr(canvas, "_std_row_h_px", 0)
-    if std_row_h <= 0:
-        sample_r = canvas.row(" ")
-        std_row_h = max(12, int(round(canvas.measure_line_height(sample_r) / Pango.SCALE)))
-        canvas._std_row_h_px = std_row_h
-    base_h = int(canvas.base_row_h_px)
-    fit_rows = int((avail_h - (2 * base_h) - std_row_h) // std_row_h)
-    win_rows = max(10, min(max(10, tot_lines), fit_rows)) if tot_lines > 0 else 10
-
+    win_rows = compute_fit_scroll_rows(cc_panel, canvas, prior_cards, tot_lines, min_rows=10)
     max_off = max(0, tot_lines - win_rows)
-    set_guide_scroll_max_off(max_off)
     raw_off = int(STATE.get("waybar", "plugin_guide_scroll", 0) or 0)
     cur_off = max(0, min(max_off, raw_off))
-    if cur_off != raw_off:
-        STATE.set("waybar", "plugin_guide_scroll", cur_off, immediate=False)
 
-    end_ln = min(tot_lines, cur_off + win_rows)
-    range_lbl = f"L{cur_off + 1}-{end_ln}/{tot_lines}" if tot_lines else "L0/0"
-
-    guide_box = Box(
-        t("cc_waybar.plugin_guide_title"),
-        icon="\uf02d",
-        actions=[
-            Txt(range_lbl, role="schema"),
-            ActionBtn("\uf100", "cc_wb:guide_scroll:top", tone="neutral"),
-            ActionBtn("\uf077", "cc_wb:guide_scroll:up", tone="neutral"),
-            ActionBtn("\uf078", "cc_wb:guide_scroll:down", tone="neutral"),
-            ActionBtn("\uf101", "cc_wb:guide_scroll:bottom", tone="neutral"),
-            fold_btn,
-        ],
-        scroll_action="cc_wb:guide_scroll",
-        highlighted=False,
-    )
-    guide_box.fill_window = True
-    guide_box.scroll_can_up = (cur_off > 0)
-    guide_box.scroll_can_down = (cur_off < max_off)
-    guide_box.add_row(" ")
-
-    thumb_row = int(round((cur_off / float(max(1, max_off))) * max(0, win_rows - 1))) if max_off > 0 else 0
     max_txt_cols = max(40, canvas.inner_cols - 6)
-    visible = raw_lines[cur_off:end_ln]
-    for row_i in range(win_rows):
-        sb_ch = Txt("█", role="intent") if row_i == thumb_row else Txt("│", role="structure")
-        if row_i < len(visible):
-            left_m = _format_guide_line(visible[row_i], canvas, max_txt_cols)
-        else:
-            left_m = " "
-        guide_box.add_row(left_m, right_markup=sb_ch)
+    fmt_rows = [
+        _format_guide_line(ln, canvas, max_txt_cols)
+        for ln in raw_lines[cur_off:min(tot_lines, cur_off + win_rows)]
+    ]
 
-    guide_box.add_row(" ")
+    guide_box = Box(t("cc_waybar.plugin_guide_title"), icon="\uf02d", highlighted=False)
+    guide_box.fill_window = True
+    guide_box.add_scroll_viewport(
+        fmt_rows,
+        total_items=tot_lines,
+        win_rows=win_rows,
+        offset=raw_off,
+        action_prefix="cc_wb:guide_scroll",
+        state_ns="waybar",
+        state_key="plugin_guide_scroll",
+        anchor="top",
+        trailing_actions=[fold_btn],
+    )
     return guide_box
 
 

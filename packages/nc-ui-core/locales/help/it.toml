@@ -19,6 +19,11 @@ title = "Tema & Sfondo"
 short = "Apre temi cromatici NC-UI, tipografia, livelli di opacità, cursore e gestione sfondi Wayland."
 verbose = "Personalizza i 7 assi della palette in `theme.toml`, trasparenza di finestra/box/notifiche, famiglia/dimensione font, sincronizzazione con Waybar e sfondi/shader animati."
 
+["cc:section:personalization:theme"]
+title = "Tema & Colori"
+short = "Apre palette semantica parametrica NC-UI, tipografia, livelli di opacità e configurazione cursore."
+verbose = "Porta direttamente alla scheda Tema & Colori (`theme.toml`) dove regolare i 7 assi cromatici semantici, font, opacità di finestra/box/toast e sincronizzazione Waybar."
+
 ["cc:section:waybar"]
 title = "Layout & Moduli Waybar"
 short = "Apre posizionamento moduli della barra Waybar, ordine, separatori e preferenze dei popup."

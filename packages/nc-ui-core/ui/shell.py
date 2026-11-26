@@ -61,7 +61,7 @@ from ui.kit import (
     get_active_inline_uri,
     get_inline_candidate_index,
     get_inline_entry_buffer,
-    get_scroll_zone_action,
+    get_scroll_zone_meta,
     get_semantic_palette,
     handle_inline_entry_key_press,
     set_inline_candidates,
@@ -70,7 +70,7 @@ from ui.kit import (
     sync_boxes_width,
     sync_inline_from_gtk_entry,
 )
-from ui.widgets import AsciiCard, CustomWidgetCard, NcPromptBar, _unpack_translated_coords, allow_step_input, pointer_moved_recently, clear_pointer_move_flag
+from ui.widgets import AsciiCard, CustomWidgetCard, NcPromptBar, _is_continuous_scroll_event, _unpack_translated_coords, allow_step_input, pointer_moved_recently, clear_pointer_move_flag
 from panels.base import load_panel
 
 
@@ -1343,25 +1343,38 @@ class ShellWindow(Gtk.Window):
     def _dispatch_hover_scroll_target(self, target: dict | None, card: AsciiCard, event) -> bool | None:
         if target is None:
             return None
+        ev_time = int(getattr(event, "time", 0) or (event.get_time() if hasattr(event, "get_time") else 0))
+        if ev_time > 0 and ev_time == getattr(card, "_passthrough_scroll_ev_time", 0):
+            return None
         if target.get("is_slider"):
             direction = card._resolve_scroll_direction(event)
             if direction == "":
                 return True
             if direction in ("up", "down"):
-                is_smooth = (event.direction == Gdk.ScrollDirection.SMOOTH)
-                return self._dispatch_slider_step(target, direction, continuous=is_smooth, scroll_card=card)
+                is_cont = _is_continuous_scroll_event(event)
+                res = self._dispatch_slider_step(target, direction, continuous=is_cont, scroll_card=card)
+                if not is_cont:
+                    card._scroll_accum = 0.0
+                return res
             return False
-        sz_prefix = get_scroll_zone_action(target.get("uri", ""))
-        if sz_prefix and card.on_link:
+        sz_meta = get_scroll_zone_meta(target.get("uri", ""))
+        if sz_meta and card.on_link:
+            sz_prefix, can_up, can_down = sz_meta
             direction = card._resolve_scroll_direction(event)
             if direction == "":
                 return True
             if direction in ("up", "down"):
-                is_smooth = (event.direction == Gdk.ScrollDirection.SMOOTH)
-                if self._check_step_rate_limit(continuous=is_smooth):
-                    if is_smooth:
-                        card._scroll_accum = 0.0
+                if (direction == "up" and not can_up) or (direction == "down" and not can_down):
+                    if ev_time > 0:
+                        card._passthrough_scroll_ev_time = ev_time
+                    card._scroll_accum = 0.0
+                    return False
+                is_cont = _is_continuous_scroll_event(event)
+                if self._check_step_rate_limit(continuous=is_cont):
+                    card._scroll_accum = 0.0
                     card.on_link(f"{sz_prefix}:{direction}")
+                elif not is_cont:
+                    card._scroll_accum = 0.0
                 return True
         return None
 

@@ -1522,9 +1522,14 @@ warn_plugin_no_label = "missing label/label_key in PLUGIN_META"
 plugin_guide_title = "Custom Plugin Developer Guide"
 plugin_guide_summary = "Architecture, PLUGIN_META contract, minimal template, toolkit, i18n & CLI testing."
 plugin_guide_lines = [
-    ' «d:╭────────────────────────────────────────────────────────────────────────╮»',
-    " «d:│»  «w:\uf135»  «f:BUILD CUSTOM WAYBAR PLUGINS FOR NC-UI»    «w:\uf12e»  «g:Zero-Setup Single-File» «d:│»",
-    ' «d:╰────────────────────────────────────────────────────────────────────────╯»',
+    '   «w:███╗   ██╗ ██████╗»    «f:██████╗ ██╗     ██╗   ██╗ ██████╗ ██╗███╗   ██╗»',
+    '   «w:████╗  ██║██╔════╝»    «f:██╔══██╗██║     ██║   ██║██╔════╝ ██║████╗  ██║»',
+    '   «w:██╔██╗ ██║██║     »    «f:██████╔╝██║     ██║   ██║██║  ███╗██║██╔██╗ ██║»',
+    '   «w:██║╚██╗██║██║     »    «f:██╔═══╝ ██║     ██║   ██║██║   ██║██║██║╚██╗██║»',
+    '   «w:██║ ╚████║╚██████╗»    «f:██║     ███████╗╚██████╔╝╚██████╔╝██║██║ ╚████║»',
+    '   «d:╚═╝  ╚═══╝ ╚═════╝    ╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝╚═╝  ╚═══╝»',
+    ' ',
+    "        «w:\uf135»  «s:BUILD CUSTOM WAYBAR PLUGINS»  «d:·»  «w:\uf12e»  «g:ZERO-SETUP SINGLE FILE»",
     ' ',
     ' ',
     "«w:\uf0e8  01»  «f:ARCHITECTURE & DISCOVERY LIFECYCLE»",
@@ -3910,7 +3915,7 @@ hero_tag_1 = "MONOSPACE PRECISION"
 hero_tag_2 = "WAYLAND LAYER-SHELL"
 hero_tag_3 = "ZERO BLOAT ENGINE"
 hero_online = "ONLINE"
-hero_deterministic = "✓ DETERMINISTIC"
+hero_deterministic = "✓ PARAMETRIC"
 status_title = "Settings Status"
 zero_lines = "0 lines"
 behavior_diagnostics = "Behavior & Diagnostics"

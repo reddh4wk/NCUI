@@ -13,7 +13,7 @@ from core.config import (
 )
 from core.i18n import list_available_languages, set_language, t
 from core.state import STATE
-from ui.kit import feedback_cards, set_feedback
+from ui.kit import feedback_cards, handle_scroll_action, set_feedback
 
 
 def backup_all_ui_settings(dest_path: str = "") -> tuple[bool, str]:
@@ -48,6 +48,8 @@ def _read_log_window(offset: int = 0, window_size: int = 30) -> tuple[str, list[
 def handle_cc_settings_link(cc_panel, uri: str) -> bool:
     if not uri.startswith("cc_set:"):
         return False
+    if handle_scroll_action(uri, "cc_set:log_scroll", "settings", "log_scroll_offset", step=5, anchor="bottom", panel=cc_panel):
+        return True
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
@@ -63,16 +65,6 @@ def handle_cc_settings_link(cc_panel, uri: str) -> bool:
     elif cmd == "lang" and arg in list_available_languages():
         set_language(arg)
         set_feedback("settings", True, t("cc_settings.interface_language_set_to", p0=arg.upper()))
-    elif cmd == "log_scroll":
-        cur_off = int(STATE.get("settings", "log_scroll_offset", 0) or 0)
-        if arg == "up":
-            STATE.set("settings", "log_scroll_offset", cur_off + 5, immediate=False)
-        elif arg == "down":
-            STATE.set("settings", "log_scroll_offset", max(0, cur_off - 5), immediate=False)
-        elif arg == "top":
-            STATE.set("settings", "log_scroll_offset", 999999, immediate=False)
-        elif arg == "bottom":
-            STATE.set("settings", "log_scroll_offset", 0, immediate=False)
     elif cmd == "loglevel" and arg.isdigit():
         lvl = int(arg)
         _update_toml_key_in_section("general", "log_level", str(lvl))

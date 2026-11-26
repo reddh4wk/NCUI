@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+if [[ ! -f "${REPO_DIR}/PKGBUILD" ]]; then
+    printf 'Errore: PKGBUILD non trovato in %s\n' "$REPO_DIR" >&2
+    exit 1
+fi
+
+DO_BUILD=1
+DO_MAIN=0
+DO_RECOVERY=0
+
+usage() {
+    cat <<'EOF'
+Uso: nc-build [opzioni]
+
+Rigenera i pacchetti split di NC-UI e li installa su sistema e/o recovery.
+
+Opzioni:
+  --main        Reinstalla i pacchetti compilati sul sistema host (pacman -U)
+  --recovery    Aggiorna i pacchetti nella recovery SquashFS e rigenera l'UKI
+  --all         Esegue entrambi (--main --recovery)
+  --no-build    Salta makepkg -f e riusa i .pkg.tar.zst gia' presenti
+  -h, --help    Mostra questo messaggio di aiuto
+
+Senza --main ne' --recovery, esegue il solo rebuild con makepkg -f.
+EOF
+}
+
+while (($# > 0)); do
+    case "$1" in
+        --main)
+            DO_MAIN=1
+            ;;
+        --recovery)
+            DO_RECOVERY=1
+            ;;
+        --all)
+            DO_MAIN=1
+            DO_RECOVERY=1
+            ;;
+        --no-build)
+            DO_BUILD=0
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'Opzione sconosciuta: %s\n\n' "$1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+cd "$REPO_DIR"
+
+if (( DO_BUILD )); then
+    printf '==> Rebuild pacchetti NC-UI in %s...\n' "$REPO_DIR"
+    makepkg -f
+fi
+
+shopt -s nullglob
+PKGS=(nc-*.pkg.tar.zst)
+shopt -u nullglob
+
+if (( ${#PKGS[@]} == 0 )); then
+    printf 'Errore: nessun pacchetto nc-*.pkg.tar.zst trovato in %s\n' "$REPO_DIR" >&2
+    exit 1
+fi
+
+if (( DO_MAIN || DO_RECOVERY )); then
+    printf '==> Copia di %d pacchetti in /var/cache/pacman/pkg/...\n' "${#PKGS[@]}"
+    sudo cp -f "${PKGS[@]}" /var/cache/pacman/pkg/
+fi
+
+if (( DO_MAIN )); then
+    printf '==> Installazione pacchetti su sistema host (pacman -U)...\n'
+    sudo pacman -U --noconfirm "${PKGS[@]}"
+fi
+
+if (( DO_RECOVERY )); then
+    printf '==> Aggiornamento recovery SquashFS e UKI (nc-rescue --sync-ncui)...\n'
+    sudo env "NCUI_PKG_DIR=${REPO_DIR}" /usr/bin/nc-rescue --sync-ncui
+fi
+
+printf '[✓ OK] Operazione completata (%d pacchetti).\n' "${#PKGS[@]}"

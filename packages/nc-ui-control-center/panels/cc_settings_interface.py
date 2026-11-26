@@ -30,7 +30,7 @@ def _build_hero_banner_box(canvas: Canvas) -> Box:
     b_hero.add_row(" ")
     pills_line = (
         f"{ActionBtn(t('cc_settings.hero_online'), 'cc:section:sysinfo', tone='neutral')}  "
-        f"{ActionBtn(t('cc_settings.hero_deterministic'), 'cc:section:personalization', tone='apply')}"
+        f"{ActionBtn(t('cc_settings.hero_deterministic'), 'cc:section:personalization:theme', tone='apply')}"
     )
     right_lines = (
         "",
@@ -128,44 +128,34 @@ def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     win_size = 30
     cur_off = int(STATE.get("settings", "log_scroll_offset", 0) or 0)
     log_path, win_lines, total, clamped_off = _read_log_window(cur_off, window_size=win_size)
-    if clamped_off != cur_off:
-        STATE.set("settings", "log_scroll_offset", clamped_off, immediate=False)
-
     range_lbl = f"L{win_lines[0][0]}-{win_lines[-1][0]}/{total}" if win_lines else t("cc_settings.zero_lines")
     log_box = Box(
         t("cc_settings.runtime_log_tail", p0=os.path.basename(log_path)),
         icon="\uf15c",
-        actions=[
-            Txt(range_lbl, role="schema"),
-            ActionBtn("\uf100", "cc_set:log_scroll:top", tone="neutral"),
-            ActionBtn("\uf077", "cc_set:log_scroll:up", tone="neutral"),
-            ActionBtn("\uf078", "cc_set:log_scroll:down", tone="neutral"),
-            ActionBtn(t("cc_settings.tail"), "cc_set:log_scroll:bottom", tone="neutral"),
-            ActionBtn(t("cc_settings.clear"), "cc_set:clear_log", tone="danger_soft"),
-        ],
-        scroll_action="cc_set:log_scroll",
         highlighted=False,
     )
-    log_box.add_row(" ")
-    max_off = max(0, total - win_size)
-    log_box.scroll_can_up = (clamped_off < max_off)
-    log_box.scroll_can_down = (clamped_off > 0)
-    thumb_row = int(round((1.0 - (clamped_off / float(max(1, max_off)))) * (win_size - 1))) if total > win_size else (win_size - 1)
     max_txt_cols = max(40, canvas.inner_cols - 12)
-    for row_i in range(win_size):
-        sb_ch = Txt("█", role="intent") if row_i == thumb_row else Txt("│", role="structure")
-        if row_i < len(win_lines):
-            ln_no, ln_txt = win_lines[row_i]
-            ln_u = ln_txt.upper()
-            is_err_ln = any(k in ln_u for k in ("[ERROR]", "[STDERR]", "CRITICAL", "TRACEBACK", "NAMEERROR", "ERROR:"))
-            ln_role = "fault" if is_err_ln else ("attention" if "WARN" in ln_u else "schema")
-            left_m = f"  {Txt(f'{ln_no:04d}│', role='structure')} {Txt(canvas.truncate_plain(ln_txt, max_txt_cols), role=ln_role)}"
-        elif row_i == 0 and not win_lines:
-            left_m = f"  {Txt(t('cc_settings.is_empty_or_absent', p0=log_path), role='inactive')}"
-        else:
-            left_m = " "
-        log_box.add_row(left_m, right_markup=sb_ch)
-    log_box.add_row(" ")
+    fmt_rows: list[str] = []
+    for ln_no, ln_txt in win_lines:
+        ln_u = ln_txt.upper()
+        is_err_ln = any(k in ln_u for k in ("[ERROR]", "[STDERR]", "CRITICAL", "TRACEBACK", "NAMEERROR", "ERROR:"))
+        ln_role = "fault" if is_err_ln else ("attention" if "WARN" in ln_u else "schema")
+        fmt_rows.append(f"  {Txt(f'{ln_no:04d}│', role='structure')} {Txt(canvas.truncate_plain(ln_txt, max_txt_cols), role=ln_role)}")
+
+    log_box.add_scroll_viewport(
+        fmt_rows,
+        total_items=total,
+        win_rows=win_size,
+        offset=clamped_off,
+        action_prefix="cc_set:log_scroll",
+        state_ns="settings",
+        state_key="log_scroll_offset",
+        anchor="bottom",
+        bottom_label=t("cc_settings.tail"),
+        range_label=range_lbl,
+        trailing_actions=[ActionBtn(t("cc_settings.clear"), "cc_set:clear_log", tone="danger_soft")],
+        empty_markup=f"  {Txt(t('cc_settings.is_empty_or_absent', p0=log_path), role='inactive')}",
+    )
     cards.append(log_box)
     return cards
 

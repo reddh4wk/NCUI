@@ -52,8 +52,8 @@ class BasePanel:
     def get_state(self, key: str, default=None):
         return STATE.get(self.id, key, default)
 
-    def set_state(self, key: str, value) -> None:
-        STATE.set(self.id, key, value)
+    def set_state(self, key: str, value, immediate: bool = True) -> None:
+        STATE.set(self.id, key, value, immediate=immediate)
 
     @property
     def is_expanded(self) -> bool:

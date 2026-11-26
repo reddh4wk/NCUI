@@ -364,6 +364,9 @@ class Panel(BasePanel):
         out.append(g_hdr + v_sep + v_sep.join(hdr_cells))
         out.append(rule_row)
 
+        can_up = (h_start > 0)
+        can_down = (h_start < (24 - _VIS_HOURS))
+
         # Row 2: ALL-DAY Ribbon
         all_cells = []
         for dt in week_days:
@@ -379,7 +382,7 @@ class Panel(BasePanel):
                 max_t = max(3, day_w - 2 - (len(extra) + 1 if extra else 0))
                 t_p = exp_canvas.truncate_plain(e0["title"], max_t)
                 uri_ev = f"cal:event:{e0['id']}"
-                register_scroll_zone(uri_ev, "cal:wscroll")
+                register_scroll_zone(uri_ev, "cal:wscroll", can_up=can_up, can_down=can_down)
                 mk = (
                     f"<a href='{uri_ev}'><span underline='none'>"
                     f"{Txt('\u2022 ', role=b_role)}{Txt(t_p, role='focus')}"
@@ -416,7 +419,7 @@ class Panel(BasePanel):
             is_cur_hr = today_in_week and (hr == now_hm.hour)
 
             g_uri = f"cal:add_hour:{hr:02d}"
-            register_scroll_zone(g_uri, "cal:wscroll")
+            register_scroll_zone(g_uri, "cal:wscroll", can_up=can_up, can_down=can_down)
             g_lbl = f"\u25b8{hr:02d}:00" if is_cur_hr else f" {hr:02d}:00"
             g_top = (
                 f"<a href='{g_uri}'><span underline='none'>"
@@ -441,7 +444,7 @@ class Panel(BasePanel):
                     r_col = "intent" if is_insp else "vitality"
                     cont_past = et > h1
                     uri_ev = f"cal:event:{ev['id']}"
-                    register_scroll_zone(uri_ev, "cal:wscroll")
+                    register_scroll_zone(uri_ev, "cal:wscroll", can_up=can_up, can_down=can_down)
 
                     # Row 1: show @ location only on the hour immediately after start
                     loc = str(ev.get("location") or "").strip()
@@ -481,8 +484,8 @@ class Panel(BasePanel):
                     r1_col = "intent" if (insp_id is not None and str(e1["id"]) == str(insp_id)) else "vitality"
                     r2_col = "intent" if (insp_id is not None and str(e2["id"]) == str(insp_id)) else "vitality"
                     u1, u2 = f"cal:event:{e1['id']}", f"cal:event:{e2['id']}"
-                    register_scroll_zone(u1, "cal:wscroll")
-                    register_scroll_zone(u2, "cal:wscroll")
+                    register_scroll_zone(u1, "cal:wscroll", can_up=can_up, can_down=can_down)
+                    register_scroll_zone(u2, "cal:wscroll", can_up=can_up, can_down=can_down)
                     tm1 = e1["start_time"][:5]
                     tm2 = e2["start_time"][:5]
                     t1_s = exp_canvas.truncate_plain(e1["title"], max(2, day_w - 8))
@@ -510,7 +513,7 @@ class Panel(BasePanel):
                     r_col = "intent" if is_insp else "vitality"
                     cont_past = et > h1
                     uri_ev = f"cal:event:{ev['id']}"
-                    register_scroll_zone(uri_ev, "cal:wscroll")
+                    register_scroll_zone(uri_ev, "cal:wscroll", can_up=can_up, can_down=can_down)
                     if ev.get("end_time"):
                         tm_rng = f"{ev['start_time'][:5]}\u2013{ev['end_time'][:5]}"
                     else:
@@ -540,7 +543,7 @@ class Panel(BasePanel):
 
                 else:
                     slot_uri = f"cal:slot:{iso_d}:{hr:02d}"
-                    register_scroll_zone(slot_uri, "cal:wscroll")
+                    register_scroll_zone(slot_uri, "cal:wscroll", can_up=can_up, can_down=can_down)
                     blank_click = f"<a href='{slot_uri}'><span underline='none'>{' ' * day_w}</span></a>"
                     row1_cells.append(blank_click)
                     row2_cells.append(blank_click)
@@ -933,8 +936,12 @@ class Panel(BasePanel):
                     by_d.setdefault(e["date"], []).append(e)
                 cur = self._compute_week_h_start([w_mon + datetime.timedelta(days=i) for i in range(7)], by_d)
             step = -1 if d == "up" else 1
-            self.hour_offset = max(0, min(24 - _VIS_HOURS, cur + step))
-            self.set_state("hour_offset", self.hour_offset)
+            new_off = max(0, min(24 - _VIS_HOURS, cur + step))
+            if new_off != self.hour_offset:
+                self.hour_offset = new_off
+                self.set_state("hour_offset", self.hour_offset, immediate=False)
+                self.request_throttled_refresh()
+            return
         elif uri == "cal:prev":
             if self.is_expanded and self.view_mode == "week":
                 dt = datetime.date.fromisoformat(self.selected_date) - datetime.timedelta(days=7)

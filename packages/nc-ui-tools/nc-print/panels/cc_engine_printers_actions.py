@@ -881,11 +881,22 @@ def handle_cc_printers_link(cc_panel, uri: str) -> bool:
     if act == "drv_box_scroll" and tail:
         cur_d = _core().get_add_draft()
         cur_sm = _disc().get_smart_probe(cur_d.get("host") or cur_d.get("uri") or "")
-        cur_off = int(cc_panel.get_state("prn_drv_scroll", 0) or 0)
-        delta = -1 if tail == "up" else (1 if tail == "down" else (-999 if tail == "top" else 999))
-        cc_panel.set_state("prn_drv_scroll", max(0, cur_off + delta))
-        _disc().get_auto_found_drivers(cc_panel, cur_d, cur_sm)
-        return _refresh()
+        auto_info = _disc().get_auto_found_drivers(cc_panel, cur_d, cur_sm)
+        max_off = max(0, int(auto_info["total"]) - int(auto_info["win_size"]))
+        cur_off = max(0, min(max_off, int(cc_panel.get_state("prn_drv_scroll", 0) or 0)))
+        if tail == "top":
+            new_off = 0
+        elif tail == "bottom":
+            new_off = max_off
+        elif tail == "up":
+            new_off = max(0, cur_off - 1)
+        else:
+            new_off = min(max_off, cur_off + 1)
+        if new_off != cur_off:
+            cc_panel.set_state("prn_drv_scroll", new_off, immediate=False)
+            if cc_panel:
+                cc_panel.request_throttled_refresh()
+        return True
 
     if act == "drv_pkg_rescan":
         cur_d = _core().get_add_draft()

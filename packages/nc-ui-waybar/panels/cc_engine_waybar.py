@@ -21,7 +21,7 @@ from core.config import (
 from core.paths import find_package_file, iter_user_plugin_dirs
 from core.state import STATE
 from core.i18n import get_active_language, t
-from ui.kit import feedback_cards, set_feedback
+from ui.kit import feedback_cards, handle_scroll_action, set_feedback
 
 REPO_WB_CONF = find_package_file("config", "waybar", "config.jsonc")
 
@@ -200,13 +200,6 @@ def _inspect_plugin_ast(fpath: str, collect_warnings: bool = False) -> tuple[boo
 
 _USER_PLUGINS_CACHE: tuple | None = None
 _WB_JSONC_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
-_GUIDE_MAX_OFF: int = 0
-
-
-def set_guide_scroll_max_off(max_off: int) -> None:
-    """Update live guide scroll ceiling so rapid wheel ticks clamp in memory."""
-    global _GUIDE_MAX_OFF
-    _GUIDE_MAX_OFF = max(0, int(max_off or 0))
 
 
 def _discover_user_waybar_plugins() -> dict[str, dict]:
@@ -430,26 +423,9 @@ def get_wb_feedback_cards() -> list:
 def handle_cc_waybar_link(cc_panel, uri: str) -> bool:
     if not uri.startswith("cc_wb:"):
         return False
-    act = uri[len("cc_wb:"):]
-
-    if act.startswith("guide_scroll:"):
-        s_dir = act.split(":", 1)[1].strip()
-        cur_off = int(STATE.get("waybar", "plugin_guide_scroll", 0) or 0)
-        ceil = _GUIDE_MAX_OFF if _GUIDE_MAX_OFF > 0 else 999999
-        new_off = cur_off
-        if s_dir == "up":
-            new_off = max(0, cur_off - 3)
-        elif s_dir == "down":
-            new_off = min(ceil, cur_off + 3)
-        elif s_dir == "top":
-            new_off = 0
-        elif s_dir == "bottom":
-            new_off = ceil
-        if new_off != cur_off:
-            STATE.set("waybar", "plugin_guide_scroll", new_off, immediate=False)
-            if cc_panel:
-                cc_panel.request_throttled_refresh()
+    if handle_scroll_action(uri, "cc_wb:guide_scroll", "waybar", "plugin_guide_scroll", step=3, anchor="top", panel=cc_panel):
         return True
+    act = uri[len("cc_wb:"):]
 
     data = _read_wb_config()
     sec_map = {

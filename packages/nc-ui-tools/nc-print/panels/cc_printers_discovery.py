@@ -71,6 +71,8 @@ def _render_auto_found_table(bx: Box, canvas: Canvas, d: dict, auto_info: dict, 
     off = auto_info["offset"]
     pm = auto_info["pkg_mgr"]
     scroll_act = "cc_prn:drv_box_scroll"
+    can_up = (off > 0)
+    can_down = ((off + win_size) < total)
 
     if total > 0:
         hi = min(total, off + win_size)
@@ -92,21 +94,21 @@ def _render_auto_found_table(bx: Box, canvas: Canvas, d: dict, auto_info: dict, 
         cmp_cell = _cmp_arrow(bool(it.get("better_than_local", True)))
         if it["kind"] == "cups":
             item_uri = f"cc_prn:pick_drv:{it['id']}"
-            register_scroll_zone(item_uri, scroll_act)
+            register_scroll_zone(item_uri, scroll_act, can_up=can_up, can_down=can_down)
             is_sel = (d["drv_id"] == it["id"]) or (d["drv_mode"] == "ppd" and it["id"] == f"ppd:{d['ppd_path']}")
             main_cell = SelectPill(canvas.truncate_plain(str(it["label"]), 36), item_uri, selected=is_sel)
             tag_role = "vitality" if it.get("tag") == "AUTO" else "schema"
             act_cell = Txt(canvas.truncate_plain(str(it.get("tag", "CUPS")), 10), role=tag_role)
         elif it["installed"]:
             item_uri = f"cc_prn:pick_pkg_drv:{it['pkg']}"
-            register_scroll_zone(item_uri, scroll_act)
+            register_scroll_zone(item_uri, scroll_act, can_up=can_up, can_down=can_down)
             is_pkg_sel = (d["drv_mode"] == "db" and d.get("selected_pkg") == it["pkg"])
             main_cell = SelectPill(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), item_uri, selected=is_pkg_sel)
             act_cell = StateBadge(True, t("cc_printers.pkg_installed_tag"))
         else:
             pk = it["pkg"]
             item_uri = f"cc_prn:install_drv_pkg:{pk}"
-            register_scroll_zone(item_uri, scroll_act)
+            register_scroll_zone(item_uri, scroll_act, can_up=can_up, can_down=can_down)
             main_cell = Txt(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), role="focus")
             act_cell = ActionBtn(t("cc_printers.install_pkg_btn"), item_uri, tone="apply")
 
@@ -176,8 +178,10 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
             scroll_act = "cc_prn:drv_box_scroll"
             up_uri = f"{scroll_act}:up"
             dn_uri = f"{scroll_act}:down"
-            register_scroll_zone(up_uri, scroll_act)
-            register_scroll_zone(dn_uri, scroll_act)
+            can_up = (off > 0)
+            can_down = ((off + win_size) < total)
+            register_scroll_zone(up_uri, scroll_act, can_up=can_up, can_down=can_down)
+            register_scroll_zone(dn_uri, scroll_act, can_up=can_up, can_down=can_down)
             up_btn = ActionBtn("\uf077", up_uri, tone="neutral" if off > 0 else "muted")
             dn_btn = ActionBtn("\uf078", dn_uri, tone="neutral" if (off + win_size) < total else "muted")
             nav_acts = [up_btn, dn_btn]

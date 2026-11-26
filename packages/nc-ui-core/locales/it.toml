@@ -1522,9 +1522,14 @@ warn_plugin_no_label = "label/label_key assenti in PLUGIN_META"
 plugin_guide_title = "Guida Sviluppo Plugin Esterni"
 plugin_guide_summary = "Architettura, contratto PLUGIN_META, template minimo, toolkit UI, i18n e test."
 plugin_guide_lines = [
-    ' «d:╭────────────────────────────────────────────────────────────────────────╮»',
-    " «d:│»  «w:\uf135»  «f:SVILUPPA PLUGIN WAYBAR ESTERNI»       «w:\uf12e»  «g:Plugin File Singolo»        «d:│»",
-    ' «d:╰────────────────────────────────────────────────────────────────────────╯»',
+    '   «w:███╗   ██╗ ██████╗»    «f:██████╗ ██╗     ██╗   ██╗ ██████╗ ██╗███╗   ██╗»',
+    '   «w:████╗  ██║██╔════╝»    «f:██╔══██╗██║     ██║   ██║██╔════╝ ██║████╗  ██║»',
+    '   «w:██╔██╗ ██║██║     »    «f:██████╔╝██║     ██║   ██║██║  ███╗██║██╔██╗ ██║»',
+    '   «w:██║╚██╗██║██║     »    «f:██╔═══╝ ██║     ██║   ██║██║   ██║██║██║╚██╗██║»',
+    '   «w:██║ ╚████║╚██████╗»    «f:██║     ███████╗╚██████╔╝╚██████╔╝██║██║ ╚████║»',
+    '   «d:╚═╝  ╚═══╝ ╚═════╝    ╚═╝     ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝╚═╝  ╚═══╝»',
+    ' ',
+    "      «w:\uf135»  «s:SVILUPPA PLUGIN WAYBAR ESTERNI»  «d:·»  «w:\uf12e»  «g:FILE SINGOLO ZERO-SETUP»",
     ' ',
     ' ',
     "«w:\uf0e8  01»  «f:ARCHITETTURA E CICLO DI DISCOVERY»",
@@ -3910,7 +3915,7 @@ hero_tag_1 = "MONOSPACE PRECISION"
 hero_tag_2 = "WAYLAND LAYER-SHELL"
 hero_tag_3 = "ZERO BLOAT ENGINE"
 hero_online = "ONLINE"
-hero_deterministic = "✓ DETERMINISTIC"
+hero_deterministic = "✓ PARAMETRIC"
 status_title = "Stato Impostazioni"
 zero_lines = "0 righe"
 behavior_diagnostics = "Comportamento & Diagnostica"

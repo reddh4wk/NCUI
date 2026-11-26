@@ -6,6 +6,7 @@ import re
 import time
 from core.config import THEME, color_for_pct, get_hide_unavailable_settings, hex_to_rgba_f, strip_jsonc_comments
 from core.i18n import t
+from core.state import STATE
 from ui.canvas import Canvas, _ATOMIC_WIDGET_RE, rounded_rect_path
 
 DEFAULT_KEY_WIDTH = 20
@@ -605,7 +606,8 @@ def ProgressBar(pct: float, width: int = 15, color_by_threshold: bool = True, in
 
 
 _SLIDER_META: dict[str, dict] = {}
-_SCROLL_ZONE_META: dict[str, str] = {}
+_SCROLL_ZONE_META: dict[str, tuple[str, bool, bool]] = {}
+_SCROLL_VIEWPORT_META: dict[str, int] = {}
 
 
 def get_slider_step_uris(action_prefix: str) -> tuple[str, str] | None:
@@ -651,13 +653,102 @@ def advance_slider_uri(action_prefix: str, direction: str) -> str | None:
     return f"{action_prefix}:{_fmt_slider_val(nxt, is_flt)}"
 
 
-def register_scroll_zone(uri: str, scroll_action_prefix: str) -> None:
+def register_scroll_zone(
+    uri: str,
+    scroll_action_prefix: str,
+    can_up: bool = True,
+    can_down: bool = True,
+) -> None:
     if uri and scroll_action_prefix:
-        _SCROLL_ZONE_META[str(uri)] = str(scroll_action_prefix)
+        _SCROLL_ZONE_META[str(uri)] = (str(scroll_action_prefix), bool(can_up), bool(can_down))
+
+
+def get_scroll_zone_meta(uri: str) -> tuple[str, bool, bool] | None:
+    return _SCROLL_ZONE_META.get(str(uri or ""))
 
 
 def get_scroll_zone_action(uri: str) -> str | None:
-    return _SCROLL_ZONE_META.get(str(uri or ""))
+    meta = _SCROLL_ZONE_META.get(str(uri or ""))
+    return meta[0] if meta else None
+
+
+def set_scroll_viewport_max_off(action_prefix: str, max_off: int) -> None:
+    if action_prefix:
+        _SCROLL_VIEWPORT_META[str(action_prefix)] = max(0, int(max_off or 0))
+
+
+def get_scroll_viewport_max_off(action_prefix: str) -> int:
+    return int(_SCROLL_VIEWPORT_META.get(str(action_prefix or ""), 0))
+
+
+def handle_scroll_action(
+    uri: str,
+    action_prefix: str,
+    state_ns: str,
+    state_key: str,
+    *,
+    step: int = 3,
+    anchor: str = "top",
+    panel=None,
+) -> bool:
+    """Standard Zero-Block controller for ScrollViewport URIs (:top/:up/:down/:bottom)."""
+    pfx = f"{action_prefix}:"
+    if not uri or not uri.startswith(pfx):
+        return False
+    s_dir = uri[len(pfx):].strip()
+    cur_off = int(STATE.get(state_ns, state_key, 0) or 0)
+    ceil = int(_SCROLL_VIEWPORT_META.get(action_prefix, 999999))
+    new_off = cur_off
+    if anchor == "bottom":
+        if s_dir == "up":
+            new_off = min(ceil, cur_off + step)
+        elif s_dir == "down":
+            new_off = max(0, cur_off - step)
+        elif s_dir == "top":
+            new_off = ceil
+        elif s_dir == "bottom":
+            new_off = 0
+    else:
+        if s_dir == "up":
+            new_off = max(0, cur_off - step)
+        elif s_dir == "down":
+            new_off = min(ceil, cur_off + step)
+        elif s_dir == "top":
+            new_off = 0
+        elif s_dir == "bottom":
+            new_off = ceil
+    if new_off != cur_off:
+        STATE.set(state_ns, state_key, new_off, immediate=False)
+        if panel is not None and hasattr(panel, "request_throttled_refresh"):
+            panel.request_throttled_refresh()
+    return True
+
+
+def compute_fit_scroll_rows(
+    cc_panel,
+    canvas: Canvas,
+    prior_cards: list,
+    total_items: int,
+    min_rows: int = 10,
+    fallback_h: int = 420,
+) -> int:
+    """Compute visible line count fitting remaining Control Center viewport height."""
+    from gi.repository import Pango
+    sh = getattr(cc_panel, "shell", None) if cc_panel else None
+    avail_h = (
+        sh.get_cc_avail_body_height_px(extra_top_cards=prior_cards)
+        if (sh and hasattr(sh, "get_cc_avail_body_height_px"))
+        else fallback_h
+    )
+    std_row_h = getattr(canvas, "_std_row_h_px", 0)
+    if std_row_h <= 0:
+        sample_r = canvas.row(" ")
+        std_row_h = max(12, int(round(canvas.measure_line_height(sample_r) / Pango.SCALE)))
+        canvas._std_row_h_px = std_row_h
+    base_h = int(canvas.base_row_h_px)
+    fit_rows = int((avail_h - (2 * base_h) - std_row_h) // std_row_h)
+    hi = max(int(min_rows), int(total_items))
+    return max(int(min_rows), min(hi, fit_rows)) if total_items > 0 else int(min_rows)
 
 
 def _fmt_slider_val(val: float, is_float: bool) -> str:
@@ -1737,6 +1828,81 @@ class Box:
         return self
 
     add_inline_picker = add_search_box
+
+    def add_scroll_viewport(
+        self,
+        visible_rows: list[str],
+        *,
+        total_items: int,
+        win_rows: int,
+        offset: int,
+        action_prefix: str,
+        state_ns: str = "",
+        state_key: str = "",
+        anchor: str = "top",
+        bottom_label: str = "\uf101",
+        range_label: str | None = None,
+        trailing_actions: list | None = None,
+        empty_markup: str = "",
+    ) -> tuple[int, int]:
+        """Populate Box as a standardized scrollable viewport with header controls, bounds, and scrollbar."""
+        win_rows = max(1, int(win_rows))
+        total_items = max(0, int(total_items))
+        max_off = max(0, total_items - win_rows)
+        cur_off = max(0, min(max_off, int(offset)))
+        set_scroll_viewport_max_off(action_prefix, max_off)
+        if state_ns and state_key and cur_off != int(offset):
+            STATE.set(state_ns, state_key, cur_off, immediate=False)
+
+        self.scroll_action = action_prefix
+        if anchor == "bottom":
+            self.scroll_can_up = (cur_off < max_off)
+            self.scroll_can_down = (cur_off > 0)
+            thumb_row = (
+                int(round((1.0 - (cur_off / float(max(1, max_off)))) * max(0, win_rows - 1)))
+                if max_off > 0
+                else max(0, win_rows - 1)
+            )
+            if range_label is None:
+                if total_items > 0:
+                    end_i = max(0, total_items - cur_off)
+                    start_i = max(1, end_i - len(visible_rows) + 1)
+                    range_label = f"L{start_i}-{end_i}/{total_items}"
+                else:
+                    range_label = "L0/0"
+        else:
+            self.scroll_can_up = (cur_off > 0)
+            self.scroll_can_down = (cur_off < max_off)
+            thumb_row = (
+                int(round((cur_off / float(max(1, max_off))) * max(0, win_rows - 1)))
+                if max_off > 0
+                else 0
+            )
+            if range_label is None:
+                end_ln = min(total_items, cur_off + win_rows)
+                range_label = f"L{cur_off + 1}-{end_ln}/{total_items}" if total_items > 0 else "L0/0"
+
+        nav_actions = [
+            Txt(range_label, role="schema"),
+            ActionBtn("\uf100", f"{action_prefix}:top", tone="neutral"),
+            ActionBtn("\uf077", f"{action_prefix}:up", tone="neutral"),
+            ActionBtn("\uf078", f"{action_prefix}:down", tone="neutral"),
+            ActionBtn(bottom_label, f"{action_prefix}:bottom", tone="neutral"),
+        ] + [a for a in (trailing_actions or ()) if a]
+        self.actions = self.actions + nav_actions
+
+        self.add_row(" ")
+        for row_i in range(win_rows):
+            sb_ch = Txt("█", role="intent") if row_i == thumb_row else Txt("│", role="structure")
+            if row_i < len(visible_rows):
+                left_m = visible_rows[row_i] or " "
+            elif row_i == 0 and empty_markup:
+                left_m = empty_markup
+            else:
+                left_m = " "
+            self.add_row(left_m, right_markup=sb_ch)
+        self.add_row(" ")
+        return cur_off, max_off
 
     def _effective_mode(self) -> str:
         if self.width_mode in ("fixed", "dynamic"):
