@@ -97,11 +97,14 @@ def _draw_rounded_frame(cr, width: int, height: int, radius: float, bg_rgba: str
     x, y, w, h = 0.5, 0.5, width - 1.0, height - 1.0
 
     cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi / 2, 0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0, math.pi / 2)
-    cr.arc(x + rad, y + h - rad, rad, math.pi / 2, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, 3 * math.pi / 2)
-    cr.close_path()
+    if rad <= 0.0:
+        cr.rectangle(x, y, w, h)
+    else:
+        cr.arc(x + w - rad, y + rad, rad, -math.pi / 2, 0)
+        cr.arc(x + w - rad, y + h - rad, rad, 0, math.pi / 2)
+        cr.arc(x + rad, y + h - rad, rad, math.pi / 2, math.pi)
+        cr.arc(x + rad, y + rad, rad, math.pi, 3 * math.pi / 2)
+        cr.close_path()
 
     cr.set_source_rgba(r, g, b, max(0.92, a))
     cr.fill_preserve()
@@ -204,7 +207,7 @@ def main() -> int:
         _msg_err(f"Impossibile inizializzare GTK3 / Cairo: {e}")
         return 3
 
-    from core.config import THEME, get_effective_window_bg
+    from core.config import THEME, get_effective_window_bg, get_effective_window_radius
     from core.state import STATE
     from core.i18n import get_active_language, reload_locale
     from ui.shell import ShellWindow
@@ -357,7 +360,7 @@ def main() -> int:
 
         bg_col = get_effective_window_bg(win.wb_look.get("bg"))
         brd_col = THEME["colors"].get("window_border", "rgba(255, 255, 255, 0.12)")
-        rad = win.wb_look["rad"] if win.wb_look.get("rad") is not None else THEME["geometry"]["window_border_radius"]
+        rad = get_effective_window_radius()
         _draw_rounded_frame(cr, final_w, final_h, rad, bg_col, brd_col)
 
         root_widget.draw(cr)

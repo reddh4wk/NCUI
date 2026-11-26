@@ -18,6 +18,9 @@ outer_margin = 8
 [capture]
 action = "clipboard_satty" # "clipboard" | "satty" | "save" | "clipboard_satty"
 
+[audio]
+max_volume = 200
+
 [panels.refresh_ms]
 calendar      = 0
 notifications = 1500

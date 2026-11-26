@@ -249,7 +249,7 @@ short = "Opens inline `#RRGGBB` hex input for this Waybar palette token."
 
 ["cc_pers:box_style:*"]
 title = "Set Box Border Style"
-short = "Selects box-drawing frame characters (`Rounded`, `Single`, `Double`, `Heavy`, or `ASCII`) rendered by Cairo/canvas."
+short = "Selects box-drawing frame characters (`Rounded`, `Hybrid`, `Sharp`, `Dashed`, or `Double`) rendered by Cairo/canvas."
 
 ["cc_pers:tbrk:*"]
 title = "Set Box Title Brackets"

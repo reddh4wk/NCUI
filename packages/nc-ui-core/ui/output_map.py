@@ -3,7 +3,7 @@
 
 from core import probe
 from core.i18n import t
-from ui.kit import hex_to_rgba_f as _hex_rgba, rounded_rect_path as _rounded_rect_path
+from ui.kit import hex_to_rgba_f as _hex_rgba, rounded_rect_path as _rounded_rect_path, stroke_styled_frame as _stroke_styled_frame
 
 
 def _output_hz_and_scale(info: dict) -> tuple[float, float]:
@@ -295,10 +295,10 @@ class _NiriOutputMapMixin:
 
         _rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, bh - 1.0, 6.0)
         cr.set_source_rgba(*_hex_rgba(pal["structure_bg"], 0.65))
-        cr.fill_preserve()
+        cr.fill()
         cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.85))
         cr.set_line_width(1.0)
-        cr.stroke()
+        _stroke_styled_frame(cr, bx + 0.5, 0.5, bw - 1.0, bh - 1.0, 6.0)
 
         cr.save()
         _rounded_rect_path(cr, bx + 1.0, 1.0, bw - 2.0, bh - 2.0, 5.5)
@@ -356,7 +356,8 @@ class _NiriOutputMapMixin:
             else:
                 cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.95))
                 cr.set_line_width(1.0)
-            cr.stroke()
+            cr.new_path()
+            _stroke_styled_frame(cr, ix + 0.5, iy + 0.5, iw - 1.0, ih - 1.0, 5.0)
 
             _rounded_rect_path(cr, ix + 1.0, iy + 1.0, iw - 2.0, ih - 2.0, 4.5)
             cr.clip()

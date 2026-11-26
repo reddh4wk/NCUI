@@ -14,6 +14,11 @@ title = "Attiva Sovra-Amplificazione 150%"
 short = "Sblocca il guadagno software PipeWire fino al 150% per portatili, cuffie o sorgenti con volume basso."
 verbose = "Salva `max_volume = 150` in `[audio]` dentro `config.toml`. Oltre il 100% PipeWire applica amplificazione digitale che può introdurre distorsione sui picchi."
 
+["cc_aud:max_vol:200"]
+title = "Attiva Guadagno Overdrive 200%"
+short = "Sblocca l'amplificazione software PipeWire fino al 200% e attiva la barra Overdrive animata sugli slider audio."
+verbose = "Salva `max_volume = 200` in `[audio]` dentro `config.toml`. Oltre il 100% PipeWire applica guadagno digitale con animazione cromatica Overdrive."
+
 ["cc_aud:test_ch"]
 title = "Test Sequenziale Canali Altoparlanti"
 short = "Riproduce campioni vocali WAV in sequenza su tutti i canali dell'uscita PipeWire predefinita."
@@ -124,7 +129,7 @@ short = "Modifica il livello del canale `lfe` a passi del 5% tramite rotella o p
 ["cc_aud:*:vol*"]
 title = "Regola Volume PipeWire"
 short = "Scorri con la rotella o usa `[-]`/`[+]` per cambiare il volume di questo dispositivo o flusso app."
-verbose = "Accoda aggiornamenti `pactl` fino al tetto configurato (100% o 150%) preservando il bilanciamento canali esistente."
+verbose = "Accoda aggiornamenti `pactl` fino al tetto configurato (100%, 150% o 200%) preservando il bilanciamento canali esistente."
 
 ["cc_aud:*:scroll:*"]
 title = "Passo Livello Volume"

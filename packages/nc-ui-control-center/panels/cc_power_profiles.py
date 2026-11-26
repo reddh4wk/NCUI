@@ -31,6 +31,7 @@ from ui.kit import (
     Txt,
     get_semantic_palette,
     rounded_rect_path as _trace_rect,
+    stroke_styled_frame as _stroke_styled_frame,
     temp_role as _temp_role,
 )
 from ui.widgets import AsciiCard, _parse_rgba_components
@@ -415,8 +416,7 @@ class _ThermalGraphWidget(Gtk.DrawingArea):
         # Crisp plot border drawn on top so clipped waves sit cleanly flush inside it
         cr.set_source_rgba(str_r / 255.0, str_g / 255.0, str_b / 255.0, 0.95)
         cr.set_line_width(1.0)
-        _trace_rect(cr, px0, py0, pw, ph, 4.0)
-        cr.stroke()
+        _stroke_styled_frame(cr, px0, py0, pw, ph, 4.0)
         return False
 
 

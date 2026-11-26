@@ -158,14 +158,9 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     )
     row_cyber = " ".join(
         SelectPill(THEME_PRESETS[pid]["label"], f"cc_pers:preset:{pid}", selected=(active_preset == pid))
-        for pid in ("cyberdeck", "arasaka", "ghost_net")
-    )
-    row_retro = " ".join(
-        SelectPill(THEME_PRESETS[pid]["label"], f"cc_pers:preset:{pid}", selected=(active_preset == pid))
-        for pid in ("robco", "amber_deck", "arctic_studio")
+        for pid in ("cyberdeck", "arasaka", "ghost_net", "matrix")
     )
     sb_box.add_kv(t("cc_personalization.cyber_tactical"), row_cyber)
-    sb_box.add_kv(t("cc_personalization.retro_studio"), row_retro)
 
     sb_box.add_section(t("cc_personalization.saved_theme_profiles_config_nc_ui", p0=len(saved)))
     if not saved:
@@ -340,7 +335,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     if not typo_open:
         typo_box.add_row(f"  {Txt(t('cc_personalization.desc_sec_typo'), role='schema')}")
     else:
-        fonts = ["Courier", "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Iosevka"]
+        fonts = ["Courier"]
         is_custom_font = cur_font not in fonts
         f_btns = " ".join(SelectPill(f.split()[0], f"cc_pers:font:{f}", selected=(cur_font == f)) for f in fonts)
         if is_custom_font:
@@ -376,10 +371,6 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
             for sz in (9, 10, 11, 12, 13, 14)
         )
         typo_box.add_kv(t("cc_personalization.font_size"), fs_btns)
-        typo_box.add_kv(
-            t("cc_personalization.window_border_rad"),
-            " ".join(SelectPill(f"{rd}px", f"cc_pers:winrad:{rd}", selected=(rad_cur == rd)) for rd in (0, 8, 12, 16, 24)),
-        )
 
         def _build_adv_geom(b: Box) -> None:
             rg_cur = get_row_gap()
@@ -488,15 +479,15 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         col_box.add_row(f"  {Txt(t('cc_personalization.desc_sec_colors'), role='schema')}")
     else:
         axis_specs = [
-            ("structure",  t("cc_personalization.axis_structure"),  ["#3e465c", "#47424f", "#2d4263", "#19542c"]),
-            ("inactive",   t("cc_personalization.axis_inactive"),   ["#596278", "#665f73", "#4a6285", "#2c7542"]),
-            ("schema",     t("cc_personalization.axis_schema"),     ["#8b9bb8", "#9a94ab", "#7fa0c9", "#55ba73"]),
-            ("focus",      t("cc_personalization.axis_focus"),      ["#ffffff", "#f7f5fa", "#d6ffe0", "#eceff4"]),
-            ("intent",     t("cc_personalization.axis_intent"),     ["#00f0ff", "#ffb800", "#b57aff", "#1aff80"]),
-            ("vitality",   t("cc_personalization.axis_vitality"),   ["#00f57a", "#2ee68a", "#00e699", "#7dff3b"]),
-            ("attention",  t("cc_personalization.axis_attention"),  ["#ffe619", "#ff7b1c", "#ffd93d", "#ffe135"]),
-            ("interrupt",  t("cc_personalization.axis_interrupt"),  ["#ff2a9d", "#ff3377", "#ff4da6", "#ff8c2b"]),
-            ("fault",      t("cc_personalization.axis_fault"),      ["#ff2442", "#ff1e38", "#ff3855", "#ff3636"]),
+            ("structure",  t("cc_personalization.axis_structure"),  ["#3e465c", "#47424f", "#2d4263", "#1b452e"]),
+            ("inactive",   t("cc_personalization.axis_inactive"),   ["#596278", "#665f73", "#4a6285", "#346b4c"]),
+            ("schema",     t("cc_personalization.axis_schema"),     ["#8b9bb8", "#9a94ab", "#7fa0c9", "#6eb58c"]),
+            ("focus",      t("cc_personalization.axis_focus"),      ["#ffffff", "#f7f5fa", "#eef5ff", "#f2fff7"]),
+            ("intent",     t("cc_personalization.axis_intent"),     ["#00f0ff", "#ffb800", "#b57aff", "#00ff73"]),
+            ("vitality",   t("cc_personalization.axis_vitality"),   ["#00f57a", "#2ee68a", "#00e699", "#00e5c3"]),
+            ("attention",  t("cc_personalization.axis_attention"),  ["#ffe619", "#ff7b1c", "#ffd93d", "#ffd026"]),
+            ("interrupt",  t("cc_personalization.axis_interrupt"),  ["#ff2a9d", "#ff3377", "#ff4da6", "#e040fb"]),
+            ("fault",      t("cc_personalization.axis_fault"),      ["#ff2442", "#ff1e38", "#ff3855", "#ff1e38"]),
         ]
         _add_color_studio_table(col_box, axis_specs, "cc_pers:set_color", "cc_col", "cc_pers:inline_col")
     cards.append(col_box)
@@ -524,13 +515,13 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         wb_box.add_row(f"  {Txt(t('cc_personalization.desc_sec_wb_colors'), role='schema')}")
     else:
         wb_specs = [
-            ("wb_bg",      t("cc_personalization.axis_wb_bg"),      ["#080a0f", "#0b0a0e", "#070d17", "#041107"]),
-            ("wb_pill_bg", t("cc_personalization.axis_wb_pill_bg"), ["#141824", "#17141d", "#0f1a2c", "#082110"]),
-            ("wb_fg",      t("cc_personalization.axis_wb_fg"),      ["#dce6f7", "#e0dce8", "#cfe0fa", "#9ef7b4"]),
-            ("wb_accent",  t("cc_personalization.axis_wb_accent"),  ["#00f0ff", "#ffb800", "#b57aff", "#1aff80"]),
-            ("wb_active",  t("cc_personalization.axis_wb_active"),  ["#00f57a", "#2ee68a", "#00e699", "#7dff3b"]),
-            ("wb_warn",    t("cc_personalization.axis_wb_warn"),    ["#ffe619", "#ff7b1c", "#ffd93d", "#ffe135"]),
-            ("wb_crit",    t("cc_personalization.axis_wb_crit"),    ["#ff2442", "#ff1e38", "#ff3855", "#ff3636"]),
+            ("wb_bg",      t("cc_personalization.axis_wb_bg"),      ["#080a0f", "#0b0a0e", "#070d17", "#030906"]),
+            ("wb_pill_bg", t("cc_personalization.axis_wb_pill_bg"), ["#141824", "#17141d", "#0f1a2c", "#091a11"]),
+            ("wb_fg",      t("cc_personalization.axis_wb_fg"),      ["#dce6f7", "#e0dce8", "#cfe0fa", "#c4f2d5"]),
+            ("wb_accent",  t("cc_personalization.axis_wb_accent"),  ["#00f0ff", "#ffb800", "#b57aff", "#00ff73"]),
+            ("wb_active",  t("cc_personalization.axis_wb_active"),  ["#00f57a", "#2ee68a", "#00e699", "#00e5c3"]),
+            ("wb_warn",    t("cc_personalization.axis_wb_warn"),    ["#ffe619", "#ff7b1c", "#ffd93d", "#ffd026"]),
+            ("wb_crit",    t("cc_personalization.axis_wb_crit"),    ["#ff2442", "#ff1e38", "#ff3855", "#ff1e38"]),
         ]
         _add_color_studio_table(wb_box, wb_specs, "cc_pers:wb_color", "cc_wb_col", "cc_pers:inline_wb_col")
     cards.append(wb_box)
@@ -551,7 +542,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         st_box.add_kv(
             t("cc_personalization.box_border_style"),
             " ".join(
-                SelectPill("ASCII" if s == "ascii" else s.title(), f"cc_pers:box_style:{s}", selected=(cur_bs == s))
+                SelectPill(s.title(), f"cc_pers:box_style:{s}", selected=(cur_bs == s))
                 for s in BOX_STYLES
             ),
         )

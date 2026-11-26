@@ -14,6 +14,11 @@ title = "Enable 150% Over-Amplification"
 short = "Unlocks PipeWire software gain up to 150% for quiet laptops, headphones, or low-level streams."
 verbose = "Writes `max_volume = 150` to `[audio]` in `config.toml`. Raising gain above 100% uses PipeWire digital amplification (`pactl`/PipeWire PulseAudio API) and may introduce clipping on loud peaks."
 
+["cc_aud:max_vol:200"]
+title = "Enable 200% Overdrive Gain"
+short = "Unlocks PipeWire software amplification up to 200% and activates the animated Overdrive Bar on audio sliders."
+verbose = "Writes `max_volume = 200` to `[audio]` in `config.toml`. Values above 100% apply PipeWire digital boost with Overdrive visual telemetry."
+
 ["cc_aud:test_ch"]
 title = "Run Full Speaker Channel Sweep"
 short = "Plays sequential WAV voice probes across every channel of the default PipeWire output sink."
@@ -124,7 +129,7 @@ short = "Changes the `lfe` channel level by 5% via mouse wheel or stepper button
 ["cc_aud:*:vol*"]
 title = "Adjust PipeWire Volume"
 short = "Scroll or click `[-]`/`[+]` to adjust the volume level of this device or application stream."
-verbose = "Queues debounced `pactl` volume updates up to the configured 100% or 150% ceiling while keeping channel balance intact."
+verbose = "Queues debounced `pactl` volume updates up to the configured 100%, 150%, or 200% ceiling while keeping channel balance intact."
 
 ["cc_aud:*:scroll:*"]
 title = "Step Volume Level"

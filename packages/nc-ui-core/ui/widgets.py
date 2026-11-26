@@ -19,6 +19,7 @@ from ui.kit import PALETTE, ActionBtn, Box, Txt, get_active_inline_entry, get_ac
 
 _ANCHOR_RE = re.compile(r"(<a\s+href=['\"]([^'\"]+)['\"]>)(.*?)(</a>)", re.IGNORECASE | re.DOTALL)
 _INNER_COLOR_RE = re.compile(r"\b(?:fg)?color=['\"][^'\"]*['\"]", re.IGNORECASE)
+_SEG_COLOR_RE = re.compile(r"\bcolor=['\"]([^'\"]+)['\"]", re.IGNORECASE)
 _INNER_WEIGHT_RE = re.compile(r"\bfont_weight=['\"][^'\"]*['\"]", re.IGNORECASE)
 _ANY_TAG_RE = re.compile(r"<[^>]+>")
 _BG_TOK_RE = re.compile(r"(<[^>]+>|&[a-zA-Z0-9#]+;|.)", re.DOTALL)
@@ -355,6 +356,58 @@ def _disable_label_context_menu(lbl: Gtk.Label) -> None:
     lbl.connect("button-release-event", lambda _w, ev: True if ev.button != 1 else False)
     lbl.connect("popup-menu", lambda *_: True)
     lbl.connect("populate-popup", lambda _l, m: (m.foreach(lambda w: m.remove(w)), m.hide()) and None)
+
+
+_BORDER_CHARS_NO_CUTOUT = frozenset((
+    "\u256d", "\u256e", "\u2570", "\u256f",
+    "\u250c", "\u2510", "\u2514", "\u2518",
+    "\u251c", "\u2524", "\u2500", "\u200b",
+    "\u2002", "\u2003", "\u2004", "\u2005",
+    "\u2006", "\u2007", "\u2008", "\u2009", "\u200a", "\ufeff",
+))
+
+
+def _layout_line_cutout_spans(lay, line_idx: int) -> list[tuple[float, float]]:
+    """Return horizontal `(x0, x1)` pixel spans of non-border content on line `line_idx`."""
+    if lay is None:
+        return []
+    txt = lay.get_text() or ""
+    lines = txt.split("\n")
+    if line_idx < 0 or line_idx >= len(lines):
+        return []
+    line_s = lines[line_idx]
+    if not line_s:
+        return []
+    line_b0 = len("\n".join(lines[:line_idx]).encode("utf-8")) + (1 if line_idx > 0 else 0)
+    spans: list[tuple[float, float]] = []
+    run_start_b: int | None = None
+    last_char_b: int | None = None
+    cur_b = line_b0
+    for ch in line_s:
+        ch_len = len(ch.encode("utf-8"))
+        if ch in _BORDER_CHARS_NO_CUTOUT:
+            if run_start_b is not None and last_char_b is not None:
+                ps = lay.index_to_pos(run_start_b)
+                pe = lay.index_to_pos(last_char_b)
+                x0 = min(ps.x, ps.x + ps.width) / Pango.SCALE
+                x1 = max(pe.x, pe.x + pe.width) / Pango.SCALE
+                if x1 > x0 + 0.5:
+                    spans.append((x0, x1))
+                run_start_b = None
+                last_char_b = None
+        else:
+            if run_start_b is None:
+                run_start_b = cur_b
+            last_char_b = cur_b
+        cur_b += ch_len
+    if run_start_b is not None and last_char_b is not None:
+        ps = lay.index_to_pos(run_start_b)
+        pe = lay.index_to_pos(last_char_b)
+        x0 = min(ps.x, ps.x + ps.width) / Pango.SCALE
+        x1 = max(pe.x, pe.x + pe.width) / Pango.SCALE
+        if x1 > x0 + 0.5:
+            spans.append((x0, x1))
+    return spans
 
 
 class AsciiCard(Gtk.ListBoxRow):
@@ -774,18 +827,24 @@ class AsciiCard(Gtk.ListBoxRow):
                     return m.group(0)
                 if f_idx is not None and f_idx == target_focus:
                     if _is_slider_segment_content(inner):
-                        is_filled = (Canvas.strip_tags(inner).strip() == s_fill)
-                        seg_bg = c_bg if is_filled else c_fg
-                        seg_fg = c_fg if is_filled else c_bg
-                        seg_ch = san_fill if is_filled else san_empty
+                        raw_ch = Canvas.strip_tags(inner).strip()
+                        is_empty = (raw_ch == s_empty)
+                        seg_ch = san_fill if raw_ch == s_fill else (san_empty if is_empty else Canvas.sanitize_markup(Canvas.escape(raw_ch)))
+                        m_col = _SEG_COLOR_RE.search(inner)
+                        orig_col = m_col.group(1) if m_col else None
+                        seg_bg = p["structure_bg"] if is_empty else p["intent_bg"]
+                        seg_fg = p["intent"] if is_empty else (orig_col or p["intent"])
                         return f"{open_a}<span background='{seg_bg}' foreground='{seg_fg}' underline='none'>{seg_ch}</span>{close_a}"
                     clean_inner = _STRIP_BG_ATTR_RE.sub("", _INNER_COLOR_RE.sub("", inner))
                     return f"{open_a}<span background='{c_bg}' foreground='{c_fg}'>{clean_inner}</span>{close_a}"
                 if f_idx is not None and f_idx == target_hover:
                     if _is_slider_segment_content(inner):
-                        is_filled = (Canvas.strip_tags(inner).strip() == s_fill)
-                        seg_fg = c_sel if is_filled else p["schema"]
-                        seg_ch = san_fill if is_filled else san_empty
+                        raw_ch = Canvas.strip_tags(inner).strip()
+                        is_empty = (raw_ch == s_empty)
+                        seg_ch = san_fill if raw_ch == s_fill else (san_empty if is_empty else Canvas.sanitize_markup(Canvas.escape(raw_ch)))
+                        m_col = _SEG_COLOR_RE.search(inner)
+                        orig_col = m_col.group(1) if m_col else None
+                        seg_fg = p["schema"] if is_empty else (orig_col or p["intent"])
                         return f"{open_a}<span background='{p['intent_bg']}' foreground='{seg_fg}' underline='none'>{seg_ch}</span>{close_a}"
                     # MEMENTO GOLDEN STANDARD (§4.1.7 & §4.3): I comandi danger_soft usano
                     # interrupt_rest a riposo e virano in interrupt acceso in hover; tutti gli
@@ -988,7 +1047,8 @@ class AsciiCard(Gtk.ListBoxRow):
                 continue
             pill_h = std_pill_h * float(h_mult)
             py0 = y_mid - pill_h * 0.5
-            r_c = 2.0 if h_mult > 1.0 else 1.5
+            bs_pill = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+            r_c = (2.0 if h_mult > 1.0 else 1.5) if bs_pill in ("rounded", "dashed") else 0.0
             hr, hg, hb, ha = _parse_rgba_components(bg_hex)
             if not bg_hex.lower().startswith("rgb") and "," not in bg_hex:
                 ha = 1.0
@@ -1003,7 +1063,9 @@ class AsciiCard(Gtk.ListBoxRow):
                 cr.fill()
 
     def _on_draw_box_bg(self, eb: Gtk.Widget, cr) -> bool:
-        if getattr(self.box_model, "is_divider", False):
+        bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+        is_div = bool(getattr(self.box_model, "is_divider", False))
+        if is_div and bs != "dashed":
             return False
         layout = self.lbl.get_layout()
         if layout is None:
@@ -1063,6 +1125,36 @@ class AsciiCard(Gtk.ListBoxRow):
             x_right = max(x_left + 2.0, total_px - (char_w * 0.5))
 
         y_top = top_off_y if getattr(self.box_model, "open_top", False) else (top_off_y + line_0_h * 0.5)
+        try:
+            dev_sx = float(cr.get_target().get_device_scale()[0])
+        except Exception:
+            dev_sx = 1.0
+        if dev_sx <= 1.01:
+            vx0 = math.ceil(x_left) - 0.5
+            vx1 = math.ceil(x_right) - 0.5
+        else:
+            vx0 = (math.ceil(x_left * dev_sx) - 0.5) / dev_sx
+            vx1 = (math.ceil(x_right * dev_sx) - 0.5) / dev_sx
+
+        if is_div:
+            c_div = THEME["colors"]["structure"]
+            dv_r, dv_g, dv_b, _ = _parse_rgba_components(c_div)
+            vy_mid = math.floor(y_top) + 0.5
+            cr.save()
+            cr.set_source_rgba(dv_r / 255.0, dv_g / 255.0, dv_b / 255.0, 1.0)
+            cr.set_fill_rule(cairo.FillRule.EVEN_ODD)
+            cr.rectangle(vx0 - 4.0, top_off_y - 2.0, (vx1 - vx0) + 8.0, line_0_h + 4.0)
+            for cx0, cx1 in _layout_line_cutout_spans(layout, 0):
+                cr.rectangle(cx0, top_off_y - 2.0, max(0.0, cx1 - cx0), line_0_h + 4.0)
+            cr.clip()
+            cr.set_line_width(1.0)
+            cr.set_dash([4.0, 2.5])
+            cr.move_to(vx0, vy_mid)
+            cr.line_to(vx1, vy_mid)
+            cr.stroke()
+            cr.restore()
+            return False
+
         cairo_close_bot = bool(getattr(self.box_model, "cairo_close_bottom", False))
         is_open_bot = getattr(self.box_model, "open_bottom", False) and (self.footer_lbl is None) and not cairo_close_bot
         if cairo_close_bot:
@@ -1072,8 +1164,20 @@ class AsciiCard(Gtk.ListBoxRow):
         else:
             y_bot = max(y_top + 2.0, total_h - (last_line_h * 0.5))
 
-        bs = str(THEME.get("ascii", {}).get("box_style", "rounded"))
-        rad = min(char_w * 0.65, line_0_h * 0.45, (x_right - x_left) * 0.25, (y_bot - y_top) * 0.25) if bs in ("rounded", "dashed") else 0.0
+        r_base = min(char_w * 0.65, line_0_h * 0.45, (x_right - x_left) * 0.25, (y_bot - y_top) * 0.25)
+        if bs in ("rounded", "dashed"):
+            r_tl = r_tr = r_br = r_bl = r_base
+            rad = r_base
+        elif bs == "hybrid":
+            cm = getattr(self.box_model, "corner_mask", None) or (False, False, False, False)
+            r_tl = r_base if cm[0] else 0.0
+            r_tr = r_base if cm[1] else 0.0
+            r_br = r_base if cm[2] else 0.0
+            r_bl = r_base if cm[3] else 0.0
+            rad = 0.0
+        else:
+            r_tl = r_tr = r_br = r_bl = 0.0
+            rad = 0.0
         is_overlay = bool(getattr(self.box_model, "is_overlay", False))
         is_toast = bool(getattr(self.box_model, "is_toast", False))
         is_sys_notif = bool(getattr(self.box_model, "is_sys_notif", False))
@@ -1092,8 +1196,8 @@ class AsciiCard(Gtk.ListBoxRow):
             shadow_a = 0.50 * max(0.18, box_op) if (is_toast or is_sys_notif) else 0.55
             cr.set_source_rgba(0.0, 0.0, 0.0, shadow_a)
             cr.set_fill_rule(cairo.FillRule.EVEN_ODD)
-            self._trace_cw_rounded_rect(cr, x_left - 2.0, y_top + 3.0, (x_right - x_left) + 4.0, (y_bot - y_top) + 2.0, rad, rad, rad, rad)
-            self._trace_cw_rounded_rect(cr, x_left, y_top, x_right - x_left, y_bot - y_top, rad, rad, rad, rad)
+            self._trace_cw_rounded_rect(cr, x_left - 2.0, y_top + 3.0, (x_right - x_left) + 4.0, (y_bot - y_top) + 2.0, r_tl, r_tr, r_br, r_bl)
+            self._trace_cw_rounded_rect(cr, x_left, y_top, x_right - x_left, y_bot - y_top, r_tl, r_tr, r_br, r_bl)
             cr.fill()
             cr.set_fill_rule(cairo.FillRule.WINDING)
         if box_op > 0.001:
@@ -1102,7 +1206,7 @@ class AsciiCard(Gtk.ListBoxRow):
             cr.set_fill_rule(cairo.FillRule.WINDING)
             cr.set_source_rgba(r_i / 255.0, g_i / 255.0, b_i / 255.0, box_op)
 
-            self._trace_cw_rounded_rect(cr, x_left, y_top, x_right - x_left, y_bot - y_top, rad, rad, rad, rad)
+            self._trace_cw_rounded_rect(cr, x_left, y_top, x_right - x_left, y_bot - y_top, r_tl, r_tr, r_br, r_bl)
 
             if not getattr(self.box_model, "open_top", False) and line_0_h > 1.0:
                 p_rad = min(2.5, rad) if rad > 0.5 else 0.0
@@ -1163,39 +1267,121 @@ class AsciiCard(Gtk.ListBoxRow):
             cr.fill()
 
         # MEMENTO GOLDEN STANDARD (§5.1.3): Montanti verticali continui tracciati in Cairo
-        # per saldare qualsiasi micro-gap verticale tra righe Pango (incluso su TabBar 1.5x).
-        if bs in ("rounded", "sharp", "heavy", "double") and y_bot - y_top > rad * 2 + 2.0:
+        # per saldare qualsiasi micro-gap verticale tra righe Pango (incluso su TabBar 1.5x e widget embedded).
+        if bs in ("rounded", "sharp", "hybrid", "double", "dashed") and y_bot - y_top > 4.0:
             c_brd = self.box_model._resolve_palette()[0]
             br_r, br_g, br_b, _ = _parse_rgba_components(c_brd)
             cr.set_source_rgba(br_r / 255.0, br_g / 255.0, br_b / 255.0, 1.0)
-            y_v0 = y_top if getattr(self.box_model, "open_top", False) else (y_top + max(2.0, rad))
-            y_v1 = y_bot if is_open_bot else (y_bot - max(2.0, rad))
-            if y_v1 > y_v0:
-                try:
-                    dev_sx = float(cr.get_target().get_device_scale()[0])
-                except Exception:
-                    dev_sx = 1.0
-                if dev_sx <= 1.01:
-                    vx0 = math.floor(x_left) + 0.5
-                    vx1 = math.floor(x_right) + 0.5
+            open_top = bool(getattr(self.box_model, "open_top", False))
+            if bs == "dashed":
+                vy_top = top_off_y if open_top else (math.floor(y_top) + 0.5)
+                vy_bot = total_h if is_open_bot else (math.floor(y_bot) + 0.5)
+                w_box = max(4.0, vx1 - vx0)
+                h_box = max(4.0, vy_bot - vy_top)
+                b_layout = f_layout if f_layout is not None else layout
+                b_line_idx = max(0, b_layout.get_line_count() - 1) if b_layout is not None else 0
+
+                cr.save()
+                cr.set_fill_rule(cairo.FillRule.EVEN_ODD)
+                cr.rectangle(vx0 - 4.0, top_off_y - 4.0, w_box + 8.0, (total_h - top_off_y) + 8.0)
+                if not open_top:
+                    for cx0, cx1 in _layout_line_cutout_spans(layout, 0):
+                        cr.rectangle(cx0, top_off_y - 2.0, max(0.0, cx1 - cx0), line_0_h + 4.0)
+                if not is_open_bot and b_layout is not None:
+                    for cx0, cx1 in _layout_line_cutout_spans(b_layout, b_line_idx):
+                        cr.rectangle(cx0, total_h - last_line_h - 2.0, max(0.0, cx1 - cx0), last_line_h + 4.0)
+                cr.clip()
+
+                cr.set_line_width(1.0)
+                cr.set_dash([4.0, 2.5])
+                if not open_top and not is_open_bot:
+                    self._trace_cw_rounded_rect(cr, vx0, vy_top, w_box, h_box, r_tl, r_tr, r_br, r_bl)
+                elif open_top and not is_open_bot:
+                    cr.new_sub_path()
+                    cr.move_to(vx0, vy_top)
+                    cr.line_to(vx0, vy_bot - r_bl)
+                    if r_bl > 0.3:
+                        cr.arc_negative(vx0 + r_bl, vy_bot - r_bl, r_bl, math.pi, math.pi / 2.0)
+                    cr.line_to(vx1 - r_br, vy_bot)
+                    if r_br > 0.3:
+                        cr.arc_negative(vx1 - r_br, vy_bot - r_br, r_br, math.pi / 2.0, 0.0)
+                    cr.line_to(vx1, vy_top)
+                elif is_open_bot and not open_top:
+                    cr.new_sub_path()
+                    cr.move_to(vx0, vy_bot)
+                    cr.line_to(vx0, vy_top + r_tl)
+                    if r_tl > 0.3:
+                        cr.arc(vx0 + r_tl, vy_top + r_tl, r_tl, math.pi, 1.5 * math.pi)
+                    cr.line_to(vx1 - r_tr, vy_top)
+                    if r_tr > 0.3:
+                        cr.arc(vx1 - r_tr, vy_top + r_tr, r_tr, -math.pi / 2.0, 0.0)
+                    cr.line_to(vx1, vy_bot)
                 else:
-                    vx0 = (round(x_left * dev_sx) + 0.5) / dev_sx
-                    vx1 = (round(x_right * dev_sx) + 0.5) / dev_sx
-                if bs == "double":
-                    cr.set_line_width(1.0)
-                    for dx in (-1.0, 1.0):
-                        cr.move_to(vx0 + dx, y_v0)
-                        cr.line_to(vx0 + dx, y_v1)
-                        cr.move_to(vx1 + dx, y_v0)
-                        cr.line_to(vx1 + dx, y_v1)
-                    cr.stroke()
-                else:
-                    cr.set_line_width(1.6 if bs == "heavy" else 1.0)
-                    cr.move_to(vx0, y_v0)
-                    cr.line_to(vx0, y_v1)
-                    cr.move_to(vx1, y_v0)
-                    cr.line_to(vx1, y_v1)
-                    cr.stroke()
+                    cr.move_to(vx0, vy_top)
+                    cr.line_to(vx0, vy_bot)
+                    cr.move_to(vx1, vy_top)
+                    cr.line_to(vx1, vy_bot)
+                cr.stroke()
+                cr.restore()
+
+                # Internal dashed section dividers (├...┤ rows)
+                lay_groups = [(layout, layout_text, top_off_y)]
+                if f_layout is not None:
+                    lay_groups.append((f_layout, f_layout.get_text() or "", bot_off_y))
+                for lay_g, ltxt_g, off_g in lay_groups:
+                    tlines = ltxt_g.split("\n")
+                    it_g = lay_g.get_iter()
+                    li_g = 0
+                    while True:
+                        if li_g < len(tlines):
+                            ls_g = tlines[li_g]
+                            if ls_g.startswith("\u251c") or ls_g.endswith("\u2524"):
+                                jy0, jy1 = it_g.get_line_yrange()
+                                y_div = math.floor(off_g + (jy0 + jy1) * 0.5 / Pango.SCALE) + 0.5
+                                y_r0 = off_g + jy0 / Pango.SCALE
+                                y_rh = max(2.0, (jy1 - jy0) / Pango.SCALE)
+                                cr.save()
+                                cr.set_fill_rule(cairo.FillRule.EVEN_ODD)
+                                cr.rectangle(vx0 - 4.0, y_r0 - 2.0, w_box + 8.0, y_rh + 4.0)
+                                for cx0, cx1 in _layout_line_cutout_spans(lay_g, li_g):
+                                    cr.rectangle(cx0, y_r0 - 2.0, max(0.0, cx1 - cx0), y_rh + 4.0)
+                                cr.clip()
+                                cr.set_line_width(1.0)
+                                cr.set_dash([4.0, 2.5])
+                                cr.move_to(vx0, y_div)
+                                cr.line_to(vx1, y_div)
+                                cr.stroke()
+                                cr.restore()
+                        li_g += 1
+                        if not it_g.next_line():
+                            break
+            else:
+                y_v0_l = y_top if open_top else (y_top + max(2.0, r_tl))
+                y_v1_l = y_bot if is_open_bot else (y_bot - max(2.0, r_bl))
+                y_v0_r = y_top if open_top else (y_top + max(2.0, r_tr))
+                y_v1_r = y_bot if is_open_bot else (y_bot - max(2.0, r_br))
+                if y_v1_l > y_v0_l or y_v1_r > y_v0_r:
+                    cr.save()
+                    if bs == "double":
+                        cr.set_line_width(1.0)
+                        for dx in (-1.05, 1.05):
+                            if y_v1_l > y_v0_l:
+                                cr.move_to(vx0 + dx, y_v0_l)
+                                cr.line_to(vx0 + dx, y_v1_l)
+                            if y_v1_r > y_v0_r:
+                                cr.move_to(vx1 + dx, y_v0_r)
+                                cr.line_to(vx1 + dx, y_v1_r)
+                        cr.stroke()
+                    else:
+                        cr.set_line_width(1.0)
+                        if y_v1_l > y_v0_l:
+                            cr.move_to(vx0, y_v0_l)
+                            cr.line_to(vx0, y_v1_l)
+                        if y_v1_r > y_v0_r:
+                            cr.move_to(vx1, y_v0_r)
+                            cr.line_to(vx1, y_v1_r)
+                        cr.stroke()
+                    cr.restore()
 
         # Vertically centered Cairo highlight pills
         self._draw_bg_spans_on_layout(cr, layout, top_off_y, self._bg_byte_spans)
@@ -1341,7 +1527,12 @@ class AsciiCard(Gtk.ListBoxRow):
             cr.line_to(gap_x0, by)
         else:
             cr.close_path()
+        emb_bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+        cr.save()
+        if emb_bs == "dashed":
+            cr.set_dash([4.0, 2.5])
         cr.stroke()
+        cr.restore()
 
         if lbl_layout is not None and gap_x0 is not None:
             lx = bx + (bw - lbl_w) * 0.5

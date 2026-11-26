@@ -34,53 +34,6 @@ It bridges the gap between raw Linux CLI control and tactile visual feedback —
 
 ---
 
-## 🎯 Visual Showcase
-
-<div align="center">
-
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <b>🎨 7-Axis Semantic Theme Studio & Live Sandbox</b><br/>
-      <img src="assets/screenshots/cc_personalization_theme.png" alt="NC-UI Live Theme Sandbox and 7-Axis Semantic Color Studio" />
-    </td>
-    <td width="50%" align="center">
-      <b>🧬 Multi-Monitor Map & Native <code>nc-matrix</code> Engine</b><br/>
-      <img src="assets/screenshots/cc_personalization_wallpaper.png" alt="NC-UI Multi-Monitor Wallpaper Map with Live nc-matrix Shader Preview" />
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <b>🛡️ Live <code>nftables</code> Packet Filter & Rule Composer</b><br/>
-      <img src="assets/screenshots/cc_firewall_rules.png" alt="NC-UI nftables Packet Filter and Live Rule Composer" />
-    </td>
-    <td width="50%" align="center">
-      <b>🖨️ Smart CUPS Discovery & Repository Driver Scoring</b><br/>
-      <img src="assets/screenshots/cc_printers_discovery.png" alt="NC-UI Automated TCP/IP Printer Discovery and Repository Drivers" />
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center">
-      <b>🎛️ Live Waybar Section & Plug-in Orchestrator</b><br/>
-      <img src="assets/screenshots/cc_waybar_layout.png" alt="NC-UI Waybar Layout Manager" />
-    </td>
-    <td width="50%" align="center">
-      <b>🔍 Instant Floating Global Search (<code>Ctrl+F</code>)</b><br/>
-      <img src="assets/screenshots/cc_global_search.png" alt="NC-UI Floating Global Search Overlay" />
-    </td>
-  </tr>
-</table>
-
-<br/>
-
-<img src="assets/screenshots/wp_capture_studio.png" width="380" alt="NC-UI Capture Studio Waybar Popup" />
-
-<sub>▲ **Waybar Layer-Shell Popup (`wp_capture`):** anchored directly beneath the bar with instant capture targets, action routing, and keyboard/wheel focus.</sub>
-
-</div>
-
----
-
 ## 🧭 Philosophy: Built for Clarity Under Pressure
 
 > *"Most interfaces shout with color everywhere until nothing stands out. NC-UI whispers in graphite — so when Cyan, Emerald, or Crimson lights up, your eye lands on the truth in 50 milliseconds."*
@@ -163,43 +116,60 @@ Built by the split [`PKGBUILD`](PKGBUILD) as the `nc-matrix` package (sources in
 
 ## 🚀 Quick Start
 
+### Compatibility & Roadmap
+NC-UI is currently built and tested for **Arch Linux** (`makepkg` split packages) running on **Wayland** with **`niri`** and **`waybar`**, integrating natively with **PipeWire/WirePlumber**, **NetworkManager**, **`nftables`**, **CUPS**, **NUT (`upsc`)**, **Limine**, and **Ghostty** (optional domain backends stay modular).
+
+> In future releases I plan to broaden NC-UI's compatibility across more Linux distributions, Wayland compositors, status bars, and system backends.
+
 ### Dependencies
 NC-UI requires **zero external PyPI packages** — only standard OS system libraries:
 - Python 3.11+ with `PyGObject` (`gi`)
 - `gtk3`, `gtk-layer-shell`, `cairo`, `pango`
-- Wayland compositor (`niri` recommended) + `waybar` (optional for bar agents/popups)
+- Wayland compositor (`niri`) + `waybar`
 - Optional domain backends: `pipewire` / `wireplumber`, `nftables`, `cups`, `networkmanager`, `nut`, `pacman` / `paru` / `apt` / `dnf` / `zypper`
 
-### Clone & Launch
+### Clone, Install & First-Run Setup (`nc-ctl`)
 ```bash
-git clone https://github.com/reddh4wk/ncui.git && cd ncui
+git clone https://github.com/reddh4wk/NCUI.git && cd NCUI
 
-# Build & install the full suite (split PKGBUILD, nc-matrix included)
-makepkg -si
+# Build & install all 15 split packages (nc-matrix included) and clean build artifacts
+makepkg -sic
 
-# Or: pick packages from the 'ncui' pacman group (Enter = all)
+# Or: pick individual packages from the 'ncui' pacman group (Enter = all)
 ./install.sh
+```
 
-# First-run setup (as your normal user, not root)
+Once installed, **`nc-ctl`** (`/usr/bin/nc-ctl`) acts as the unified CLI entrypoint for provisioning, launching Control Center / Waybar popups, triggering quick actions, and restoring desktop wallpapers:
+
+```bash
+# First-run user provisioning (run as your normal user, never root):
+#   • Seeds default ~/.config/ncui/{config,theme}.toml
+#   • Generates ~/.config/niri/ncui.kdl and links it in config.kdl (validated via niri)
+#   • Installs synchronized Waybar config.jsonc & style.css
+#   • Automatically backs up any overwritten user files (reversible anytime)
 nc-ctl setup
 
-# Open Control Center
-./bin/nc-ctl settings
+# Inspect setup state or roll back cleanly to pre-NC-UI configs
+nc-ctl setup --status
+nc-ctl setup --dry-run
+nc-ctl setup --restore
 
-# Jump directly to any section & subtab
-./bin/nc-ctl settings personalization theme
-./bin/nc-ctl settings printers discovery
+# Open Control Center or jump straight to a section & subtab
+nc-ctl settings
+nc-ctl settings personalization theme
+nc-ctl settings printers discovery
 
-# Open a Waybar popup directly
-./bin/nc-ctl popup network
-./bin/nc-ctl popup capture
+# Toggle Waybar popups or trigger quick bar actions
+nc-ctl popup network
+nc-ctl popup capture
+nc-ctl action audio vol-up
 ```
 
 ### Visual Verification (`nc-shot`)
 Inspect any section, subtab, popup, or locale headlessly via Cairo/Broadway offscreen rendering:
 ```bash
-./bin/nc-shot -l en -s firewall -t rules -o /tmp/firewall.png
-./bin/nc-shot -l it -m popup -s audio -e -o /tmp/audio_popup.png
+./dev/nc-shot -l en -s firewall -t rules -o /tmp/firewall.png
+./dev/nc-shot -l it -m popup -s audio -e -o /tmp/audio_popup.png
 ```
 
 ---
@@ -226,6 +196,110 @@ ncui/
     ├── nc-matrix/         # Standalone C11 + OpenGL/EGL Wayland & TTY digital rain package
     └── *.sh               # Desktop, floater, notification & screenshot utilities
 ```
+
+---
+
+## 🎯 Visual Showcase
+
+<div align="center">
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <b>🖥️ Display</b><br/>
+      <img src="assets/screenshots/cc_display_monitors.png" alt="NC-UI Display Topology, Monitors, Scaling and Modes" />
+    </td>
+    <td width="50%" align="center">
+      <b>🎨 Theme &amp; Colors</b><br/>
+      <img src="assets/screenshots/cc_personalization_theme.png" alt="NC-UI Theme Sandbox and 7-Axis Semantic Color Studio" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>🧬 Wallpaper</b><br/>
+      <img src="assets/screenshots/cc_personalization_wallpaper.png" alt="NC-UI Multi-Monitor Wallpaper Map and Native nc-matrix Engine" />
+    </td>
+    <td width="50%" align="center">
+      <b>🎛️ Waybar Layout Configurator</b><br/>
+      <img src="assets/screenshots/cc_waybar_layout.png" alt="NC-UI Waybar Layout Configurator" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>📦 Default Apps</b><br/>
+      <img src="assets/screenshots/cc_apps_mime.png" alt="NC-UI Default Apps and MIME Handlers" />
+    </td>
+    <td width="50%" align="center">
+      <b>⌨️ Macro Studio</b><br/>
+      <img src="assets/screenshots/cc_input_macros.png" alt="NC-UI Hardware Macro Studio" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>🎮 Gaming Controllers</b><br/>
+      <img src="assets/screenshots/cc_input_controllers.png" alt="NC-UI Gaming Controllers Calibration and Mapping" />
+    </td>
+    <td width="50%" align="center">
+      <b>🖨️ Devices &amp; Prefs</b><br/>
+      <img src="assets/screenshots/cc_printers_devices.png" alt="NC-UI Printer Devices and Preferences" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>🌐 Interface &amp; Profiles</b><br/>
+      <img src="assets/screenshots/cc_network_interfaces.png" alt="NC-UI Network Interfaces and Connection Profiles" />
+    </td>
+    <td width="50%" align="center">
+      <b>🛡️ Active Flows</b><br/>
+      <img src="assets/screenshots/cc_firewall_connections.png" alt="NC-UI Firewall Active Flows" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>⚡ Power Profiles</b><br/>
+      <img src="assets/screenshots/cc_power_profiles.png" alt="NC-UI Power Profiles and Thermal Telemetry" />
+    </td>
+    <td width="50%" align="center">
+      <b>🔋 UPS &amp; NUT</b><br/>
+      <img src="assets/screenshots/cc_power_ups.png" alt="NC-UI UPS and NUT Battery Monitoring" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <b>🔒 Sudoers &amp; Privs</b><br/>
+      <img src="assets/screenshots/cc_auth_sudoers.png" alt="NC-UI Least-Privilege Sudoers Manager" />
+    </td>
+    <td width="50%" align="center">
+      <b>🔧 Bootloader</b><br/>
+      <img src="assets/screenshots/cc_telemetry_boot.png" alt="NC-UI Bootloader and Kernel Telemetry" />
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <b>🔔 Notifications &amp; Rules</b><br/>
+      <img src="assets/screenshots/cc_settings_notifications.png" width="50%" alt="NC-UI Notification Center Rules and DND Settings" />
+    </td>
+  </tr>
+</table>
+
+<br/>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <b>📸 Quick Capture Mode</b><br/>
+      <img src="assets/screenshots/wp_capture_studio.png" width="380" alt="NC-UI Quick Capture Mode Waybar Popup" />
+    </td>
+    <td width="50%" align="center">
+      <b>🔔 Notification Center</b><br/>
+      <img src="assets/screenshots/wp_notifications.png" width="380" alt="NC-UI Notification Center Waybar Popup" />
+    </td>
+  </tr>
+</table>
+
+<sub>▲ **Waybar Layer-Shell Popups (`wp_capture` &amp; `wp_notifications`):** anchored directly beneath the bar with instant capture targets, live alert management, and keyboard/wheel focus.</sub>
+
+</div>
 
 ---
 

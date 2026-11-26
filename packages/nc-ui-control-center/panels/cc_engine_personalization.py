@@ -84,6 +84,7 @@ from core.config import (
     get_waybar_sync_opacity,
     get_window_opacity,
     is_ncmatrix_available,
+    is_rounded_box_style,
     resolve_ncmatrix_bin,
     sanitize_theme_dict,
     set_box_opacity_pct,
@@ -342,7 +343,6 @@ THEME_PRESETS = {
     "cyberdeck": {
         "label": "Cyberdeck",
         "group": "cyber",
-        "box_style": "rounded",
         "title_brackets": ["[ ", " ]"],
         "button_brackets": ["[", "]"],
         "slider_brackets": ["[", "]"],
@@ -386,7 +386,6 @@ THEME_PRESETS = {
     "arasaka": {
         "label": "Arasaka Ops",
         "group": "cyber",
-        "box_style": "sharp",
         "title_brackets": [":: ", " ::"],
         "button_brackets": ["[", "]"],
         "slider_brackets": ["[", "]"],
@@ -430,7 +429,6 @@ THEME_PRESETS = {
     "ghost_net": {
         "label": "Ghost Net",
         "group": "cyber",
-        "box_style": "heavy",
         "title_brackets": ["\u00ab ", " \u00bb"],
         "button_brackets": ["[", "]"],
         "slider_brackets": ["\u2590", "\u258c"],
@@ -470,151 +468,60 @@ THEME_PRESETS = {
             "fault_bg": "#380812",
         },
     },
-    # 4. VT-AMBER 84 — DEC Engineering Cathode Terminal
-    "amber_deck": {
-        "label": "VT-Amber 84",
-        "group": "retro",
-        "box_style": "sharp",
+    # 4. MATRIX — Nebuchadnezzar Construct & Katakana Rain (#00ff73)
+    "matrix": {
+        "label": "Matrix",
+        "group": "cyber",
         "title_brackets": ["[ ", " ]"],
         "button_brackets": ["[", "]"],
-        "slider_brackets": ["[", "]"],
-        "slider_fill": "=",
-        "slider_empty": "\u00b7",
-        "pill_dots": ["\u25a0", "\u25a1"],
-        "tab_caps": ["\u2039", "\u203a"],
-        "collapsible_icons": ["\u229f", "\u229e"],
-        "table_rule": "\u2500",
-        "kv_separator": ":",
-        "search_prefix": "/ >",
-        "search_cursor": "\u2502",
-        "colors": {
-            "surface_bg": "#120b04",
-            "window_opacity": 0.90,
-            "box_opacity": 0.80,
-            "structure": "#593e18",
-            "structure_bg": "#1f1407",
-            "inactive": "#785626",
-            "schema": "#ba8c49",
-            "focus": "#fff0cc",
-            "focus_val": "#ffd98a",
-            "intent": "#ffb700",
-            "intent_soft": "#c79008",
-            "intent_bg": "#362200",
-            "vitality": "#8ce63c",
-            "vitality_soft": "#6fb332",
-            "vitality_bg": "#1c2e08",
-            "attention": "#ff7714",
-            "attention_soft": "#c75e10",
-            "attention_bg": "#361600",
-            "interrupt": "#ff5e4d",
-            "interrupt_rest": "#bf5649",
-            "interrupt_bg": "#360e0b",
-            "fault": "#ff2929",
-            "fault_soft": "#c43131",
-            "fault_bg": "#380707",
-        },
-    },
-    # 6. ARCTIC STUDIO — Low-Glare Ice Workstation
-    "arctic_studio": {
-        "label": "Arctic Studio",
-        "group": "retro",
-        "box_style": "rounded",
-        "title_brackets": ["\u2039 ", " \u203a"],
-        "button_brackets": ["[", "]"],
-        "slider_brackets": ["[", "]"],
-        "slider_fill": "\u2501",
-        "slider_empty": "\u2500",
-        "pill_dots": ["\u25cf", "\u25cb"],
+        "slider_brackets": ["\u2590", "\u258c"],
+        "slider_fill": "\u2588",
+        "slider_empty": "\u2591",
+        "pill_dots": ["\u25c6", "\u25c7"],
         "tab_caps": ["\u258f", "\u2595"],
         "collapsible_icons": ["\u25bc", "\u25b6"],
         "table_rule": "\u2500",
         "kv_separator": ":",
-        "search_prefix": "\uf002 >",
-        "search_cursor": "\u2502",
-        "colors": {
-            "surface_bg": "#141923",
-            "window_opacity": 0.88,
-            "box_opacity": 0.75,
-            "structure": "#3e4859",
-            "structure_bg": "#1f2633",
-            "inactive": "#5b677d",
-            "schema": "#90a0ba",
-            "focus": "#eceff4",
-            "focus_val": "#d8dee9",
-            "intent": "#7dcfff",
-            "intent_soft": "#62a8d4",
-            "intent_bg": "#152e40",
-            "vitality": "#7ee09b",
-            "vitality_soft": "#62b37b",
-            "vitality_bg": "#142e1f",
-            "attention": "#f0c674",
-            "attention_soft": "#bfa05e",
-            "attention_bg": "#332812",
-            "interrupt": "#e38ec5",
-            "interrupt_rest": "#ad7197",
-            "interrupt_bg": "#301c2a",
-            "fault": "#eb5768",
-            "fault_soft": "#ba4957",
-            "fault_bg": "#36151a",
-        },
-    },
-    # 7. ROBCO UOS — Vault-Tec / RobCo Industries TERMLINK Terminal
-    "robco": {
-        "label": "RobCo UOS",
-        "group": "retro",
-        "box_style": "heavy",
-        "title_brackets": ["[ ", " ]"],
-        "button_brackets": ["[", "]"],
-        "slider_brackets": ["[", "]"],
-        "slider_fill": "\u2588",
-        "slider_empty": "\u2591",
-        "pill_dots": ["\u25a0", "\u25a1"],
-        "tab_caps": ["\u2590", "\u258c"],
-        "collapsible_icons": ["\u25bc", "\u25b6"],
-        "table_rule": "\u2501",
-        "kv_separator": ":",
         "search_prefix": "/ >",
         "search_cursor": "\u2502",
         "colors": {
-            "surface_bg": "#041107",
-            "window_opacity": 0.90,
-            "box_opacity": 0.82,
-            "structure": "#19542c",
-            "structure_bg": "#082110",
-            "inactive": "#2c7542",
-            "schema": "#55ba73",
-            "focus": "#d6ffe0",
-            "focus_val": "#9ef7b4",
-            "intent": "#1aff80",
-            "intent_soft": "#25c468",
-            "intent_bg": "#053318",
-            "vitality": "#7dff3b",
-            "vitality_soft": "#60bf30",
-            "vitality_bg": "#132e05",
-            "attention": "#ffe135",
-            "attention_soft": "#c7af2c",
-            "attention_bg": "#302904",
-            "interrupt": "#ff8c2b",
-            "interrupt_rest": "#bf6a24",
-            "interrupt_bg": "#331905",
-            "fault": "#ff3636",
-            "fault_soft": "#c43333",
-            "fault_bg": "#380707",
+            "surface_bg": "#080a09",
+            "window_opacity": 0.88,
+            "box_opacity": 0.76,
+            "structure": "#3c4540",
+            "structure_bg": "#131715",
+            "inactive": "#59665f",
+            "schema": "#8f9e96",
+            "focus": "#f5f7f6",
+            "focus_val": "#dce3df",
+            "intent": "#00ff73",
+            "intent_soft": "#24c96e",
+            "intent_bg": "#002611",
+            "vitality": "#00e5c3",
+            "vitality_soft": "#26b39e",
+            "vitality_bg": "#002b26",
+            "attention": "#ffd026",
+            "attention_soft": "#c7a324",
+            "attention_bg": "#332800",
+            "interrupt": "#ff3355",
+            "interrupt_rest": "#c9495b",
+            "interrupt_bg": "#38060e",
+            "fault": "#ff1e38",
+            "fault_soft": "#c73849",
+            "fault_bg": "#3b050c",
         },
     },
 }
 
 
 def get_active_theme_preset_id() -> str:
-    """Restituisce l'ID del preset architetturale attualmente attivo (o stringa vuota se custom)."""
+    """Restituisce l'ID del preset architetturale attualmente attivo (indipendente dal box_style)."""
     asc = THEME.get("ascii", {})
     col = THEME.get("colors", {})
     cur_surf = get_surface_bg_hex().lower()
     check_axes = ("structure", "inactive", "schema", "focus", "intent", "vitality", "attention", "interrupt", "fault")
     for pid, spec in THEME_PRESETS.items():
         sc = spec["colors"]
-        if str(asc.get("box_style", "")) != spec["box_style"]:
-            continue
         if list(asc.get("title_brackets", [])) != list(spec["title_brackets"]):
             continue
         if list(asc.get("pill_dots", [])) != list(spec["pill_dots"]):
@@ -726,8 +633,6 @@ def _apply_full_preset(cc_panel, pid: str) -> bool:
     if not spec:
         return False
     asc = THEME.setdefault("ascii", {})
-    asc["box_style"] = spec["box_style"]
-    asc["chars"] = dict(BOX_STYLES.get(spec["box_style"], BOX_STYLES["rounded"]))
     for k in (
         "title_brackets",
         "button_brackets",
@@ -1398,7 +1303,15 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
         THEME["ascii"]["box_style"] = st
         THEME["ascii"]["chars"] = dict(BOX_STYLES[st])
         _persist_theme_key("ascii", "box_style", f'"{st}"')
+        rad_v = 16 if is_rounded_box_style(st) else 0
+        THEME.setdefault("geometry", {})["window_border_radius"] = rad_v
+        _persist_theme_key("geometry", "window_border_radius", str(rad_v))
+        _sync_theme_aliases()
         _save_theme_file(_theme_path(), THEME)
+        apply_waybar_transparency(
+            sync_opacity=get_waybar_sync_opacity(),
+            sync_color=get_waybar_sync_color(),
+        )
         if cc_panel and cc_panel.shell:
             cc_panel.shell._apply_css()
         _set_pers_fb(True, t("cc_personalization.box_style_set_to", p0=st))
@@ -1695,6 +1608,7 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
             return False
         THEME["geometry"]["window_border_radius"] = rad
         _persist_theme_key("geometry", "window_border_radius", str(rad))
+        _sync_theme_aliases()
         if cc_panel and cc_panel.shell:
             cc_panel.shell._apply_css()
     elif act.startswith("spacing:"):

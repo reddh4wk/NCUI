@@ -194,6 +194,20 @@ widget > box:hover > .module-nc {
 #custom-calendar {
     font-weight: bold;
     padding-top: 4px;
+    margin: 3px 10px;
+}
+
+#custom-nc-spacer-l,
+#custom-nc-spacer-r {
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    font-size: 1px;
+    color: transparent;
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
 }
 
 #workspaces button.active,
@@ -258,7 +272,7 @@ widget > box:hover > .module-nc {
 }
 
 #custom-ups.online {
-    color: #2ee68a;
+    color: #00e65c;
 }
 
 #custom-ups.on-battery {

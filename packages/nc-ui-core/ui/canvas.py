@@ -2,7 +2,7 @@
 import html
 import math
 import re
-from core.config import BOX_STYLES, THEME, get_row_gap
+from core.config import BOX_STYLES, THEME, get_row_gap, is_inner_rounded_box_style, is_rounded_box_style
 
 _PANGO_SCALE = 1024
 cairo = None
@@ -140,8 +140,9 @@ def _safe_pair(seq, d_l: str, d_r: str) -> tuple[str, str]:
     return d_l, d_r
 
 
-def rounded_rect_path(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(float(r), float(w) * 0.5, float(h) * 0.5))
+def rounded_rect_path(cr, x: float, y: float, w: float, h: float, r: float, *, outer: bool = False) -> None:
+    eff_r = float(r) if (outer or is_inner_rounded_box_style()) else 0.0
+    rad = max(0.0, min(eff_r, float(w) * 0.5, float(h) * 0.5))
     if rad <= 0.0:
         cr.rectangle(x, y, w, h)
         return
@@ -151,6 +152,24 @@ def rounded_rect_path(cr, x: float, y: float, w: float, h: float, r: float) -> N
     cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
     cr.arc(x + rad, y + rad, rad, math.pi, math.pi * 1.5)
     cr.close_path()
+
+
+def stroke_styled_frame(cr, x: float, y: float, w: float, h: float, r: float = 5.0, *, outer: bool = False) -> None:
+    """Stroke an already-traced or newly-traced rectangle matching active `box_style` (dashed/double/solid)."""
+    bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded").strip().lower()
+    cr.save()
+    rounded_rect_path(cr, x, y, w, h, r, outer=outer)
+    if bs == "dashed":
+        cr.set_dash([4.0, 2.5])
+        cr.stroke()
+    elif bs == "double":
+        cr.stroke()
+        if w > 8.0 and h > 8.0:
+            rounded_rect_path(cr, x + 2.0, y + 2.0, w - 4.0, h - 4.0, max(0.0, r - 1.0), outer=outer)
+            cr.stroke()
+    else:
+        cr.stroke()
+    cr.restore()
 
 
 class Canvas:
@@ -451,7 +470,15 @@ class Canvas:
         rem_px = max(0.0, gap_px - used)
         return self._micro_space(rem_px) + (fill_char * n_chars)
 
-    def _fit_line(self, left_markup: str, right_markup: str, fill_char: str = " ", c_fill: str = None, min_chars: int = 0) -> str:
+    def _fit_line(
+        self,
+        left_markup: str,
+        right_markup: str,
+        fill_char: str = " ",
+        c_fill: str = None,
+        min_chars: int = 0,
+        fill_alpha: str = "",
+    ) -> str:
         base_px = self.measure_markup(left_markup) + self.measure_markup(right_markup)
         gap_px = max(0.0, self.total_px - base_px)
         unit_w = self.space_w if fill_char == " " else self.measure_text(fill_char)
@@ -460,7 +487,7 @@ class Canvas:
         def _wrap_fill(body: str) -> str:
             if not body:
                 return ""
-            return f"<span color='{c_fill}'>{body}</span>" if c_fill else body
+            return f"<span color='{c_fill}'{fill_alpha}>{body}</span>" if c_fill else body
 
         while n_chars > min_chars and (base_px + n_chars * unit_w) > self.total_px + 0.15:
             n_chars -= 1
@@ -706,68 +733,85 @@ class Canvas:
         s = str(text or "")
         return s if len(s) <= max_cols else s[: max(1, max_cols - 1)] + "\u2026"
 
-    def top(self, title_markup: str, right_markup: str = "", c_box: str = None, c_txt: str = None, c_brk: str = None) -> str:
+    def top(
+        self,
+        title_markup: str,
+        right_markup: str = "",
+        c_box: str = None,
+        c_txt: str = None,
+        c_brk: str = None,
+        *,
+        tl_ch: str = None,
+        tr_ch: str = None,
+    ) -> str:
         c_box = c_box or THEME["colors"]["box_inactive"]
         c_txt = c_txt or THEME["colors"]["focus"]
         c_brk = c_brk or c_box
         ch = self.chars
+        b_alpha = " alpha='1%'" if str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded") == "dashed" else ""
+        tl = tl_ch or ch["tl"]
+        tr = tr_ch or ch["tr"]
         if not title_markup and not right_markup:
-            return f"<span color='{c_box}'>{ch['tl']}{ch['h'] * max(1, self.total_cols - 2)}{ch['tr']}</span>"
+            return f"<span color='{c_box}'{b_alpha}>{tl}{ch['h'] * max(1, self.total_cols - 2)}{tr}</span>"
         b_l, b_r = self.title_brackets
         if title_markup:
             left_part = (
-                f"<span color='{c_box}'>{ch['tl']}{ch['h']} </span>"
+                f"<span color='{c_box}'{b_alpha}>{tl}{ch['h']} </span>"
                 f"<span color='{c_brk}'>{self.escape(b_l)}</span>"
                 f"<span color='{c_txt}'>{self.sanitize_markup(title_markup)}</span>"
                 f"<span color='{c_brk}'>{self.escape(b_r)}</span>"
-                f"<span color='{c_box}'> </span>"
+                f"<span color='{c_box}'{b_alpha}> </span>"
             )
         else:
-            left_part = f"<span color='{c_box}'>{ch['tl']}{ch['h']}</span>"
+            left_part = f"<span color='{c_box}'{b_alpha}>{tl}{ch['h']}</span>"
         right_part = (
-            f"<span color='{c_box}'> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'> {ch['h']}{ch['tr']}</span>"
+            f"<span color='{c_box}'{b_alpha}> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'{b_alpha}> {ch['h']}{tr}</span>"
             if right_markup
-            else f"<span color='{c_box}'>{ch['tr']}</span>"
+            else f"<span color='{c_box}'{b_alpha}>{tr}</span>"
         )
-        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1)
+        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1, fill_alpha=b_alpha)
 
     def mid(self, label_markup: str = "", right_markup: str = "", c_box: str = None) -> str:
         c_box = c_box or THEME["colors"]["box_inactive"]
         ch = self.chars
-        left_part = f"<span color='{c_box}'>{ch['ml']}{ch['h']} </span>{self.sanitize_markup(label_markup)}<span color='{c_box}'> </span>" if label_markup else f"<span color='{c_box}'>{ch['ml']}</span>"
-        right_part = f"<span color='{c_box}'> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'> {ch['h']}{ch['mr']}</span>" if right_markup else f"<span color='{c_box}'>{ch['mr']}</span>"
-        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1)
+        b_alpha = " alpha='1%'" if str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded") == "dashed" else ""
+        left_part = f"<span color='{c_box}'{b_alpha}>{ch['ml']}{ch['h']} </span>{self.sanitize_markup(label_markup)}<span color='{c_box}'{b_alpha}> </span>" if label_markup else f"<span color='{c_box}'{b_alpha}>{ch['ml']}</span>"
+        right_part = f"<span color='{c_box}'{b_alpha}> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'{b_alpha}> {ch['h']}{ch['mr']}</span>" if right_markup else f"<span color='{c_box}'{b_alpha}>{ch['mr']}</span>"
+        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1, fill_alpha=b_alpha)
 
     def divider_line(self, title_markup: str = "", c_line: str = None, c_txt: str = None, align: str = "left") -> str:
         c_line = c_line or THEME["colors"]["structure"]
         c_txt = c_txt or THEME["colors"]["schema"]
         ch = self.chars
+        b_alpha = " alpha='1%'" if str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded") == "dashed" else ""
         if not title_markup:
-            return f"<span color='{c_line}'>{ch['h'] * max(1, self.total_cols)}</span>"
+            return f"<span color='{c_line}'{b_alpha}>{ch['h'] * max(1, self.total_cols)}</span>"
         b_l, b_r = self.title_brackets
         title_block = f"<span color='{c_line}'>{self.escape(b_l)}</span><span color='{c_txt}'>{self.sanitize_markup(title_markup)}</span><span color='{c_line}'>{self.escape(b_r)}</span>"
         if align == "left":
-            left_part = f"<span color='{c_line}'>{ch['h'] * 3} </span>{title_block}<span color='{c_line}'> </span>"
-            right_part = f"<span color='{c_line}'>{ch['h']}</span>"
-            return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_line, min_chars=1)
+            left_part = f"<span color='{c_line}'{b_alpha}>{ch['h'] * 3} </span>{title_block}<span color='{c_line}'{b_alpha}> </span>"
+            right_part = f"<span color='{c_line}'{b_alpha}>{ch['h']}</span>"
+            return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_line, min_chars=1, fill_alpha=b_alpha)
         elif align == "right":
-            left_part = f"<span color='{c_line}'>{ch['h']}</span>"
-            right_part = f"<span color='{c_line}'> </span>{title_block}<span color='{c_line}'> {ch['h'] * 3}</span>"
-            return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_line, min_chars=1)
+            left_part = f"<span color='{c_line}'{b_alpha}>{ch['h']}</span>"
+            right_part = f"<span color='{c_line}'{b_alpha}> </span>{title_block}<span color='{c_line}'{b_alpha}> {ch['h'] * 3}</span>"
+            return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_line, min_chars=1, fill_alpha=b_alpha)
         else:
             base_px = self.measure_markup(f"<span color='{c_line}'> </span>{title_block}<span color='{c_line}'> </span>")
             gap_px = max(0.0, self.total_px - base_px)
             left_dashes = self._space_fill(gap_px / 2.0, ch["h"])
-            left_part = f"<span color='{c_line}'>{left_dashes} </span>{title_block}<span color='{c_line}'> </span>"
-            return self._fit_line(left_part, "", fill_char=ch["h"], c_fill=c_line, min_chars=0)
+            left_part = f"<span color='{c_line}'{b_alpha}>{left_dashes} </span>{title_block}<span color='{c_line}'{b_alpha}> </span>"
+            return self._fit_line(left_part, "", fill_char=ch["h"], c_fill=c_line, min_chars=0, fill_alpha=b_alpha)
 
     def row(self, content_markup: str, right_markup: str = "", c_box: str = None, c_txt: str = None, min_height_pango: int = 0) -> str:
         c_box = c_box or THEME["colors"]["box_inactive"]
         c_txt = c_txt or THEME["colors"]["focus"]
         ch = self.chars
+        bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+        v_alpha = " alpha='1%'" if bs in ("dashed", "double") else ""
         content_markup, right_markup = self.sanitize_markup(content_markup), self.sanitize_markup(right_markup)
-        left_border = f"<span color='{c_box}'>{ch['v']}</span> "
-        right_border = f" <span color='{c_box}'>{ch['v']}</span>"
+        left_border = f"<span color='{c_box}'{v_alpha}>{ch['v']}</span> "
+        right_border = f" <span color='{c_box}'{v_alpha}>{ch['v']}</span>"
         borders_px = self.measure_markup(left_border + right_border)
 
         if right_markup:
@@ -806,11 +850,22 @@ class Canvas:
                 return cand
         return line_out
 
-    def bot(self, label_markup: str = "", right_markup: str = "", c_box: str = None) -> str:
+    def bot(
+        self,
+        label_markup: str = "",
+        right_markup: str = "",
+        c_box: str = None,
+        *,
+        bl_ch: str = None,
+        br_ch: str = None,
+    ) -> str:
         c_box = c_box or THEME["colors"]["box_inactive"]
         ch = self.chars
+        b_alpha = " alpha='1%'" if str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded") == "dashed" else ""
+        bl = bl_ch or ch["bl"]
+        br = br_ch or ch["br"]
         if not label_markup and not right_markup:
-            return f"<span color='{c_box}'>{ch['bl']}{ch['h'] * max(1, self.total_cols - 2)}{ch['br']}</span>"
-        left_part = f"<span color='{c_box}'>{ch['bl']}{ch['h']} </span>{self.sanitize_markup(label_markup)}<span color='{c_box}'> </span>" if label_markup else f"<span color='{c_box}'>{ch['bl']}</span>"
-        right_part = f"<span color='{c_box}'> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'> {ch['h']}{ch['br']}</span>" if right_markup else f"<span color='{c_box}'>{ch['br']}</span>"
-        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1)
+            return f"<span color='{c_box}'{b_alpha}>{bl}{ch['h'] * max(1, self.total_cols - 2)}{br}</span>"
+        left_part = f"<span color='{c_box}'{b_alpha}>{bl}{ch['h']} </span>{self.sanitize_markup(label_markup)}<span color='{c_box}'{b_alpha}> </span>" if label_markup else f"<span color='{c_box}'{b_alpha}>{bl}</span>"
+        right_part = f"<span color='{c_box}'{b_alpha}> </span>{self.sanitize_markup(right_markup)}<span color='{c_box}'{b_alpha}> {ch['h']}{br}</span>" if right_markup else f"<span color='{c_box}'{b_alpha}>{br}</span>"
+        return self._fit_line(left_part, right_part, fill_char=ch["h"], c_fill=c_box, min_chars=1, fill_alpha=b_alpha)

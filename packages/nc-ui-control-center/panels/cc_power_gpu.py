@@ -29,6 +29,7 @@ from ui.kit import (  # noqa: E402
     get_semantic_palette,
     hex_to_rgba_f as _bp_hex_rgba,
     rounded_rect_path as _trace_rect,
+    stroke_styled_frame as _stroke_styled_frame,
     temp_role as _temp_role,
 )
 from ui.widgets import AsciiCard  # noqa: E402
@@ -717,6 +718,7 @@ class _GpuHardwareBlueprintWidget(Gtk.DrawingArea):
         base_pt = float((THEME.get("typography") or {}).get("font_size", 11) or 11)
         sig = (
             int(w), int(h), surf_hex, font_family, round(base_pt, 1), cat, vendor,
+            str((THEME.get("ascii") or {}).get("box_style", "rounded")),
             pal["intent"], pal["vitality"], pal["attention"], pal["interrupt"], pal["fault"], pal["schema"], pal["structure"], pal["focus"], pal["focus_val"],
             round(util_pct), has_draw, round(draw_w, 1), round(lim_w), round(temp_c), round(fan_pct), fan_rpm, round(clk_mhz), pstate,
             str(gpu.get("name") or ""), psu_sig,
@@ -749,10 +751,10 @@ class _GpuHardwareBlueprintWidget(Gtk.DrawingArea):
         # 1. Outer recessed Tactical Blueprint frame
         _trace_rect(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
         cr.set_source_rgba(*_bp_hex_rgba(pal["structure_bg"], 0.64))
-        cr.fill_preserve()
+        cr.fill()
         cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.90))
         cr.set_line_width(1.0)
-        cr.stroke()
+        _stroke_styled_frame(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
 
         cr.save()
         _trace_rect(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)

@@ -112,10 +112,46 @@ def _detach_from_waybar() -> None:
     log.install_stderr_logger()
 
 
+def _print_main_help() -> None:
+    from core.cli_ui import c_val, ui_header, ui_help_row, ui_section
+
+    ui_header("NC-CTL", "NC-UI Wayland Control Center & Bar Controller")
+    ui_section("USAGE")
+    print(f"  {c_val('nc-ctl <command> [target] [args...] [--x <px>]')}")
+    ui_section("COMMANDS")
+    ui_help_row("settings [sec] [subtab]", "Open or focus the Control Center")
+    ui_help_row("popup <module>", "Toggle a Waybar layer-shell micro-popup")
+    ui_help_row("action <module> <act>", "Run a quick module action without opening UI")
+    ui_help_row("wallpaper <subcmd>", "Restore saved wallpapers or run slideshow worker")
+    ui_help_row("setup [options]", "Provision Niri/Waybar configs, check status or restore")
+    ui_section("EXAMPLES")
+    ui_help_row("nc-ctl settings", "Open Control Center on last active tab")
+    ui_help_row("nc-ctl settings power ups", "Jump straight to Power -> UPS & NUT")
+    ui_help_row("nc-ctl popup audio", "Toggle the Waybar Audio popup")
+    ui_help_row("nc-ctl setup --status", "Inspect provisioning status and backups")
+    print()
+
+
+def _print_setup_help() -> None:
+    from core.cli_ui import c_val, ui_header, ui_help_row, ui_section
+
+    ui_header("NC-CTL SETUP", "User Configuration Provisioning & Rollback")
+    ui_section("USAGE")
+    print(f"  {c_val('nc-ctl setup [options]')}")
+    ui_section("OPTIONS")
+    ui_help_row("--status", "Show current Niri, Waybar, NC-UI & backup status")
+    ui_help_row("--dry-run", "Preview changes and backups without touching files")
+    ui_help_row("--force", "Overwrite existing NC-UI/Waybar/ncui.kdl configs (backed up)")
+    ui_help_row("--no-niri", "Skip Niri config.kdl / ncui.kdl integration")
+    ui_help_row("--no-waybar", "Skip Waybar config.jsonc / style.css provisioning")
+    ui_help_row("--restore [backup_dir]", "Restore files from latest or specified backup")
+    print()
+
+
 def main():
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
-        print("Uso: nc-ctl <popup|settings|action|wallpaper|setup> <target> [args...] [--x <px>]")
+        _print_main_help()
         sys.exit(0)
 
     cmd = args[0]
@@ -123,7 +159,7 @@ def main():
         from core import setup as nc_setup
         sub_args = args[1:]
         if "-h" in sub_args or "--help" in sub_args:
-            print("Uso: nc-ctl setup [--dry-run] [--force] [--no-niri] [--no-waybar] [--status] [--restore [backup_dir]]")
+            _print_setup_help()
             sys.exit(0)
         dry_run = "--dry-run" in sub_args
         if "--status" in sub_args:
@@ -143,7 +179,12 @@ def main():
         sub = args[1] if len(args) > 1 else ""
         if sub == "restore":
             ok, msg = wp.restore_all(args[2] if len(args) > 2 else "")
-            print(msg, file=(sys.stdout if ok else sys.stderr))
+            if ok:
+                from core.cli_ui import msg_ok
+                msg_ok(msg)
+            else:
+                from core.cli_ui import msg_err
+                msg_err(msg)
             sys.exit(0 if ok else 1)
         if sub == "slideshow-worker" and len(args) >= 4:
             wp.run_slideshow_worker(
@@ -156,7 +197,10 @@ def main():
                 shuffle=(args[8] != "0") if len(args) > 8 else True,
             )
             sys.exit(0)
-        print("Uso: nc-ctl wallpaper <restore [output]|slideshow-worker ...>", file=sys.stderr)
+        from core.cli_ui import msg_err, ui_help_row
+        msg_err("Invalid wallpaper subcommand.")
+        ui_help_row("nc-ctl wallpaper restore [out]", "Restore saved desktop wallpapers", w=34)
+        ui_help_row("nc-ctl wallpaper slideshow-worker ...", "Internal wallpaper slideshow loop", w=34)
         sys.exit(2)
     pos_args = []
     i = 1

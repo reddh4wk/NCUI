@@ -7,18 +7,23 @@
     "margin-top": 8,
     "margin-left": 8,
     "margin-right": 8,
+    "fixed-center": true,
+    "expand-left": true,
+    "expand-right": true,
     "modules-left": [
         "niri/workspaces",
-        "niri/window"
+        "niri/window",
+        "custom/nc-spacer-l",
+        "custom/media",
+        "custom/settings"
     ],
     "modules-center": [
-        "custom/media",
-        "custom/settings",
-        "custom/calendar",
-        "custom/notifications",
-        "custom/telegram"
+        "custom/calendar"
     ],
     "modules-right": [
+        "custom/notifications",
+        "custom/telegram",
+        "custom/nc-spacer-r",
         "custom/printers",
         "custom/kb_layout",
         "custom/desktop",
@@ -201,6 +206,16 @@
         "exec": "nc-bar-agent media",
         "return-type": "json",
         "interval": 2,
+        "tooltip": false
+    },
+    "custom/nc-spacer-l": {
+        "format": "\u200b",
+        "expand": true,
+        "tooltip": false
+    },
+    "custom/nc-spacer-r": {
+        "format": "\u200b",
+        "expand": true,
         "tooltip": false
     },
     "custom/session": {

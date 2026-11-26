@@ -9,29 +9,25 @@ import shutil
 import subprocess
 
 from core import probe
+from core.cli_ui import (
+    c_dim,
+    c_focus,
+    c_intent,
+    c_ok,
+    c_val,
+    c_warn,
+    msg_err,
+    msg_info,
+    msg_ok,
+    msg_step,
+    msg_warn,
+    ui_header,
+    ui_kv,
+    ui_section,
+)
 from core.paths import find_package_file
 
 _NIRI_MARKER = "// managed-by: nc-ui"
-
-
-def _use_color() -> bool:
-    return "NO_COLOR" not in os.environ
-
-
-def _c(code: str, text: str) -> str:
-    return f"\033[{code}m{text}\033[0m" if _use_color() else text
-
-
-def _tag(kind: str) -> str:
-    colors = {
-        "BACKUP": "1;93",
-        "RESTORE": "1;95",
-        "OK": "1;92",
-        "INFO": "1;96",
-        "WARN": "1;93",
-        "ERR": "1;91",
-    }
-    return _c(colors.get(kind, "1"), f"[{kind}]")
 
 
 def _xdg_config_home() -> str:
@@ -119,7 +115,7 @@ def _backup_file(sess: dict, src_path: str, rel_key: str) -> str:
         shutil.copy2(src_path, dst_path)
     sess["backed_up"].add(src_path)
     sess["files"].append({"orig": src_path, "rel": rel_key})
-    print(f"{_tag('BACKUP')} {prefix}{_c('1;97', src_path)} -> {_c('1;96', dst_path)}")
+    msg_step(f"{prefix}Backup {c_focus(src_path)} {c_dim('->')} {c_intent(dst_path)}")
     return dst_path
 
 
@@ -201,6 +197,7 @@ def _setup_ncui_configs(sess: dict, force: bool = False) -> None:
         dst = os.path.join(dst_dir, fname)
         if os.path.exists(dst):
             if not force:
+                msg_ok(f"Config already present: {c_focus(dst)}")
                 continue
             _backup_file(sess, dst, os.path.join("ncui", fname))
         else:
@@ -208,7 +205,7 @@ def _setup_ncui_configs(sess: dict, force: bool = False) -> None:
         if not dry:
             os.makedirs(dst_dir, exist_ok=True)
             shutil.copy2(tpl, dst)
-        print(f"{_tag('OK')} {'(dry-run) ' if dry else ''}Seeded {_c('1;97', dst)}")
+        msg_ok(f"{'(dry-run) ' if dry else ''}Seeded {c_focus(dst)}")
 
 
 def _setup_niri(sess: dict, force: bool = False) -> tuple[bool, str]:
@@ -238,7 +235,7 @@ def _setup_niri(sess: dict, force: bool = False) -> tuple[bool, str]:
     if ncui_existed:
         if ncui_is_managed and not force:
             write_ncui_kdl = False
-            print(f"{_tag('OK')} Niri include file already managed: {_c('1;97', ncui_kdl_p)}")
+            msg_ok(f"Niri include file already managed: {c_focus(ncui_kdl_p)}")
         else:
             _backup_file(sess, ncui_kdl_p, os.path.join("niri", "ncui.kdl"))
     else:
@@ -250,7 +247,7 @@ def _setup_niri(sess: dict, force: bool = False) -> tuple[bool, str]:
             os.makedirs(ndir, exist_ok=True)
             with open(ncui_kdl_p, "w", encoding="utf-8") as f:
                 f.write(kdl_body)
-        print(f"{_tag('OK')} {'(dry-run) ' if dry else ''}Wrote {_c('1;97', ncui_kdl_p)}")
+        msg_ok(f"{'(dry-run) ' if dry else ''}Wrote {c_focus(ncui_kdl_p)}")
 
     if not cfg_existed:
         _record_created(sess, cfg_p)
@@ -259,7 +256,7 @@ def _setup_niri(sess: dict, force: bool = False) -> tuple[bool, str]:
             os.makedirs(ndir, exist_ok=True)
             with open(cfg_p, "w", encoding="utf-8") as f:
                 f.write(new_cfg)
-        print(f"{_tag('OK')} {'(dry-run) ' if dry else ''}Created {_c('1;97', cfg_p)} with ncui.kdl include")
+        msg_ok(f"{'(dry-run) ' if dry else ''}Created {c_focus(cfg_p)} with ncui.kdl include")
     elif not _has_ncui_kdl_include(orig_cfg):
         cfg_bak = _backup_file(sess, cfg_p, os.path.join("niri", "config.kdl"))
         new_cfg = orig_cfg.rstrip() + '\n\n// NC-UI integration\ninclude optional=true "ncui.kdl"\n'
@@ -272,9 +269,9 @@ def _setup_niri(sess: dict, force: bool = False) -> tuple[bool, str]:
                     if cfg_bak and os.path.isfile(cfg_bak):
                         shutil.copy2(cfg_bak, cfg_p)
                     return False, f"niri validate failed (rolled back): {err or 'syntax error'}"
-        print(f"{_tag('OK')} {'(dry-run) ' if dry else ''}Linked ncui.kdl in {_c('1;97', cfg_p)}")
+        msg_ok(f"{'(dry-run) ' if dry else ''}Linked ncui.kdl in {c_focus(cfg_p)}")
     else:
-        print(f"{_tag('OK')} Niri config already includes ncui.kdl: {_c('1;97', cfg_p)}")
+        msg_ok(f"Niri config already includes ncui.kdl: {c_focus(cfg_p)}")
 
     return True, ""
 
@@ -283,12 +280,12 @@ def _setup_waybar(sess: dict, force: bool = False) -> tuple[bool, str]:
     tpl_cfg = find_package_file("config", "waybar", "config.jsonc")
     tpl_css = find_package_file("config", "waybar", "style.css")
     if not tpl_cfg or not tpl_css or not os.path.isfile(tpl_cfg) or not os.path.isfile(tpl_css):
-        print(f"{_tag('INFO')} Waybar templates not found (nc-ui-waybar not installed); skipping Waybar setup.")
+        msg_info("Waybar templates not found (nc-ui-waybar not installed); skipping Waybar setup.")
         return True, ""
 
     wb_dir = waybar_dir()
     if _is_waybar_ncui_managed(wb_dir) and not force:
-        print(f"{_tag('OK')} Waybar config already NC-UI managed: {_c('1;97', wb_dir)}")
+        msg_ok(f"Waybar config already NC-UI managed: {c_focus(wb_dir)}")
         return True, ""
 
     dry = sess["dry_run"]
@@ -315,41 +312,46 @@ def _setup_waybar(sess: dict, force: bool = False) -> tuple[bool, str]:
         shutil.copy2(tpl_css, css_dst)
         _reload_waybar_if_running(dry_run=False)
 
-    print(f"{_tag('OK')} {'(dry-run) ' if dry else ''}Installed NC-UI Waybar config in {_c('1;97', wb_dir)}")
+    msg_ok(f"{'(dry-run) ' if dry else ''}Installed NC-UI Waybar config in {c_focus(wb_dir)}")
     return True, ""
 
 
 def run_setup(dry_run: bool = False, force: bool = False, do_niri: bool = True, do_waybar: bool = True) -> int:
     """Provision NC-UI configs for Niri and Waybar with automatic timestamped backups."""
     if os.geteuid() == 0:
-        print(f"{_tag('ERR')} Run 'nc-ctl setup' as your normal user, not root.")
+        msg_err("Run 'nc-ctl setup' as your normal user, not root.")
         return 1
 
+    ui_header("NC-CTL SETUP", "Dry-Run Preview" if dry_run else "User Configuration Provisioning")
     sess = _new_backup_session(dry_run=dry_run)
+
+    ui_section("01", "NC-UI Configs")
     _setup_ncui_configs(sess, force=force)
 
     if do_niri:
+        ui_section("02", "Niri Integration")
         ok, err = _setup_niri(sess, force=force)
         if not ok:
-            print(f"{_tag('ERR')} {err}")
+            msg_err(err)
             return 1
     if do_waybar:
+        ui_section("03", "Waybar Integration")
         ok, err = _setup_waybar(sess, force=force)
         if not ok:
-            print(f"{_tag('ERR')} {err}")
+            msg_err(err)
             return 1
 
+    ui_section("SUMMARY")
     wrote_manifest = _write_manifest(sess)
     if sess["files"]:
         label = "would be saved" if dry_run else "saved"
-        print(
-            f"{_tag('BACKUP')} {len(sess['files'])} existing file(s) {label} in "
-            f"{_c('1;96', sess['dir'])}  (restore anytime: {_c('1;93', 'nc-ctl setup --restore')})"
-        )
+        msg_ok(f"{len(sess['files'])} existing file(s) {label} in {c_intent(sess['dir'])}")
+        msg_info(f"Restore anytime with: {c_warn('nc-ctl setup --restore')}")
     elif wrote_manifest:
-        print(f"{_tag('INFO')} Setup manifest recorded in {_c('1;96', sess['dir'])}")
+        msg_info(f"Setup manifest recorded in {c_intent(sess['dir'])}")
     else:
-        print(f"{_tag('INFO')} No existing user files needed changes.")
+        msg_info("No existing user files needed changes.")
+    print()
     return 0
 
 
@@ -368,28 +370,30 @@ def _list_backups() -> list[str]:
 def run_restore(backup_dir: str = "", dry_run: bool = False) -> int:
     """Restore user configuration files from the latest or specified backup directory."""
     if os.geteuid() == 0:
-        print(f"{_tag('ERR')} Run 'nc-ctl setup --restore' as your normal user, not root.")
+        msg_err("Run 'nc-ctl setup --restore' as your normal user, not root.")
         return 1
 
     target = os.path.expanduser(backup_dir.strip()) if backup_dir else ""
     if not target:
         avail = _list_backups()
         if not avail:
-            print(f"{_tag('ERR')} No backups found in {_c('1;96', backup_root())}")
+            msg_err(f"No backups found in {c_intent(backup_root())}")
             return 1
         target = avail[0]
 
     manifest_p = os.path.join(target, "manifest.json")
     if not os.path.isfile(manifest_p):
-        print(f"{_tag('ERR')} Invalid backup directory (missing manifest.json): {target}")
+        msg_err(f"Invalid backup directory (missing manifest.json): {target}")
         return 1
 
     try:
         manifest = json.load(open(manifest_p, "r", encoding="utf-8"))
     except Exception as e:
-        print(f"{_tag('ERR')} Cannot read {manifest_p}: {e}")
+        msg_err(f"Cannot read {manifest_p}: {e}")
         return 1
 
+    ui_header("NC-CTL RESTORE", "Dry-Run Preview" if dry_run else "Configuration Rollback")
+    ui_section("01", "Restoring Files")
     prefix = "(dry-run) " if dry_run else ""
     restored_wb = False
     niri_cfg = os.path.join(niri_dir(), "config.kdl")
@@ -404,7 +408,7 @@ def run_restore(backup_dir: str = "", dry_run: bool = False) -> int:
         if not dry_run:
             os.makedirs(os.path.dirname(orig), exist_ok=True)
             shutil.copy2(src, orig)
-        print(f"{_tag('RESTORE')} {prefix}{_c('1;96', src)} -> {_c('1;97', orig)}")
+        msg_step(f"{prefix}{c_intent(src)} {c_dim('->')} {c_focus(orig)}")
         if rel.startswith("waybar" + os.sep) or rel.startswith("waybar/"):
             restored_wb = True
         if orig == niri_cfg:
@@ -414,19 +418,21 @@ def run_restore(backup_dir: str = "", dry_run: bool = False) -> int:
         if created_p and os.path.lexists(created_p):
             if not dry_run:
                 os.unlink(created_p)
-            print(f"{_tag('RESTORE')} {prefix}Removed created file {_c('1;97', created_p)}")
+            msg_step(f"{prefix}Removed created file {c_focus(created_p)}")
             if "waybar" in created_p:
                 restored_wb = True
 
     if restored_niri and not dry_run and os.path.isfile(niri_cfg) and probe.has_bin("niri"):
         ok, _out, err = probe.run_cmd_full(["niri", "validate", "-c", niri_cfg], timeout=2.5)
         if not ok:
-            print(f"{_tag('WARN')} niri validate reported: {err}")
+            msg_warn(f"niri validate reported: {err}")
 
     if restored_wb:
         _reload_waybar_if_running(dry_run=dry_run)
 
-    print(f"{_tag('OK')} {prefix}Restore completed from {_c('1;96', target)}")
+    ui_section("SUMMARY")
+    msg_ok(f"{prefix}Restore completed from {c_intent(target)}")
+    print()
     return 0
 
 
@@ -443,13 +449,23 @@ def run_status() -> int:
     wb_managed = _is_waybar_ncui_managed(wb_dir)
     wb_has_files = any(os.path.lexists(os.path.join(wb_dir, f)) for f in ("config", "config.jsonc", "style.css"))
 
-    print(f"{_tag('INFO')} Niri config:   {cfg_p} ({'includes ncui.kdl' if has_inc else 'no ncui.kdl include'})")
-    print(f"{_tag('INFO')} Niri ncui.kdl: {ncui_kdl_p} ({'present' if has_ncui_kdl else 'missing'})")
-    wb_state = "NC-UI managed" if wb_managed else ("custom / non-standard" if wb_has_files else "missing")
-    print(f"{_tag('INFO')} Waybar dir:    {wb_dir} ({wb_state})")
+    ui_header("NC-CTL STATUS", "Provisioning State & Backups")
+    ui_section("COMPONENTS")
+    ui_kv("Niri config", cfg_p, f"[{c_ok('includes ncui.kdl') if has_inc else c_warn('no include')}]", key_w=18)
+    ui_kv("Niri ncui.kdl", ncui_kdl_p, f"[{c_ok('present') if has_ncui_kdl else c_warn('missing')}]", key_w=18)
+    if wb_managed:
+        wb_badge = c_ok("NC-UI managed")
+    elif wb_has_files:
+        wb_badge = c_warn("custom")
+    else:
+        wb_badge = c_warn("missing")
+    ui_kv("Waybar dir", wb_dir, f"[{wb_badge}]", key_w=18)
     for fn in ("config.toml", "theme.toml"):
         p = os.path.join(ncui_cfg_dir(), fn)
-        print(f"{_tag('INFO')} NC-UI {fn:11s}: {p} ({'present' if os.path.isfile(p) else 'missing'})")
+        ui_kv(f"NC-UI {fn}", p, f"[{c_ok('present') if os.path.isfile(p) else c_warn('missing')}]", key_w=18)
+
     baks = _list_backups()
-    print(f"{_tag('INFO')} Backups ({len(baks)}): {baks[0] if baks else 'none'}")
+    ui_section("BACKUPS")
+    ui_kv("Snapshots", str(len(baks)), baks[0] if baks else "none", key_w=18)
+    print()
     return 0

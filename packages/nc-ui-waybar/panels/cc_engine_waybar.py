@@ -25,6 +25,78 @@ from ui.kit import feedback_cards, handle_scroll_action, set_feedback
 
 REPO_WB_CONF = find_package_file("config", "waybar", "config.jsonc")
 
+SPACER_LEFT_MOD = "custom/nc-spacer-l"
+SPACER_RIGHT_MOD = "custom/nc-spacer-r"
+INTERNAL_SPACER_MODS = (SPACER_LEFT_MOD, SPACER_RIGHT_MOD)
+CENTER_ANCHOR_MOD = "custom/calendar"
+_SPACER_DEF = {"format": "\u200b", "expand": True, "tooltip": False}
+
+
+def _unpack_logical_sections(data: dict) -> dict:
+    """Convert physical Waybar spacer-packed lists back into logical left/center/right lists."""
+    left = list(data.get("modules-left", []) or [])
+    center = list(data.get("modules-center", []) or [])
+    right = list(data.get("modules-right", []) or [])
+    pre_center: list[str] = []
+    post_center: list[str] = []
+
+    if SPACER_LEFT_MOD in left:
+        idx = left.index(SPACER_LEFT_MOD)
+        pre_center = [m for m in left[idx + 1:] if m not in INTERNAL_SPACER_MODS]
+        left = [m for m in left[:idx] if m not in INTERNAL_SPACER_MODS]
+    else:
+        left = [m for m in left if m not in INTERNAL_SPACER_MODS]
+
+    if SPACER_RIGHT_MOD in right:
+        idx = right.index(SPACER_RIGHT_MOD)
+        post_center = [m for m in right[:idx] if m not in INTERNAL_SPACER_MODS]
+        right = [m for m in right[idx + 1:] if m not in INTERNAL_SPACER_MODS]
+    else:
+        right = [m for m in right if m not in INTERNAL_SPACER_MODS]
+
+    center = [m for m in center if m not in INTERNAL_SPACER_MODS]
+    data["modules-left"] = left
+    data["modules-center"] = pre_center + center + post_center
+    data["modules-right"] = right
+    for sp in INTERNAL_SPACER_MODS:
+        data.pop(sp, None)
+    return data
+
+
+def _pack_physical_sections(data: dict) -> dict:
+    """Pack logical center modules around a dead-center `custom/calendar` using invisible flex spacers."""
+    left = [m for m in (data.get("modules-left", []) or []) if m not in INTERNAL_SPACER_MODS]
+    center = [m for m in (data.get("modules-center", []) or []) if m not in INTERNAL_SPACER_MODS]
+    right = [m for m in (data.get("modules-right", []) or []) if m not in INTERNAL_SPACER_MODS]
+
+    if CENTER_ANCHOR_MOD in center:
+        cal_idx = center.index(CENTER_ANCHOR_MOD)
+        pre_c = center[:cal_idx]
+        post_c = center[cal_idx + 1:]
+        data["modules-left"] = left + ([SPACER_LEFT_MOD] + pre_c if pre_c else [])
+        data["modules-center"] = [CENTER_ANCHOR_MOD]
+        data["modules-right"] = (post_c + [SPACER_RIGHT_MOD] if post_c else []) + right
+        data["fixed-center"] = True
+        data["expand-left"] = bool(pre_c)
+        data["expand-right"] = bool(post_c)
+        if pre_c:
+            data[SPACER_LEFT_MOD] = dict(_SPACER_DEF)
+        else:
+            data.pop(SPACER_LEFT_MOD, None)
+        if post_c:
+            data[SPACER_RIGHT_MOD] = dict(_SPACER_DEF)
+        else:
+            data.pop(SPACER_RIGHT_MOD, None)
+    else:
+        data["modules-left"] = left
+        data["modules-center"] = center
+        data["modules-right"] = right
+        data["expand-left"] = False
+        data["expand-right"] = False
+        data.pop(SPACER_LEFT_MOD, None)
+        data.pop(SPACER_RIGHT_MOD, None)
+    return data
+
 
 def _user_wb_conf() -> str:
     return os.path.join(get_waybar_config_dir(), "config.jsonc")
@@ -366,6 +438,8 @@ def _load_wb_jsonc(path: str) -> dict:
 def _backfill_wb_modules(data: dict) -> dict:
     base = _load_wb_jsonc(REPO_WB_CONF)
     for k, v in base.items():
+        if k in INTERNAL_SPACER_MODS:
+            continue
         if isinstance(v, dict) and (k.startswith("custom/") or k.startswith("niri/")):
             if not isinstance(data.get(k), dict):
                 data[k] = dict(v)
@@ -398,12 +472,13 @@ def _read_wb_config() -> dict:
     data = _load_wb_jsonc(_user_wb_conf()) or _load_wb_jsonc(REPO_WB_CONF)
     if not data:
         data = {"modules-left": [], "modules-center": [], "modules-right": []}
-    return _backfill_wb_modules(data)
+    return _unpack_logical_sections(_backfill_wb_modules(data))
 
 
 def _write_wb_config(data: dict, reload_bar: bool = False) -> None:
     from core.config import get_layout_margins
     _backfill_wb_modules(data)
+    _pack_physical_sections(data)
     _, outer_m = get_layout_margins()
     data["margin-top"] = outer_m
     data["margin-left"] = outer_m
@@ -412,7 +487,7 @@ def _write_wb_config(data: dict, reload_bar: bool = False) -> None:
     data.setdefault("niri/window", {})["max-length"] = int(budget["window_chars"])
     managed_mods = set(KNOWN_WAYBAR_PLUGINS) | set(_discover_user_waybar_plugins())
     for k, v in data.items():
-        if isinstance(v, dict) and k in managed_mods:
+        if isinstance(v, dict) and k in managed_mods and k not in INTERNAL_SPACER_MODS:
             if k.startswith("custom/") and k != "custom/media":
                 v["tooltip"] = True
                 v["tooltip-format"] = ""

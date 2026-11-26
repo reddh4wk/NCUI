@@ -33,6 +33,7 @@ from core.config import (
     get_waybar_config_dir,
     get_waybar_look,
     get_effective_window_bg,
+    get_effective_window_radius,
     get_layout_margins,
     strip_jsonc_comments,
     _parse_rgba_components,
@@ -292,21 +293,22 @@ class ShellWindow(Gtk.Window):
     def _get_inner_box_margins(self) -> tuple[int, int, int, int, int]:
         inner_pad, _ = get_layout_margins()
         bw = int(self.geom.get("window_border_width", 1))
-        s_left, s_right, s_top_hdr, _s_bot = self._get_box_ink_insets()
+        s_left, s_right, s_top_hdr, s_bot = self._get_box_ink_insets()
         m_left = max(bw, bw + inner_pad - s_left)
         m_right = max(bw, bw + inner_pad - s_right)
         m_top = max(bw, bw + inner_pad - s_top_hdr)
-        # Keep physical bottom margin uncompensated by Pango descent so scrolled content
-        # and flush Cairo/TUI cards never intrude into the outer window border margin.
-        m_bot = bw + inner_pad
+        # Compensate bottom margin by Pango descent (s_bot) symmetrically with m_top
+        # so the last NC-Box's bottom border aligns flush with the Sidebar bottom border.
+        m_bot = max(bw, bw + inner_pad - s_bot)
         hbox_gap = max(0, inner_pad - s_right - s_left)
         return m_left, m_right, m_top, m_bot, hbox_gap
 
     def _get_popup_margins(self) -> tuple[int, int, int, int]:
         pad = int(self.geom.get("panel_padding", 10))
         bw = int(self.geom.get("window_border_width", 1))
-        s_left, _s_right, _s_top_hdr, s_bot = self._get_box_ink_insets()
-        m_left = m_right = m_top = pad
+        s_left, _s_right, s_top_hdr, s_bot = self._get_box_ink_insets()
+        m_left = m_right = pad
+        m_top = max(bw + 2, pad - max(0, s_top_hdr - s_left))
         m_bot = max(bw + 2, pad - max(0, s_bot - s_left))
         return m_left, m_right, m_top, m_bot
 
@@ -761,6 +763,8 @@ class ShellWindow(Gtk.Window):
         return {}
 
     def _estimate_wb_module_px(self, mod_name: str, wb_info: dict, cached_pills: dict) -> float:
+        if mod_name in ("custom/nc-spacer-l", "custom/nc-spacer-r"):
+            return 0.0
         css_box_extra = float(wb_info.get("css_box_extra", 40.0))
         wb_defs = wb_info.get("defs", {})
         mod_to_panel = wb_info.get("mod_to_panel", {})
@@ -887,61 +891,108 @@ class ShellWindow(Gtk.Window):
         box_spacing = float(wb.get("spacing", 6))
         cached_pills = self._read_cached_pills()
 
-        if target_mod and target_mod in wb["right"]:
-            cursor_from_right = float(wb["margin_right"])
-            for mod in reversed(wb["right"]):
-                w = self._estimate_wb_module_px(mod, wb, cached_pills)
-                if mod == target_mod:
-                    eff_w = w if w > 0 else 44.0
-                    center_from_right = cursor_from_right + (eff_w / 2.0)
-                    target_right = int(round(center_from_right - (win_w / 2.0)))
-                    clamped_right = max(edge_margin, min(target_right, max_margin))
-                    GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, True)
+        if target_mod:
+            wb_left = list(wb.get("left") or [])
+            wb_right = list(wb.get("right") or [])
+            wb_center = list(wb.get("center") or [])
+            sp_l = "custom/nc-spacer-l"
+            sp_r = "custom/nc-spacer-r"
+            outer_left = wb_left[:wb_left.index(sp_l)] if sp_l in wb_left else wb_left
+            center_left = wb_left[wb_left.index(sp_l) + 1:] if sp_l in wb_left else []
+            center_right = wb_right[:wb_right.index(sp_r)] if sp_r in wb_right else []
+            outer_right = wb_right[wb_right.index(sp_r) + 1:] if sp_r in wb_right else wb_right
+
+            if target_mod in outer_right:
+                cursor_from_right = float(wb["margin_right"])
+                for mod in reversed(outer_right):
+                    w = self._estimate_wb_module_px(mod, wb, cached_pills)
+                    if mod == target_mod:
+                        eff_w = w if w > 0 else 44.0
+                        center_from_right = cursor_from_right + (eff_w / 2.0)
+                        target_right = int(round(center_from_right - (win_w / 2.0)))
+                        clamped_right = max(edge_margin, min(target_right, max_margin))
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, True)
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, False)
+                        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, clamped_right)
+                        return
+                    if w > 0:
+                        cursor_from_right += w + box_spacing
+
+            if target_mod in outer_left:
+                cursor_from_left = float(wb["margin_left"])
+                for mod in outer_left:
+                    w = self._estimate_wb_module_px(mod, wb, cached_pills)
+                    if mod == target_mod:
+                        eff_w = w if w > 0 else 44.0
+                        center_from_left = cursor_from_left + (eff_w / 2.0)
+                        target_left = int(round(center_from_left - (win_w / 2.0)))
+                        clamped_left = max(edge_margin, min(target_left, max_margin))
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
+                        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
+                        return
+                    if w > 0:
+                        cursor_from_left += w + box_spacing
+
+            if target_mod in center_left or target_mod in center_right:
+                cal_widths = [self._estimate_wb_module_px(m, wb, cached_pills) for m in wb_center]
+                cal_active = sum(1 for cw in cal_widths if cw > 0)
+                cal_w = (sum(cal_widths) + max(0, cal_active - 1) * box_spacing) if cal_active else 220.0
+                cal_left_x = (mon_w - cal_w) / 2.0
+                cal_right_x = (mon_w + cal_w) / 2.0
+                if target_mod in center_left:
+                    cursor_x = cal_left_x - box_spacing
+                    for mod in reversed(center_left):
+                        w = self._estimate_wb_module_px(mod, wb, cached_pills)
+                        if mod == target_mod:
+                            eff_w = w if w > 0 else 44.0
+                            center_x = cursor_x - (eff_w / 2.0)
+                            target_left = int(round(center_x - (win_w / 2.0)))
+                            clamped_left = max(edge_margin, min(target_left, max_margin))
+                            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+                            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
+                            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
+                            return
+                        if w > 0:
+                            cursor_x -= w + box_spacing
+                if target_mod in center_right:
+                    cursor_x = cal_right_x + box_spacing
+                    for mod in center_right:
+                        w = self._estimate_wb_module_px(mod, wb, cached_pills)
+                        if mod == target_mod:
+                            eff_w = w if w > 0 else 44.0
+                            center_x = cursor_x + (eff_w / 2.0)
+                            target_left = int(round(center_x - (win_w / 2.0)))
+                            clamped_left = max(edge_margin, min(target_left, max_margin))
+                            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+                            GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
+                            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
+                            return
+                        if w > 0:
+                            cursor_x += w + box_spacing
+
+            if target_mod in wb_center:
+                if len(wb_center) == 1:
                     GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, False)
-                    GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, clamped_right)
-                    return
-                if w > 0:
-                    cursor_from_right += w + box_spacing
-
-        if target_mod and target_mod in wb["left"]:
-            cursor_from_left = float(wb["margin_left"])
-            for mod in wb["left"]:
-                w = self._estimate_wb_module_px(mod, wb, cached_pills)
-                if mod == target_mod:
-                    eff_w = w if w > 0 else 44.0
-                    center_from_left = cursor_from_left + (eff_w / 2.0)
-                    target_left = int(round(center_from_left - (win_w / 2.0)))
-                    clamped_left = max(edge_margin, min(target_left, max_margin))
-                    GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
                     GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
-                    GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
                     return
-                if w > 0:
-                    cursor_from_left += w + box_spacing
-
-        if target_mod and target_mod in wb["center"]:
-            c_mods = wb["center"]
-            if len(c_mods) == 1:
-                GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, False)
-                GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
-                return
-            widths = [self._estimate_wb_module_px(m, wb, cached_pills) for m in c_mods]
-            active_count = sum(1 for w in widths if w > 0)
-            total_c_w = sum(widths) + max(0, active_count - 1) * box_spacing
-            start_x = (mon_w - total_c_w) / 2.0
-            cursor_x = start_x
-            for mod, w in zip(c_mods, widths):
-                if mod == target_mod:
-                    eff_w = w if w > 0 else 44.0
-                    center_x = cursor_x + (eff_w / 2.0)
-                    target_left = int(round(center_x - (win_w / 2.0)))
-                    clamped_left = max(edge_margin, min(target_left, max_margin))
-                    GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
-                    GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
-                    GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
-                    return
-                if w > 0:
-                    cursor_x += w + box_spacing
+                widths = [self._estimate_wb_module_px(m, wb, cached_pills) for m in wb_center]
+                active_count = sum(1 for w in widths if w > 0)
+                total_c_w = sum(widths) + max(0, active_count - 1) * box_spacing
+                start_x = (mon_w - total_c_w) / 2.0
+                cursor_x = start_x
+                for mod, w in zip(wb_center, widths):
+                    if mod == target_mod:
+                        eff_w = w if w > 0 else 44.0
+                        center_x = cursor_x + (eff_w / 2.0)
+                        target_left = int(round(center_x - (win_w / 2.0)))
+                        clamped_left = max(edge_margin, min(target_left, max_margin))
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+                        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
+                        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, clamped_left)
+                        return
+                    if w > 0:
+                        cursor_x += w + box_spacing
 
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, False)
         GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, False)
@@ -997,7 +1048,7 @@ class ShellWindow(Gtk.Window):
             self.nav_canvas.sync_theme()
 
         bg = get_effective_window_bg(self.wb_look.get("bg"))
-        rad = self.wb_look["rad"] if self.wb_look["rad"] is not None else self.geom["window_border_radius"]
+        rad = get_effective_window_radius()
         bw = self.geom["window_border_width"]
         bc = self.colors["window_border"]
         c_pri = p["focus"]
@@ -2509,8 +2560,8 @@ class ShellWindow(Gtk.Window):
             avail_h_px = max(360, self._get_cc_target_height_px() - m_top - m_bot - (2 * bw) - prompt_h)
 
         active_sec = getattr(self.panel, "section", self.panel_id)
-        is_rounded = (THEME.get("ascii", {}).get("box_style", "rounded") in ("rounded", "dashed"))
-        nav_state = (active_sec, avail_h_px, c_acc, c_brd, c_sec, is_rounded, round(get_box_opacity(), 3), get_surface_bg_rgb())
+        bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+        nav_state = (active_sec, avail_h_px, c_acc, c_brd, c_sec, bs, round(get_box_opacity(), 3), get_surface_bg_rgb())
         if getattr(self, "_last_nav_state", None) == nav_state and self.nav_listbox.get_children():
             self._last_nav_height_px = avail_h_px
             return
@@ -2539,31 +2590,61 @@ class ShellWindow(Gtk.Window):
         bg_da.set_size_request(nav_w_px, grid_h_px)
         bg_da.set_can_focus(False)
 
+        def _trace_nav_rect(cr, rx0, ry0, rx1, ry1, rtl, rtr, rbr, rbl):
+            cr.new_sub_path()
+            cr.move_to(rx0 + rtl, ry0)
+            cr.line_to(rx1 - rtr, ry0)
+            if rtr > 0.3:
+                cr.arc(rx1 - rtr, ry0 + rtr, rtr, -math.pi / 2.0, 0.0)
+            cr.line_to(rx1, ry1 - rbr)
+            if rbr > 0.3:
+                cr.arc(rx1 - rbr, ry1 - rbr, rbr, 0.0, math.pi / 2.0)
+            cr.line_to(rx0 + rbl, ry1)
+            if rbl > 0.3:
+                cr.arc(rx0 + rbl, ry1 - rbl, rbl, math.pi / 2.0, math.pi)
+            cr.line_to(rx0, ry0 + rtl)
+            if rtl > 0.3:
+                cr.arc(rx0 + rtl, ry0 + rtl, rtl, math.pi, 3.0 * math.pi / 2.0)
+            cr.close_path()
+
         def _on_draw_nav(_da, cr):
             box_op = get_box_opacity()
             sr, sg, sb = get_surface_bg_rgb()
             cr.set_line_width(1.0)
-            rad = min(4.5, (x1 - x0) / 4.0, (y1 - y0) / 4.0) if is_rounded else 0.0
-            if rad > 0.5:
-                cr.new_sub_path()
-                cr.arc(x1 - rad, y0 + rad, rad, -math.pi / 2.0, 0.0)
-                cr.arc(x1 - rad, y1 - rad, rad, 0.0, math.pi / 2.0)
-                cr.arc(x0 + rad, y1 - rad, rad, math.pi / 2.0, math.pi)
-                cr.arc(x0 + rad, y0 + rad, rad, math.pi, 3.0 * math.pi / 2.0)
-                cr.close_path()
+            base_r = min(4.5, (x1 - x0) / 4.0, (y1 - y0) / 4.0)
+            if bs in ("rounded", "dashed"):
+                rtl = rtr = rbr = rbl = base_r
+            elif bs == "hybrid":
+                rtl = rbl = base_r
+                rtr = rbr = 0.0
             else:
-                cr.rectangle(x0, y0, x1 - x0, y1 - y0)
+                rtl = rtr = rbr = rbl = 0.0
+
+            _trace_nav_rect(cr, x0, y0, x1, y1, rtl, rtr, rbr, rbl)
             if box_op > 0.001:
                 cr.set_source_rgba(sr / 255.0, sg / 255.0, sb / 255.0, box_op)
                 cr.fill_preserve()
             cr.set_source_rgba(br_r / 255.0, br_g / 255.0, br_b / 255.0, 1.0)
-            cr.stroke()
+            cr.save()
+            if bs == "dashed":
+                cr.set_dash([4.0, 2.5])
+                cr.stroke()
+            elif bs == "double":
+                cr.stroke()
+                if (x1 - x0) > 6.0 and (y1 - y0) > 6.0:
+                    _trace_nav_rect(cr, x0 + 2.0, y0 + 2.0, x1 - 2.0, y1 - 2.0, 0.0, 0.0, 0.0, 0.0)
+                    cr.stroke()
+            else:
+                cr.stroke()
 
+            div_x0 = (x0 + 2.0) if bs == "double" else x0
+            div_x1 = (x1 - 2.0) if bs == "double" else x1
             for div_i in range(1, n_items):
                 y_div = math.floor(y0 + div_i * (y1 - y0) / float(n_items)) + 0.5
-                cr.move_to(x0, y_div)
-                cr.line_to(x1, y_div)
+                cr.move_to(div_x0, y_div)
+                cr.line_to(div_x1, y_div)
                 cr.stroke()
+            cr.restore()
             return False
 
         bg_da.connect("draw", _on_draw_nav)
@@ -3049,6 +3130,19 @@ class ShellWindow(Gtk.Window):
             elif isinstance(item, (CustomWidgetCard, Gtk.ListBoxRow)):
                 specs.append(("custom", None, item, False))
 
+        non_div_bms = [sp[1] for sp in specs if sp[0] == "ascii" and not sp[3] and isinstance(sp[1], Box)]
+        bs_cur = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+        for bm_item in non_div_bms:
+            if bs_cur == "hybrid":
+                is_first = (bm_item is non_div_bms[0])
+                is_last = (bm_item is non_div_bms[-1])
+                if self.mode == "settings":
+                    bm_item.corner_mask = (False, is_first, is_last, False)
+                else:
+                    bm_item.corner_mask = (is_first, is_first, is_last, is_last)
+            else:
+                bm_item.corner_mask = None
+
         panel_hover = bool(getattr(self.panel, "hover_highlight", True))
         can_select_boxes = panel_hover and (selectable_count > 1)
         spacing = int(self.geom.get("card_spacing", 4))
@@ -3098,6 +3192,7 @@ class ShellWindow(Gtk.Window):
 
         render_sig = (
             self.mode,
+            bs_cur,
             int(self.content_canvas.total_cols),
             bool(self.prompt_bar.get_visible()),
             _lb_line_sig(self.header_listbox) if self.header_listbox is not None else (),

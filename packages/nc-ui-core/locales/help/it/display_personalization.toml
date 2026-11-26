@@ -249,7 +249,7 @@ short = "Apre l'inserimento inline `#RRGGBB` per questo token cromatico di Wayba
 
 ["cc_pers:box_style:*"]
 title = "Imposta Stile Bordi Box"
-short = "Sceglie i caratteri della cornice dei riquadri (`Rounded`, `Single`, `Double`, `Heavy` o `ASCII`) disegnati su canvas."
+short = "Sceglie i caratteri della cornice dei riquadri (`Rounded`, `Hybrid`, `Sharp`, `Dashed` o `Double`) disegnati su canvas."
 
 ["cc_pers:tbrk:*"]
 title = "Imposta Delimitatori Titolo Box"

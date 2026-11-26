@@ -5,9 +5,19 @@
 from core import probe
 from core.i18n import t
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, ProgressBar, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, ProgressBar, StateBadge, Txt, _lerp_hex
 from panels.base import BasePanel
 from panels.cc_engine_ups import _collect_ups_data, invalidate_ups_cache
+
+
+def _battery_charge_hex(charge: int | None) -> str:
+    """Battery pill color solely from charge level: 100% (#00e65c) -> 50% (#ffe619) -> 0% (#ff2442)."""
+    if charge is None:
+        return "#00e65c"
+    c = max(0, min(100, int(charge)))
+    if c >= 50:
+        return _lerp_hex("#ffe619", "#00e65c", (c - 50) / 50.0)
+    return _lerp_hex("#ff2442", "#ffe619", c / 50.0)
 
 
 def _battery_glyph(charge: int | None) -> str:
@@ -35,13 +45,13 @@ class Panel(BasePanel):
             return {"text": "", "tooltip": "", "class": "module-nc-empty"}
         if not probe.has_bin("upsc"):
             return {
-                "text": "▂ ERR",
+                "text": "<span color='#ff2442'>\u2582 ERR</span>",
                 "tooltip": t("ups.upsc_missing_hint"),
                 "class": "module-nc offline",
             }
         if not u["reachable"]:
             return {
-                "text": "▂ ERR",
+                "text": "<span color='#ff2442'>\u2582 ERR</span>",
                 "tooltip": t("ups.unreachable_hint"),
                 "class": "module-nc offline",
             }
@@ -53,11 +63,12 @@ class Panel(BasePanel):
         else:
             pill_txt = f"{glyph} {u['status_raw'] or 'OL'}"
 
+        col = _battery_charge_hex(charge)
         tip_parts = [u["model"] or u["ups_name"] or "UPS", u["status_text"]]
         if u["runtime_str"]:
             tip_parts.append(u["runtime_str"])
         return {
-            "text": pill_txt,
+            "text": f"<span color='{col}'>{Canvas.escape(pill_txt)}</span>",
             "tooltip": " | ".join(tip_parts),
             "class": f"module-nc {u['css_state']}",
         }

@@ -15,7 +15,11 @@ from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 
 from core.config import THEME, _norm_notif_style, get_hover_help_opacity, get_surface_bg_rgb  # noqa: E402
 from core.i18n import t  # noqa: E402
-from ui.kit import get_semantic_palette, hex_to_rgba_f as _hex_rgba, rounded_rect_path as _rounded_rect  # noqa: E402
+from ui.kit import get_semantic_palette, hex_to_rgba_f as _hex_rgba, rounded_rect_path as _raw_rounded_rect  # noqa: E402
+
+
+def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
+    _raw_rounded_rect(cr, x, y, w, h, r, outer=True)
 
 
 def _norm_rgb(rgb) -> tuple[float, float, float]:
@@ -26,7 +30,7 @@ def _norm_rgb(rgb) -> tuple[float, float, float]:
 
 
 def _style_radius(box_style: str, card_style: str) -> float:
-    if box_style in ("sharp", "heavy", "double", "ascii"):
+    if box_style in ("sharp", "double"):
         return 0.0
     return 3.0 if card_style == "clean" else 4.0
 
@@ -59,7 +63,7 @@ def _stroke_box_frame(
     col_hex: str,
     alpha: float,
 ) -> None:
-    """Apply the orthogonal NC-UI `box_style` (rounded/sharp/heavy/double/dashed/ascii) onto an overlay frame."""
+    """Apply the orthogonal NC-UI `box_style` (rounded/hybrid/sharp/dashed/double) onto an overlay frame."""
     cr.save()
     outer_path_fn()
     cr.set_source_rgba(*_hex_rgba(col_hex, alpha))
@@ -78,23 +82,6 @@ def _stroke_box_frame(
             cr.set_source_rgba(*_hex_rgba(col_hex, alpha * 0.72))
             cr.set_line_width(0.9)
             cr.stroke()
-    elif box_style == "ascii":
-        cr.set_line_width(0.9)
-        cr.stroke()
-        tlen = 4.0
-        cr.set_source_rgba(*_hex_rgba(col_hex, min(1.0, alpha * 1.05)))
-        cr.set_line_width(1.5)
-        for cx, cy, sx, sy in (
-            (rx, ry, 1.0, 1.0),
-            (rx + rw, ry, -1.0, 1.0),
-            (rx, ry + rh, 1.0, -1.0),
-            (rx + rw, ry + rh, -1.0, -1.0),
-        ):
-            cr.move_to(cx, cy)
-            cr.line_to(cx + sx * tlen, cy)
-            cr.move_to(cx, cy)
-            cr.line_to(cx, cy + sy * tlen)
-        cr.stroke()
     else:
         cr.set_line_width(1.05)
         cr.stroke()

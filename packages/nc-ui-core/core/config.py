@@ -67,30 +67,25 @@ BOX_STYLES = {
         "h": "\u2500", "v": "\u2502", "ml": "\u251c", "mr": "\u2524",
         "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
     },
+    "hybrid": {
+        "tl": "\u250c", "tr": "\u2510", "bl": "\u2514", "br": "\u2518",
+        "h": "\u2500", "v": "\u2502", "ml": "\u251c", "mr": "\u2524",
+        "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
+    },
     "sharp": {
         "tl": "\u250c", "tr": "\u2510", "bl": "\u2514", "br": "\u2518",
         "h": "\u2500", "v": "\u2502", "ml": "\u251c", "mr": "\u2524",
         "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
     },
-    "heavy": {
-        "tl": "\u250f", "tr": "\u2513", "bl": "\u2517", "br": "\u251b",
-        "h": "\u2501", "v": "\u2503", "ml": "\u2523", "mr": "\u252b",
-        "mt": "\u2533", "mb": "\u253b", "mc": "\u254b",
+    "dashed": {
+        "tl": "\u256d", "tr": "\u256e", "bl": "\u2570", "br": "\u256f",
+        "h": "\u2500", "v": "\u2502", "ml": "\u251c", "mr": "\u2524",
+        "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
     },
     "double": {
         "tl": "\u2554", "tr": "\u2557", "bl": "\u255a", "br": "\u255d",
         "h": "\u2550", "v": "\u2551", "ml": "\u2560", "mr": "\u2563",
         "mt": "\u2566", "mb": "\u2569", "mc": "\u256c",
-    },
-    "dashed": {
-        "tl": "\u256d", "tr": "\u256e", "bl": "\u2570", "br": "\u256f",
-        "h": "\u2504", "v": "\u2506", "ml": "\u251c", "mr": "\u2524",
-        "mt": "\u252c", "mb": "\u2534", "mc": "\u253c",
-    },
-    "ascii": {
-        "tl": "+", "tr": "+", "bl": "+", "br": "+",
-        "h": "-", "v": "|", "ml": "+", "mr": "+",
-        "mt": "+", "mb": "+", "mc": "+",
     },
 }
 
@@ -407,6 +402,10 @@ def sanitize_theme_dict(theme_dict: dict) -> dict:
 
     asc = theme_dict.setdefault("ascii", {})
     st_name = str(asc.get("box_style", "rounded") or "rounded").strip().lower()
+    if st_name == "heavy":
+        st_name = "hybrid"
+    elif st_name == "ascii":
+        st_name = "sharp"
     if st_name not in BOX_STYLES:
         st_name = "rounded"
     asc["box_style"] = st_name
@@ -528,6 +527,7 @@ def sanitize_theme_dict(theme_dict: dict) -> dict:
     th["critical"] = colors["fault"]
 
     geom = theme_dict.setdefault("geometry", {})
+    geom["window_border_radius"] = 16 if st_name in ("rounded", "hybrid", "dashed") else 0
     try:
         geom["row_gap"] = max(0, min(6, int(geom.get("row_gap", 2))))
     except Exception:
@@ -681,6 +681,11 @@ def set_layout_margins(
         )
         if sync_bar:
             sync_waybar_outer_margin(new_outer, reload_bar=reload_bar)
+            try:
+                from panels.cc_engine_ecosystem import sync_ecosystem_themes_if_enabled
+                sync_ecosystem_themes_if_enabled(force_niri=True)
+            except Exception:
+                pass
 
     return new_inner, new_outer
 
@@ -990,6 +995,8 @@ def estimate_waybar_free_chars_budget() -> dict:
         "custom/kb_layout": 68,
         "custom/telegram": 52,
         "custom/session": 52,
+        "custom/nc-spacer-l": 0,
+        "custom/nc-spacer-r": 0,
         "tray": 0,
     }
     for m in active_mods:
@@ -1223,6 +1230,10 @@ def apply_waybar_palette(
             with open(rp, "r", encoding="utf-8") as f:
                 css_content = f.read()
 
+            wb_is_rnd = is_rounded_box_style()
+            wb_pill_rad = "50px" if wb_is_rnd else "0px"
+            wb_ws_rad = "999px" if wb_is_rnd else "0px"
+
             def _repl_wb(m):
                 block = m.group(0)
                 m_bg = re.search(r"background-color\s*:\s*([^;]+);", block)
@@ -1232,11 +1243,19 @@ def apply_waybar_palette(
                 b = bg_b if (force_palette or sync_color) else cur_b
                 a = win_alpha if (force_palette or sync_opacity) else cur_a
                 out = _set_css_prop(block, "background-color", f"rgba({r}, {g}, {b}, {a:.2f})")
+                out = _set_css_prop(out, "border-radius", wb_pill_rad)
                 if force_palette:
                     out = _set_css_prop(out, "color", wb_fg)
                 return out
 
             new_css = re.sub(r"window#waybar\s*\{[^}]+\}", _repl_wb, css_content, count=1)
+            for rad_pat, rad_val in (
+                (r"#workspaces", wb_ws_rad),
+                (r"#workspaces\s+button", wb_ws_rad),
+                (r"#clock,[\s\S]*?\.module-nc", wb_pill_rad),
+                (r"#window", wb_pill_rad),
+            ):
+                new_css = _sub_block(new_css, rad_pat, {"border-radius": rad_val})
             if force_palette:
                 new_css = re.sub(r"(?:eventbox|widget):hover\s*>", "widget > box:hover >", new_css)
                 new_css = _sub_keyframes(
@@ -1313,7 +1332,7 @@ def apply_waybar_palette(
                         "box-shadow": f"0 0 2px 0 rgba({ar}, {ag}, {ab}, 0.60), inset 0 0 6px 0 rgba({ar}, {ag}, {ab}, 0.65)",
                         "text-shadow": f"0 0 8px rgba({ar}, {ag}, {ab}, 0.95)",
                     }),
-                    (r"#custom-ups\.online", {"color": wb_act}),
+                    (r"#custom-ups\.online", {"color": "#00e65c"}),
                     (r"#custom-ups\.on-battery", {
                         "color": wb_warn,
                         "background-color": f"rgba({wr}, {wg}, {wb_c}, 0.18)",
@@ -1359,7 +1378,7 @@ def apply_waybar_palette(
                 if isinstance(wb_data, dict):
                     changed_wb = False
                     for mk, mv in wb_data.items():
-                        if isinstance(mv, dict) and mk.startswith("custom/") and mk != "custom/media":
+                        if isinstance(mv, dict) and mk.startswith("custom/") and mk not in ("custom/media", "custom/nc-spacer-l", "custom/nc-spacer-r"):
                             if mv.get("tooltip") is False:
                                 mv["tooltip"] = True
                                 mv["tooltip-format"] = ""
@@ -1497,6 +1516,20 @@ def get_effective_window_bg(wb_look_bg: str = None) -> str:
     r, g, b = get_surface_bg_rgb()
     alpha = max(0.05, min(1.0, get_window_opacity()))
     return f"rgba({r}, {g}, {b}, {alpha:.2f})"
+
+
+def is_rounded_box_style(box_style: str = None) -> bool:
+    st = str(box_style if box_style is not None else THEME.get("ascii", {}).get("box_style", "rounded") or "rounded").strip().lower()
+    return st in ("rounded", "hybrid", "dashed")
+
+
+def is_inner_rounded_box_style(box_style: str = None) -> bool:
+    st = str(box_style if box_style is not None else THEME.get("ascii", {}).get("box_style", "rounded") or "rounded").strip().lower()
+    return st in ("rounded", "dashed")
+
+
+def get_effective_window_radius() -> int:
+    return 16 if is_rounded_box_style() else 0
 
 
 def color_for_pct(pct: float) -> str:

@@ -101,10 +101,10 @@ def speaker_icon(vol: int, muted: bool) -> str:
 
 def get_max_volume() -> int:
     try:
-        mv = int(CONFIG.get("audio", {}).get("max_volume", 100))
+        mv = int(CONFIG.get("audio", {}).get("max_volume", 200))
         return mv if mv in (100, 150, 200) else max(100, min(200, mv))
     except Exception:
-        return 100
+        return 200
 
 
 def get_alert_sound() -> str:

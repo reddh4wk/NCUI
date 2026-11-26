@@ -14,7 +14,7 @@ from core.config import (
 )
 from core.i18n import t
 from core.state import STATE
-from ui.canvas import Canvas, _ATOMIC_WIDGET_RE, rounded_rect_path
+from ui.canvas import Canvas, _ATOMIC_WIDGET_RE, rounded_rect_path, stroke_styled_frame
 
 DEFAULT_KEY_WIDTH = 20
 COMPACT_KEY_WIDTH = 12
@@ -616,8 +616,49 @@ def ProgressBar(pct: float, width: int = 15, color_by_threshold: bool = True, in
 
 
 _SLIDER_META: dict[str, dict] = {}
+_SLIDER_BUILD_SPECS: dict[str, tuple[str, dict]] = {}
+_SLIDER_HREF_RE = re.compile(r"<a href='([^']+)'>")
 _SCROLL_ZONE_META: dict[str, tuple[str, bool, bool]] = {}
 _SCROLL_VIEWPORT_META: dict[str, int] = {}
+
+
+def _find_embedded_slider(markup: str) -> tuple[str, str, str, dict] | None:
+    if not markup or "<a href='" not in markup:
+        return None
+    for m in _SLIDER_HREF_RE.finditer(markup):
+        uri = m.group(1)
+        if ":" not in uri:
+            continue
+        entry = _SLIDER_BUILD_SPECS.get(uri.rsplit(":", 1)[0])
+        if entry is None:
+            continue
+        orig_m, spec = entry
+        idx = markup.find(orig_m)
+        if idx >= 0:
+            return markup[:idx], orig_m, markup[idx + len(orig_m):], spec
+    return None
+
+
+def _slider_avail_cols(canvas: Canvas, spec: dict, before_s: str, after_s: str, avail_px: float) -> int:
+    chrome_cols = (8 if (spec["step_buttons"] or spec["width"] >= 6) else 0) + 2 + (5 if spec["show_pct"] else 0)
+    used_px = (
+        canvas.measure_markup(before_s)
+        + canvas.measure_markup(after_s)
+        + (chrome_cols * canvas.char_w)
+        + (canvas.space_w * 2.0)
+    )
+    return int(max(0.0, avail_px - used_px) // max(1.0, canvas.char_w))
+
+
+def _rebuild_slider_row(canvas: Canvas, before_s: str, after_s: str, spec: dict, target_w: int, avail_px: float, min_w: int) -> str:
+    w = max(min_w, int(target_w))
+    sl = Slider(**{**spec, "width": w, "_cache": False})
+    res = before_s + sl + after_s
+    while w > min_w and canvas.measure_markup(res) > avail_px + 0.5:
+        w -= 1
+        sl = Slider(**{**spec, "width": w, "_cache": False})
+        res = before_s + sl + after_s
+    return res
 
 
 def get_slider_step_uris(action_prefix: str) -> tuple[str, str] | None:
@@ -630,6 +671,11 @@ def get_slider_step_uris(action_prefix: str) -> tuple[str, str] | None:
 def is_slider_enabled(action_prefix: str) -> bool:
     meta = _SLIDER_META.get(action_prefix)
     return bool(meta.get("enabled", True)) if meta else True
+
+
+def is_slider_overdrive(action_prefix: str) -> bool:
+    meta = _SLIDER_META.get(action_prefix)
+    return bool(meta.get("has_overdrive", False)) if meta else False
 
 
 def set_slider_meta_value(action_prefix: str, val_str: str) -> None:
@@ -778,11 +824,14 @@ def _lerp_hex(h1: str, h2: str, t_frac: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def _slider_base_hex(p: dict, frac: float) -> str:
+    return _lerp_hex(p["focus"], p["intent"], max(0.0, min(1.0, float(frac))))
+
+
 def _overdrive_heat_hex(p: dict, heat: float) -> str:
     h = max(0.0, min(1.0, float(heat)))
-    if h <= 0.5:
-        return _lerp_hex(p["attention"], p["interrupt"], h * 2.0)
-    return _lerp_hex(p["interrupt"], p["fault"], (h - 0.5) * 2.0)
+    dark_intent = _lerp_hex(p["intent"], "#000000", 0.75)
+    return _lerp_hex(p["intent"], dark_intent, h)
 
 
 def Slider(
@@ -798,6 +847,7 @@ def Slider(
     enabled: bool = True,
     overdrive_threshold: float | None = None,
     overdrive_style: str = "",
+    _cache: bool = True,
 ) -> str:
     """
     Barra di modulazione continua interattiva (Golden Standard §2.2 / §4.1.5 / §8):
@@ -850,20 +900,24 @@ def Slider(
                 raw_v = max(lo, min(hi, snapped))
         seg_val = _fmt_slider_val(raw_v, is_float)
 
+        pos_frac = i / float(max(1, width - 1))
+        base_col = _slider_base_hex(p, pos_frac) if enabled else p["inactive"]
+
         if not od_active:
             ch = s_fill if (i + 1) <= fill_n else s_empty
-            col = c_fill if (i + 1) <= fill_n else c_empty
+            col = base_col if (i + 1) <= fill_n else c_empty
         elif od_style == "split_scale" and idx_100 >= 1:
             if i == idx_100:
                 ch = "\u2502"
-                col = (p["focus"] if val_c >= od_thresh - 0.5 else p["structure"]) if enabled else p["inactive"]
+                col = (p["intent"] if val_c >= od_thresh - 0.5 else p["structure"]) if enabled else p["inactive"]
             elif i < idx_100:
                 l_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
                 l_fill = int(round(l_norm * idx_100))
                 if val_c > lo + 0.5 and l_fill == 0:
                     l_fill = 1
                 ch = s_fill if i < l_fill else s_empty
-                col = (p["intent"] if enabled else p["inactive"]) if i < l_fill else c_empty
+                l_col = _slider_base_hex(p, i / float(max(1, idx_100 - 1))) if enabled else p["inactive"]
+                col = l_col if i < l_fill else c_empty
             else:
                 r_total = max(1, width - 1 - idx_100)
                 r_fill = int(round(over_frac * r_total))
@@ -872,7 +926,7 @@ def Slider(
                 pos = i - idx_100
                 if is_over and pos <= r_fill:
                     ch = s_fill
-                    col = _overdrive_heat_hex(p, pos / float(r_total)) if enabled else p["inactive"]
+                    col = _overdrive_heat_hex(p, (pos - 1) / float(max(1, r_total - 1))) if enabled else p["inactive"]
                 else:
                     ch = s_empty
                     col = c_empty
@@ -885,20 +939,19 @@ def Slider(
                     mid = (width - 1) / 2.0
                     dist = abs(i - mid) / max(1.0, mid)
                     if dist <= over_frac + 1e-6:
-                        heat = max(0.0, min(1.0, over_frac * (1.0 - 0.35 * dist)))
-                        col = _overdrive_heat_hex(p, heat)
+                        col = _overdrive_heat_hex(p, dist)
                     else:
-                        col = p["focus"]
+                        col = base_col
             elif at_thresh:
                 ch = s_fill
-                col = p["focus"] if enabled else p["inactive"]
+                col = base_col
             else:
                 b_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
                 b_fill = int(round(b_norm * width))
                 ch = s_fill if (i + 1) <= b_fill else s_empty
-                col = c_fill if (i + 1) <= b_fill else c_empty
+                col = base_col if (i + 1) <= b_fill else c_empty
         else:
-            # reverse_sweep (default): 0-99% cyan L->R, 100% white, 101-200% yellow->red R->L
+            # reverse_sweep (default): 0-100% white->intent L->R, 101-200% intent->4x dark R->L
             if is_over:
                 ch = s_fill
                 if not enabled:
@@ -907,19 +960,18 @@ def Slider(
                     over_n = max(1, int(round(over_frac * width)))
                     start_i = width - over_n
                     if i >= start_i:
-                        local_pos = (i - start_i) / float(max(1, over_n - 1))
-                        heat = max(0.0, min(1.0, (over_frac * 0.65) + (local_pos * 0.35)))
+                        heat = (width - 1 - i) / float(max(1, width - 1))
                         col = _overdrive_heat_hex(p, heat)
                     else:
-                        col = p["focus"]
+                        col = base_col
             elif at_thresh:
                 ch = s_fill
-                col = p["focus"] if enabled else p["inactive"]
+                col = base_col
             else:
                 b_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
                 b_fill = int(round(b_norm * width))
                 ch = s_fill if (i + 1) <= b_fill else s_empty
-                col = c_fill if (i + 1) <= b_fill else c_empty
+                col = base_col if (i + 1) <= b_fill else c_empty
 
         segments.append(
             f"<a href='{Canvas.escape(action_prefix)}:{seg_val}'><span color='{col}' underline='none'>{Canvas.escape(ch)}</span></a>"
@@ -935,6 +987,7 @@ def Slider(
         "is_float": is_float,
         "scroll_prefix": scroll_prefix,
         "enabled": bool(enabled),
+        "has_overdrive": bool(od_active),
         "dec_uri": f"{scroll_prefix}:down" if scroll_prefix else f"{action_prefix}:{v_dec}",
         "inc_uri": f"{scroll_prefix}:up" if scroll_prefix else f"{action_prefix}:{v_inc}",
     }
@@ -945,15 +998,28 @@ def Slider(
         bar_markup = f"{ActionBtn('-', f'{action_prefix}:{v_dec}', tone=step_tone)}\u00a0{bar_markup}\u00a0{ActionBtn('+', f'{action_prefix}:{v_inc}', tone=step_tone)}"
     if show_pct:
         pct_int = int(round(value)) if (not is_float and 0 <= min_val < max_val <= 200) else int(round(norm * 100.0))
-        if not enabled:
-            pct_col = p["inactive"]
-        elif is_over:
-            pct_col = _overdrive_heat_hex(p, over_frac)
-        elif at_thresh:
-            pct_col = p["focus"]
-        else:
-            pct_col = p["focus_val"]
+        pct_col = p["focus_val"] if enabled else p["inactive"]
         bar_markup += f"\u00a0<span color='{pct_col}'>{pct_int:3d}%</span>"
+    if _cache:
+        while len(_SLIDER_BUILD_SPECS) >= 512:
+            _SLIDER_BUILD_SPECS.pop(next(iter(_SLIDER_BUILD_SPECS)))
+        _SLIDER_BUILD_SPECS[action_prefix] = (
+            bar_markup,
+            {
+                "value": value,
+                "action_prefix": action_prefix,
+                "min_val": min_val,
+                "max_val": max_val,
+                "width": width,
+                "show_pct": show_pct,
+                "step_buttons": step_buttons,
+                "step": step,
+                "scroll_prefix": scroll_prefix,
+                "enabled": enabled,
+                "overdrive_threshold": overdrive_threshold,
+                "overdrive_style": overdrive_style,
+            },
+        )
     return bar_markup
 
 
@@ -2297,22 +2363,28 @@ class Box:
             self._render_total_px = float(canvas.total_px)
             self._top_protrusions = []
             self._top_protrusion_bytes = []
+            ch = canvas.chars
+            bs = str(THEME.get("ascii", {}).get("box_style", "rounded") or "rounded")
+            cm = getattr(self, "corner_mask", None) if bs == "hybrid" else None
+            tl_c = ("\u256d" if cm[0] else "\u250c") if cm else ch["tl"]
+            tr_c = ("\u256e" if cm[1] else "\u2510") if cm else ch["tr"]
+            br_c = ("\u256f" if cm[2] else "\u2518") if cm else ch["br"]
+            bl_c = ("\u2570" if cm[3] else "\u2514") if cm else ch["bl"]
             if not self.open_top:
-                top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk)
+                top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk, tl_ch=tl_c, tr_ch=tr_c)
                 if not self.title_is_markup and raw_title and canvas.measure_markup(top_line) > canvas.total_px + 0.5:
                     lim = min(len(raw_title), len(cur_plain_title)) - 1
                     while lim >= 4 and canvas.measure_markup(top_line) > canvas.total_px + 0.5:
                         cur_plain_title = canvas.truncate_plain(raw_title, lim)
                         full_title = f"{self.icon}  {Canvas.escape(cur_plain_title)}" if self.icon else Canvas.escape(cur_plain_title)
-                        top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk)
+                        top_line = canvas.top(full_title, right_markup=right_hdr, c_box=c_brd, c_txt=c_title, c_brk=c_brk, tl_ch=tl_c, tr_ch=tr_c)
                         lim -= 1
                 out_lines.append(top_line)
-                ch = canvas.chars
                 top_plain = Canvas.strip_tags(top_line)
                 top_bytes = top_plain.encode("utf-8")
                 if full_title:
                     b_l, b_r = canvas.title_brackets
-                    left_lead = f"<span color='{c_brd}'>{ch['tl']}{ch['h']} </span>"
+                    left_lead = f"<span color='{c_brd}'>{tl_c}{ch['h']} </span>"
                     title_blk = (
                         f"<span color='{c_brk}'>{canvas.escape(b_l)}</span>"
                         f"<span color='{c_title}'>{canvas.sanitize_markup(full_title)}</span>"
@@ -2322,14 +2394,14 @@ class Box:
                     x_t1 = canvas.measure_markup(left_lead + title_blk)
                     if x_t1 > x_t0:
                         self._top_protrusions.append((x_t0, x_t1))
-                    lead_p = f"{ch['tl']}{ch['h']} "
+                    lead_p = f"{tl_c}{ch['h']} "
                     title_p = f"{b_l}{Canvas.strip_tags(full_title)}{b_r}"
                     bt0 = len(lead_p.encode("utf-8"))
                     bt1 = bt0 + len(title_p.encode("utf-8"))
                     if bt1 > bt0 and bt1 <= len(top_bytes):
                         self._top_protrusion_bytes.append((bt0, bt1))
                 if right_hdr:
-                    right_tail = f"<span color='{c_brd}'> {ch['h']}{ch['tr']}</span>"
+                    right_tail = f"<span color='{c_brd}'> {ch['h']}{tr_c}</span>"
                     line_w = canvas.measure_markup(top_line)
                     tail_w = canvas.measure_markup(right_tail)
                     rhdr_w = canvas.measure_markup(canvas.sanitize_markup(right_hdr))
@@ -2337,7 +2409,7 @@ class Box:
                     x_r0 = max(0.0, x_r1 - rhdr_w)
                     if x_r1 > x_r0:
                         self._top_protrusions.append((x_r0, x_r1))
-                    tail_p = f" {ch['h']}{ch['tr']}"
+                    tail_p = f" {ch['h']}{tr_c}"
                     rhdr_p = Canvas.strip_tags(right_hdr)
                     br1 = max(0, len(top_bytes) - len(tail_p.encode("utf-8")))
                     br0 = max(0, br1 - len(rhdr_p.encode("utf-8")))
@@ -2384,12 +2456,62 @@ class Box:
             if self._ops and not is_micro_card and not self.open_top and not _is_blank_op(self._ops[0]) and self._ops[0][0] != "tabs":
                 out_lines.append(canvas.row(" ", c_box=c_brd, c_txt=c_pri))
 
+            # Option A: lazy responsive auto-width & box-level alignment for embedded Sliders
+            min_sl_w = 10 if target_cols <= 60 else 14
+            max_sl_w = 64
+            resolved_kv_vals: dict[int, str] = {}
+            resolved_row_lefts: dict[int, str] = {}
+            kv_sl_hits: list[tuple[int, str, str, dict, float, int]] = []
+            row_sl_hits: list[tuple[int, str, str, dict, float, int]] = []
+            for op_idx, op in enumerate(self._ops):
+                if op[0] == "kv":
+                    _, key, val_m, kw, right_m, icon = op
+                    hit = _find_embedded_slider(val_m)
+                    if hit is None:
+                        continue
+                    before_s, _orig_m, after_s, spec = hit
+                    eff_kw = max(kw, default_kw) if kw is not None else default_kw
+                    prefix = f"{icon} " if icon else ""
+                    k_raw = f"{prefix}{key}{kv_sep}" if key else ""
+                    key_prefix = f"  <span color='{c_sec}'>{Canvas.escape(k_raw.ljust(eff_kw))}</span> "
+                    prefix_px = canvas.measure_markup(key_prefix)
+                    r_px = canvas.measure_markup(right_m) if right_m else 0.0
+                    emb_px = (canvas.char_w * 14.0) if (self.side_emblem and op_idx < 7) else 0.0
+                    avail_val_px = canvas.inner_px - prefix_px - emb_px - (r_px + canvas.space_w * 2 if right_m else 0.0)
+                    if right_m and avail_val_px < (canvas.char_w * 14):
+                        avail_val_px = max(canvas.char_w * 10, canvas.inner_px - prefix_px)
+                    ac = _slider_avail_cols(canvas, spec, before_s, after_s, avail_val_px)
+                    kv_sl_hits.append((op_idx, before_s, after_s, spec, avail_val_px, ac))
+                elif op[0] == "row":
+                    _, left_m, right_m, _ = op
+                    hit = _find_embedded_slider(left_m)
+                    if hit is None:
+                        continue
+                    before_s, _orig_m, after_s, spec = hit
+                    r_px = canvas.measure_markup(right_m) if right_m else 0.0
+                    avail_px = max(canvas.char_w * 6, canvas.inner_px - r_px - canvas.space_w) if right_m else canvas.inner_px
+                    ac = _slider_avail_cols(canvas, spec, before_s, after_s, avail_px)
+                    row_sl_hits.append((op_idx, before_s, after_s, spec, avail_px, ac))
+
+            if kv_sl_hits:
+                plain_avails = [ac for (_oi, bs_s, _as, _sp, _apx, ac) in kv_sl_hits if not bs_s.strip()]
+                uni_kv_w = max(min_sl_w, min(max_sl_w, min(plain_avails))) if plain_avails else None
+                for op_idx, before_s, after_s, spec, avail_val_px, ac in kv_sl_hits:
+                    tgt_w = uni_kv_w if (not before_s.strip() and uni_kv_w is not None) else max(min_sl_w, min(max_sl_w, ac))
+                    resolved_kv_vals[op_idx] = _rebuild_slider_row(canvas, before_s, after_s, spec, tgt_w, avail_val_px, min_sl_w)
+            if row_sl_hits:
+                uni_row_w = max(min_sl_w, min(max_sl_w, min(ac for _oi, _bs, _as, _sp, _apx, ac in row_sl_hits)))
+                for op_idx, before_s, after_s, spec, avail_px, ac in row_sl_hits:
+                    tgt_w = min(uni_row_w, max(min_sl_w, ac))
+                    resolved_row_lefts[op_idx] = _rebuild_slider_row(canvas, before_s, after_s, spec, tgt_w, avail_px, min_sl_w)
+
             kv_line_indices: list[int] = []
             for op_idx, op in enumerate(self._ops):
                 kind = op[0]
 
                 if kind == "row":
                     _, left_m, right_m, _ = op
+                    left_m = resolved_row_lefts.get(op_idx, left_m)
                     stripped_plain = Canvas.strip_tags(left_m)
                     lead_spaces = len(stripped_plain) - len(stripped_plain.lstrip(" "))
                     indent_str = " " * min(lead_spaces, 6) if stripped_plain.strip() else ""
@@ -2419,6 +2541,7 @@ class Box:
 
                 elif kind == "kv":
                     _, key, val_m, kw, right_m, icon = op
+                    val_m = resolved_kv_vals.get(op_idx, val_m)
                     eff_kw = max(kw, default_kw) if kw is not None else default_kw
                     prefix = f"{icon} " if icon else ""
                     k_raw = f"{prefix}{key}{kv_sep}" if key else ""
@@ -2522,6 +2645,28 @@ class Box:
                     table_inner_cols = max(n_cols * 2, canvas.inner_cols - 2)
                     resolved_w = self._resolve_table_geometry(canvas, headers, widths, rows, table_inner_cols, expand=True)
 
+                    norm_rows = [[str(r[i]) if i < len(r) else "" for i in range(n_cols)] for r in rows]
+                    for c_idx in range(n_cols):
+                        col_sl_hits = []
+                        for r_idx, nr in enumerate(norm_rows):
+                            hit = _find_embedded_slider(nr[c_idx])
+                            if hit is None:
+                                continue
+                            before_s, _orig_m, after_s, spec = hit
+                            eff_w = resolved_w[c_idx]
+                            for nxt in range(c_idx + 1, n_cols):
+                                if not canvas.strip_tags(nr[nxt]).strip():
+                                    eff_w += resolved_w[nxt] + 2
+                                else:
+                                    break
+                            b_px = eff_w * canvas.char_w
+                            ac = _slider_avail_cols(canvas, spec, before_s, after_s, b_px)
+                            col_sl_hits.append((r_idx, before_s, after_s, spec, b_px, ac))
+                        if col_sl_hits:
+                            uni_tbl_w = max(min_sl_w, min(max_sl_w, min(ac for _ri, _bs, _as, _sp, _bpx, ac in col_sl_hits)))
+                            for r_idx, before_s, after_s, spec, b_px, _ac in col_sl_hits:
+                                norm_rows[r_idx][c_idx] = _rebuild_slider_row(canvas, before_s, after_s, spec, uni_tbl_w, b_px, min_sl_w)
+
                     if show_hdr and headers:
                         hdr_formatted = []
                         for h in headers:
@@ -2535,8 +2680,7 @@ class Box:
                         out_lines.append(canvas.row("  " + f"<span color='{p['structure']}'>{t_rule * table_inner_cols}</span>", c_box=c_brd))
 
                     rendered_rows = []
-                    for r in rows:
-                        norm_r = [str(r[i]) if i < len(r) else "" for i in range(n_cols)]
+                    for norm_r in norm_rows:
                         sub_cols = []
                         for c_idx in range(n_cols):
                             cell_s = norm_r[c_idx]
@@ -2587,27 +2731,26 @@ class Box:
             self._bot_protrusion_bytes = []
             if not self.open_bottom:
                 bot_left, bot_right = self._format_bottom_bar(c_sec_hdr, canvas=canvas, max_total_cols=target_cols)
-                bot_line = canvas.bot(label_markup=bot_left, right_markup=bot_right, c_box=c_brd)
+                bot_line = canvas.bot(label_markup=bot_left, right_markup=bot_right, c_box=c_brd, bl_ch=bl_c, br_ch=br_c)
                 out_lines.append(bot_line)
                 if bot_left or bot_right:
-                    ch = canvas.chars
                     bot_plain = Canvas.strip_tags(bot_line)
                     bot_bytes = bot_plain.encode("utf-8")
                     if bot_left:
-                        lead_m = f"<span color='{c_brd}'>{ch['bl']}{ch['h']} </span>"
+                        lead_m = f"<span color='{c_brd}'>{bl_c}{ch['h']} </span>"
                         lbl_m = canvas.sanitize_markup(bot_left)
                         xb0 = canvas.measure_markup(lead_m)
                         xb1 = canvas.measure_markup(lead_m + lbl_m)
                         if xb1 > xb0:
                             self._bot_protrusions.append((xb0, xb1))
-                        lead_p = f"{ch['bl']}{ch['h']} "
+                        lead_p = f"{bl_c}{ch['h']} "
                         lbl_p = Canvas.strip_tags(bot_left)
                         bb0 = len(lead_p.encode("utf-8"))
                         bb1 = bb0 + len(lbl_p.encode("utf-8"))
                         if bb1 > bb0 and bb1 <= len(bot_bytes):
                             self._bot_protrusion_bytes.append((bb0, bb1))
                     if bot_right:
-                        tail_m = f"<span color='{c_brd}'> {ch['h']}{ch['br']}</span>"
+                        tail_m = f"<span color='{c_brd}'> {ch['h']}{br_c}</span>"
                         bline_w = canvas.measure_markup(bot_line)
                         tail_w = canvas.measure_markup(tail_m)
                         rbot_w = canvas.measure_markup(canvas.sanitize_markup(bot_right))
@@ -2615,7 +2758,7 @@ class Box:
                         xr0 = max(0.0, xr1 - rbot_w)
                         if xr1 > xr0:
                             self._bot_protrusions.append((xr0, xr1))
-                        tail_p = f" {ch['h']}{ch['br']}"
+                        tail_p = f" {ch['h']}{br_c}"
                         rbot_p = Canvas.strip_tags(bot_right)
                         bbr1 = max(0, len(bot_bytes) - len(tail_p.encode("utf-8")))
                         bbr0 = max(0, bbr1 - len(rbot_p.encode("utf-8")))

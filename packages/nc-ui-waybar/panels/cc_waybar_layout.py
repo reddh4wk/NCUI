@@ -13,6 +13,7 @@ from ui.kit import (
     set_scroll_viewport_max_off,
 )
 from panels.cc_engine_waybar import (
+    INTERNAL_SPACER_MODS,
     KNOWN_WAYBAR_PLUGINS,
     _discover_user_waybar_plugins,
     _read_wb_config,
@@ -169,6 +170,8 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         if k not in all_known_keys:
             all_known_keys.append(k)
     for k, v in data.items():
+        if k in INTERNAL_SPACER_MODS:
+            continue
         if isinstance(v, dict) and (k.startswith("custom/") or k.startswith("niri/")) and k not in all_known_keys:
             all_known_keys.append(k)
 
