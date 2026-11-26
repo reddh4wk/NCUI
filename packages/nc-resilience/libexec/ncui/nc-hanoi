@@ -12,7 +12,7 @@ LOCAL_STATUS_ENV="$LOCAL_STATE_DIR/status.env"
 LOCAL_SHA_CACHE_FILE="$LOCAL_STATE_DIR/local_sha.cache"
 NAS_SIDECAR_CACHE_FILE="$LOCAL_STATE_DIR/nas_sidecar.cache"
 MAGIC_HEADER="NCMKENC1"
-DEFAULT_HW_UUID="eb0fec46-4204-1f1a-cc10-04421a1fcc0f"
+DEFAULT_HW_UUID=""
 BACKUP_DIR_NAME="backups"
 
 CFG_VAULT_PROTOCOL="smb"
@@ -106,7 +106,7 @@ DELTA_NEW_DIR_LOCAL_ITEMS=()
 declare -A DELTA_NEW_DIR_NAS_ITEMS=()
 
 CONSUMERS_INDEX_READY=false
-declare -A CONSUMERS_CACHE=()      # "source_alias|rel_clean" -> "dc,wsl"
+declare -A CONSUMERS_CACHE=()      # "source_alias|rel_clean" -> "host2,laptop"
 declare -A ORIGIN_RAW_CACHE=()     # meta_file -> raw text
 declare -A SHARED_RAW_CACHE=()     # ph_file -> raw text
 
@@ -165,12 +165,9 @@ get_work_tmp_dir() {
     if [[ -n "$WORK_TMP_DIR" && -d "$WORK_TMP_DIR" ]]; then
         return 0
     fi
-    if [[ -d /dev/shm && -w /dev/shm ]]; then
-        WORK_TMP_DIR="/dev/shm/nc_nas_$$"
-    else
-        WORK_TMP_DIR="/tmp/nc_nas_$$"
-    fi
-    mkdir -p -m 0700 "$WORK_TMP_DIR"
+    local base="${TMPDIR:-/var/tmp}"
+    [[ -d /dev/shm && -w /dev/shm ]] && base="/dev/shm"
+    WORK_TMP_DIR="$(mktemp -d "${base%/}/ncui-hanoi.XXXXXX")"
     return 0
 }
 
@@ -179,7 +176,6 @@ cleanup_trap() {
     if [[ -n "${WORK_TMP_DIR:-}" && -d "$WORK_TMP_DIR" ]]; then
         rm -rf "$WORK_TMP_DIR" 2>/dev/null || true
     fi
-    rm -rf /tmp/nc_nas_$$_* 2>/dev/null || true
     if [[ -n "${LINUX_ROOT:-}" ]]; then
         rm -f "$LINUX_ROOT/.time_probe_$$" 2>/dev/null || true
     fi
@@ -246,21 +242,21 @@ usage() {
     echo -e " ${C_BOLD}CONDIVISIONE E PLACEHOLDER (-S, --share):${C_RESET}"
     echo -e "   Ogni file condiviso ha ${C_BOLD}un solo sistema sorgente${C_RESET} (che conserva il file reale)."
     echo -e "   Negli altri sistemi viene scritto un placeholder ${C_BOLD}.shared${C_RESET} che punta alla sorgente:"
-    echo -e "     ${C_CYAN}-S dc,wsl${C_RESET}                Il sistema corrente è sorgente; crea placeholder in dc e wsl"
+    echo -e "     ${C_CYAN}-S host2,laptop${C_RESET}          Il sistema corrente è sorgente; crea placeholder in host2 e laptop"
     echo -e "     ${C_CYAN}-S all${C_RESET}                   Il sistema corrente è sorgente; crea placeholder in tutti gli altri delta"
-    echo -e "     ${C_CYAN}-S dc:nc,wsl${C_RESET}             Imposta esplicitamente 'dc' come sorgente e crea placeholder in 'nc,wsl'"
+    echo -e "     ${C_CYAN}-S host2:host1,laptop${C_RESET}    Imposta esplicitamente 'host2' come sorgente e crea placeholder in 'host1,laptop'"
     echo -e "     ${C_CYAN}-S local${C_RESET}                 Rimuove i placeholder dagli altri delta (file esclusivo locale)"
     echo
     echo -e " ${C_BOLD}OPZIONI AGGIUNTIVE:${C_RESET}"
     echo -e "   ${C_CYAN}--reverse${C_RESET}                  Usato con -s/--sync: applica il delta dal NAS al sistema locale"
     echo -e "   ${C_CYAN}--reverse-forced${C_RESET}           Usato con -s/--sync: forza i file del NAS sul locale senza prompt singoli"
-    echo -e "   ${C_CYAN}-P, --profile <alias>${C_RESET}      Forza l'operazione su un profilo specifico (es. nc, dc, wsl)"
+    echo -e "   ${C_CYAN}-P, --profile <alias>${C_RESET}      Forza l'operazione su un profilo specifico (es. host1, host2, laptop)"
     echo -e "   ${C_CYAN}-sec, --secure${C_RESET}             Cifra con chiave pubblica master_key (o password dedicata)"
     echo -e "   ${C_CYAN}-D, --dir <cartella>${C_RESET}       Salva in una cartella custom sul NAS (fuori da delta, solo con -a)"
     echo
     echo -e " ${C_BOLD}ESEMPI:${C_RESET}"
-    echo -e "   ${C_MUTED}# Aggiungi zshrc da 'nc' (sorgente) e genera i placeholder in 'dc' e 'wsl':${C_RESET}"
-    echo -e "   nc-hanoi -a /etc/zsh/zshrc -S dc,wsl"
+    echo -e "   ${C_MUTED}# Aggiungi zshrc da 'host1' (sorgente) e genera i placeholder in 'host2' e 'laptop':${C_RESET}"
+    echo -e "   nc-hanoi -a /etc/zsh/zshrc -S host2,laptop"
     echo
     echo -e "   ${C_MUTED}# Sincronizza verso il NAS (o dal NAS al locale post-golden image con --reverse / --reverse-forced):${C_RESET}"
     echo -e "   nc-hanoi -s"
@@ -576,7 +572,7 @@ vault_root_is_ready() {
                 local top="${sub%%/*}"
                 mountpoint -q "$mp/$top" 2>/dev/null && return 0
             fi
-            mountpoint -q "$mp/personal_folder" 2>/dev/null || mountpoint -q "$mp" 2>/dev/null
+            mountpoint -q "$mp" 2>/dev/null
             ;;
     esac
 }
@@ -637,24 +633,12 @@ ALL_DISCOVERED_ALIASES=()
 discover_nas_systems() {
     local sub="${CFG_VAULT_BACKUP_SUBDIR#/}"
     sub="${sub%/}"
-    if [[ -z "$sub" ]]; then
-        if [[ -d "$NAS_ROOT/personal_folder" ]]; then
-            sub="personal_folder/Software/Linux"
-        else
-            sub="ncui-vault"
-        fi
-    fi
+    [[ -n "$sub" ]] || sub="ncui-vault"
     LINUX_ROOT=$(realpath -s -m "$NAS_ROOT/$sub")
     SHARED_DIR="$LINUX_ROOT/shared"
     MASTER_KEY_FILE="$SHARED_DIR/master_key"
 
     [[ -d "$SHARED_DIR" ]] || mkdir -p "$SHARED_DIR"
-
-    local legacy_mk="$LINUX_ROOT/nightcity-archlinux/master_key"
-    if [[ ! -f "$MASTER_KEY_FILE" && -f "$legacy_mk" ]]; then
-        cp -p "$legacy_mk" "$MASTER_KEY_FILE"
-        chmod 600 "$MASTER_KEY_FILE" 2>/dev/null || true
-    fi
 
     SYS_FOLDER_MAP=()
     SYS_DELTA_MAP=()
@@ -797,7 +781,13 @@ run_onboarding_wizard() {
 
     confirm_enter "Vuoi configurare un nuovo profilo e la relativa cartella sul NAS?"
 
-    local default_folder="${DETECTED_HOSTNAME}-archlinux"
+    local os_id="linux"
+    if [[ -r /etc/os-release ]]; then
+        os_id="$(awk -F= '/^ID=/{gsub(/["[:space:]]/,"",$2); print tolower($2); exit}' /etc/os-release 2>/dev/null || true)"
+        os_id="$(printf '%s' "${os_id:-linux}" | tr -cd 'a-z0-9_-')"
+        [[ -n "$os_id" ]] || os_id="linux"
+    fi
+    local default_folder="${DETECTED_HOSTNAME}-${os_id}"
     local default_alias="${DETECTED_HOSTNAME:0:3}"
     local new_folder="" new_alias=""
 
@@ -806,7 +796,7 @@ run_onboarding_wizard() {
     new_folder="${new_folder// /_}"
 
     while true; do
-        read -r -p "$(echo -e "${C_CYAN}[?]${C_RESET} Alias breve per il sistema (es. nc, dc, wsl) [$default_alias]: ")" new_alias </dev/tty
+        read -r -p "$(echo -e "${C_CYAN}[?]${C_RESET} Alias breve per il sistema (es. host1, host2, laptop) [$default_alias]: ")" new_alias </dev/tty
         new_alias="${new_alias:-$default_alias}"
         new_alias="${new_alias,,}"
         new_alias="${new_alias//[^a-z0-9_-]/}"
@@ -861,27 +851,13 @@ resolve_active_profile() {
     fi
 
     if [[ -z "$ACTIVE_ALIAS" ]]; then
-        if [[ "$DETECTED_IS_WSL" == "true" || "$DETECTED_HOSTNAME" == "tokyo"* ]]; then
-            if [[ -n "${SYS_FOLDER_MAP[wsl]:-}" ]]; then
-                ACTIVE_ALIAS="wsl"; ACTIVE_FOLDER="${SYS_FOLDER_MAP[wsl]}"
+        local a f
+        for a in "${ALL_DISCOVERED_ALIASES[@]}"; do
+            f="${SYS_FOLDER_MAP[$a]}"
+            if [[ "$f" == "${DETECTED_HOSTNAME}"* ]]; then
+                ACTIVE_ALIAS="$a"; ACTIVE_FOLDER="$f"; break
             fi
-        elif [[ "$DETECTED_UUID" == "$DEFAULT_HW_UUID" || "$IS_CHROOT" == true ]]; then
-            if [[ "$DETECTED_HOSTNAME" == "nightcity"* && -n "${SYS_FOLDER_MAP[nc]:-}" ]]; then
-                ACTIVE_ALIAS="nc"; ACTIVE_FOLDER="${SYS_FOLDER_MAP[nc]}"
-            elif [[ "$DETECTED_HOSTNAME" == "duskcity"* && -n "${SYS_FOLDER_MAP[dc]:-}" ]]; then
-                ACTIVE_ALIAS="dc"; ACTIVE_FOLDER="${SYS_FOLDER_MAP[dc]}"
-            fi
-        fi
-
-        if [[ -z "$ACTIVE_ALIAS" ]]; then
-            local a f
-            for a in "${ALL_DISCOVERED_ALIASES[@]}"; do
-                f="${SYS_FOLDER_MAP[$a]}"
-                if [[ "$f" == "${DETECTED_HOSTNAME}"* ]]; then
-                    ACTIVE_ALIAS="$a"; ACTIVE_FOLDER="$f"; break
-                fi
-            done
-        fi
+        done
 
         if [[ -n "$ACTIVE_ALIAS" && ! -f "$NC_PROFILE_FILE" ]]; then
             write_local_nc_profile "$ACTIVE_ALIAS" "$ACTIVE_FOLDER" "$DETECTED_HOSTNAME" "$DETECTED_UUID" "$DETECTED_IS_WSL" "$NAS_ROOT"
@@ -3810,7 +3786,7 @@ run_add_mode() {
 run_share_mode() {
     if [[ -z "$SHARE_TARGETS_ARG" || ${#POSITIONAL_ARGS[@]} -eq 0 ]]; then
         echo -e "${C_RED}[-]${C_RESET} Errore: Specifica i target di condivisione e almeno un percorso." >&2
-        echo -e "${C_MUTED}    Esempio: nc-hanoi -S dc,wsl /etc/zsh/zshrc  oppure  -S dc:nc,wsl /percorso/file${C_RESET}" >&2
+        echo -e "${C_MUTED}    Esempio: nc-hanoi -S host2,laptop /etc/zsh/zshrc  oppure  -S host2:host1,laptop /percorso/file${C_RESET}" >&2
         exit 1
     fi
 
@@ -6316,7 +6292,7 @@ main() {
                 [[ -z "${2:-}" ]] && { echo -e "${C_RED}[-]${C_RESET} Errore: --service richiede un argomento (enable|disable|status)." >&2; exit 1; }
                 MODE="service"; SERVICE_ACTION="$2"; shift 2 ;;
             -S|--share)
-                [[ -z "${2:-}" ]] && { echo -e "${C_RED}[-]${C_RESET} Errore: l'opzione $1 richiede i target (es. dc,wsl, all, local, o dc:nc,wsl)." >&2; exit 1; }
+                [[ -z "${2:-}" ]] && { echo -e "${C_RED}[-]${C_RESET} Errore: l'opzione $1 richiede i target (es. host2,laptop, all, local, o host2:host1,laptop)." >&2; exit 1; }
                 SHARE_TARGETS_ARG="$2"; [[ -z "$MODE" ]] && MODE="share"; shift 2 ;;
             -P|--profile)
                 [[ -z "${2:-}" ]] && { echo -e "${C_RED}[-]${C_RESET} Errore: l'opzione $1 richiede l'alias del profilo." >&2; exit 1; }

@@ -1,10 +1,10 @@
-# Maintainer: Damiano <damiano@nightcity.local>
+# Maintainer: NC-UI Contributors
 pkgname=nc-matrix
 pkgver=1.0.0
-pkgrel=2
+pkgrel=3
 pkgdesc='High-performance C11/EGL/Wayland & TTY Matrix digital rain engine'
 arch=('x86_64')
-url='https://nightcity.local/nc-matrix'
+url='https://github.com/nc-ui/ncui'
 license=('MIT')
 conflicts=('ncmatrix')
 replaces=('ncmatrix')

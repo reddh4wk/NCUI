@@ -13,9 +13,14 @@ from core import probe
 from core.i18n import t
 from core.state import STATE
 from core.paths import find_bin
-from ui.kit import FeedbackBox, start_inline_input
+from ui.kit import feedback_cards, set_feedback, start_inline_input
 
-NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
+
+def _niri_config_file() -> str:
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip() or "~/.config"
+    return os.path.join(os.path.expanduser(xdg), "niri", "config.kdl")
+
+
 VALID_TRANSFORMS = (
     "normal",
     "90",
@@ -28,28 +33,20 @@ VALID_TRANSFORMS = (
 )
 
 
-
 def _set_disp_fb(ok: bool, msg: str) -> None:
-    STATE.set("display", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_disp_fb() -> dict:
-    fb = STATE.get("display", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
+    set_feedback("display", ok, msg)
 
 
 def _feedback_cards() -> list:
-    fb = _get_disp_fb()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_display.display_status"), bool(fb["ok"]), fb["msg"])]
+    return feedback_cards("display", "cc_display.display_status")
 
 
 _OUTPUTS_CACHE: tuple[float, dict] | None = None
 _NIGHTLIGHT_SOCK = "/tmp/nc_ui_nightlight.sock"
-_NIGHTLIGHT_BIN = find_bin("nc-nightlight") or "nc-nightlight"
+
+
+def _nightlight_bin() -> str:
+    return find_bin("nc-nightlight")
 
 
 def _invalidate_outputs_cache() -> None:
@@ -72,9 +69,10 @@ def get_niri_outputs_data() -> dict:
             pass
     # Fallback parsing from config.kdl when niri IPC socket isn't present in headless env
     outs = {}
-    if os.path.exists(NIRI_CONFIG_FILE):
+    cfg_file = _niri_config_file()
+    if os.path.exists(cfg_file):
         try:
-            txt = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read()
+            txt = open(cfg_file, "r", encoding="utf-8").read()
             for m in re.finditer(r'output\s+"([^"]+)"\s*\{([^}]*)\}', txt, re.DOTALL):
                 name, blk = m.group(1), m.group(2)
                 is_off = bool(re.search(r"(?m)^\s*off\b", blk))
@@ -87,7 +85,7 @@ def get_niri_outputs_data() -> dict:
                 hz = int(round(float(m_mode.group(3)) * 1000)) if (m_mode and m_mode.group(3)) else 60000
                 outs[name] = {
                     "name": name,
-                    "model": "Configured Output",
+                    "model": t("cc_display.configured_output"),
                     "logical": None if is_off else {
                         "width": w,
                         "height": h,
@@ -147,10 +145,11 @@ def _parse_latlon(raw: str):
 
 
 def _update_niri_output_kdl(out_name: str, **updates) -> tuple[bool, str]:
-    if not os.path.exists(NIRI_CONFIG_FILE):
+    cfg_file = _niri_config_file()
+    if not os.path.exists(cfg_file):
         return True, ""
     try:
-        txt = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read()
+        txt = open(cfg_file, "r", encoding="utf-8").read()
         pat = re.compile(rf'(output\s+"{re.escape(out_name)}"\s*\{{)([^}}]*)(\}})', re.DOTALL)
         m = pat.search(txt)
         blk = m.group(2) if m else "\n"
@@ -183,12 +182,12 @@ def _update_niri_output_kdl(out_name: str, **updates) -> tuple[bool, str]:
         else:
             new_txt = txt.rstrip() + f'\n\noutput "{out_name}" {{{blk}}}\n'
 
-        parent_dir = os.path.dirname(NIRI_CONFIG_FILE) or "."
+        parent_dir = os.path.dirname(cfg_file) or "."
         fd, tmp_path = tempfile.mkstemp(dir=parent_dir, prefix=".niri_kdl_", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_txt)
-            os.replace(tmp_path, NIRI_CONFIG_FILE)
+            os.replace(tmp_path, cfg_file)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -342,11 +341,12 @@ def _ensure_night_light_running(nl: dict) -> bool:
             if not _is_proc_alive("wlsunset"):
                 break
             time.sleep(0.025)
-    if not os.path.exists(_NIGHTLIGHT_BIN):
+    nl_bin = _nightlight_bin()
+    if not nl_bin:
         return False
     probe.spawn_bg([
         sys.executable,
-        _NIGHTLIGHT_BIN,
+        nl_bin,
         "--temp", str(payload["temp"]),
         "--schedule", payload["schedule"],
         "--sunrise", payload["sunrise"],
@@ -364,7 +364,9 @@ def _ensure_night_light_running(nl: dict) -> bool:
 def _apply_night_light(enable: bool) -> tuple[bool, str]:
     if not enable:
         _nightlight_ipc({"cmd": "stop"}, timeout=0.25)
-        probe.run_cmd(["pkill", "-f", _NIGHTLIGHT_BIN], timeout=0.8)
+        nl_bin = _nightlight_bin()
+        if nl_bin:
+            probe.run_cmd(["pkill", "-f", nl_bin], timeout=0.8)
         probe.run_cmd(["pkill", "-x", "wlsunset"], timeout=0.8)
         return True, t("cc_display.night_light", p0=t("common.off"))
     nl = _get_night_light_state()
@@ -396,8 +398,68 @@ def _apply_dpms_timeout(mins: int) -> tuple[bool, str]:
     return True, t("cc_display.dpms_timeout_set_to_min", p0=mins)
 
 
+def get_backlight_info() -> dict | None:
+    bl_root = "/sys/class/backlight"
+    if not os.path.isdir(bl_root):
+        return None
+    prio = {"raw": 0, "platform": 1, "firmware": 2}
+    best = None
+    try:
+        entries = sorted(os.listdir(bl_root))
+    except OSError:
+        return None
+    for name in entries:
+        dev_dir = os.path.join(bl_root, name)
+        try:
+            max_b = int(open(os.path.join(dev_dir, "max_brightness"), encoding="utf-8").read().strip())
+            if max_b <= 0:
+                continue
+            cur_p = os.path.join(dev_dir, "actual_brightness")
+            if not os.path.isfile(cur_p):
+                cur_p = os.path.join(dev_dir, "brightness")
+            cur_b = int(open(cur_p, encoding="utf-8").read().strip())
+            tp = os.path.join(dev_dir, "type")
+            btype = open(tp, encoding="utf-8").read().strip().lower() if os.path.isfile(tp) else ""
+        except Exception:
+            continue
+        rank = (prio.get(btype, 3), -max_b, name)
+        if best is None or rank < best[0]:
+            best = (rank, {
+                "device": name,
+                "path": dev_dir,
+                "type": btype or "unknown",
+                "brightness": cur_b,
+                "max_brightness": max_b,
+                "pct": max(0, min(100, int(round((cur_b * 100.0) / max_b)))),
+            })
+    return best[1] if best else None
+
+
+def set_backlight_pct(pct: int) -> tuple[bool, str]:
+    info = get_backlight_info()
+    if not info:
+        return False, t("cc_display.backlight_err", p0="no backlight device")
+    target_pct = max(1, min(100, int(round(pct))))
+    bctl = find_bin("brightnessctl") or shutil.which("brightnessctl")
+    last_err = ""
+    if bctl:
+        ok, _o, err = probe.run_cmd_full([bctl, "-d", info["device"], "set", f"{target_pct}%"], timeout=2.0)
+        if ok:
+            after = get_backlight_info()
+            return True, t("cc_display.backlight_set", p0=(after["pct"] if after else target_pct))
+        last_err = err
+    try:
+        raw_val = max(1, min(info["max_brightness"], int(round(info["max_brightness"] * (target_pct / 100.0)))))
+        with open(os.path.join(info["path"], "brightness"), "w", encoding="utf-8") as f:
+            f.write(f"{raw_val}\n")
+        after = get_backlight_info()
+        return True, t("cc_display.backlight_set", p0=(after["pct"] if after else target_pct))
+    except Exception as e:
+        return False, t("cc_display.backlight_err", p0=(last_err or str(e)))
+
+
 def handle_cc_display_link(cc_panel, uri: str) -> bool:
-    if not uri.startswith("cc_desk:"):
+    if not isinstance(uri, str) or not uri.startswith("cc_desk:"):
         return False
     act = uri[len("cc_desk:"):]
 
@@ -419,6 +481,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             _set_disp_fb(False, last_err or t("cc_display.err_cmd_failed", p0="all"))
     elif act.startswith("pos_auto:"):
         out_n = act.split(":", 1)[1]
+        if not out_n:
+            return False
         ok, _o, err = probe.run_cmd_full(["niri", "msg", "output", out_n, "position", "auto"], timeout=2.0)
         if ok:
             _invalidate_outputs_cache()
@@ -428,6 +492,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             _set_disp_fb(False, err or t("cc_display.err_cmd_failed", p0=out_n))
     elif act.startswith("pos_inline:"):
         out_n = act.split(":", 1)[1]
+        if not out_n or not cc_panel or not cc_panel.shell:
+            return False
         logical = (get_niri_outputs_data().get(out_n) or {}).get("logical") or {}
         init_pos = f"{logical.get('x', 0)},{logical.get('y', 0)}"
         start_inline_input(
@@ -442,10 +508,15 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
         return True
     elif act.startswith("select_out:"):
         out_n = act.split(":", 1)[1]
+        if not out_n:
+            return False
         if out_n in get_niri_outputs_data():
             STATE.set("display", "selected_output", out_n)
     elif act.startswith("power:"):
-        _, out_n, st = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1]:
+            return False
+        _, out_n, st = parts
         if st not in ("on", "off"):
             return False
         ok, _o, err = probe.run_cmd_full(["niri", "msg", "output", out_n, st], timeout=2.0)
@@ -457,7 +528,10 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             _sync_after_display_geometry_change(cc_panel)
             return True
     elif act.startswith("transform:"):
-        _, out_n, tr_val = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1]:
+            return False
+        _, out_n, tr_val = parts
         if tr_val not in VALID_TRANSFORMS:
             return False
         ok, _o, err = probe.run_cmd_full(["niri", "msg", "output", out_n, "transform", tr_val], timeout=2.0)
@@ -470,6 +544,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             return True
     elif act.startswith("res_max:"):
         out_n = act.split(":", 1)[1]
+        if not out_n:
+            return False
         max_spec = _get_max_mode_spec(out_n)
         if not max_spec:
             _set_disp_fb(False, t("cc_display.err_cmd_failed", p0=out_n))
@@ -483,7 +559,10 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
                 return True
             _set_disp_fb(False, err or t("cc_display.err_cmd_failed", p0=out_n))
     elif act.startswith("res:"):
-        _, out_n, m_spec = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return False
+        _, out_n, m_spec = parts
         ok, _o, err = probe.run_cmd_full(["niri", "msg", "output", out_n, "mode", m_spec], timeout=2.0)
         if ok:
             _invalidate_outputs_cache()
@@ -493,7 +572,10 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             return True
         _set_disp_fb(False, err or t("cc_display.err_cmd_failed", p0=out_n))
     elif act.startswith("scale:"):
-        _, out_n, sc_val = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return False
+        _, out_n, sc_val = parts
         if not _is_valid_scale(sc_val):
             _set_disp_fb(False, t("cc_display.invalid_scale", p0=sc_val))
         else:
@@ -507,6 +589,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             _set_disp_fb(False, err or t("cc_display.err_cmd_failed", p0=out_n))
     elif act.startswith("scale_inline:"):
         out_n = act.split(":", 1)[1]
+        if not out_n or not cc_panel or not cc_panel.shell:
+            return False
         logical = (get_niri_outputs_data().get(out_n) or {}).get("logical") or {}
         init_scale = f"{float(logical.get('scale', 1.0)):g}"
         start_inline_input(
@@ -520,11 +604,16 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act.startswith("nl:"):
-        on = act.split(":", 1)[1] == "on"
-        ok, msg = _apply_night_light(on)
+        nl_arg = act.split(":", 1)[1]
+        if nl_arg not in ("on", "off"):
+            return False
+        ok, msg = _apply_night_light(nl_arg == "on")
         _set_disp_fb(ok, msg)
     elif act.startswith("nl_temp:"):
-        temp = max(1700, min(6500, int(round(float(act.split(":", 1)[1])))))
+        try:
+            temp = max(1700, min(6500, int(round(float(act.split(":", 1)[1])))))
+        except (ValueError, TypeError, OverflowError):
+            return False
         STATE.set("display", "night_temp", temp)
         nl = _get_night_light_state()
         if nl["active"]:
@@ -542,6 +631,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
             probe.enqueue_latest("night_light_apply", lambda snap=dict(nl): _ensure_night_light_running(snap), debounce_ms=0)
         _set_disp_fb(True, t("cc_display.nl_sched_saved", p0=t(f"cc_display.nl_sched_{sched}")))
     elif act == "nl_hours_inline":
+        if not cc_panel or not cc_panel.shell:
+            return False
         nl = _get_night_light_state()
         start_inline_input(
             entry_id="cc_disp_nl_hours",
@@ -554,6 +645,8 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act == "nl_coords_inline":
+        if not cc_panel or not cc_panel.shell:
+            return False
         nl = _get_night_light_state()
         coords_init = f"{nl['lat']},{nl['lon']}" if (nl["lat"] and nl["lon"]) else ""
         start_inline_input(
@@ -567,16 +660,37 @@ def handle_cc_display_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act.startswith("dpms:"):
-        mins = int(act.split(":", 1)[1])
+        try:
+            mins = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         ok, msg = _apply_dpms_timeout(mins)
         _set_disp_fb(ok, msg)
     elif act == "dpms_now":
         probe.spawn_bg(["niri", "msg", "action", "power-off-monitors"])
         return True
+    elif act.startswith("backlight:"):
+        try:
+            pct = int(round(float(act.split(":", 1)[1])))
+        except (ValueError, TypeError, OverflowError):
+            return False
+        ok, msg = set_backlight_pct(pct)
+        if not ok:
+            _set_disp_fb(False, msg)
+        elif cc_panel:
+            cc_panel.request_throttled_refresh()
+            return True
+    elif act.startswith("backlight_preset:"):
+        try:
+            pct = int(round(float(act.split(":", 1)[1])))
+        except (ValueError, TypeError, OverflowError):
+            return False
+        ok, msg = set_backlight_pct(pct)
+        _set_disp_fb(ok, msg)
     else:
         return False
 
-    if cc_panel.shell:
+    if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
     return True
 

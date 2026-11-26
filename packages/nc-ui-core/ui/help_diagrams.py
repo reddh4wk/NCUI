@@ -10,7 +10,7 @@ gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gtk, Pango, PangoCairo  # noqa: E402
 
 from core.config import THEME  # noqa: E402
-from ui.kit import get_semantic_palette  # noqa: E402
+from ui.kit import get_semantic_palette, hex_to_rgba_f as _hex_rgba, rounded_rect_path as _rounded_rect  # noqa: E402
 
 VALID_HELP_DIAGRAMS = frozenset({
     "hanoi_sync",
@@ -25,28 +25,6 @@ VALID_HELP_DIAGRAMS = frozenset({
     "security_trust",
     "input_pipeline",
 })
-
-
-def _hex_rgba(hx: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    s = str(hx or "#ffffff").strip().lstrip("#")
-    if len(s) == 8:
-        s = s[2:]
-    if len(s) == 6:
-        try:
-            return (int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0, float(alpha))
-        except ValueError:
-            pass
-    return (1.0, 1.0, 1.0, float(alpha))
-
-
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    r = min(float(r), max(0.0, w * 0.5), max(0.0, h * 0.5))
-    cr.new_sub_path()
-    cr.arc(x + w - r, y + r, r, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - r, y + h - r, r, 0.0, math.pi * 0.5)
-    cr.arc(x + r, y + h - r, r, math.pi * 0.5, math.pi)
-    cr.arc(x + r, y + r, r, math.pi, math.pi * 1.5)
-    cr.close_path()
 
 
 class _HelpDiagramWidget(Gtk.DrawingArea):

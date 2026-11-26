@@ -172,7 +172,7 @@ L'unico caso in tutta l'interfaccia in cui è consentito dipingere un glifo con 
 
 ### 5.1 Griglia Tipografica Monospace & Glifi (`ui/canvas.py`)
 1. **Disattivazione Ligature OpenType:** Tutte le superfici Pango/CSS forzano `liga=0, clig=0, dlig=0, hlig=0` per impedire che sequenze come `->`, `!=` o `--` alterino la larghezza di cella.
-2. **Scaling Automatico Glifi Nerd Font / PUA (`62%`):** `Canvas.sanitize_markup()` ridimensiona automaticamente al `62%` (`fallback_glyph_pt`) le icone PUA e i simboli geometrici fuori metrica per evitare che allarghino la cella o spacchino l'altezza riga costante.
+2. **Scaling Automatico & Allineamento Glifi Nerd Font / PUA (`62%` + `rise`):** `Canvas.sanitize_markup()` ridimensiona automaticamente al `62%` (`fallback_glyph_pt`, con micro-shrink `1-cella` quando `space_w < gw <= 1.25 * space_w` così nessuna icona standard sfora a `2` celle) e centra verticalmente i glifi sul testo adiacente tramite `rise` (clamped per non alterare mai l'altezza di riga costante).
 3. **Allineamento Sub-Pixel Senza Deriva Hinting:** Le righe tabellari usano solo spazi interi (`_int_spaces_for_px`); `_micro_space` è confinato alla chiusura del trattino finale `─` dei bordi superiore/intermedio/inferiore dei `Box` per combaciare al pixel con `total_px`, mentre `AsciiCard._on_draw_box_bg()` traccia in Cairo i montanti verticali continui.
 
 ### 5.2 Gerarchia delle Cornici (`highlighted`) e Opacità a Doppio Strato
@@ -207,8 +207,9 @@ L'unico caso in tutta l'interfaccia in cui è consentito dipingere un glifo con 
 
 1. **Allineamento Chiave-Valore (`add_kv`):**
    - Usare sempre `box.add_kv(t("..."), val_markup, right_markup=..., requires=[...])` lasciando `key_width=None` (usa `DEFAULT_KEY_WIDTH = 20`, o `COMPACT_KEY_WIDTH = 14` nei popup stretti, espandendosi automaticamente sulla chiave più lunga dello stesso `Box`).
-2. **Obbligo di `add_table` per Elenchi Multi-Campo:**
+2. **Obbligo di `add_table` per Elenchi Multi-Campo & Allineamento Indice-Icona:**
    - Qualsiasi elenco con 2 o più elementi per riga deve usare `box.add_table(headers=[...], widths=[...], rows=[...], aligns=[...], show_headers=True/False)`. È **vietato** incolonnare campi con spazi manuali dentro `add_row()`.
+   - Negli elenchi numerati con icona (`01.  Icona  Titolo  (meta)`), usare colonne dedicate (`widths=[3, icon_w, "flex", ...]` con `align="left"` su indice/icona, così la distanza tra `01.` e l'icona resta esattamente di `2` spazi su ogni sezione) e pre-troncare il solo titolo sul budget `flex` affinché suffissi tecnici (`(custom/...)`, `CUSTOM`) abbiano precedenza assoluta e non vengano mai tagliati.
    - `Canvas.format_table_row()` protegge i controlli atomici (`_ATOMIC_WIDGET_RE`) dal troncamento, calcola lo spanning automatico sulle celle vuote adiacenti e uniforma l'altezza di tutte le righe (`uniform_row_height=True`).
 3. **Uniformità e Misura Stretta di `min_chars` in Colonna:**
    - Pulsanti o badge allineati nella stessa colonna usano lo stesso `min_chars` (e uno slot vuoto di pari larghezza quando un pulsante secondario è omesso su una riga), ma **`min_chars` deve corrispondere esattamente alla lunghezza massima reale tra le etichette di quello slot** (es. `max(len("Enable"), len("Disable")) = 7`). È **vietato** passare `min_chars` sovradimensionati (es. `24` o `30`) che generano parentesi cave `[       Testo       ]`: la larghezza della colonna si governa con `widths` e `aligns` di `add_table`.
@@ -285,3 +286,15 @@ Tutti gli inserimenti di testo in NC-UI sono ricondotti a **5 archetipi determin
    - **`err`:** **persistente** finché l'utente non clicca `[x]`, non cambia sezione/sottoscheda o non avvia una nuova azione mutante.
    - **Zero *ghost replay*:** il tracciamento per vista (`_current_view_key()` + sequenza azioni filtrata da `_is_nav_only_uri`) garantisce che refresh periodici, chiusura con `[x]`, espansione/compressione sezioni (`ui:state:*`), selezioni Master-Detail o cambi di scheda non facciano mai riapparire vecchi feedback.
    - Le notifiche di sistema (`notify-send`) restano riservate ai soli test espliciti del demone notifiche/UPS; tutte le conferme operative UI usano il Toast `NC-Box` interno.
+
+---
+
+## 10. Localizzazione & Eccezione Esclusiva per Plugin Esterni di Terze Parti
+
+1. **Moduli e Pannelli Nativi NC-UI (`packages/**`):**
+   - Tutti i pannelli built-in (`panels/cc_*.py`, `panels/wp_*.py`) devono usare **esclusivamente** `t("sezione.chiave")` (e `t_list(...)`) con chiavi presenti sia in `locales/en.toml` sia in `locales/it.toml`. È **tassativamente vietato** introdurre dizionari inline di fallback linguistico o stringhe UI hardcoded nel codice sorgente dei pacchetti NC-UI.
+2. **Eccezione Esclusiva per Plugin Esterni di Terze Parti (`~/.local/share/ncui/plugins/wp_*.py` / `~/.config/ncui/plugins/wp_*.py`):**
+   - **Regola di Identità & Path (`<= 15` caratteri):** sia lo slug di `PLUGIN_META["module_id"]` (`custom/<slug>`) sia `panel_id` / nome modulo (`wp_<id>.py`) devono rispettare `^[a-z0-9_]{1,15}$`. Il pulsante `[Unlink]` / `[Scollega]` appare esclusivamente nel pool dei plugin disattivati (dopo rimozione dalla barra tramite `[x]`). All'importazione il Layout Configurator esegue validazione statica AST (sintassi, `PLUGIN_META`, `Panel`/`create_panel`, collisioni ID) e avvisi non bloccanti su eventuali dipendenze mancanti o `sys.exit()` top-level.
+   - **SOLO ed ESCLUSIVAMENTE per i plugin esterni di terze parti** è consentito includere un **fallback linguistico inline** all'interno del singolo file `.py`, affinché il plugin resti distribuibile e linkabile come file autonomo *zero-setup* senza richiedere l'installazione separata di file TOML:
+     - In `PLUGIN_META`: i campi opzionali `"label"` e `"desc"` possono essere una stringa oppure un dizionario bilingue `{"en": "...", "it": "..."}`, utilizzati dal Layout Configurator come `default=` qualora `label_key` / `desc_key` non risultino presenti nei TOML caricati da `core.i18n`.
+     - Nel corpo del plugin: un helper di traduzione locale può risolvere `core.i18n.t(chiave, default=...)` appoggiandosi a un dizionario `_I18N_FALLBACK` interno al plugin stesso, mantenendo così la compatibilità automatica con eventuali override TOML posti dall'utente in `~/.local/share/ncui/locales/*.toml`.

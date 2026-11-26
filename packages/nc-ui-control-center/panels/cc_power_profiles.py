@@ -30,6 +30,8 @@ from ui.kit import (
     SwatchTxt,
     Txt,
     get_semantic_palette,
+    rounded_rect_path as _trace_rect,
+    temp_role as _temp_role,
 )
 from ui.widgets import AsciiCard, _parse_rgba_components
 from panels.cc_engine_power import (
@@ -84,16 +86,6 @@ def _thermal_palette(pal: dict) -> tuple[str, ...]:
         "#f7768e",
         pal["schema"],
     )
-
-
-def _trace_rect(cr, x: float, y: float, w: float, h: float, r: float = 4.0) -> None:
-    rad = max(0.0, min(r, w * 0.5, h * 0.5))
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0.0, math.pi * 0.5)
-    cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, 1.5 * math.pi)
-    cr.close_path()
 
 
 class _ThermalGraphWidget(Gtk.DrawingArea):
@@ -491,16 +483,9 @@ def _build_thermal_graph_card(cc_panel, canvas: Canvas):
     return AsciiCard(hdr, canvas, embedded_widget=graph_w, footer_box_model=foot)
 
 
-def _temp_role(temp_c: float) -> str:
-    if temp_c >= 85.0:
-        return "fault"
-    if temp_c >= 75.0:
-        return "attention"
-    return "val"
-
-
 def _build_power_cpu_box(cc_panel, st: dict) -> Box:
     ppd_avail = st["ppd_avail"]
+    has_cpufreq = bool(st["avail_gov"] or st["avail_epp"] or st["boost"] in ("0", "1"))
     active_mode = st["ppd_active"] if ppd_avail else st["native_preset"]
     hdr_lbl = (active_mode or st["gov"] or t("cc_power.mode_custom")).upper()
     gm = st["posture"]
@@ -512,8 +497,10 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
             if gm["is_gaming"]
             else StateBadge(True, t("cc_system.mode_hardened").upper(), on_tone="ok")
         )
+    if st.get("tlp_active"):
+        hdr_actions.append(StateBadge(True, t("cc_power.tlp_active_badge"), on_tone="ok"))
     hdr_actions.append(Txt(hdr_lbl, role="schema"))
-    if not ppd_avail and not st["cpu_priv_ok"]:
+    if not ppd_avail and st["avail_gov"] and not st["cpu_priv_ok"]:
         hdr_actions.append(ActionBtn(t("cc_power.authorize_priv"), "cc_pwr:auth_cpu", tone="apply"))
     if gm["available"] and not gm["priv_ok"]:
         hdr_actions.append(ActionBtn(t("cc_power.authorize_posture"), "priv:request:gaming_mode", tone="apply"))
@@ -533,17 +520,23 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
         )
         box.add_kv(t("cc_power.security_posture"), post_pills, right_markup=post_right)
 
-    if ppd_avail:
-        lbl_map = dict(_PPD_MODES)
-        mode_pills = " ".join(
-            SelectPill(t(lbl_map[p]) if p in lbl_map else p, f"cc_pwr:ppd:{p}", selected=(active_mode == p))
-            for p in ppd_avail
-        )
+    if ppd_avail or st["avail_gov"]:
+        if ppd_avail:
+            lbl_map = dict(_PPD_MODES)
+            mode_pills = " ".join(
+                SelectPill(t(lbl_map[p]) if p in lbl_map else p, f"cc_pwr:ppd:{p}", selected=(active_mode == p))
+                for p in ppd_avail
+            )
+        else:
+            mode_pills = " ".join(
+                SelectPill(t(lk), f"cc_pwr:preset:{key}", selected=(active_mode == key))
+                for key, lk in _PPD_MODES
+            )
+        mode_right = Txt(t("cc_power.preset_sync_hint" if active_mode else "cc_power.preset_custom_hint"), role="schema" if active_mode else "attention")
+        box.add_kv(t("cc_power.power_preset_lbl"), mode_pills, right_markup=mode_right)
     else:
-        mode_pills = " ".join(
-            SelectPill(t(lk), f"cc_pwr:preset:{key}", selected=(active_mode == key))
-            for key, lk in _PPD_MODES
-        )
+        box.add_kv(t("cc_power.power_preset_lbl"), Txt(t("cc_power.no_cpufreq_hint"), role="inactive"))
+
     epp_lbl_map = dict(_EPP_MODES)
     epp_raw = str(st["epp"] or "")
     epp_disp = t(epp_lbl_map[epp_raw]) if epp_raw in epp_lbl_map else (epp_raw.replace("_", " ").title() if epp_raw else "")
@@ -555,12 +548,6 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
     if boost_disp:
         recipe_parts.append(f"Boost: {boost_disp}")
     recipe_str = " · ".join(recipe_parts)
-
-    if active_mode:
-        mode_right = Txt(t("cc_power.preset_sync_hint"), role="schema")
-    else:
-        mode_right = Txt(t("cc_power.preset_custom_hint"), role="attention")
-    box.add_kv(t("cc_power.power_preset_lbl"), mode_pills, right_markup=mode_right)
 
     drv = st["driver"] or t("common.nd")
     if st["pstate_status"]:
@@ -584,21 +571,22 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
         box.add_kv(t("cc_power.cpu_thermal"), f"{Txt(f'{t_c:.1f}°C', role=_temp_role(t_c))}{ccd_txt}")
 
     def _build_cpu_registers(bx: Box) -> None:
-        gov_pills = " ".join(
-            SelectPill(g.capitalize(), f"cc_pwr:gov:{g}", selected=(st["gov"] == g))
-            for g in st["avail_gov"][:5]
-        )
-        gov_hint_key = (
-            "cc_power.gov_hint_perf"
-            if st["gov"] == "performance"
-            else ("cc_power.gov_hint_save" if st["gov"] == "powersave" else "cc_power.gov_hint_sched")
-        )
-        bx.add_kv(
-            t("cc_power.cpu_governor"),
-            gov_pills,
-            right_markup=Txt(t(gov_hint_key), role="schema"),
-            requires=["cpupower"],
-        )
+        if st["avail_gov"]:
+            gov_pills = " ".join(
+                SelectPill(g.capitalize(), f"cc_pwr:gov:{g}", selected=(st["gov"] == g))
+                for g in st["avail_gov"][:5]
+            )
+            gov_hint_key = (
+                "cc_power.gov_hint_perf"
+                if st["gov"] == "performance"
+                else ("cc_power.gov_hint_save" if st["gov"] == "powersave" else "cc_power.gov_hint_sched")
+            )
+            bx.add_kv(
+                t("cc_power.cpu_governor"),
+                gov_pills,
+                right_markup=Txt(t(gov_hint_key), role="schema"),
+                requires=["cpupower"],
+            )
 
         epp_right = Txt(t("cc_power.epp_hint_locked"), role="schema") if st["gov"] == "performance" else ""
         std_epp = [(e, lk) for e, lk in _EPP_MODES if e in st["avail_epp"]]
@@ -611,11 +599,8 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
                 for e in st["avail_epp"][:4]
             )
             bx.add_kv(t("cc_power.energy_perf_epp"), epp_pills, right_markup=epp_right)
-        else:
-            bx.add_kv(
-                t("cc_power.energy_perf_epp"),
-                Txt(st["epp"] or t("common.nd"), role="val" if st["epp"] else "inactive"),
-            )
+        elif st["epp"]:
+            bx.add_kv(t("cc_power.energy_perf_epp"), Txt(st["epp"], role="val"))
 
         if st["boost"] in ("0", "1"):
             b_on = st["boost"] == "1"
@@ -626,24 +611,26 @@ def _build_power_cpu_box(cc_panel, st: dict) -> Box:
             b_hint = Txt(t("cc_power.boost_hint_on" if b_on else "cc_power.boost_hint_off"), role="schema")
             bx.add_kv(t("cc_power.core_boost_cpb"), boost_pills, right_markup=b_hint)
 
-    reg_open, reg_fold = FoldToggle(cc_panel, "pwr_cpu_registers", default=True, uri_prefix="ui:state")
-    box.add_section(t("cc_power.cpu_registers_sec"), actions=[reg_fold])
-    if reg_open:
-        _build_cpu_registers(box)
-    else:
-        box.add_row(f"  {Txt(recipe_str, role='schema')}")
+    if has_cpufreq:
+        reg_open, reg_fold = FoldToggle(cc_panel, "pwr_cpu_registers", default=True, uri_prefix="ui:state")
+        box.add_section(t("cc_power.cpu_registers_sec"), actions=[reg_fold])
+        if reg_open:
+            _build_cpu_registers(box)
+        else:
+            box.add_row(f"  {Txt(recipe_str, role='schema')}")
 
     def _build_posture_sysctl(bx: Box) -> None:
         if gm["available"]:
             pcfg = gm["cfg"]
-            knobs = (
+            knobs = [
                 ("ntsync", "ntsync"),
                 ("proc_hidepid", "hidepid=0"),
                 ("ptrace_relax", "ptrace=0"),
                 ("vm_tuning", "VM/Map"),
                 ("suspend_audit", "Audit Off"),
-                ("nvidia_persistence", "NVIDIA PM"),
-            )
+            ]
+            if st.get("has_nvidia"):
+                knobs.append(("nvidia_persistence", "NVIDIA PM"))
             k_pills = " ".join(
                 SelectPill(
                     lbl,
@@ -668,6 +655,21 @@ def _build_fan_cooling_box(cc_panel, st: dict) -> Box | None:
     fans = st.get("fans")
     if not fans:
         return None
+
+    if fans.get("mode") == "readonly":
+        box = Box(
+            t("cc_power.fan_box_title"),
+            icon="\uf863",
+            actions=[Txt(f"{fans['hwmon_name']} · {t('cc_power.fans_readonly_sec')}", role="schema")],
+            highlighted=False,
+        )
+        if st["cpu_temp"] is not None:
+            t_c = st["cpu_temp"]
+            box.add_kv(t("cc_power.cpu_thermal"), Txt(f"{t_c:.1f}°C", role=_temp_role(t_c)))
+        for fitem in fans.get("fans", []):
+            pwm_s = f" ({fitem['pwm_pct']}%)" if fitem.get("pwm_pct") is not None else ""
+            box.add_kv(fitem["label"], Txt(f"{fitem['rpm']} RPM{pwm_s}", role="val"))
+        return box
 
     hdr_txt = f"{fans['hwmon_name']} · Smart Fan IV" if fans["smart_fan"] else fans["hwmon_name"]
     hdr_actions = [
@@ -802,29 +804,59 @@ def _battery_status_badge(status: str) -> str:
 def _build_batteries_box(bd: dict) -> Box:
     bats = bd["batteries"]
     periphs = bd["peripherals"]
+    ac_online = bd.get("ac_online")
     total = len(bats) + len(periphs)
     title = t("cc_power.batteries_title_n", p0=total) if total else t("cc_power.batteries_title")
     box = Box(title, icon="\uf240", highlighted=False)
 
     if not bats and not periphs:
+        ac_txt = (
+            StateBadge(True, t("cc_power.ac_online"), on_tone="ok")
+            if ac_online is True
+            else (StateBadge(False, t("cc_power.ac_offline"), t("cc_power.ac_offline")) if ac_online is False else Txt(t("cc_power.ac_mains"), role="val"))
+        )
         box.add_kv(
             t("cc_power.power_source"),
-            f"{Txt(t('cc_power.ac_mains'), role='val')}  {Txt(t('cc_power.no_batteries_detected'), role='schema')}",
+            f"{ac_txt}  {Txt(t('cc_power.no_batteries_detected'), role='schema')}",
         )
         return box
+
+    if ac_online is not None:
+        ac_badge = (
+            StateBadge(True, t("cc_power.ac_online"), on_tone="ok")
+            if ac_online
+            else StateBadge(False, t("cc_power.ac_offline"), t("cc_power.ac_offline"))
+        )
+        box.add_kv(t("cc_power.ac_adapter"), ac_badge)
 
     for b in bats:
         cap = b["capacity"]
         bat_name = b["name"]
         watts_val = b["watts"]
+        est_s = b.get("est_time_str") or ""
         ch_role = "val" if cap >= 20 else "fault"
-        w_txt = f"  {Txt(f'({watts_val}W)', role='schema')}" if watts_val else ""
+        meta_bits = []
+        if watts_val:
+            meta_bits.append(f"{watts_val}W")
+        if est_s:
+            meta_bits.append(est_s)
+        w_txt = f"  {Txt('(' + ' · '.join(meta_bits) + ')', role='schema')}" if meta_bits else ""
         bar = ProgressBar(cap, width=16, color_by_threshold=False)
         box.add_kv(
             t("cc_power.battery_label", p0=bat_name),
             f"{bar} {Txt(f'{cap}%', role=ch_role)}{w_txt}",
             right_markup=_battery_status_badge(b["status"]),
         )
+        hp = b.get("health_pct")
+        cyc = b.get("cycle_count")
+        if hp is not None or cyc is not None:
+            hc_parts = []
+            if hp is not None:
+                h_role = "vitality" if hp >= 80 else ("attention" if hp >= 60 else "fault")
+                hc_parts.append(Txt(f"{t('cc_power.battery_health')}: {hp}%", role=h_role))
+            if cyc is not None:
+                hc_parts.append(Txt(f"{cyc} {t('cc_power.battery_cycles')}", role="schema"))
+            box.add_kv(t("cc_power.battery_health_cycles"), "  ·  ".join(hc_parts))
         if b["has_threshold"]:
             thr = b["end_threshold"]
             thr_pills = (
@@ -832,6 +864,13 @@ def _build_batteries_box(bd: dict) -> Box:
                 f"{SelectPill(t('cc_power.charge_preserve'), f'cc_pwr:bat_thr:{bat_name}:80', selected=(thr == 80))}"
             )
             box.add_kv(t("cc_power.charge_health", p0=bat_name), thr_pills)
+        if b.get("has_start_threshold"):
+            sthr = b.get("start_threshold")
+            st_pills = " ".join(
+                SelectPill(f"{v}%", f"cc_pwr:bat_start:{bat_name}:{v}", selected=(sthr == int(v)))
+                for v in ("40", "60", "75")
+            )
+            box.add_kv(t("cc_power.charge_start_health", p0=bat_name), st_pills)
 
     if periphs:
         rows = [[Txt(p["name"], role="focus"), Txt(p["type"], role="schema"), Txt(p["charge"], role="val")] for p in periphs]

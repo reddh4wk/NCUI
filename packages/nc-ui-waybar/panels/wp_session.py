@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import getpass
 import os
+import socket
 from core.config import get_screen_lock_cmd
 from core.i18n import t
 from core import probe
@@ -20,7 +21,81 @@ def _read_system_uptime() -> str:
             return f"{days}d {hours:02d}h {mins:02d}m"
         return f"{hours:02d}h {mins:02d}m"
     except Exception:
-        return "N/A"
+        return t("common.nd")
+
+
+def _resolve_lock_cmd() -> str:
+    cmd = get_screen_lock_cmd()
+    if cmd:
+        return cmd
+    for cand in ("swaylock", "hyprlock", "gtklock", "waylock"):
+        if probe.has_bin(cand):
+            return cand
+    return ""
+
+
+def _distro_ascii_art(os_info: dict) -> list[str]:
+    os_id = str(os_info.get("id", "")).lower()
+    fam = str(os_info.get("family", "")).lower()
+    if os_id == "ubuntu":
+        return [
+            Txt("      .---.    ", role="attention"),
+            Txt("    .(  o  ).  ", role="attention"),
+            Txt("   /  '---'  \\ ", role="attention"),
+            Txt("  o   (   )   o", role="fault"),
+            Txt("   \\  '---'  / ", role="fault"),
+            Txt("    '.( o ).'  ", role="attention"),
+            Txt("      '---'    ", role="schema"),
+        ]
+    if fam == "debian" or os_id == "debian":
+        return [
+            Txt("   ,g$$$$$bp.  ", role="fault"),
+            Txt("  d$''    `$$b ", role="fault"),
+            Txt(" d$   ,$$.  $$ ", role="fault"),
+            Txt(" $$   `$$'  $P ", role="fault"),
+            Txt(" Y$.  `\"\"  ,P  ", role="fault"),
+            Txt("  `Yb.         ", role="schema"),
+            Txt("    `\"Ybo._    ", role="schema"),
+        ]
+    if fam == "fedora" or os_id == "fedora":
+        return [
+            Txt("    .------.   ", role="intent"),
+            Txt("   /   .-.  \\  ", role="intent"),
+            Txt("  |   /   |  | ", role="focus"),
+            Txt("  |  -+---'  | ", role="focus"),
+            Txt("  |   |      | ", role="intent"),
+            Txt("   \\  '-'   /  ", role="schema"),
+            Txt("    '------'   ", role="schema"),
+        ]
+    if fam == "suse" or "suse" in os_id:
+        return [
+            Txt("   .--------.  ", role="vitality"),
+            Txt("  /  .--.  o \\ ", role="vitality"),
+            Txt(" |  /    \\___/ ", role="vitality"),
+            Txt(" | |  (O)      ", role="focus"),
+            Txt("  \\ \\____/\\    ", role="vitality"),
+            Txt("   '------'    ", role="schema"),
+            Txt("    ~~  ~~     ", role="schema"),
+        ]
+    if fam == "arch" or os_id == "arch":
+        return [
+            f"{Txt('      /\\       ', role='focus')}",
+            f"{Txt('     /  \\      ', role='focus')}",
+            f"{Txt('    /\\   \\     ', role='focus')}",
+            f"{Txt('   /  ', role='focus')}{Txt('..', role='vitality')}{Txt('  \\    ', role='focus')}",
+            f"{Txt('  /   ', role='focus')}{Txt('||', role='schema')}{Txt('   \\   ', role='focus')}",
+            f"{Txt(' /   ', role='schema')}{Txt('_||_', role='schema')}{Txt('  -\\  ', role='schema')}",
+            f"{Txt('/_-\'\'    \'\'-_\\ ', role='schema')}",
+        ]
+    return [
+        Txt("     .---.     ", role="focus"),
+        Txt("    /     \\    ", role="focus"),
+        Txt("    | o_o |    ", role="focus"),
+        Txt("    | :_/ |    ", role="attention"),
+        Txt("   //    \\ \\   ", role="schema"),
+        Txt("  (|     | )   ", role="schema"),
+        Txt(" /'\\_   _/`\\   ", role="schema"),
+    ]
 
 
 class Panel(BasePanel):
@@ -49,13 +124,15 @@ class Panel(BasePanel):
         canvas.set_cols(target_cols)
 
         user = getpass.getuser()
-        host = os.uname().nodename
+        host = socket.gethostname() or os.uname().nodename
+        os_info = probe.get_os_release()
+        distro_tag = (os_info.get("id") or os_info.get("family") or "linux").upper()[:12]
         uptime_str = _read_system_uptime()
-        lock_cmd = get_screen_lock_cmd()
+        lock_cmd = _resolve_lock_cmd()
 
         cards = []
 
-        # --- CARD 1: ACTIVE SESSION (Arch x Nightcity Cyberdeck HUD) ---
+        # --- CARD 1: ACTIVE SESSION (Distro & Host HUD) ---
         hero_box = Box(
             t("session.active_session"),
             icon="\uf007",
@@ -71,25 +148,17 @@ class Panel(BasePanel):
             t("session.unset"),
             on_tone="ok_soft",
         )
-        arch_art = [
-            f"{Txt('      /\\       ', role='focus')}",
-            f"{Txt('     /  \\      ', role='focus')}",
-            f"{Txt('    /\\   \\     ', role='focus')}",
-            f"{Txt('   /  ', role='focus')}{Txt('..', role='vitality')}{Txt('  \\    ', role='focus')}",
-            f"{Txt('  /   ', role='focus')}{Txt('||', role='schema')}{Txt('   \\   ', role='focus')}",
-            f"{Txt(' /   ', role='schema')}{Txt('_||_', role='schema')}{Txt('  -\\  ', role='schema')}",
-            f"{Txt('/_-\'\'    \'\'-_\\ ', role='schema')}",
-        ]
+        distro_art = _distro_ascii_art(os_info)
         hud_right = [
-            f"{Txt('╭── ', role='structure')}{Txt(t('session.hud_header'), role='focus')}{Txt(' ──╮', role='structure')}",
+            f"{Txt('╭── ', role='structure')}{Txt(t('session.hud_header', host=host.upper()[:12]), role='focus')}{Txt(' ──╮', role='structure')}",
             f"  {Txt('\uf007', role='vitality')}  {Txt(f'{user}@{host}', role='focus')}",
             f"  {Txt('\uf017', role='schema')}  {Txt(t('session.uptime'), role='schema')} {Txt(uptime_str, role='val')}",
             f"  {Txt('\uf120', role='schema')}  {Txt(t('session.tty_wayland'), role='val')}",
             f"  {Txt('\uf023', role='schema')}  {lock_state_txt}",
-            f"{Txt('╰── ', role='structure')}{Txt(t('session.hud_footer'), role='schema')}{Txt(' ──╯', role='structure')}",
+            f"{Txt('╰── ', role='structure')}{Txt(t('session.hud_footer', distro=distro_tag), role='schema')}{Txt(' ──╯', role='structure')}",
             f" {Txt(':: ', role='structure')}{Txt('SYS.ONLINE', role='vitality')}{Txt(' // ', role='structure')}{Txt('01', role='schema')}{Txt(' ::', role='structure')}",
         ]
-        hero_rows = [[arch_art[i], hud_right[i]] for i in range(len(arch_art))]
+        hero_rows = [[distro_art[i], hud_right[i]] for i in range(len(distro_art))]
         hero_box.add_row(" ")
         hero_box.add_table(
             headers=[],
@@ -183,7 +252,7 @@ class Panel(BasePanel):
                 self.shell.dispatch_uri("ui:open_settings:waybar")
             return
         if act == "lock":
-            lock_cmd = get_screen_lock_cmd()
+            lock_cmd = _resolve_lock_cmd()
             if not lock_cmd:
                 from core.state import STATE
                 STATE.set("control_center", "subtab_waybar", "options")
@@ -207,7 +276,7 @@ class Panel(BasePanel):
         if act.startswith("do:"):
             kind = act.split(":", 1)[1]
             if kind == "suspend":
-                lock_cmd = get_screen_lock_cmd()
+                lock_cmd = _resolve_lock_cmd()
                 if lock_cmd:
                     probe.spawn_bg(["bash", "-c", f"{lock_cmd} & sleep 0.3; systemctl suspend"])
                 else:
@@ -217,7 +286,7 @@ class Panel(BasePanel):
             elif kind == "reboot":
                 probe.spawn_bg(["systemctl", "reboot"])
             elif kind == "logout":
-                if probe.has_bin("niri"):
+                if probe.has_bin("niri") and os.environ.get("NIRI_SOCKET"):
                     probe.spawn_bg(["niri", "msg", "action", "quit", "--skip-confirmation"])
                 else:
                     probe.spawn_bg(["loginctl", "terminate-user", getpass.getuser()])

@@ -12,7 +12,6 @@ from ui.kit import (
     InspectorCell,
     SelectPill,
     StateBadge,
-    ToggleExpandBtn,
     Txt,
     register_scroll_zone,
 )
@@ -151,7 +150,7 @@ class Panel(BasePanel):
         )
         out = list(extra_actions or [])
         out.append(nav_group)
-        out.append(ToggleExpandBtn(expanded))
+        out.append(ActionBtn("-" if expanded else "+", "ui:toggle_expand", tone="neutral"))
         return out
 
     def _build_compact(self, canvas: Canvas, events: list[dict], has_feeds: bool, initialized: bool, mode: str) -> list:
@@ -210,7 +209,7 @@ class Panel(BasePanel):
             )
             return [box]
 
-        add_btn = ActionBtn("+", "cal:add_start", tone="apply")
+        add_btn = ActionBtn("+..", "cal:add_start", tone="apply")
         if not self.show_all:
             sel_events = events_by_date.get(self.selected_date, [])
             box.add_section(

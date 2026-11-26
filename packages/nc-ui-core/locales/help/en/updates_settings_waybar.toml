@@ -110,7 +110,7 @@ short = "Expands the package table beyond the viewport fit limit or collapses it
 # ==============================================================================
 ["cc_notif:test"]
 title = "Send Test Notification"
-short = "Dispatches a test desktop notification through `nc-util-notify.sh` (or `notify-send`) to verify routing."
+short = "Dispatches a test desktop notification through `nc-notify` (or `notify-send`) to verify routing."
 
 ["cc_notif:clear"]
 title = "Clear Notification Archive"
@@ -264,6 +264,18 @@ short = "Enables this plugin from the pool and appends it to `modules-right` in 
 ["cc_wb:remove:*"]
 title = "Remove Module from Waybar"
 short = "Removes this module from active bar sections back to the disabled pool (remember to click Apply)."
+
+["cc_wb:prompt_link_plugin"]
+title = "Link External Custom Plugin (.py)"
+short = "Selects a custom Python plugin file (`wp_*.py`), validates `PLUGIN_META`, and symlinks it into `~/.local/share/ncui/plugins/`."
+
+["cc_wb:unlink:*"]
+title = "Unlink Custom Plugin Symlink"
+short = "Removes this external plugin symlink from `~/.local/share/ncui/plugins/` and cleans its `config.jsonc` entry without deleting your source file."
+
+["cc_wb:guide_scroll*"]
+title = "Scroll Plugin Developer Guide"
+short = "Scrolls through the external Waybar plugin specification, template, and Golden Standard tips."
 
 ["cc_wb:prompt_lock_cmd"]
 title = "Set Custom Screen Lock Command"

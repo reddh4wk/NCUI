@@ -33,13 +33,17 @@ find_nct_hwmon() {
 }
 
 detect_profile() {
-    local hw="$1" en t1 p1 t3 p5_1
+    local hw="$1" en t1="" p1="" t3="" p5_1=""
     [[ -r "$hw/pwm2_enable" ]] || { echo "unknown"; return; }
     en="$(<"$hw/pwm2_enable")"
-    t1="$(<"$hw/pwm2_auto_point1_temp")"
-    p1="$(<"$hw/pwm2_auto_point1_pwm")"
-    t3="$(<"$hw/pwm2_auto_point3_temp")"
-    p5_1="$(<"$hw/pwm5_auto_point1_pwm")"
+    [[ -r "$hw/pwm2_auto_point1_temp" ]] && t1="$(<"$hw/pwm2_auto_point1_temp")"
+    [[ -r "$hw/pwm2_auto_point1_pwm" ]] && p1="$(<"$hw/pwm2_auto_point1_pwm")"
+    [[ -r "$hw/pwm2_auto_point3_temp" ]] && t3="$(<"$hw/pwm2_auto_point3_temp")"
+    if [[ -r "$hw/pwm5_auto_point1_pwm" ]]; then
+        p5_1="$(<"$hw/pwm5_auto_point1_pwm")"
+    else
+        p5_1="$p1"
+    fi
     if [[ "$en" == "5" && "$t1" == "35000" && "$p1" == "64" && "$t3" == "74000" && "$p5_1" == "64" ]]; then
         echo "silent"
     elif [[ "$en" == "5" && "$t1" == "30000" && "$p1" == "89" && "$t3" == "70000" && "$p5_1" == "89" ]]; then
@@ -52,15 +56,19 @@ detect_profile() {
 }
 
 print_status() {
-    local hw="$1" chip prof f2 p2 f5 p5 pct2 pct5
+    local hw="$1" chip prof f2="0" p2="0" f5="0" p5="0" pct2="0" pct5="0"
     chip="$(<"$hw/name")"
     prof="$(detect_profile "$hw")"
-    f2="$(<"$hw/fan2_input")"
-    p2="$(<"$hw/pwm2")"
-    f5="$(<"$hw/fan5_input")"
-    p5="$(<"$hw/pwm5")"
-    pct2=$(( (p2 * 100 + 127) / 255 ))
-    pct5=$(( (p5 * 100 + 127) / 255 ))
+    [[ -r "$hw/fan2_input" ]] && f2="$(<"$hw/fan2_input")"
+    if [[ -r "$hw/pwm2" ]]; then
+        p2="$(<"$hw/pwm2")"
+        pct2=$(( (p2 * 100 + 127) / 255 ))
+    fi
+    [[ -r "$hw/fan5_input" ]] && f5="$(<"$hw/fan5_input")"
+    if [[ -r "$hw/pwm5" ]]; then
+        p5="$(<"$hw/pwm5")"
+        pct5=$(( (p5 * 100 + 127) / 255 ))
+    fi
     printf 'profile=%s hwmon=%s fan2=%s pwm2=%s%% fan5=%s pwm5=%s%%\n' \
         "$prof" "$chip" "$f2" "$pct2" "$f5" "$pct5"
 }
@@ -69,10 +77,11 @@ write_raw_curve() {
     local hw="$1"
     shift
     local -a pts=("$@")
-    local ch idx pair tmp pwm got_t got_p
+    local ch idx pair tmp pwm got_t got_p applied=0
 
     for ch in "${CHANNELS[@]}"; do
-        [[ -w "$hw/pwm${ch}_enable" ]] || { echo "Missing writable $hw/pwm${ch}_enable" >&2; exit 1; }
+        [[ -w "$hw/pwm${ch}_enable" ]] || continue
+        applied=$((applied + 1))
         [[ -w "$hw/pwm${ch}_mode" ]] && printf '1' > "$hw/pwm${ch}_mode"
         printf '5' > "$hw/pwm${ch}_enable"
 
@@ -102,6 +111,7 @@ write_raw_curve() {
             fi
         done
     done
+    (( applied > 0 )) || { echo "No writable pwm{2,5}_enable channel found in $hw" >&2; exit 1; }
 }
 
 save_conf_line() {

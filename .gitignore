@@ -14,3 +14,5 @@ config/ncui/ical_feeds.json
 packages/nc-wallpapers/nc-matrix/nc-matrix
 packages/nc-ui-core/config/ncui/calendar.db*
 packages/nc-ui-core/config/ncui/ical_feeds.json
+src/
+pkg/

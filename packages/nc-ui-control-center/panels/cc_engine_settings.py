@@ -11,12 +11,9 @@ from core.config import (
     set_hover_tooltip_delay,
     set_hover_tooltips_enabled,
 )
-from core.i18n import set_language, t
+from core.i18n import list_available_languages, set_language, t
 from core.state import STATE
-from ui.kit import FeedbackBox
-
-_MSG = ""
-_ERR = ""
+from ui.kit import feedback_cards, set_feedback
 
 
 def backup_all_ui_settings(dest_path: str = "") -> tuple[bool, str]:
@@ -30,9 +27,7 @@ def build_distro_package(dest_path: str = "") -> tuple[bool, str]:
 
 
 def _feedback_cards() -> list:
-    if not _MSG and not _ERR:
-        return []
-    return [FeedbackBox(t("cc_settings.status_title"), not bool(_ERR), _ERR if _ERR else _MSG)]
+    return feedback_cards("settings", "cc_settings.status_title")
 
 def _read_log_window(offset: int = 0, window_size: int = 30) -> tuple[str, list[tuple[int, str]], int, int]:
     lp = str(CONFIG.get("general", {}).get("log_file", "/tmp/nc-ui.log"))
@@ -51,13 +46,8 @@ def _read_log_window(offset: int = 0, window_size: int = 30) -> tuple[str, list[
         return lp, [], 0, 0
 
 def handle_cc_settings_link(cc_panel, uri: str) -> bool:
-    global _MSG, _ERR
-    if uri.startswith("cc_notif:"):
-        return handle_cc_notifications_link(cc_panel, uri)
     if not uri.startswith("cc_set:"):
         return False
-    _MSG = ""
-    _ERR = ""
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
@@ -65,63 +55,57 @@ def handle_cc_settings_link(cc_panel, uri: str) -> bool:
     if cmd == "hide_unavail" and arg in ("0", "1"):
         val = (arg == "1")
         set_hide_unavailable_settings(val)
-        _MSG = t("cc_settings.hide_unavailable_settings", p0=val)
+        set_feedback("settings", True, t("cc_settings.hide_unavailable_settings", p0=val))
     elif cmd == "side" and arg in ("left", "right"):
-        _update_toml_key_in_section("general", "side", f'"{arg}"')
-        CONFIG.setdefault("general", {})["side"] = arg
-        _MSG = t("cc_settings.control_center_anchor_side_set_to", p0=arg)
-    elif cmd == "lang" and arg in ("en", "it"):
+        _update_toml_key_in_section("control_center", "side", f'"{arg}"')
+        CONFIG.setdefault("control_center", {})["side"] = arg
+        set_feedback("settings", True, t("cc_settings.control_center_anchor_side_set_to", p0=arg))
+    elif cmd == "lang" and arg in list_available_languages():
         set_language(arg)
-        _MSG = t("cc_settings.interface_language_set_to", p0=arg.upper())
+        set_feedback("settings", True, t("cc_settings.interface_language_set_to", p0=arg.upper()))
     elif cmd == "log_scroll":
         cur_off = int(STATE.get("settings", "log_scroll_offset", 0) or 0)
         if arg == "up":
-            STATE.set("settings", "log_scroll_offset", cur_off + 5)
+            STATE.set("settings", "log_scroll_offset", cur_off + 5, immediate=False)
         elif arg == "down":
-            STATE.set("settings", "log_scroll_offset", max(0, cur_off - 5))
+            STATE.set("settings", "log_scroll_offset", max(0, cur_off - 5), immediate=False)
         elif arg == "top":
-            STATE.set("settings", "log_scroll_offset", 999999)
+            STATE.set("settings", "log_scroll_offset", 999999, immediate=False)
         elif arg == "bottom":
-            STATE.set("settings", "log_scroll_offset", 0)
+            STATE.set("settings", "log_scroll_offset", 0, immediate=False)
     elif cmd == "loglevel" and arg.isdigit():
         lvl = int(arg)
         _update_toml_key_in_section("general", "log_level", str(lvl))
         CONFIG.setdefault("general", {})["log_level"] = lvl
-        _MSG = t("cc_settings.log_level_set_to", p0=lvl)
+        set_feedback("settings", True, t("cc_settings.log_level_set_to", p0=lvl))
     elif cmd == "hover_help" and arg in ("0", "1"):
         val = (arg == "1")
         set_hover_tooltips_enabled(val)
         if not val and cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "dismiss_hover_help"):
             cc_panel.shell.dismiss_hover_help()
-        _MSG = t("cc_settings.hover_help_set", p0=t("common.on") if val else t("common.off"))
+        set_feedback("settings", True, t("cc_settings.hover_help_set", p0=t("common.on") if val else t("common.off")))
     elif cmd == "hover_delay":
         try:
             v = set_hover_tooltip_delay(float(arg))
-            _MSG = t("cc_settings.hover_delay_set", p0=f"{v:.1f}s")
+            set_feedback("settings", True, t("cc_settings.hover_delay_set", p0=f"{v:.1f}s"))
         except (TypeError, ValueError):
             pass
     elif cmd == "clear_log":
         lp = str(CONFIG.get("general", {}).get("log_file", "/tmp/nc-ui.log"))
         try:
-            open(lp, "w", encoding="utf-8").write("")
+            with open(lp, "w", encoding="utf-8") as f:
+                f.write("")
             STATE.set("settings", "log_scroll_offset", 0)
-            _MSG = t("cc_settings.cleared", p0=lp)
+            set_feedback("settings", True, t("cc_settings.cleared", p0=lp))
         except Exception as e:
-            _ERR = str(e)
+            set_feedback("settings", False, str(e))
     elif cmd == "backup_ui":
         ok_b, msg_b = backup_all_ui_settings()
-        if ok_b:
-            _MSG = msg_b
-        else:
-            _ERR = msg_b
+        set_feedback("settings", ok_b, msg_b)
     elif cmd == "build_distro_pkg":
         ok_p, msg_p = build_distro_package()
-        if ok_p:
-            _MSG = msg_p
-        else:
-            _ERR = msg_p
+        set_feedback("settings", ok_p, msg_p)
     else:
-
         return False
 
     if cc_panel and cc_panel.shell:

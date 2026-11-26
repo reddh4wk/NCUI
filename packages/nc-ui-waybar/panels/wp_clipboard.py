@@ -11,6 +11,7 @@ import gi
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf
+from core.config import get_cache_dir
 from core.state import STATE
 from core.i18n import t
 from core import probe
@@ -27,25 +28,46 @@ from ui.kit import (
 )
 from ui.widgets import AsciiCard
 from panels.base import BasePanel
+from panels.wp_capture import _screenshots_dir
 
-META_FILE = os.path.expanduser("~/.cache/nc_clipboard_meta.json")
-PINS_FILE = os.path.expanduser("~/.cache/nc-ui/clipboard_pins.json")
-CACHE_DIR = "/tmp/nc_clipboard_cache"
-TEXT_CACHE_FILE = os.path.join(CACHE_DIR, "texts.json")
-SCREENSHOTS_DIR = os.path.expanduser("~/Pictures/Screenshots")
 _THUMB_W = 440
 _THUMB_H = 96
 _MEM_TEXT_CACHE: dict[str, str] | None = None
 _MEM_PIXBUF_CACHE: dict[str, GdkPixbuf.Pixbuf] = {}
 
 
+def _meta_file() -> str:
+    env_c = os.environ.get("XDG_CACHE_HOME", "").strip()
+    base = os.path.expanduser(env_c) if env_c else os.path.expanduser("~/.cache")
+    return os.path.join(base, "nc_clipboard_meta.json")
+
+
+def _pins_file(for_write: bool = False) -> str:
+    path = os.path.join(get_cache_dir(), "clipboard_pins.json")
+    if not for_write and not os.path.exists(path) and not os.environ.get("XDG_CACHE_HOME", "").strip():
+        legacy = os.path.expanduser("~/.cache/nc-ui/clipboard_pins.json")
+        if os.path.exists(legacy):
+            return legacy
+    return path
+
+
+def _cache_dir() -> str:
+    rt = os.environ.get("XDG_RUNTIME_DIR", "").strip() or "/tmp"
+    return os.path.join(os.path.expanduser(rt), "nc_clipboard_cache")
+
+
+def _text_cache_file() -> str:
+    return os.path.join(_cache_dir(), "texts.json")
+
+
 def _load_text_cache() -> dict[str, str]:
     global _MEM_TEXT_CACHE
     if _MEM_TEXT_CACHE is not None:
         return _MEM_TEXT_CACHE
-    if os.path.exists(TEXT_CACHE_FILE):
+    tcf = _text_cache_file()
+    if os.path.exists(tcf):
         try:
-            with open(TEXT_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(tcf, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     _MEM_TEXT_CACHE = {str(k): str(v) for k, v in data.items()}
@@ -57,12 +79,13 @@ def _load_text_cache() -> dict[str, str]:
 
 
 def _save_text_cache(cache: dict[str, str]) -> None:
+    cdir = _cache_dir()
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        tmp = os.path.join(CACHE_DIR, ".texts.tmp")
+        os.makedirs(cdir, exist_ok=True)
+        tmp = os.path.join(cdir, ".texts.tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache, f)
-        os.replace(tmp, TEXT_CACHE_FILE)
+        os.replace(tmp, _text_cache_file())
     except Exception:
         pass
 
@@ -71,7 +94,8 @@ def _get_image_thumb_pixbuf(item_id: str, line_item: str, preview: str) -> GdkPi
     cached = _MEM_PIXBUF_CACHE.get(item_id)
     if cached is not None:
         return cached
-    thumb_p = os.path.join(CACHE_DIR, f"thumb_{item_id}.png")
+    cdir = _cache_dir()
+    thumb_p = os.path.join(cdir, f"thumb_{item_id}.png")
     if os.path.exists(thumb_p):
         try:
             surf = cairo.ImageSurface.create_from_png(thumb_p)
@@ -97,8 +121,8 @@ def _get_image_thumb_pixbuf(item_id: str, line_item: str, preview: str) -> GdkPi
                     cr.scale(scale, scale)
                     cr.set_source_surface(src, (_THUMB_W / scale - sw) * 0.5, (_THUMB_H / scale - sh) * 0.5)
                     cr.paint()
-                    os.makedirs(CACHE_DIR, exist_ok=True)
-                    tmp_png = os.path.join(CACHE_DIR, f".thumb_{item_id}.png.tmp")
+                    os.makedirs(cdir, exist_ok=True)
+                    tmp_png = os.path.join(cdir, f".thumb_{item_id}.png.tmp")
                     dst.write_to_png(tmp_png)
                     os.replace(tmp_png, thumb_p)
                     pb = Gdk.pixbuf_get_from_surface(dst, 0, 0, _THUMB_W, _THUMB_H)
@@ -149,26 +173,28 @@ def _save_clipboard_image(item_id: str) -> tuple[bool, str]:
         if not raw_bytes:
             return False, ""
         ext = _detect_image_ext(raw_bytes, match_line)
-        os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+        s_dir = _screenshots_dir()
+        os.makedirs(s_dir, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         fname = f"clipboard_{item_id}_{stamp}.{ext}"
-        dest_path = os.path.join(SCREENSHOTS_DIR, fname)
-        tmp_path = os.path.join(SCREENSHOTS_DIR, f".{fname}.tmp")
+        dest_path = os.path.join(s_dir, fname)
+        tmp_path = os.path.join(s_dir, f".{fname}.tmp")
         with open(tmp_path, "wb") as f:
             f.write(raw_bytes)
         os.replace(tmp_path, dest_path)
         if os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
-            return True, fname
+            return True, os.path.join(os.path.basename(s_dir), fname)
     except Exception:
         pass
     return False, ""
 
 
 def _load_pins() -> list[str]:
-    if not os.path.exists(PINS_FILE):
+    pf = _pins_file(for_write=False)
+    if not os.path.exists(pf):
         return []
     try:
-        with open(PINS_FILE, "r", encoding="utf-8") as f:
+        with open(pf, "r", encoding="utf-8") as f:
             data = json.load(f)
             return [str(x) for x in data if str(x).strip()] if isinstance(data, list) else []
     except Exception:
@@ -176,9 +202,10 @@ def _load_pins() -> list[str]:
 
 
 def _save_pins(pins: list[str]) -> None:
+    pf = _pins_file(for_write=True)
     try:
-        os.makedirs(os.path.dirname(PINS_FILE), exist_ok=True)
-        with open(PINS_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(pf), exist_ok=True)
+        with open(pf, "w", encoding="utf-8") as f:
             json.dump(pins, f, indent=2)
     except Exception:
         pass
@@ -213,7 +240,7 @@ def _classify_text(txt: str) -> tuple[str, str]:
         return "PATH", "accent"
     if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
         return "JSON", "info"
-    if s.startswith(("sudo ", "git ", "paru ", "pacman ", "systemctl ", "docker ", "tar ", "ssh ")):
+    if s.startswith(("sudo ", "git ", "paru ", "pacman ", "apt ", "dnf ", "zypper ", "flatpak ", "systemctl ", "docker ", "tar ", "ssh ")):
         return "CMD", "accent"
     return "TXT", "secondary"
 
@@ -225,7 +252,7 @@ class Panel(BasePanel):
     refresh_ms = 1500
 
     def __init__(self, shell=None):
-        self.title = t("clipboard.title", "Clipboard")
+        self.title = t("clipboard.title") if shell is not None else self.id
         super().__init__(shell)
         self.search_query = ""
         self.last_saved: tuple[str, bool, str] | None = None
@@ -252,7 +279,9 @@ class Panel(BasePanel):
     def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
         if not probe.has_bin("cliphist"):
             b = Box(t("clipboard.title"), icon="\uf0ea")
-            b.add_row(Txt(t("clipboard.not_installed"), role="inactive"))
+            b.add_row(" ")
+            b.add_row(f"  {Txt(t('clipboard.not_installed'), role='inactive')}")
+            b.add_row(" ")
             return [b]
 
         img_enabled = is_image_capture_enabled()
@@ -275,20 +304,7 @@ class Panel(BasePanel):
         live_q = get_inline_entry_buffer() if get_active_inline_entry() == "wp_clip_flt" else self.search_query
 
         # --- HERO BAR: Contatore, Toggle Cattura Immagini, Ricerca Live & Wipe ---
-        hdr_acts = [
-            InlineFilter(
-                "wp_clip_flt",
-                live_q,
-                t("clipboard.filter_clipboard"),
-                "clip:search",
-                clear_uri="clip:clear_search" if live_q else "",
-                width=18,
-                compact=True,
-                active=bool(live_q),
-            ),
-        ]
-        if raw_lines:
-            hdr_acts.append(ActionBtn(t("clipboard.wipe"), "clip:wipe", tone="danger_soft"))
+        hdr_acts = [ActionBtn(t("clipboard.wipe"), "clip:wipe", tone="danger_soft")] if raw_lines else []
 
         hdr_box = Box(
             t("clipboard.clipboard", p0=len(raw_lines)),
@@ -297,9 +313,9 @@ class Panel(BasePanel):
             highlighted=True,
         )
         img_btn_lbl = (
-            f"\uf03e {t("clipboard.images_on")}"
+            f"\uf03e {t('clipboard.images_on')}"
             if img_enabled
-            else f"\uf03e {t("clipboard.images_off")}"
+            else f"\uf03e {t('clipboard.images_off')}"
         )
         img_toggle_btn = SelectPill(img_btn_lbl, "clip:toggle_images", selected=img_enabled)
         hdr_box.add_row(" ")
@@ -308,13 +324,9 @@ class Panel(BasePanel):
             f"{Txt(t('clipboard.items'), role='schema')} {Txt(str(len(raw_lines)), role='val')}",
             right_markup=img_toggle_btn,
         )
-        if self.last_saved:
-            saved_id, saved_ok, saved_fname = self.last_saved
-            if saved_ok:
-                fb_txt = Txt(f"● {t('clipboard.saved_msg', p0=saved_fname)}", role="vitality")
-            else:
-                fb_txt = Txt(t("clipboard.save_err_msg", p0=saved_id), role="fault")
-            hdr_box.add_row(f"  {fb_txt}")
+        hdr_box.add_row(
+            f"  {InlineFilter('wp_clip_flt', live_q, t('clipboard.filter_clipboard'), 'clip:search', clear_uri='clip:clear_search' if live_q else '', width=26, compact=False, active=False)}"
+        )
         hdr_box.add_row(" ")
         cards = [hdr_box]
 
@@ -357,9 +369,10 @@ class Panel(BasePanel):
             return cards
 
         meta_data = {}
-        if os.path.exists(META_FILE):
+        mf = _meta_file()
+        if os.path.exists(mf):
             try:
-                with open(META_FILE, "r", encoding="utf-8") as f:
+                with open(mf, "r", encoding="utf-8") as f:
                     meta_data = json.load(f)
             except Exception:
                 pass
@@ -479,10 +492,6 @@ class Panel(BasePanel):
         if self.shell:
             self.shell.dispatch_uri("ui:close")
 
-    def on_prompt_submit(self, action_id: str, text: str) -> None:
-        if action_id == "clip_search":
-            self.search_query = text.strip()
-
     def on_link(self, uri: str) -> None:
         if uri == "clip:toggle_images":
             new_val = not is_image_capture_enabled()
@@ -510,10 +519,11 @@ class Panel(BasePanel):
             _MEM_PIXBUF_CACHE.clear()
             if _MEM_TEXT_CACHE is not None:
                 _MEM_TEXT_CACHE.clear()
-            if os.path.isdir(CACHE_DIR):
-                for fn in os.listdir(CACHE_DIR):
+            cdir = _cache_dir()
+            if os.path.isdir(cdir):
+                for fn in os.listdir(cdir):
                     try:
-                        os.remove(os.path.join(CACHE_DIR, fn))
+                        os.remove(os.path.join(cdir, fn))
                     except OSError:
                         pass
             self.request_throttled_refresh()
@@ -522,6 +532,9 @@ class Panel(BasePanel):
             target_id = uri.split(":", 2)[2]
             ok_s, fname = _save_clipboard_image(target_id)
             self.last_saved = (str(target_id), ok_s, fname)
+            if self.shell:
+                msg = t("clipboard.saved_msg", p0=fname) if ok_s else t("clipboard.save_err_msg", p0=target_id)
+                self.shell.show_toast(msg, level=("ok" if ok_s else "err"), title=t("clipboard.title"))
             self.request_throttled_refresh()
             return
         if uri.startswith("clip:unpin:"):
@@ -549,7 +562,7 @@ class Panel(BasePanel):
                         if target_id in txt_c:
                             txt_c.pop(target_id, None)
                             _save_text_cache(txt_c)
-                        thumb_p = os.path.join(CACHE_DIR, f"thumb_{target_id}.png")
+                        thumb_p = os.path.join(_cache_dir(), f"thumb_{target_id}.png")
                         if os.path.exists(thumb_p):
                             try:
                                 os.remove(thumb_p)

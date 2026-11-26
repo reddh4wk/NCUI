@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """NC-UI Waybar Plugin & Popup — Auto-Hiding Print Spooler (`panels/wp_printers.py`)."""
 
-import time
 from core.i18n import t
-from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, StateBadge, Txt, feedback_cards
 from panels.base import BasePanel
 from panels.cc_engine_printers import (
     get_printers_bar_summary,
@@ -90,10 +88,6 @@ class Panel(BasePanel):
         )
         box.add_row(" ")
 
-        fb = STATE.get("printers", "fb", {})
-        if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 10.0:
-            box.add_row(f"  {Txt(canvas.truncate_plain(str(fb['msg']), POPUP_COLS - 6), role='vitality' if fb.get('ok') else 'fault')}")
-
         if not daemon["scheduler_up"]:
             box.add_kv(
                 t("cc_printers.cups_package"),
@@ -105,9 +99,10 @@ class Panel(BasePanel):
                 StateBadge(daemon["service_enabled"], t("common.enabled"), t("common.disabled")),
                 key_width=17,
             )
+            start_btn = f"  {ActionBtn(t('cc_printers.start_cups'), 'cc_prn:svc:start:cups.service', tone='apply')}" if daemon["cups_installed"] else ""
             box.add_kv(
                 t("cc_printers.kv_cups_scheduler"),
-                f"{StateBadge(False, '', t('cc_printers.stopped'))}  {ActionBtn(t('cc_printers.start_cups'), 'cc_prn:svc:start:cups.service', tone='apply')}",
+                f"{StateBadge(False, '', t('cc_printers.stopped'))}{start_btn}",
                 key_width=17,
             )
         else:
@@ -191,7 +186,7 @@ class Panel(BasePanel):
             t("printers_popup.bottom_manage_lbl"),
             actions=[ActionBtn("\uf013", f"ui:open_settings:printers:{target_sub}", tone="neutral")],
         )
-        return [box]
+        return [box] + feedback_cards("printers", "cc_printers.status_title", key="fb", ttl=10.0)
 
     def on_link(self, uri: str) -> None:
         if uri == "prn_pop:refresh":

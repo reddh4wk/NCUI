@@ -8,23 +8,23 @@ import time
 from core import probe
 from core.config import (
     CONFIG,
-    _unique_existing_paths,
     _update_toml_key_in_section,
+    get_waybar_config_dir,
 )
 from core.i18n import t
-from core.paths import find_all_package_files
 from core.state import STATE
 from ui.kit import (
     ActionBtn,
     Badge,
     Box,
-    FeedbackBox,
     InlineField,
     ProgressBar,
     SelectPill,
     StateBadge,
     Txt,
     cancel_inline_entry,
+    feedback_cards,
+    set_feedback,
     start_inline_input,
 )
 
@@ -34,14 +34,11 @@ _UPS_CACHE = {"ts": 0.0, "target": "", "data": None, "pending": False}
 
 
 def _set_ups_fb(ok: bool, msg: str) -> None:
-    STATE.set("power", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
+    set_feedback("power", ok, msg)
 
 
 def _feedback_cards() -> list:
-    fb = STATE.get("power", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return [FeedbackBox(t("cc_power.status_title"), bool(fb["ok"]), fb["msg"])]
-    return []
+    return feedback_cards("power", "cc_power.status_title")
 
 
 def invalidate_ups_cache() -> None:
@@ -286,26 +283,22 @@ def _find_jsonc_object_span(raw: str, key: str) -> tuple[int, int] | None:
 
 
 def _sync_waybar_ups_interval(sec: int) -> None:
-    """Update `custom/ups` interval in-place across Waybar JSONC configs."""
-    paths = _unique_existing_paths(
-        os.path.expanduser("~/.config/waybar/config.jsonc"),
-        *find_all_package_files("config", "waybar", "config.jsonc"),
-    )
-    for rp in paths:
+    """Update `custom/ups` interval in-place in the user's Waybar JSONC config."""
+    rp = os.path.join(get_waybar_config_dir(), "config.jsonc")
+    if os.path.isfile(rp):
         try:
             with open(rp, "r", encoding="utf-8") as f:
                 raw = f.read()
             span = _find_jsonc_object_span(raw, "custom/ups")
-            if not span:
-                continue
-            s_idx, e_idx = span
-            block = raw[s_idx:e_idx]
-            new_block, count = re.subn(r'("interval"\s*:\s*)\d+', rf"\g<1>{int(sec)}", block, count=1)
-            if count == 0:
-                new_block = '{\n        "interval": ' + str(int(sec)) + "," + block[1:]
-            if new_block != block:
-                with open(rp, "w", encoding="utf-8") as f:
-                    f.write(raw[:s_idx] + new_block + raw[e_idx:])
+            if span:
+                s_idx, e_idx = span
+                block = raw[s_idx:e_idx]
+                new_block, count = re.subn(r'("interval"\s*:\s*)\d+', rf"\g<1>{int(sec)}", block, count=1)
+                if count == 0:
+                    new_block = '{\n        "interval": ' + str(int(sec)) + "," + block[1:]
+                if new_block != block:
+                    with open(rp, "w", encoding="utf-8") as f:
+                        f.write(raw[:s_idx] + new_block + raw[e_idx:])
         except Exception:
             pass
     probe.run_cmd(["pkill", "-SIGUSR2", "waybar"], timeout=0.6)
@@ -536,9 +529,10 @@ def _build_ups_connection_rows(b: Box, u: dict) -> None:
         InlineField("cc_pwr_port", "cc_pwr:inline_port", value=str(u["port"]), empty_label=t("cc_power.edit"), placeholder="3493", width=7, icon="\u270e", tone="neutral", selected=False),
     )
 
-    ups_field = InlineField("cc_pwr_ups", "cc_pwr:inline_ups", value=u["ups_name"], empty_label=t("cc_power.edit"), placeholder="ecoflow", width=16, icon="\u270e", tone="neutral", selected=False)
+    ups_field = InlineField("cc_pwr_ups", "cc_pwr:inline_ups", value=u["ups_name"], empty_label=t("cc_power.edit"), placeholder="ups", width=16, icon="\u270e", tone="neutral", selected=False)
     ups_val = ups_field if u["ups_name"] else f"{ups_field} {Badge(t('cc_power.not_set_badge'), style='warn')}"
-    b.add_kv(t("cc_power.ups_name"), ups_val, right_markup=ActionBtn(t("cc_power.auto_discover"), "cc_pwr:discover", tone="apply"))
+    disc_btn = ActionBtn(t("cc_power.auto_discover"), "cc_pwr:discover", tone="apply") if probe.has_bin("upsc") else None
+    b.add_kv(t("cc_power.ups_name"), ups_val, right_markup=disc_btn)
 
     if u["discovered"]:
         disc_pills = " ".join(
@@ -568,6 +562,12 @@ def _build_ups_connection_rows(b: Box, u: dict) -> None:
 def _append_ups_status_section(b: Box, cc_panel, u: dict) -> None:
     if not u["enabled"]:
         b.add_kv(t("cc_power.telemetry"), Txt(t("ups.disabled_hint", "NUT UPS monitor is disabled."), role="inactive"))
+        return
+    if not probe.has_bin("upsc"):
+        b.add_kv(
+            t("cc_power.telemetry"),
+            f"{Badge('MISSING: upsc', style='warn')}  {Txt(t('cc_power.upsc_missing_hint'), role='attention')}",
+        )
         return
     if u.get("polling"):
         b.add_kv(t("cc_power.telemetry"), Txt(t("cc_power.polling"), role="inactive"))
@@ -711,14 +711,17 @@ def handle_cc_ups_link(cc_panel, uri: str) -> bool:
         return True
     elif act == "discover":
         cancel_inline_entry(refresh=False)
-        _set_ups_fb(True, t("cc_power.fb_discover_started", p0=cfg["host"], p1=cfg["port"]))
-        def _disc_worker():
-            ok, found, err = discover_nut_ups()
-            msg = t("cc_power.fb_discover_ok", p0=len(found), p1=", ".join(found)) if (ok and found) else (err or t("cc_power.fb_discover_none", p0=cfg["host"], p1=cfg["port"]))
-            _set_ups_fb(ok and bool(found), msg)
-            invalidate_ups_cache()
-            _schedule_ui_refresh(cc_panel)
-        threading.Thread(target=_disc_worker, daemon=True).start()
+        if not probe.has_bin("upsc"):
+            _set_ups_fb(False, t("cc_power.upsc_missing_hint"))
+        else:
+            _set_ups_fb(True, t("cc_power.fb_discover_started", p0=cfg["host"], p1=cfg["port"]))
+            def _disc_worker():
+                ok, found, err = discover_nut_ups()
+                msg = t("cc_power.fb_discover_ok", p0=len(found), p1=", ".join(found)) if (ok and found) else (err or t("cc_power.fb_discover_none", p0=cfg["host"], p1=cfg["port"]))
+                _set_ups_fb(ok and bool(found), msg)
+                invalidate_ups_cache()
+                _schedule_ui_refresh(cc_panel)
+            threading.Thread(target=_disc_worker, daemon=True).start()
     elif act.startswith("sel_ups:"):
         cancel_inline_entry(refresh=False)
         name = act.split(":", 1)[1].strip()

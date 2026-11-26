@@ -6,15 +6,15 @@
 set -euo pipefail
 
 CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
-LEGACY_CONF="${NC_SNAP_CONF:-/etc/nightcity-snap.conf}"
+LEGACY_CONF="${NC_SNAP_CONF:-/etc/ncui/snap.conf}"
 RUN_DIR="${NC_SNAP_RUN_DIR:-/run/nc-snapshot}"
 STATE_DIR="${NC_SNAP_STATE_DIR:-/var/lib/ncui}"
-LEGACY_STATE_DIR="/var/lib/nightcity"
-ALERT_MSG="${NC_SNAP_ALERT_MSG:-/run/nightcity/snap-alert.msg}"
+ALERT_MSG="${NC_SNAP_ALERT_MSG:-/run/ncui/snap-alert.msg}"
 ALERT_PROFILE="${NC_SNAP_ALERT_PROFILE:-/etc/profile.d/99-snap-alert.sh}"
 PROC_CMDLINE="${NC_SNAP_PROC_CMDLINE:-/proc/cmdline}"
 FSTAB_PATH="${NC_SNAP_FSTAB:-/etc/fstab}"
 PACMAN_HOOK_PATH="${NC_SNAP_PACMAN_HOOK:-/etc/pacman.d/hooks/00-nc-snapshot.hook}"
+APT_HOOK_PATH="${NC_SNAP_APT_HOOK:-/etc/apt/apt.conf.d/00-nc-snapshot}"
 
 WARN_USAGE_PCT=75
 CRIT_USAGE_PCT=85
@@ -53,8 +53,8 @@ Actions:
   -p, --promote               Promote currently booted snapshot to main root
   promote-confirm             Non-interactive promote when booted inside snapshot
   purge-broken-stdin          Remove validated unmounted '*_broken_*' LV
-  hook-on                     Install pacman pre-transaction hook for nc-snap
-  hook-off                    Remove pacman pre-transaction hook
+  hook-on                     Install package-manager pre-transaction snapshot hook
+  hook-off                    Remove package-manager pre-transaction snapshot hook
   config-stdin                Update [snapshots] keys in ${CONF_FILE}
   -h, --help                  Show this help
 EOF
@@ -93,6 +93,7 @@ CFG_SNAP_VAR_SIZE="5G"
 CFG_SNAP_HOME_SIZE="15G"
 CFG_BTRFS_SUBVOL="@"
 CFG_PACMAN_HOOK_AUTO="true"
+CFG_RECOVERY_UKI="nc-rescue.efi"
 
 expand_uki_vars() {
     local val="$1" esp="$2" uki_dir="${2}/EFI/Linux"
@@ -102,7 +103,7 @@ expand_uki_vars() {
 }
 
 load_snap_config() {
-    local host_def
+    local host_def toml_has_esp=0
     host_def="$(uname -n 2>/dev/null | cut -d. -f1)"
     CFG_HOSTNAME="${host_def:-linux}"
 
@@ -120,6 +121,10 @@ load_snap_config() {
                 CFG_HOSTNAME="${BASH_REMATCH[1]}"
                 continue
             fi
+            if [[ "$sec" == "recovery" && "$line" =~ ^uki_name[[:space:]]*=[[:space:]]*\"([^\"]*)\"$ ]]; then
+                [[ -n "${BASH_REMATCH[1]}" ]] && CFG_RECOVERY_UKI="${BASH_REMATCH[1]}"
+                continue
+            fi
             [[ "$sec" == "snapshots" ]] || continue
             if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*(true|false|\"[^\"]*\")$ ]]; then
                 k="${BASH_REMATCH[1]}"
@@ -134,7 +139,7 @@ load_snap_config() {
                     root_lv)          CFG_ROOT_LV="$v" ;;
                     var_lv)           CFG_VAR_LV="$v" ;;
                     home_lv)          CFG_HOME_LV="$v" ;;
-                    esp_mount)        CFG_ESP_MOUNT="$v" ;;
+                    esp_mount)        CFG_ESP_MOUNT="$v"; [[ -n "$v" ]] && toml_has_esp=1 ;;
                     uki_prefix)       CFG_UKI_PREFIX="$v" ;;
                     primary_uki)      CFG_PRIMARY_UKI="$v" ;;
                     snap_root_size)   CFG_SNAP_ROOT_SIZE="$v" ;;
@@ -155,7 +160,7 @@ load_snap_config() {
             v="${v#\"}" ; v="${v%\"}"
             case "$k" in
                 VG_NAME)        CFG_VG_NAME="$v" ;;
-                ESP_MOUNT)      CFG_ESP_MOUNT="$v" ;;
+                ESP_MOUNT)      CFG_ESP_MOUNT="$v"; [[ -n "$v" ]] && toml_has_esp=1 ;;
                 PRIMARY_UKI)    CFG_PRIMARY_UKI="$v" ;;
                 SNAP_ROOT_SIZE) CFG_SNAP_ROOT_SIZE="$v" ;;
                 SNAP_VAR_SIZE)  CFG_SNAP_VAR_SIZE="$v" ;;
@@ -171,17 +176,20 @@ load_snap_config() {
         fi
     fi
 
+    if (( toml_has_esp == 0 )); then
+        local c_esp
+        for c_esp in /efi /boot/efi /boot; do
+            if [[ -d "${c_esp}/EFI" ]]; then
+                CFG_ESP_MOUNT="$c_esp"
+                break
+            fi
+        done
+    fi
+
     [[ "$CFG_BACKEND" == "btrfs" ]] || CFG_BACKEND="lvm_uki"
     CFG_ESP_MOUNT="$(realpath -m "${CFG_ESP_MOUNT:-/boot}")"
     UKI_DIR="${CFG_ESP_MOUNT}/EFI/Linux"
     CFG_PRIMARY_UKI="$(expand_uki_vars "$CFG_PRIMARY_UKI" "$CFG_ESP_MOUNT")"
-    if [[ -z "$CFG_PRIMARY_UKI" ]]; then
-        if [[ -f "${UKI_DIR}/cachyos-linux-hardened.efi" ]]; then
-            CFG_PRIMARY_UKI="${UKI_DIR}/cachyos-linux-hardened.efi"
-        elif [[ -f "${UKI_DIR}/arch-linux-cachyos.efi" ]]; then
-            CFG_PRIMARY_UKI="${UKI_DIR}/arch-linux-cachyos.efi"
-        fi
-    fi
     if [[ -z "$CFG_UKI_PREFIX" ]]; then
         CFG_UKI_PREFIX="$(printf '%s' "${CFG_HOSTNAME:-linux}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
     fi
@@ -352,7 +360,7 @@ is_main_uki() {
     [[ "$base" == "${AUTO_UKI##*/}" ]] && return 1
     [[ "$base" == "${STABLE_UKI##*/}" ]] && return 1
     [[ "$base" == *-auto.efi || "$base" == *-stable.efi ]] && return 1
-    [[ "$base" == *-fallback.efi || "$base" == *recovery*.efi || "$base" == *rescue*.efi || "$base" == *duskcity*.efi || "$base" == *.tmp.* ]] && return 1
+    [[ "$base" == *-fallback.efi || "$base" == *recovery*.efi || "$base" == *rescue*.efi || "$base" == *.tmp.* ]] && return 1
     return 0
 }
 
@@ -549,6 +557,10 @@ write_slot_meta_and_pkgs() {
     TMP_PATHS+=("${SLOT_PKGS}.tmp.$$" "${SLOT_META}.tmp.$$")
     if command -v pacman >/dev/null 2>&1; then
         pacman -Q > "${SLOT_PKGS}.tmp.$$" 2>/dev/null || : > "${SLOT_PKGS}.tmp.$$"
+    elif command -v dpkg-query >/dev/null 2>&1; then
+        dpkg-query -W -f='${Package} ${Version}\n' > "${SLOT_PKGS}.tmp.$$" 2>/dev/null || : > "${SLOT_PKGS}.tmp.$$"
+    elif command -v rpm >/dev/null 2>&1; then
+        rpm -qa > "${SLOT_PKGS}.tmp.$$" 2>/dev/null || : > "${SLOT_PKGS}.tmp.$$"
     else
         : > "${SLOT_PKGS}.tmp.$$"
     fi
@@ -987,83 +999,83 @@ slot_cow_summary() {
 
 write_status_mirrors() {
     local dir snaps_dir status_env
-    for dir in "$STATE_DIR" "$LEGACY_STATE_DIR"; do
-        snaps_dir="${dir}/snapshots"
-        status_env="${dir}/dr-status.env"
-        mkdir -p "$snaps_dir"
-        chmod 0755 "$dir" "$snaps_dir" 2>/dev/null || true
+    dir="$STATE_DIR"
+    snaps_dir="${dir}/snapshots"
+    status_env="${dir}/dr-status.env"
+    mkdir -p "$snaps_dir"
+    chmod 0755 "$dir" "$snaps_dir" 2>/dev/null || true
 
-        local slot present meta_src uki_present uki_file cow_line cow_sum max_pct lv_health
-        for slot in auto stable; do
-            slot_paths "$slot"
-            present=0
-            meta_src="$SLOT_META"
-            if [[ "$CFG_BACKEND" == "btrfs" ]]; then
-                [[ -d "$(btrfs_subvol_path "$slot")" ]] && present=1
-                [[ -f "$meta_src" ]] || meta_src="${STATE_DIR}/snapshots/btrfs-${slot}.meta"
+    local slot present meta_src uki_present uki_file cow_line cow_sum max_pct lv_health
+    for slot in auto stable; do
+        slot_paths "$slot"
+        present=0
+        meta_src="$SLOT_META"
+        if [[ "$CFG_BACKEND" == "btrfs" ]]; then
+            [[ -d "$(btrfs_subvol_path "$slot")" ]] && present=1
+            [[ -f "$meta_src" ]] || meta_src="${STATE_DIR}/snapshots/btrfs-${slot}.meta"
+        else
+            local r_info
+            r_info=$(get_lv_cached_info "snap_${slot}_${CFG_ROOT_LV}")
+            [[ "${r_info%%|*}" != "MISSING" ]] && present=1
+        fi
+
+        if (( present == 0 )); then
+            rm -f "${snaps_dir}/${slot}.meta"
+            continue
+        fi
+
+        [[ -f "$SLOT_UKI" ]] && uki_present=1 || uki_present=0
+        uki_file="${SLOT_UKI##*/}"
+        cow_line="$(slot_cow_summary "$slot")"
+        IFS='|' read -r cow_sum max_pct lv_health <<< "$cow_line"
+
+        {
+            if [[ -f "$meta_src" ]]; then
+                grep -vE '^(UKI_PRESENT|UKI_FILE|COW_SUMMARY|MAX_COW_PCT|LV_HEALTH|BACKEND)=' "$meta_src" || true
             else
-                local r_info
-                r_info=$(get_lv_cached_info "snap_${slot}_${CFG_ROOT_LV}")
-                [[ "${r_info%%|*}" != "MISSING" ]] && present=1
+                printf 'SLOT="%s"\nCREATED_AT="-"\nKERNEL="-"\nNOTE="-"\n' "$slot"
             fi
+            printf 'BACKEND="%s"\n' "$CFG_BACKEND"
+            printf 'UKI_PRESENT="%s"\n' "$uki_present"
+            printf 'UKI_FILE="%s"\n' "$uki_file"
+            printf 'COW_SUMMARY="%s"\n' "$cow_sum"
+            printf 'MAX_COW_PCT="%s"\n' "$max_pct"
+            printf 'LV_HEALTH="%s"\n' "$lv_health"
+        } > "${snaps_dir}/${slot}.meta.tmp.$$"
+        chmod 0644 "${snaps_dir}/${slot}.meta.tmp.$$"
+        mv -f "${snaps_dir}/${slot}.meta.tmp.$$" "${snaps_dir}/${slot}.meta"
+    done
 
-            if (( present == 0 )); then
-                rm -f "${snaps_dir}/${slot}.meta"
-                continue
-            fi
-
-            [[ -f "$SLOT_UKI" ]] && uki_present=1 || uki_present=0
-            uki_file="${SLOT_UKI##*/}"
-            cow_line="$(slot_cow_summary "$slot")"
-            IFS='|' read -r cow_sum max_pct lv_health <<< "$cow_line"
-
-            {
-                if [[ -f "$meta_src" ]]; then
-                    grep -vE '^(UKI_PRESENT|UKI_FILE|COW_SUMMARY|MAX_COW_PCT|LV_HEALTH|BACKEND)=' "$meta_src" || true
-                else
-                    printf 'SLOT="%s"\nCREATED_AT="-"\nKERNEL="-"\nNOTE="-"\n' "$slot"
-                fi
-                printf 'BACKEND="%s"\n' "$CFG_BACKEND"
-                printf 'UKI_PRESENT="%s"\n' "$uki_present"
-                printf 'UKI_FILE="%s"\n' "$uki_file"
-                printf 'COW_SUMMARY="%s"\n' "$cow_sum"
-                printf 'MAX_COW_PCT="%s"\n' "$max_pct"
-                printf 'LV_HEALTH="%s"\n' "$lv_health"
-            } > "${snaps_dir}/${slot}.meta.tmp.$$"
-            chmod 0644 "${snaps_dir}/${slot}.meta.tmp.$$"
-            mv -f "${snaps_dir}/${slot}.meta.tmp.$$" "${snaps_dir}/${slot}.meta"
+    local rescue_ready=0 uki_names="" u broken_list="" blv hook_state=0
+    if [[ -f "${UKI_DIR}/${CFG_RECOVERY_UKI}" || -f "${UKI_DIR}/nc-rescue.efi" ]]; then
+        rescue_ready=1
+    fi
+    [[ -f "$PACMAN_HOOK_PATH" || -f "$APT_HOOK_PATH" ]] && hook_state=1
+    if [[ -d "$UKI_DIR" ]]; then
+        shopt -s nullglob
+        for u in "${UKI_DIR}"/*.efi; do
+            [[ "$u" == *.tmp.* ]] && continue
+            uki_names+="${uki_names:+,}${u##*/}"
         done
+        shopt -u nullglob
+    fi
+    for blv in "${BROKEN_LVS[@]}"; do
+        broken_list+="${broken_list:+,}${blv}:$(human_bytes "${LV_SIZE_B[$blv]}")"
+    done
 
-        local duskcity_ready=0 uki_names="" u broken_list="" blv hook_state=0
-        if [[ -f "${UKI_DIR}/nc-rescue.efi" || -f "${UKI_DIR}/nightcity-recovery.efi" || -f "${UKI_DIR}/duskcity.efi" ]]; then
-            duskcity_ready=1
-        fi
-        [[ -f "$PACMAN_HOOK_PATH" ]] && hook_state=1
-        if [[ -d "$UKI_DIR" ]]; then
-            shopt -s nullglob
-            for u in "${UKI_DIR}"/*.efi; do
-                [[ "$u" == *.tmp.* ]] && continue
-                uki_names+="${uki_names:+,}${u##*/}"
-            done
-            shopt -u nullglob
-        fi
-        for blv in "${BROKEN_LVS[@]}"; do
-            broken_list+="${broken_list:+,}${blv}:$(human_bytes "${LV_SIZE_B[$blv]}")"
-        done
-
-        cat > "${status_env}.tmp.$$" <<EOF
+    cat > "${status_env}.tmp.$$" <<EOF
 BACKEND="${CFG_BACKEND}"
 BOOTED_SLOT="$(get_booted_slot)"
 VG_FREE="${VG_FREE_H}"
-DUSKCITY_READY="${duskcity_ready}"
+RESCUE_READY="${rescue_ready}"
 UKI_NAMES="${uki_names}"
+SNAP_HOOK="${hook_state}"
 PACMAN_HOOK="${hook_state}"
 BROKEN_LVS="${broken_list}"
 UPDATED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 EOF
-        chmod 0644 "${status_env}.tmp.$$"
-        mv -f "${status_env}.tmp.$$" "$status_env"
-    done
+    chmod 0644 "${status_env}.tmp.$$"
+    mv -f "${status_env}.tmp.$$" "$status_env"
 }
 
 cmd_check_health() {
@@ -1145,7 +1157,7 @@ cmd_status() {
     printf " Kernel        : %s%s%s\n" "$C_CYAN" "$(uname -r)" "$C_RESET"
     printf " Environment   : %s\n" "$env_label"
     printf " Pool Free     : %s%s%s\n" "$C_BOLD" "$VG_FREE_H" "$C_RESET"
-    printf " Pacman Hook   : %s\n" "$([[ -f "$PACMAN_HOOK_PATH" ]] && echo ENABLED || echo DISABLED)"
+    printf " Pre-Hook      : %s\n" "$([[ -f "$PACMAN_HOOK_PATH" || -f "$APT_HOOK_PATH" ]] && echo ENABLED || echo DISABLED)"
     if (( ${#BROKEN_LVS[@]} > 0 )); then
         printf " Broken LVs    : %s%s%s\n" "$C_YELLOW" "${BROKEN_LVS[*]}" "$C_RESET"
     fi
@@ -1286,7 +1298,7 @@ apply_config_stdin() {
                 updates["$k"]="\"$v\""
                 ;;
             esp_mount)
-                [[ "$v" =~ ^/(boot|efi)(/[a-zA-Z0-9_.-]+)?$ ]] || { log_err "Invalid esp_mount: $v"; exit 2; }
+                [[ "$v" =~ ^(/boot|/efi|/boot/efi)(/[a-zA-Z0-9_.-]+)?$ ]] || { log_err "Invalid esp_mount: $v"; exit 2; }
                 updates["$k"]="\"$v\""
                 ;;
             uki_prefix)
@@ -1294,7 +1306,7 @@ apply_config_stdin() {
                 updates["$k"]="\"$v\""
                 ;;
             primary_uki)
-                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^/(boot|efi)/[a-zA-Z0-9_./-]+\.efi$ ) ]] || { log_err "Invalid primary_uki: $v"; exit 2; }
+                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^(/boot|/efi|/boot/efi)/[a-zA-Z0-9_./-]+\.efi$ ) ]] || { log_err "Invalid primary_uki: $v"; exit 2; }
                 updates["$k"]="\"$v\""
                 ;;
             snap_root_size|snap_var_size|snap_home_size)
@@ -1324,8 +1336,9 @@ apply_config_stdin() {
 }
 
 cmd_hook_on() {
-    mkdir -p "$(dirname "$PACMAN_HOOK_PATH")"
-    cat > "${PACMAN_HOOK_PATH}.tmp.$$" <<'EOF'
+    if [[ -d /etc/pacman.d ]] || command -v pacman >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$PACMAN_HOOK_PATH")"
+        cat > "${PACMAN_HOOK_PATH}.tmp.$$" <<'EOF'
 [Trigger]
 Operation = Upgrade
 Operation = Install
@@ -1339,19 +1352,44 @@ When = PreTransaction
 Exec = /usr/lib/ncui/sbin/nc-snap --auto
 AbortOnFail
 EOF
-    chmod 0644 "${PACMAN_HOOK_PATH}.tmp.$$"
-    chown root:root "${PACMAN_HOOK_PATH}.tmp.$$"
-    mv -f "${PACMAN_HOOK_PATH}.tmp.$$" "$PACMAN_HOOK_PATH"
-    toml_apply_updates $'pacman_hook_auto=true\n'
-    cmd_check_health || true
-    log_info "Pacman pre-update hook enabled (${PACMAN_HOOK_PATH})."
+        chmod 0644 "${PACMAN_HOOK_PATH}.tmp.$$"
+        chown root:root "${PACMAN_HOOK_PATH}.tmp.$$"
+        mv -f "${PACMAN_HOOK_PATH}.tmp.$$" "$PACMAN_HOOK_PATH"
+        toml_apply_updates $'pacman_hook_auto=true\n'
+        cmd_check_health || true
+        log_info "Pacman pre-update hook enabled (${PACMAN_HOOK_PATH})."
+    elif [[ -d /etc/apt/apt.conf.d ]] || command -v apt-get >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$APT_HOOK_PATH")"
+        cat > "${APT_HOOK_PATH}.tmp.$$" <<'EOF'
+DPkg::Pre-Invoke { "/usr/lib/ncui/sbin/nc-snap --auto || true"; };
+EOF
+        chmod 0644 "${APT_HOOK_PATH}.tmp.$$"
+        chown root:root "${APT_HOOK_PATH}.tmp.$$"
+        mv -f "${APT_HOOK_PATH}.tmp.$$" "$APT_HOOK_PATH"
+        toml_apply_updates $'pacman_hook_auto=true\n'
+        cmd_check_health || true
+        log_info "APT pre-update hook enabled (${APT_HOOK_PATH})."
+    else
+        log_err "MISSING: pacman or apt hook directory not found on this distribution."
+        exit 1
+    fi
 }
 
 cmd_hook_off() {
-    rm -f "$PACMAN_HOOK_PATH"
-    toml_apply_updates $'pacman_hook_auto=false\n'
-    cmd_check_health || true
-    log_info "Pacman pre-update hook disabled."
+    if [[ -f "$PACMAN_HOOK_PATH" || -d /etc/pacman.d ]] || command -v pacman >/dev/null 2>&1; then
+        rm -f "$PACMAN_HOOK_PATH"
+        toml_apply_updates $'pacman_hook_auto=false\n'
+        cmd_check_health || true
+        log_info "Pacman pre-update hook disabled."
+    elif [[ -f "$APT_HOOK_PATH" || -d /etc/apt/apt.conf.d ]] || command -v apt-get >/dev/null 2>&1; then
+        rm -f "$APT_HOOK_PATH"
+        toml_apply_updates $'pacman_hook_auto=false\n'
+        cmd_check_health || true
+        log_info "APT pre-update hook disabled."
+    else
+        log_err "MISSING: pacman or apt hook directory not found on this distribution."
+        exit 1
+    fi
 }
 
 # ==============================================================================
@@ -1390,7 +1428,7 @@ acquire_lock
 case "$ACTION" in
     check-health|--check-health) cmd_check_health ;;
     -n|--new)                    create_boot_environment "stable" "Manual Checkpoint" ;;
-    --auto)                      create_boot_environment "auto" "Pre-update Pacman Hook" ;;
+    --auto)                      create_boot_environment "auto" "Pre-update Hook" ;;
     create-stdin)                cmd_create_stdin ;;
     delete-auto)                 delete_slot_impl "auto" 1 ;;
     delete-stable)               delete_slot_impl "stable" 1 ;;

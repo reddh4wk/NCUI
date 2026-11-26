@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import os
+import sys
 import traceback
 import time
 from core.config import CONFIG, THEME, CONFIG_DIR
@@ -152,6 +153,7 @@ def load_panel(panel_id: str, shell=None, mode: str = "popup") -> BasePanel:
         try:
             spec = importlib.util.spec_from_file_location(f"nc_panel_{base_mod_name}", target_path)
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
             spec.loader.exec_module(mod)
             if hasattr(mod, "create_panel"):
                 return mod.create_panel(pid, shell)

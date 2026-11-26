@@ -38,8 +38,8 @@ Actions:
   umount, -u            Unmount vault backend (auto-pushes SSH staging if active)
   creds-stdin           Read 'user\\npass\\npersist(0|1)' on stdin, verify & mount SMB
   ssh-push              Push staged local SSH vault directory back to remote
-  pkglist [label]       Export pacman -Qqe (+ -Qqm) to vault pkglists (default: snapshot)
-  pkglist-stdin         Export pacman -Qqe (+ -Qqm) to vault pkglists using stdin label
+  pkglist [label]       Export installed packages list to vault pkglists (default: snapshot)
+  pkglist-stdin         Export installed packages list to vault pkglists using stdin label
   pkglist-tsv           List saved pkglists as TSV
   config-stdin          Update [vault] / [identity] in ${CONF_FILE} and sync /etc/nc.profile
   -h, --help            Show this help
@@ -60,6 +60,78 @@ CFG_SMB_CREDS="/etc/samba/nas-cred"
 CFG_SHARES=()
 CFG_BACKUP_SUBDIR=""
 CFG_PKGLIST_SUBDIR=""
+CFG_MOUNT_VISIBILITY="symlink"
+CFG_USER_SYMLINK_DIR="~/NAS"
+CFG_SMB_VERSION="auto"
+CFG_PORT=""
+CFG_MOUNT_OPTS=""
+
+expand_user_tokens() {
+    local p="${1:-}" tilde_pfx="~/"
+    [[ -n "$p" ]] || { printf ''; return 0; }
+    local u="${CALLING_USER:-root}" h="${USER_HOME:-/root}"
+    p="${p//\$USER/$u}"
+    p="${p//\{user\}/$u}"
+    if [[ "$p" == "~" ]]; then
+        p="$h"
+    elif [[ "$p" == "~/"* ]]; then
+        p="${h%/}/${p#"$tilde_pfx"}"
+    fi
+    printf '%s' "$p"
+}
+
+share_remote_part() {
+    local s="$1"
+    if [[ "$s" == *":/"* ]]; then
+        printf '%s' "${s%%:/*}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+share_mount_name() {
+    local r
+    r="$(share_remote_part "$1")"
+    r="${r%/}"
+    printf '%s' "${r##*/}"
+}
+
+share_target_dir() {
+    local s="$1" base_mp="$2" tgt=""
+    if [[ "$SYS_TRUST" == "UNTRUSTED" ]]; then
+        tgt="${base_mp%/}/$(share_mount_name "$s")"
+    elif [[ "$s" == *":/"* ]]; then
+        tgt="/${s#*:/}"
+        tgt="$(expand_user_tokens "$tgt")"
+    else
+        tgt="${base_mp%/}/$(share_mount_name "$s")"
+    fi
+    tgt="${tgt%/}"
+    [[ -n "$tgt" ]] || tgt="/"
+    printf '%s' "$tgt"
+}
+
+share_label_name() {
+    local s="$1" base_mp="${2:-$EFFECTIVE_MP}" tgt lbl
+    tgt="$(share_target_dir "$s" "$base_mp")"
+    lbl="${tgt##*/}"
+    [[ -n "$lbl" ]] || lbl="$(share_mount_name "$s")"
+    printf '%s' "$lbl"
+}
+
+gvfs_opts_for_label() {
+    local raw="$1" safe=""
+    case "$CFG_MOUNT_VISIBILITY" in
+        filemanager|both)
+            safe="${raw//[,[:space:]]/_}"
+            [[ -n "$safe" ]] || safe="NAS"
+            printf ',x-gvfs-show,x-gvfs-name=%s' "$safe"
+            ;;
+        *)
+            printf ''
+            ;;
+    esac
+}
 
 parse_toml_array() {
     local raw="$1"
@@ -78,11 +150,16 @@ parse_toml_array() {
 }
 
 load_vault_config() {
-    local host_def
+    local host_def os_id="linux"
     host_def="$(uname -n 2>/dev/null | cut -d. -f1 || true)"
+    if [[ -r /etc/os-release ]]; then
+        os_id="$(awk -F= '/^ID=/{gsub(/["[:space:]]/,"",$2); print tolower($2); exit}' /etc/os-release 2>/dev/null || true)"
+        os_id="$(printf '%s' "${os_id:-linux}" | tr -cd 'a-z0-9_-')"
+        [[ -n "$os_id" ]] || os_id="linux"
+    fi
     CFG_HOSTNAME="${host_def:-linux}"
     CFG_SYS_ALIAS="$(printf '%s' "$CFG_HOSTNAME" | tr '[:upper:]' '[:lower:]' | cut -c1-8)"
-    CFG_SYS_FOLDER="${CFG_HOSTNAME}-archlinux"
+    CFG_SYS_FOLDER="${CFG_HOSTNAME}-${os_id}"
 
     toml_has_alias=0
     toml_has_folder=0
@@ -118,9 +195,14 @@ load_vault_config() {
                     protocol)           CFG_PROTOCOL="${v,,}" ;;
                     host)               CFG_HOST="$v" ;;
                     mountpoint)         CFG_MOUNTPOINT="$v"; [[ -n "$v" ]] && toml_has_mp=1 ;;
+                    mount_visibility)   CFG_MOUNT_VISIBILITY="${v,,}" ;;
+                    user_symlink_dir)   CFG_USER_SYMLINK_DIR="$v" ;;
                     ssh_user)           CFG_SSH_USER="$v" ;;
                     remote_path)        CFG_REMOTE_PATH="$v" ;;
                     smb_creds_file)     CFG_SMB_CREDS="$v" ;;
+                    smb_version)        CFG_SMB_VERSION="${v,,}" ;;
+                    port)               CFG_PORT="$v" ;;
+                    mount_opts)         CFG_MOUNT_OPTS="$v" ;;
                     backup_root_subdir) CFG_BACKUP_SUBDIR="$v" ;;
                     pkglist_subdir)     CFG_PKGLIST_SUBDIR="$v" ;;
                 esac
@@ -148,24 +230,49 @@ load_vault_config() {
         smb|nfs|ssh|local) ;;
         *) CFG_PROTOCOL="smb" ;;
     esac
-    CFG_MOUNTPOINT="${CFG_MOUNTPOINT:-/nas}"
+    case "$CFG_MOUNT_VISIBILITY" in
+        symlink|filemanager|both|none) ;;
+        *) CFG_MOUNT_VISIBILITY="symlink" ;;
+    esac
+    case "$CFG_SMB_VERSION" in
+        auto|3.1.1|3.0|2.1|2.0|1.0) ;;
+        *) CFG_SMB_VERSION="auto" ;;
+    esac
+    [[ "$CFG_PORT" =~ ^[0-9]+$ ]] && (( CFG_PORT >= 1 && CFG_PORT <= 65535 )) || CFG_PORT=""
+
+    resolve_calling_user
+    CFG_MOUNTPOINT="$(expand_user_tokens "${CFG_MOUNTPOINT:-/nas}")"
     CFG_MOUNTPOINT="${CFG_MOUNTPOINT%/}"
     [[ -n "$CFG_MOUNTPOINT" ]] || CFG_MOUNTPOINT="/nas"
     [[ -n "$CFG_SMB_CREDS" ]] || CFG_SMB_CREDS="/etc/samba/nas-cred"
+    if [[ -n "$CFG_USER_SYMLINK_DIR" ]]; then
+        USER_NAS_DIR="$(expand_user_tokens "$CFG_USER_SYMLINK_DIR")"
+        USER_NAS_DIR="${USER_NAS_DIR%/}"
+    else
+        USER_NAS_DIR=""
+    fi
 
-    # Auto-detect live CIFS mount host/shares when TOML vault is still unpopulated
-    if [[ "$CFG_PROTOCOL" == "smb" && ( -z "$CFG_HOST" || ${#CFG_SHARES[@]} -eq 0 ) && -r "$MOUNTINFO_PATH" ]]; then
-        local _id _pid _maj _rt _mp _rest _fs _src _opts det_host=""
+    # Auto-detect live CIFS/NFS/SSHFS mounts when TOML vault is still unpopulated
+    if [[ ( -z "$CFG_HOST" || ${#CFG_SHARES[@]} -eq 0 ) && -r "$MOUNTINFO_PATH" ]]; then
+        local _id _pid _maj _rt _mp _rest _fs _src _opts det_host="" det_proto=""
         local -a det_shares=()
+        local media_prefix="/run/media/${CALLING_USER}/"
         while read -r _id _pid _maj _rt _mp _rest; do
             [[ -n "$_mp" ]] || continue
             _mp="${_mp//\\040/ }"; _mp="${_mp//\\011/$'\t'}"; _mp="${_mp//\\134/\\}"
-            [[ "$_mp" == "${CFG_MOUNTPOINT}/"* || "$_mp" == "/run/nas/"* ]] || continue
+            [[ "$_mp" == "$CFG_MOUNTPOINT" || "$_mp" == "${CFG_MOUNTPOINT}/"* || "$_mp" == "/run/nas/"* || "$_mp" == "${media_prefix}"* ]] || continue
             if [[ "$_rest" =~ [[:space:]]-[[:space:]]([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]*(.*)$ ]]; then
                 _fs="${BASH_REMATCH[1]}"; _src="${BASH_REMATCH[2]}"
                 if [[ "$_fs" == "cifs" && "$_src" =~ ^//([^/]+)/([^/]+)$ ]]; then
-                    det_host="${BASH_REMATCH[1]}"
+                    det_proto="${det_proto:-smb}"; det_host="${det_host:-${BASH_REMATCH[1]}}"
                     det_shares+=("${BASH_REMATCH[2]}")
+                elif [[ ( "$_fs" == "nfs" || "$_fs" == "nfs4" ) && "$_src" =~ ^([^:]+):(.+)$ ]]; then
+                    det_proto="${det_proto:-nfs}"; det_host="${det_host:-${BASH_REMATCH[1]}}"
+                    det_shares+=("${BASH_REMATCH[2]#/}")
+                elif [[ "$_fs" == "fuse.sshfs" && "$_src" =~ ^([^:@]+@)?([^:]+):(.+)$ ]]; then
+                    det_proto="${det_proto:-ssh}"; det_host="${det_host:-${BASH_REMATCH[2]}}"
+                    [[ -n "$CFG_SSH_USER" || -z "${BASH_REMATCH[1]}" ]] || CFG_SSH_USER="${BASH_REMATCH[1]%@}"
+                    [[ -n "$CFG_REMOTE_PATH" ]] || CFG_REMOTE_PATH="${BASH_REMATCH[3]}"
                 fi
             fi
         done < "$MOUNTINFO_PATH"
@@ -175,24 +282,8 @@ load_vault_config() {
         fi
     fi
 
-    if [[ -z "$CFG_BACKUP_SUBDIR" ]]; then
-        if printf '%s\n' "${CFG_SHARES[@]}" | grep -qx "personal_folder"; then
-            CFG_BACKUP_SUBDIR="personal_folder/Software/Linux"
-        else
-            CFG_BACKUP_SUBDIR="ncui-vault"
-        fi
-    fi
-    if [[ -z "$CFG_PKGLIST_SUBDIR" ]]; then
-        if [[ "$CFG_BACKUP_SUBDIR" == "personal_folder/Software/Linux" ]]; then
-            if [[ -n "$CFG_SYS_FOLDER" && ( -d "${CFG_MOUNTPOINT}/${CFG_BACKUP_SUBDIR%/}/${CFG_SYS_FOLDER}/pkglists" || ! -d "${CFG_MOUNTPOINT}/${CFG_BACKUP_SUBDIR%/}/arch/pkglists" ) ]]; then
-                CFG_PKGLIST_SUBDIR="${CFG_BACKUP_SUBDIR%/}/${CFG_SYS_FOLDER}/pkglists"
-            else
-                CFG_PKGLIST_SUBDIR="${CFG_BACKUP_SUBDIR%/}/arch/pkglists"
-            fi
-        else
-            CFG_PKGLIST_SUBDIR="${CFG_BACKUP_SUBDIR%/}/pkglists"
-        fi
-    fi
+    [[ -n "$CFG_BACKUP_SUBDIR" ]] || CFG_BACKUP_SUBDIR="ncui-vault"
+    [[ -n "$CFG_PKGLIST_SUBDIR" ]] || CFG_PKGLIST_SUBDIR="${CFG_BACKUP_SUBDIR%/}/pkglists"
     CFG_BACKUP_SUBDIR="${CFG_BACKUP_SUBDIR#/}"; CFG_BACKUP_SUBDIR="${CFG_BACKUP_SUBDIR%/}"
     CFG_PKGLIST_SUBDIR="${CFG_PKGLIST_SUBDIR#/}"; CFG_PKGLIST_SUBDIR="${CFG_PKGLIST_SUBDIR%/}"
     return 0
@@ -229,6 +320,8 @@ resolve_calling_user() {
         cand="$DOAS_USER"
     elif [[ "${PKEXEC_UID:-}" =~ ^[0-9]+$ && "$PKEXEC_UID" != "0" ]]; then
         cand="$PKEXEC_UID"
+    elif [[ $EUID -ne 0 && -n "${USER:-}" && "$USER" != "root" ]]; then
+        cand="$USER"
     elif [[ -n "${CFG_SSH_USER:-}" && "$CFG_SSH_USER" != "root" ]]; then
         cand="$CFG_SSH_USER"
     else
@@ -246,7 +339,6 @@ resolve_calling_user() {
             CALLING_USER="root"
         fi
     fi
-    USER_NAS_DIR="${USER_HOME}/NAS"
 }
 
 declare -A MOUNTED_PATHS=()
@@ -301,18 +393,14 @@ run_ssh_cmd() {
     fi
 }
 
-share_mount_name() {
-    local s="${1%/}"
-    printf '%s' "${s##*/}"
-}
-
 setup_user_symlinks_shares() {
     [[ -n "$USER_HOME" && -d "$USER_HOME" && -w "$USER_HOME" ]] || return 0
+    [[ -n "$USER_NAS_DIR" ]] || return 0
     [[ -e "$USER_NAS_DIR" && ! -d "$USER_NAS_DIR" ]] && return 0
     local sh sh_name mp lp cur ensured=0
     for sh in "${CFG_SHARES[@]}"; do
-        sh_name="$(share_mount_name "$sh")"
-        mp="${EFFECTIVE_MP}/${sh_name}"
+        sh_name="$(share_label_name "$sh" "$EFFECTIVE_MP")"
+        mp="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
         is_mounted "$mp" || continue
         if (( ensured == 0 )); then
             mkdir -p "$USER_NAS_DIR"
@@ -334,6 +422,7 @@ setup_user_symlinks_shares() {
 setup_user_symlink_single() {
     local target="$1" name="${2:-vault}"
     [[ -n "$USER_HOME" && -d "$USER_HOME" && -w "$USER_HOME" ]] || return 0
+    [[ -n "$USER_NAS_DIR" ]] || return 0
     mkdir -p "$USER_NAS_DIR"
     chown "$MOUNT_UID:$MOUNT_GID" "$USER_NAS_DIR"
     chmod 755 "$USER_NAS_DIR"
@@ -345,32 +434,68 @@ setup_user_symlink_single() {
 }
 
 cleanup_user_symlinks() {
-    [[ -n "$USER_HOME" && -d "$USER_NAS_DIR" && -w "$USER_NAS_DIR" ]] || return 0
-    local sh sh_name lp base still_mounted
+    local force="${1:-0}"
+    [[ -n "$USER_HOME" && -n "$USER_NAS_DIR" && -d "$USER_NAS_DIR" && -w "$USER_NAS_DIR" ]] || return 0
+    local sh sh_name mp_tgt lp base still_mounted
     for sh in "${CFG_SHARES[@]}"; do
-        sh_name="$(share_mount_name "$sh")"
+        sh_name="$(share_label_name "$sh" "$EFFECTIVE_MP")"
+        mp_tgt="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
         still_mounted=0
-        for base in "$EFFECTIVE_MP" "/nas" "/run/nas"; do
-            if is_mounted "${base}/${sh_name}"; then
+        if [[ "$force" != "--force" ]]; then
+            if is_mounted "$mp_tgt"; then
                 still_mounted=1
-                break
+            else
+                for base in "$EFFECTIVE_MP" "/nas" "/run/nas"; do
+                    if is_mounted "${base}/${sh_name}"; then
+                        still_mounted=1
+                        break
+                    fi
+                done
             fi
-        done
+        fi
         (( still_mounted == 1 )) && continue
         lp="${USER_NAS_DIR}/${sh_name}"
         [[ -L "$lp" ]] && rm -f "$lp" 2>/dev/null || true
     done
     lp="${USER_NAS_DIR}/vault"
-    if [[ -L "$lp" ]] && ! is_mounted "$EFFECTIVE_MP" && [[ ! -f "${EFFECTIVE_MP}/.ncui_ssh_mounted" ]]; then
+    if [[ -L "$lp" ]] && ( [[ "$force" == "--force" ]] || ( ! is_mounted "$EFFECTIVE_MP" && [[ ! -f "${EFFECTIVE_MP}/.ncui_ssh_mounted" ]] ) ); then
         rm -f "$lp" 2>/dev/null || true
     fi
     is_dir_empty "$USER_NAS_DIR" && rmdir "$USER_NAS_DIR" 2>/dev/null || true
 }
 
+sync_user_symlinks_shares() {
+    if [[ ( "$CFG_MOUNT_VISIBILITY" == "symlink" || "$CFG_MOUNT_VISIBILITY" == "both" ) && -n "$USER_NAS_DIR" ]]; then
+        setup_user_symlinks_shares
+    else
+        cleanup_user_symlinks --force
+    fi
+}
+
+sync_user_symlink_single() {
+    local target="$1" name="${2:-vault}"
+    if [[ ( "$CFG_MOUNT_VISIBILITY" == "symlink" || "$CFG_MOUNT_VISIBILITY" == "both" ) && -n "$USER_NAS_DIR" ]]; then
+        setup_user_symlink_single "$target" "$name"
+    else
+        cleanup_user_symlinks --force
+    fi
+}
+
 resolve_active_base() {
-    local mp first_name=""
-    (( ${#CFG_SHARES[@]} > 0 )) && first_name="$(share_mount_name "${CFG_SHARES[0]}")"
+    local mp first_name="" first_tgt=""
+    if (( ${#CFG_SHARES[@]} > 0 )); then
+        first_tgt="$(share_target_dir "${CFG_SHARES[0]}" "$EFFECTIVE_MP")"
+        first_name="$(share_label_name "${CFG_SHARES[0]}" "$EFFECTIVE_MP")"
+    fi
     if [[ "$CFG_PROTOCOL" == "smb" || "$CFG_PROTOCOL" == "nfs" ]]; then
+        if [[ -n "$first_tgt" ]] && is_mounted "$first_tgt"; then
+            if [[ "${CFG_SHARES[0]}" == *":/"* ]]; then
+                printf '%s' "${first_tgt%/*}"
+            else
+                printf '%s' "$EFFECTIVE_MP"
+            fi
+            return 0
+        fi
         for mp in "$EFFECTIVE_MP" "/nas" "/run/nas"; do
             if [[ -n "$first_name" ]] && is_mounted "${mp}/${first_name}"; then
                 printf '%s' "$mp"
@@ -401,10 +526,11 @@ compute_mount_counts() {
     case "$CFG_PROTOCOL" in
         smb|nfs)
             (( TOTAL_CNT > 0 )) || TOTAL_CNT=1
-            local sh sh_name
+            local sh sh_tgt sh_lbl
             for sh in "${CFG_SHARES[@]}"; do
-                sh_name="$(share_mount_name "$sh")"
-                if is_mounted "${ACTIVE_BASE}/${sh_name}"; then
+                sh_tgt="$(share_target_dir "$sh" "$ACTIVE_BASE")"
+                sh_lbl="$(share_label_name "$sh" "$ACTIVE_BASE")"
+                if is_mounted "$sh_tgt" || is_mounted "${ACTIVE_BASE}/${sh_lbl}"; then
                     MOUNTED_CNT=$(( MOUNTED_CNT + 1 ))
                 fi
             done
@@ -435,13 +561,18 @@ cmd_status_env() {
     local shares_csv=""
     local IFS_SAV="$IFS"; IFS=","; shares_csv="${CFG_SHARES[*]}"; IFS="$IFS_SAV"
     local creds_ok=0
-    if [[ -f "$CFG_SMB_CREDS" ]]; then
+    if [[ "${CFG_SMB_CREDS,,}" == "guest" || -f "$CFG_SMB_CREDS" ]]; then
         creds_ok=1
     fi
     printf 'PROTOCOL="%s"\n' "$CFG_PROTOCOL"
     printf 'HOST="%s"\n' "$CFG_HOST"
+    printf 'PORT="%s"\n' "$CFG_PORT"
     printf 'MOUNTPOINT="%s"\n' "$CFG_MOUNTPOINT"
     printf 'EFFECTIVE_MP="%s"\n' "$ACTIVE_BASE"
+    printf 'MOUNT_VISIBILITY="%s"\n' "$CFG_MOUNT_VISIBILITY"
+    printf 'USER_SYMLINK_DIR="%s"\n' "$USER_NAS_DIR"
+    printf 'SMB_VERSION="%s"\n' "$CFG_SMB_VERSION"
+    printf 'MOUNT_OPTS="%s"\n' "$CFG_MOUNT_OPTS"
     printf 'MOUNTED="%s"\n' "$MOUNTED_STATE"
     printf 'MOUNTED_COUNT="%s"\n' "$MOUNTED_CNT"
     printf 'TOTAL_SHARES="%s"\n' "$TOTAL_CNT"
@@ -456,6 +587,9 @@ cmd_status() {
     compute_mount_counts
     printf "Protocol     : %s\n" "$CFG_PROTOCOL"
     printf "Target       : %s (%s)\n" "${CFG_HOST:-local}" "$ACTIVE_BASE"
+    printf "Visibility   : %s\n" "$CFG_MOUNT_VISIBILITY"
+    [[ -n "$CFG_PORT" ]] && printf "Port         : %s\n" "$CFG_PORT" || true
+    [[ "$CFG_PROTOCOL" == "smb" && "$CFG_SMB_VERSION" != "auto" ]] && printf "SMB Version  : %s\n" "$CFG_SMB_VERSION" || true
     printf "State        : %s (%d/%d)\n" "$([[ "$MOUNTED_STATE" == "1" ]] && echo MOUNTED || echo UNMOUNTED)" "$MOUNTED_CNT" "$TOTAL_CNT"
     printf "Trust Policy : %s\n" "$SYS_TRUST"
     printf "Backup Root  : %s\n" "${ACTIVE_BASE}/${CFG_BACKUP_SUBDIR}"
@@ -463,13 +597,15 @@ cmd_status() {
 }
 
 TMP_CREDS=""
-TEST_MNT="/dev/shm/.nc_vault_probe_$$"
+TEST_MNT=""
 cleanup() {
     set +e
-    if mountpoint -q "$TEST_MNT" 2>/dev/null; then
-        umount -l "$TEST_MNT" 2>/dev/null || true
+    if [[ -n "${TEST_MNT:-}" ]]; then
+        if mountpoint -q "$TEST_MNT" 2>/dev/null; then
+            umount -l "$TEST_MNT" 2>/dev/null || true
+        fi
+        [[ -d "$TEST_MNT" ]] && rmdir "$TEST_MNT" 2>/dev/null || true
     fi
-    [[ -d "$TEST_MNT" ]] && rmdir "$TEST_MNT" 2>/dev/null || true
     if [[ -n "${TMP_CREDS:-}" && -f "$TMP_CREDS" ]]; then
         shred -u -z "$TMP_CREDS" 2>/dev/null || rm -f "$TMP_CREDS"
     fi
@@ -489,16 +625,26 @@ mount_smb_with_creds() {
     command -v mount.cifs >/dev/null 2>&1 || { log_err "mount.cifs not installed (install cifs-utils)."; exit 1; }
     [[ -n "$CFG_HOST" ]] || { log_err "Vault host not configured."; exit 1; }
     (( ${#CFG_SHARES[@]} > 0 )) || { log_err "No SMB shares configured."; exit 1; }
-    probe_host_port "$CFG_HOST" 445 || { log_err "SMB host ${CFG_HOST}:445 unreachable."; exit 1; }
+    local smb_port="${CFG_PORT:-445}"
+    probe_host_port "$CFG_HOST" "$smb_port" || { log_err "SMB host ${CFG_HOST}:${smb_port} unreachable."; exit 1; }
 
     refresh_mounted_map
     mkdir -p "$EFFECTIVE_MP"
     chown "$MOUNT_UID:$MOUNT_GID" "$EFFECTIVE_MP" 2>/dev/null || true
     chmod 755 "$EFFECTIVE_MP"
 
-    local failed=0 sh sh_dir actimeo
+    local creds_opt="credentials=${creds_path}"
+    [[ "${CFG_SMB_CREDS,,}" == "guest" || -z "$creds_path" ]] && creds_opt="guest"
+    local vers_opt="" port_opt="" extra_opt=""
+    [[ "$CFG_SMB_VERSION" != "auto" && -n "$CFG_SMB_VERSION" ]] && vers_opt=",vers=${CFG_SMB_VERSION}"
+    [[ -n "$CFG_PORT" ]] && port_opt=",port=${CFG_PORT}"
+    [[ -n "$CFG_MOUNT_OPTS" ]] && extra_opt=",${CFG_MOUNT_OPTS}"
+
+    local failed=0 sh rem_sh sh_dir lbl actimeo gvfs_opt
     for sh in "${CFG_SHARES[@]}"; do
-        sh_dir="${EFFECTIVE_MP}/${sh}"
+        rem_sh="$(share_remote_part "$sh")"
+        sh_dir="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
+        lbl="$(share_label_name "$sh" "$EFFECTIVE_MP")"
         if is_mounted "$sh_dir"; then
             continue
         fi
@@ -508,36 +654,57 @@ mount_smb_with_creds() {
             continue
         fi
         mkdir -p "$sh_dir"
-        chown "$MOUNT_UID:$MOUNT_GID" "$sh_dir" 2>/dev/null || true
-        [[ "$sh" == "personal_folder" || "$sh" == "docker" ]] && actimeo=1 || actimeo=30
-        if mount -t cifs "//${CFG_HOST}/${sh}" "$sh_dir" \
-            -o "credentials=${creds_path},iocharset=utf8,uid=${MOUNT_UID},gid=${MOUNT_GID},file_mode=0600,dir_mode=0700,vers=3.1.1,actimeo=${actimeo},nosuid,nodev"; then
+        chown "$MOUNT_UID:$MOUNT_GID" "$(dirname "$sh_dir")" "$sh_dir" 2>/dev/null || true
+        [[ "$CFG_BACKUP_SUBDIR" == "${rem_sh}/"* || "$CFG_BACKUP_SUBDIR" == "$rem_sh" || "$CFG_BACKUP_SUBDIR" == "${lbl}/"* || "$CFG_BACKUP_SUBDIR" == "$lbl" ]] && actimeo=1 || actimeo=30
+        gvfs_opt="$(gvfs_opts_for_label "$lbl")"
+        if mount -t cifs "//${CFG_HOST}/${rem_sh}" "$sh_dir" \
+            -o "${creds_opt},iocharset=utf8,uid=${MOUNT_UID},gid=${MOUNT_GID},file_mode=0600,dir_mode=0700${vers_opt}${port_opt}${gvfs_opt}${extra_opt},actimeo=${actimeo},nosuid,nodev"; then
             log_ok "Mounted ${sh_dir}"
         else
-            log_err "Failed mounting //${CFG_HOST}/${sh}"
+            log_err "Failed mounting //${CFG_HOST}/${rem_sh}"
             failed=1
         fi
     done
 
     refresh_mounted_map
-    setup_user_symlinks_shares
+    sync_user_symlinks_shares
     (( failed == 0 )) || exit 1
 }
 
 cmd_mount_smb() {
     refresh_mounted_map
-    local missing=0 sh
+    local missing=0 sh sh_tgt
     for sh in "${CFG_SHARES[@]}"; do
-        is_mounted "${EFFECTIVE_MP}/${sh}" || missing=$(( missing + 1 ))
+        sh_tgt="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
+        is_mounted "$sh_tgt" || missing=$(( missing + 1 ))
     done
     if (( ${#CFG_SHARES[@]} > 0 && missing == 0 )); then
-        setup_user_symlinks_shares
+        sync_user_symlinks_shares
         log_ok "All SMB shares already mounted in ${EFFECTIVE_MP}."
+        return 0
+    fi
+    if [[ "${CFG_SMB_CREDS,,}" == "guest" ]]; then
+        mount_smb_with_creds ""
         return 0
     fi
     if [[ "$SYS_TRUST" == "TRUSTED" && -f "$CFG_SMB_CREDS" ]]; then
         mount_smb_with_creds "$CFG_SMB_CREDS"
         return 0
+    fi
+    if [[ -t 0 ]]; then
+        local tty_user="" tty_pass="" tty_ans="" tty_persist="0"
+        printf 'SMB username for %s: ' "$CFG_HOST" >&2
+        IFS= read -r tty_user || true
+        printf 'SMB password for %s@%s: ' "${tty_user:-user}" "$CFG_HOST" >&2
+        IFS= read -rs tty_pass || true
+        printf '\n' >&2
+        if [[ "$SYS_TRUST" == "TRUSTED" ]]; then
+            printf 'Save credentials to %s? [y/N]: ' "$CFG_SMB_CREDS" >&2
+            IFS= read -r tty_ans || true
+            [[ "${tty_ans,,}" == "y" || "${tty_ans,,}" == "yes" || "${tty_ans,,}" == "s" ]] && tty_persist="1"
+        fi
+        printf '%s\n%s\n%s\n' "$tty_user" "$tty_pass" "$tty_persist" | cmd_creds_stdin
+        return $?
     fi
     echo "CREDENTIALS_REQUIRED"
     exit 10
@@ -554,19 +721,26 @@ cmd_creds_stdin() {
     [[ -n "$smb_user" && -n "$smb_pass" ]] || { log_err "Username and password required."; exit 2; }
     [[ -n "$CFG_HOST" ]] || { log_err "Vault host not configured."; exit 2; }
     (( ${#CFG_SHARES[@]} > 0 )) || { log_err "No SMB shares configured."; exit 2; }
-    probe_host_port "$CFG_HOST" 445 || { log_err "SMB host ${CFG_HOST}:445 unreachable."; exit 1; }
+    local smb_port="${CFG_PORT:-445}"
+    local vers_opt="" port_opt=""
+    [[ "$CFG_SMB_VERSION" != "auto" && -n "$CFG_SMB_VERSION" ]] && vers_opt=",vers=${CFG_SMB_VERSION}"
+    [[ -n "$CFG_PORT" ]] && port_opt=",port=${CFG_PORT}"
+    probe_host_port "$CFG_HOST" "$smb_port" || { log_err "SMB host ${CFG_HOST}:${smb_port} unreachable."; exit 1; }
 
     TMP_CREDS=$(mktemp -p /dev/shm .nc_vault_cred_XXXXXX)
     chmod 0600 "$TMP_CREDS"
     printf 'username=%s\npassword=%s\n' "$smb_user" "$smb_pass" > "$TMP_CREDS"
 
-    mkdir -p "$TEST_MNT"
-    if ! mount -t cifs "//${CFG_HOST}/${CFG_SHARES[0]}" "$TEST_MNT" -o "credentials=${TMP_CREDS},ro,vers=3.1.1,nosuid,nodev" >/dev/null 2>&1; then
+    local probe_sh
+    probe_sh="$(share_remote_part "${CFG_SHARES[0]}")"
+    TEST_MNT="$(mktemp -d -p /dev/shm .ncui_vault_probe.XXXXXX)"
+    if ! mount -t cifs "//${CFG_HOST}/${probe_sh}" "$TEST_MNT" -o "credentials=${TMP_CREDS},ro${vers_opt}${port_opt},nosuid,nodev" >/dev/null 2>&1; then
         log_err "SMB authentication rejected by ${CFG_HOST}."
         exit 1
     fi
     umount "$TEST_MNT"
     rmdir "$TEST_MNT"
+    TEST_MNT=""
 
     local creds_use="$TMP_CREDS"
     if [[ "$persist" == "1" && "$SYS_TRUST" == "TRUSTED" ]]; then
@@ -581,19 +755,24 @@ cmd_mount_nfs() {
     command -v mount.nfs >/dev/null 2>&1 || command -v mount.nfs4 >/dev/null 2>&1 || { log_err "nfs-utils not installed."; exit 1; }
     [[ -n "$CFG_HOST" ]] || { log_err "NFS host not configured."; exit 1; }
     (( ${#CFG_SHARES[@]} > 0 )) || { log_err "No NFS exports configured in shares[]."; exit 1; }
-    probe_host_port "$CFG_HOST" 2049 || { log_err "NFS host ${CFG_HOST}:2049 unreachable."; exit 1; }
+    local nfs_port="${CFG_PORT:-2049}"
+    probe_host_port "$CFG_HOST" "$nfs_port" || { log_err "NFS host ${CFG_HOST}:${nfs_port} unreachable."; exit 1; }
 
     refresh_mounted_map
     mkdir -p "$EFFECTIVE_MP"
     chmod 755 "$EFFECTIVE_MP"
-    local sh sh_dir failed=0 exp
+    local port_opt="${CFG_PORT:+,port=${CFG_PORT}}" extra_opt="${CFG_MOUNT_OPTS:+,${CFG_MOUNT_OPTS}}"
+    local sh rem_sh sh_dir lbl failed=0 exp gvfs_opt
     for sh in "${CFG_SHARES[@]}"; do
-        sh_dir="${EFFECTIVE_MP}/${sh##*/}"
+        rem_sh="$(share_remote_part "$sh")"
+        sh_dir="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
+        lbl="$(share_label_name "$sh" "$EFFECTIVE_MP")"
         is_mounted "$sh_dir" && continue
         mkdir -p "$sh_dir"
-        [[ "$sh" == /* ]] && exp="$sh" || exp="/${sh}"
-        if mount -t nfs4 -o "rw,nosuid,nodev,soft,timeo=50" "${CFG_HOST}:${exp}" "$sh_dir" \
-           || mount -t nfs -o "rw,nosuid,nodev,soft,timeo=50" "${CFG_HOST}:${exp}" "$sh_dir"; then
+        [[ "$rem_sh" == /* ]] && exp="$rem_sh" || exp="/${rem_sh}"
+        gvfs_opt="$(gvfs_opts_for_label "$lbl")"
+        if mount -t nfs4 -o "rw,nosuid,nodev,soft,timeo=50${port_opt}${gvfs_opt}${extra_opt}" "${CFG_HOST}:${exp}" "$sh_dir" \
+           || mount -t nfs -o "rw,nosuid,nodev,soft,timeo=50${port_opt}${gvfs_opt}${extra_opt}" "${CFG_HOST}:${exp}" "$sh_dir"; then
             log_ok "Mounted NFS ${sh_dir}"
         else
             log_err "Failed mounting NFS ${CFG_HOST}:${exp}"
@@ -601,7 +780,7 @@ cmd_mount_nfs() {
         fi
     done
     refresh_mounted_map
-    setup_user_symlinks_shares
+    sync_user_symlinks_shares
     (( failed == 0 )) || exit 1
 }
 
@@ -609,7 +788,8 @@ cmd_mount_ssh() {
     [[ -n "$CFG_HOST" ]] || { log_err "SSH host not configured."; exit 1; }
     local rpath="${CFG_REMOTE_PATH:-/srv/vault}"
     local target="${CFG_SSH_USER:+${CFG_SSH_USER}@}${CFG_HOST}:${rpath}"
-    probe_host_port "$CFG_HOST" 22 || { log_err "SSH host ${CFG_HOST}:22 unreachable."; exit 1; }
+    local ssh_port="${CFG_PORT:-22}"
+    probe_host_port "$CFG_HOST" "$ssh_port" || { log_err "SSH host ${CFG_HOST}:${ssh_port} unreachable."; exit 1; }
 
     refresh_mounted_map
     mkdir -p "$EFFECTIVE_MP"
@@ -617,18 +797,32 @@ cmd_mount_ssh() {
 
     if command -v sshfs >/dev/null 2>&1; then
         if ! is_mounted "$EFFECTIVE_MP"; then
-            run_ssh_cmd sshfs "$target" "$EFFECTIVE_MP" -o "uid=${MOUNT_UID},gid=${MOUNT_GID},reconnect,ServerAliveInterval=15"
+            local port_opt="${CFG_PORT:+,port=${CFG_PORT}}" extra_opt="${CFG_MOUNT_OPTS:+,${CFG_MOUNT_OPTS}}"
+            local gvfs_opt lbl="${EFFECTIVE_MP##*/}"
+            gvfs_opt="$(gvfs_opts_for_label "${lbl:-Vault}")"
+            if [[ -n "$gvfs_opt" ]]; then
+                run_ssh_cmd sshfs "$target" "$EFFECTIVE_MP" -o "uid=${MOUNT_UID},gid=${MOUNT_GID},reconnect,ServerAliveInterval=15${port_opt}${gvfs_opt}${extra_opt}" 2>/dev/null \
+                    || run_ssh_cmd sshfs "$target" "$EFFECTIVE_MP" -o "uid=${MOUNT_UID},gid=${MOUNT_GID},reconnect,ServerAliveInterval=15${port_opt}${extra_opt}"
+            else
+                run_ssh_cmd sshfs "$target" "$EFFECTIVE_MP" -o "uid=${MOUNT_UID},gid=${MOUNT_GID},reconnect,ServerAliveInterval=15${port_opt}${extra_opt}"
+            fi
         fi
         log_ok "Mounted SSHFS ${target} -> ${EFFECTIVE_MP}"
     else
         command -v rsync >/dev/null 2>&1 || { log_err "Neither sshfs nor rsync is installed."; exit 1; }
-        run_ssh_cmd ssh -o BatchMode=yes -o ConnectTimeout=6 "${CFG_SSH_USER:+${CFG_SSH_USER}@}${CFG_HOST}" "mkdir -p '${rpath}'"
-        run_ssh_cmd rsync -az --delete --exclude='.ncui_ssh_mounted' "${target%/}/" "${EFFECTIVE_MP%/}/"
+        local -a ssh_opts=(-o BatchMode=yes -o ConnectTimeout=6)
+        local rsh_cmd="ssh"
+        if [[ -n "$CFG_PORT" ]]; then
+            ssh_opts+=(-p "$CFG_PORT")
+            rsh_cmd="ssh -p ${CFG_PORT}"
+        fi
+        run_ssh_cmd ssh "${ssh_opts[@]}" "${CFG_SSH_USER:+${CFG_SSH_USER}@}${CFG_HOST}" "mkdir -p '${rpath}'"
+        run_ssh_cmd rsync -az -e "$rsh_cmd" --delete --exclude='.ncui_ssh_mounted' "${target%/}/" "${EFFECTIVE_MP%/}/"
         printf 'HOST=%s\nTARGET=%s\n' "$CFG_HOST" "$target" > "${EFFECTIVE_MP}/.ncui_ssh_mounted"
         chown "$MOUNT_UID:$MOUNT_GID" "${EFFECTIVE_MP}/.ncui_ssh_mounted" 2>/dev/null || true
         log_ok "Staged SSH/Rsync vault ${target} -> ${EFFECTIVE_MP}"
     fi
-    setup_user_symlink_single "$EFFECTIVE_MP" "vault"
+    sync_user_symlink_single "$EFFECTIVE_MP" "vault"
 }
 
 cmd_ssh_push() {
@@ -637,14 +831,16 @@ cmd_ssh_push() {
     command -v rsync >/dev/null 2>&1 || return 0
     local rpath="${CFG_REMOTE_PATH:-/srv/vault}"
     local target="${CFG_SSH_USER:+${CFG_SSH_USER}@}${CFG_HOST}:${rpath}"
-    run_ssh_cmd rsync -az --delete --exclude='.ncui_ssh_mounted' "${EFFECTIVE_MP%/}/" "${target%/}/"
+    local rsh_cmd="ssh"
+    [[ -n "$CFG_PORT" ]] && rsh_cmd="ssh -p ${CFG_PORT}"
+    run_ssh_cmd rsync -az -e "$rsh_cmd" --delete --exclude='.ncui_ssh_mounted' "${EFFECTIVE_MP%/}/" "${target%/}/"
     log_ok "Pushed staged vault to ${target}"
 }
 
 cmd_mount_local() {
     mkdir -p "${EFFECTIVE_MP}/${CFG_BACKUP_SUBDIR}" "${EFFECTIVE_MP}/${CFG_PKGLIST_SUBDIR}"
     chown -R "$MOUNT_UID:$MOUNT_GID" "${EFFECTIVE_MP}" 2>/dev/null || true
-    setup_user_symlink_single "$EFFECTIVE_MP" "vault"
+    sync_user_symlink_single "$EFFECTIVE_MP" "vault"
     log_ok "Local vault ready at ${EFFECTIVE_MP}"
 }
 
@@ -666,7 +862,7 @@ cmd_umount() {
             cmd_ssh_push || true
             rm -f "${EFFECTIVE_MP}/.ncui_ssh_mounted"
         fi
-        cleanup_user_symlinks
+        cleanup_user_symlinks --force
         log_ok "Unmounted SSH vault."
         return 0
     fi
@@ -674,15 +870,21 @@ cmd_umount() {
         if is_mounted "$EFFECTIVE_MP"; then
             umount "$EFFECTIVE_MP" 2>/dev/null || true
         fi
-        cleanup_user_symlinks
+        cleanup_user_symlinks --force
         log_ok "Detached local vault symlinks."
         return 0
     fi
 
-    local base sh sh_name sd failed=0
+    local base sh sh_name sh_tgt sd failed=0
+    for sh in "${CFG_SHARES[@]}"; do
+        sh_tgt="$(share_target_dir "$sh" "$EFFECTIVE_MP")"
+        if is_mounted "$sh_tgt"; then
+            umount "$sh_tgt" 2>/dev/null || umount -l "$sh_tgt" 2>/dev/null || failed=1
+        fi
+    done
     for base in "$EFFECTIVE_MP" "/nas" "/run/nas"; do
         for sh in "${CFG_SHARES[@]}"; do
-            sh_name="$(share_mount_name "$sh")"
+            sh_name="$(share_label_name "$sh" "$base")"
             sd="${base}/${sh_name}"
             if is_mounted "$sd"; then
                 umount "$sd" 2>/dev/null || umount -l "$sd" 2>/dev/null || failed=1
@@ -732,15 +934,30 @@ cmd_pkglist_stdin() {
     local aur_path="${dest_dir}/${next_num}_${label}_aur.txt"
     local tmp_aur="${aur_path}.tmp.$$"
 
-    mapfile -t pkgs < <(pacman -Qqe 2>/dev/null || true)
-    (( ${#pkgs[@]} > 0 )) || { log_err "pacman -Qqe returned no packages."; exit 1; }
+    local -a pkgs=() aur_pkgs=()
+    local aur_cnt=0
+    if command -v pacman >/dev/null 2>&1; then
+        mapfile -t pkgs < <(pacman -Qqe 2>/dev/null || true)
+        mapfile -t aur_pkgs < <(pacman -Qqm 2>/dev/null || true)
+    elif command -v apt-mark >/dev/null 2>&1; then
+        mapfile -t pkgs < <(apt-mark showmanual 2>/dev/null | sort -u || true)
+    elif command -v dpkg-query >/dev/null 2>&1; then
+        mapfile -t pkgs < <(dpkg-query -W -f='${Package}\n' 2>/dev/null | sort -u || true)
+    elif command -v dnf >/dev/null 2>&1; then
+        mapfile -t pkgs < <(dnf repoquery --userinstalled --qf '%{name}' 2>/dev/null | sort -u || true)
+        (( ${#pkgs[@]} > 0 )) || mapfile -t pkgs < <(rpm -qa --qf '%{NAME}\n' 2>/dev/null | sort -u || true)
+    elif command -v rpm >/dev/null 2>&1; then
+        mapfile -t pkgs < <(rpm -qa --qf '%{NAME}\n' 2>/dev/null | sort -u || true)
+    else
+        log_err "No supported package manager found (pacman/apt/dnf/rpm)."
+        exit 1
+    fi
+    (( ${#pkgs[@]} > 0 )) || { log_err "Package query returned no packages."; exit 1; }
     printf '%s\n' "${pkgs[@]}" > "$tmp_path"
     sync -f "$tmp_path" 2>/dev/null || true
     chown "$MOUNT_UID:$MOUNT_GID" "$tmp_path" 2>/dev/null || true
     mv -f "$tmp_path" "$file_path"
 
-    local aur_cnt=0
-    mapfile -t aur_pkgs < <(pacman -Qqm 2>/dev/null || true)
     if (( ${#aur_pkgs[@]} > 0 )); then
         aur_cnt=${#aur_pkgs[@]}
         printf '%s\n' "${aur_pkgs[@]}" > "$tmp_aur"
@@ -788,7 +1005,7 @@ toml_format_str_array() {
     while IFS= read -r -d ',' item || [[ -n "$item" ]]; do
         item="$(printf '%s' "$item" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         [[ -n "$item" ]] || continue
-        [[ "$item" =~ ^[a-zA-Z0-9_./-]+$ && "$item" != *".."* ]] || return 1
+        [[ "$item" =~ ^[a-zA-Z0-9_.:/{}\$-]+$ && "$item" != *".."* ]] || return 1
         parts+=("\"$item\"")
     done <<< "${csv},"
     local IFS_SAV="$IFS"; IFS=", "; out="[${parts[*]}]"; IFS="$IFS_SAV"
@@ -858,10 +1075,28 @@ cmd_config_stdin() {
                 [[ -z "$v" || "$v" =~ ^[a-zA-Z0-9_.:-]{1,64}$ ]] || { log_err "Invalid $k: $v"; exit 2; }
                 upd_vault["$k"]="\"$v\"" ;;
             mountpoint|remote_path)
-                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^/[a-zA-Z0-9_./-]{1,96}$ ) ]] || { log_err "Invalid path $k: $v"; exit 2; }
+                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^/[a-zA-Z0-9_./{}\$-]{1,96}$ ) ]] || { log_err "Invalid path $k: $v"; exit 2; }
+                upd_vault["$k"]="\"$v\"" ;;
+            mount_visibility)
+                v="${v,,}"
+                [[ "$v" =~ ^(symlink|filemanager|both|none)$ ]] || { log_err "Invalid mount_visibility: $v"; exit 2; }
+                upd_vault["$k"]="\"$v\"" ;;
+            user_symlink_dir)
+                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^(~/[a-zA-Z0-9_./{}\$-]{1,62}|/[a-zA-Z0-9_./{}\$-]{1,63})$ ) ]] || { log_err "Invalid user_symlink_dir: $v"; exit 2; }
+                upd_vault["$k"]="\"$v\"" ;;
+            smb_version)
+                v="${v,,}"
+                [[ "$v" =~ ^(auto|3\.1\.1|3\.0|2\.1|2\.0|1\.0)$ ]] || { log_err "Invalid smb_version: $v"; exit 2; }
+                upd_vault["$k"]="\"$v\"" ;;
+            port)
+                [[ -z "$v" || ( "$v" =~ ^[0-9]{1,5}$ && "$v" -ge 1 && "$v" -le 65535 ) ]] || { log_err "Invalid port: $v"; exit 2; }
+                upd_vault["$k"]="\"$v\"" ;;
+            mount_opts)
+                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^[a-zA-Z0-9_.,=:/-]{1,128}$ ) ]] || { log_err "Invalid mount_opts: $v"; exit 2; }
                 upd_vault["$k"]="\"$v\"" ;;
             smb_creds_file)
-                [[ -z "$v" || ( "$v" != *".."* && "$v" =~ ^/etc/[a-zA-Z0-9_./-]{1,80}$ ) ]] || { log_err "Invalid creds path: $v"; exit 2; }
+                [[ -z "$v" || "${v,,}" == "guest" || ( "$v" != *".."* && "$v" =~ ^/etc/[a-zA-Z0-9_./-]{1,80}$ ) ]] || { log_err "Invalid creds path: $v"; exit 2; }
+                [[ "${v,,}" == "guest" ]] && v="guest"
                 upd_vault["$k"]="\"$v\"" ;;
             shares)
                 arr_v=$(toml_format_str_array "$v") || { log_err "Invalid shares list"; exit 2; }
@@ -920,7 +1155,6 @@ esac
 
 load_vault_config
 detect_hardware_trust
-resolve_calling_user
 
 case "$ACTION" in
     status|--status)  cmd_status; exit 0 ;;

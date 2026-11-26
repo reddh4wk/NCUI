@@ -7,7 +7,6 @@ from core import probe
 from core.config import CONFIG, _update_toml_key_in_section
 from core.i18n import t
 from core.state import STATE
-from core.paths import resolve_script_path
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, Divider, SelectPill, StateBadge, Txt
 from panels.cc_engine_apps import (

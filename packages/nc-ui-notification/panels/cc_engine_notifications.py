@@ -11,28 +11,95 @@ import shlex
 import shutil
 import socket
 import sys
+import tempfile
 import time
 from core import probe
 from core.config import (
+    _xdg_base,
+    get_cache_dir,
+    get_config_dir,
     get_sys_notif_opacity,
     set_sys_notif_opacity_pct,
 )
 from core.i18n import t
 from core.paths import find_bin, resolve_script_path
 from core.state import STATE
-from ui.kit import FeedbackBox, start_inline_input
 
-HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
-ADDONS_CONF = os.path.expanduser("~/.config/nc-ui/nc-addons.conf")
-RULES_FILE = os.path.expanduser("~/.config/nc-ui/notifications_rules.json")
-_NOTIFY_SCRIPT = find_bin("nc-notify", fallback_aliases=("nc_util_notify.sh",)) or resolve_script_path("nc-notify", fallback_alias="nc_util_notify.sh")
-
-_NTF_MSG = ""
-_NTF_ERR = ""
 _COMMON_APPS = ["discord", "slack", "firefox", "thunderbird", "spotify", "chromium", "steam"]
 _POPUP_POSITIONS = ("top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right")
 _POPUP_EFFECTS = ("slide", "fade", "slide_fade", "none")
-_POPUP_BIN = find_bin("nc-notify-popup") or "nc-notify-popup"
+
+
+def _rules_file() -> str:
+    return os.path.join(get_config_dir(), "notifications_rules.json")
+
+
+def _addons_conf() -> str:
+    return os.path.join(get_config_dir(), "nc-addons.conf")
+
+
+def _hist_file() -> str:
+    return os.path.join(get_cache_dir(), "nc_notifications.json")
+
+
+def _legacy_hist_file() -> str:
+    return os.path.join(_xdg_base("XDG_CACHE_HOME", "~/.cache"), "nc_notifications.json")
+
+
+def _resolve_notify_bin() -> str:
+    b = find_bin("nc-notify")
+    if b and os.path.isfile(b):
+        return b
+    s = resolve_script_path("nc-notify")
+    return s if (s and os.path.isfile(s)) else ""
+
+
+def _resolve_popup_bin() -> str:
+    b = find_bin("nc-notify-popup")
+    if b and os.path.isfile(b):
+        return b
+    local = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "nc-notify-popup")
+    return local if os.path.isfile(local) else ""
+
+
+def _fb(ok: bool, msg: str) -> None:
+    from ui.kit import set_feedback
+    set_feedback("notifications", ok, msg)
+
+
+def get_delivery_status() -> dict:
+    has_dbus = bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
+    has_notify_send = probe.has_bin("notify-send")
+    has_swaync = probe.has_bin("swaync-client")
+    swaync_live = bool(has_dbus and has_swaync and probe.run_cmd_full(["swaync-client", "-D"], timeout=0.6)[0])
+    return {
+        "has_dbus": has_dbus,
+        "has_notify_send": has_notify_send,
+        "has_swaync": has_swaync,
+        "swaync_live": swaync_live,
+        "has_notify_bin": bool(_resolve_notify_bin()),
+    }
+
+
+def _atomic_write_text(path: str, text: str) -> bool:
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".nc_tmp_", dir=d or ".")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, path)
+            return True
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+    except Exception:
+        return False
 
 
 def _get_app_icon(app_name: str) -> str:
@@ -58,11 +125,18 @@ def _get_app_icon(app_name: str) -> str:
     return "\uf0f3"
 
 
-get_app_icon = _get_app_icon
-
-
 def get_popup_socket_path() -> str:
-    return f"/tmp/nc_notify_popup_{os.getuid()}.sock"
+    rt = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    base = rt if (rt and os.path.isdir(rt)) else "/tmp"
+    return os.path.join(base, f"nc_notify_popup_{os.getuid()}.sock")
+
+
+def _valid_quiet_window(val: str) -> bool:
+    m = re.match(r"^\s*(\d{2}):(\d{2})-(\d{2}):(\d{2})\s*$", str(val or ""))
+    if not m:
+        return False
+    sh, sm, eh, em = (int(x) for x in m.groups())
+    return 0 <= sh <= 23 and 0 <= eh <= 23 and 0 <= sm <= 59 and 0 <= em <= 59
 
 
 def is_in_quiet_hours(rules: dict, now: datetime.datetime = None) -> bool:
@@ -109,63 +183,64 @@ def spawn_notification_popup(notif: dict, force: bool = False) -> bool:
             return True
         except Exception:
             pass
-    popup_bin = _POPUP_BIN if os.path.exists(_POPUP_BIN) else find_bin("nc-notify-popup")
-    if popup_bin and os.path.exists(popup_bin):
+    popup_bin = _resolve_popup_bin()
+    if popup_bin:
         probe.spawn_bg([sys.executable, popup_bin, "--payload", raw])
         return True
     return False
 
 
-
 def load_notifs() -> list[dict]:
-    if not os.path.exists(HIST_FILE):
+    path = _hist_file()
+    if not os.path.exists(path):
+        leg = _legacy_hist_file()
+        path = leg if os.path.exists(leg) else ""
+    if not path:
         return []
     try:
-        with open(HIST_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [n for n in data if isinstance(n, dict)] if isinstance(data, list) else []
     except Exception:
         return []
 
 
-def save_notifs(notifs: list[dict]) -> None:
-    try:
-        os.makedirs(os.path.dirname(HIST_FILE), exist_ok=True)
-        with open(HIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(notifs, f)
-    except Exception:
-        pass
+def save_notifs(notifs: list[dict]) -> bool:
+    return _atomic_write_text(_hist_file(), json.dumps(notifs, ensure_ascii=False))
 
 
 def get_active_notifs() -> list[dict]:
     return [n for n in load_notifs() if not n.get("deleted")]
 
 
-def clear_all_notifs() -> None:
+def clear_all_notifs() -> bool:
     notifs = load_notifs()
     for n in notifs:
         n["deleted"] = True
-    save_notifs(notifs)
+    return save_notifs(notifs)
 
 
-def delete_notif(target_id: str) -> None:
+def delete_notif(target_id: str) -> bool:
     notifs = load_notifs()
+    tgt = str(target_id)
     for n in notifs:
-        if str(n.get("id")) == str(target_id):
+        nid = n.get("id")
+        if str(0 if nid is None else nid) == tgt:
             n["deleted"] = True
-    save_notifs(notifs)
+    return save_notifs(notifs)
 
 
-def clear_app_notifs(app_name: str) -> None:
+def clear_app_notifs(app_name: str) -> bool:
     notifs = load_notifs()
     tgt = str(app_name or "").strip().lower()
     for n in notifs:
         a = str(n.get("app_name") or n.get("app") or "").strip().lower()
         if a == tgt:
             n["deleted"] = True
-    save_notifs(notifs)
+    return save_notifs(notifs)
 
 
-def _load_rules() -> dict:
+def _load_rules(check_swaync: bool = True) -> dict:
     base = {
         "dnd": False,
         "quiet_enabled": False,
@@ -179,15 +254,22 @@ def _load_rules() -> dict:
         "popup_position": "top-right",
         "popup_effect": "slide",
     }
-    if os.path.exists(RULES_FILE):
+    rpath = _rules_file()
+    if os.path.exists(rpath):
         try:
-            data = json.load(open(RULES_FILE, "r", encoding="utf-8"))
-            if isinstance(data, dict):
-                base.update(data)
+            with open(rpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    base.update(data)
         except Exception:
             pass
+    if not isinstance(base.get("muted_apps"), list):
+        base["muted_apps"] = []
     if not isinstance(base.get("clickable_apps"), dict):
         base["clickable_apps"] = {}
+    base["quiet_enabled"] = bool(base.get("quiet_enabled", False))
+    if not isinstance(base.get("quiet_window"), str) or not base.get("quiet_window"):
+        base["quiet_window"] = "23:00-07:00"
     base["popup_enabled"] = bool(base.get("popup_enabled", False))
     try:
         base["popup_timeout"] = max(0, min(120, int(base.get("popup_timeout", 5))))
@@ -197,37 +279,41 @@ def _load_rules() -> dict:
         base["popup_position"] = "top-right"
     if base.get("popup_effect") not in _POPUP_EFFECTS:
         base["popup_effect"] = "slide"
-    if os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
+    if check_swaync and os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
         ok, out, _ = probe.run_cmd_full(["swaync-client", "-D"], timeout=0.8)
         if ok and out.strip().lower() in ("true", "false"):
             base["dnd"] = (out.strip().lower() == "true")
     return base
 
 
-def _save_rules(rules: dict) -> None:
-    os.makedirs(os.path.dirname(RULES_FILE), exist_ok=True)
-    with open(RULES_FILE, "w", encoding="utf-8") as f:
-        json.dump(rules, f, indent=2)
+def _save_rules(rules: dict) -> bool:
+    return _atomic_write_text(_rules_file(), json.dumps(rules, indent=2, ensure_ascii=False))
 
 
 def _get_max_notifications() -> int:
-    if os.path.exists(ADDONS_CONF):
+    apath = _addons_conf()
+    if os.path.exists(apath):
         try:
-            for ln in open(ADDONS_CONF, "r", encoding="utf-8", errors="ignore"):
-                m = re.match(r"^\s*max_notifications\s*=\s*(\d+)", ln)
-                if m:
-                    return int(m.group(1))
+            with open(apath, "r", encoding="utf-8", errors="ignore") as f:
+                for ln in f:
+                    m = re.match(r"^\s*max_notifications\s*=\s*(\d+)", ln)
+                    if m:
+                        return int(m.group(1))
         except Exception:
             pass
     return 50
 
 
-def _set_max_notifications(val: int) -> None:
-    os.makedirs(os.path.dirname(ADDONS_CONF), exist_ok=True)
+def _set_max_notifications(val: int) -> bool:
+    apath = _addons_conf()
     lines = []
     found = False
-    if os.path.exists(ADDONS_CONF):
-        lines = open(ADDONS_CONF, "r", encoding="utf-8", errors="ignore").splitlines()
+    if os.path.exists(apath):
+        try:
+            with open(apath, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.read().splitlines()
+        except Exception:
+            lines = []
     out = []
     for ln in lines:
         if re.match(r"^\s*max_notifications\s*=", ln):
@@ -237,20 +323,13 @@ def _set_max_notifications(val: int) -> None:
             out.append(ln)
     if not found:
         out.append(f"max_notifications={val}")
-    with open(ADDONS_CONF, "w", encoding="utf-8") as f:
-        f.write("\n".join(out).rstrip() + "\n")
-
-
-def _notif_feedback_cards() -> list:
-    if not _NTF_MSG and not _NTF_ERR:
-        return []
-    return [FeedbackBox(t("cc_notifications.status_title"), not bool(_NTF_ERR), _NTF_ERR if _NTF_ERR else _NTF_MSG)]
+    return _atomic_write_text(apath, "\n".join(out).rstrip() + "\n")
 
 
 def _collected_apps(rules: dict) -> list[str]:
-    seen = list(dict.fromkeys(_COMMON_APPS + list(rules.get("muted_apps", []))))
-    for n in load_notifs()[-40:]:
-        a = str(n.get("app") or "").strip().lower()
+    seen = list(dict.fromkeys(_COMMON_APPS + [str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None and str(a).strip()]))
+    for n in load_notifs()[:40]:
+        a = str(n.get("app_name") or n.get("app") or "").strip().lower()
         if a and a not in seen:
             seen.append(a)
     return seen[:14]
@@ -259,25 +338,31 @@ def _collected_apps(rules: dict) -> list[str]:
 def get_archive_unique_apps(rules: dict = None) -> list[str]:
     """Extract ordered unique application names recorded in the notification archive."""
     rules = rules if rules is not None else _load_rules()
-    seen_lower = {}
-    ordered = []
-    all_notifs = load_notifs()
-    for n in all_notifs:
-        if n.get("deleted"):
+    active_ordered, deleted_ordered = [], []
+    seen_active, seen_deleted = set(), set()
+    for n in load_notifs():
+        raw = str(n.get("app_name") or n.get("app") or "").strip()
+        if not raw:
             continue
-        raw = str(n.get("app_name") or n.get("app") or "").strip()
-        if raw and raw.lower() not in seen_lower:
-            seen_lower[raw.lower()] = raw
-            ordered.append(raw)
-    for n in all_notifs:
-        raw = str(n.get("app_name") or n.get("app") or "").strip()
-        if raw and raw.lower() not in seen_lower:
-            seen_lower[raw.lower()] = raw
+        low = raw.lower()
+        if n.get("deleted"):
+            if low not in seen_deleted:
+                seen_deleted.add(low)
+                deleted_ordered.append(raw)
+        else:
+            if low not in seen_active:
+                seen_active.add(low)
+                active_ordered.append(raw)
+    ordered = list(active_ordered)
+    seen_all = set(seen_active)
+    for raw in deleted_ordered:
+        if raw.lower() not in seen_all:
+            seen_all.add(raw.lower())
             ordered.append(raw)
     for k, v in (rules.get("clickable_apps") or {}).items():
         disp = str((v or {}).get("app") or k).strip() if isinstance(v, dict) else str(k).strip()
-        if disp and k.lower() not in seen_lower:
-            seen_lower[k.lower()] = disp
+        if disp and k.lower() not in seen_all:
+            seen_all.add(k.lower())
             ordered.append(disp)
     return ordered
 
@@ -294,8 +379,10 @@ def _resolve_app_meta(app_name: str) -> dict:
     if len(first_word) >= 3:
         tokens.add(first_word)
 
+    data_home = _xdg_base("XDG_DATA_HOME", "~/.local/share")
     dirs = (
-        os.path.expanduser("~/.local/share/applications"),
+        os.path.join(data_home, "applications"),
+        os.path.join(data_home, "flatpak", "exports", "share", "applications"),
         "/usr/local/share/applications",
         "/usr/share/applications",
         "/var/lib/flatpak/exports/share/applications",
@@ -309,7 +396,8 @@ def _resolve_app_meta(app_name: str) -> dict:
             if "url-handler" in stem:
                 continue
             try:
-                txt = open(path, "r", encoding="utf-8", errors="ignore").read()
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
             except Exception:
                 continue
             m_entry = re.search(r"^\[Desktop Entry\]\s*$", txt, re.M)
@@ -458,7 +546,8 @@ def trigger_notification_click(notif_or_id, rules: dict = None) -> tuple[bool, s
     else:
         s_id = str(notif_or_id or "").strip()
         for n in load_notifs():
-            if str(n.get("id", "")) == s_id:
+            nid = n.get("id")
+            if str(0 if nid is None else nid) == s_id:
                 notif = n
                 app_name = str(n.get("app_name") or n.get("app") or "").strip()
                 break
@@ -483,11 +572,9 @@ def trigger_notification_click(notif_or_id, rules: dict = None) -> tuple[bool, s
 
 
 def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
-    global _NTF_MSG, _NTF_ERR
     if not uri.startswith("cc_notif:"):
         return False
-    _NTF_MSG = ""
-    _NTF_ERR = ""
+    from ui.kit import start_inline_input
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
@@ -496,23 +583,50 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
     if cmd == "dnd":
         dnd = (arg == "1")
         rules["dnd"] = dnd
-        _save_rules(rules)
-        if os.environ.get("DBUS_SESSION_BUS_ADDRESS") and probe.has_bin("swaync-client"):
-            probe.run_cmd_full(["swaync-client", "-dn" if dnd else "-df"], timeout=1.0)
-        _NTF_MSG = t("cc_notifications.do_not_disturb_2", p0=t("common.enabled").lower() if dnd else t("common.disabled").lower())
+        if not _save_rules(rules):
+            _fb(False, t("cc_notifications.save_failed"))
+        else:
+            sw_active = bool(
+                os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+                and probe.has_bin("swaync-client")
+                and probe.run_cmd_full(["swaync-client", "-D"], timeout=0.6)[0]
+            )
+            if sw_active:
+                ok_sw, _, err_sw = probe.run_cmd_full(["swaync-client", "-dn" if dnd else "-df"], timeout=1.0)
+                if not ok_sw:
+                    _fb(False, t("cc_notifications.swaync_failed", p0=err_sw or "swaync-client"))
+                else:
+                    ok_chk, out_chk, _ = probe.run_cmd_full(["swaync-client", "-D"], timeout=0.6)
+                    if ok_chk and out_chk.strip().lower() in ("true", "false") and (out_chk.strip().lower() == "true") != dnd:
+                        _fb(False, t("cc_notifications.swaync_failed", p0=f"DND={out_chk.strip()}"))
+                    else:
+                        _fb(True, t("cc_notifications.do_not_disturb_2", p0=t("common.enabled").lower() if dnd else t("common.disabled").lower()))
+            else:
+                _fb(True, t("cc_notifications.do_not_disturb_2", p0=t("common.enabled").lower() if dnd else t("common.disabled").lower()))
     elif cmd == "quiet_toggle":
         rules["quiet_enabled"] = not rules["quiet_enabled"]
-        _save_rules(rules)
-        _NTF_MSG = t(
-            "cc_notifications.quiet_hours_2",
-            p0=t("common.enabled").lower() if rules["quiet_enabled"] else t("common.disabled").lower(),
-            p1=rules["quiet_window"],
-        )
+        if _save_rules(rules):
+            _fb(
+                True,
+                t(
+                    "cc_notifications.quiet_hours_2",
+                    p0=t("common.enabled").lower() if rules["quiet_enabled"] else t("common.disabled").lower(),
+                    p1=rules["quiet_window"],
+                ),
+            )
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "quiet_win" and arg:
-        rules["quiet_window"] = arg
-        rules["quiet_enabled"] = True
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.quiet_schedule_set_to", p0=arg)
+        win = arg.strip()
+        if not _valid_quiet_window(win):
+            _fb(False, t("cc_notifications.invalid_format_use_hh_mm_hh_mm"))
+        else:
+            rules["quiet_window"] = win
+            rules["quiet_enabled"] = True
+            if _save_rules(rules):
+                _fb(True, t("cc_notifications.quiet_schedule_set_to", p0=win))
+            else:
+                _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "inline_quiet" and cc_panel:
         start_inline_input(
             "cc_notif_quiet",
@@ -520,7 +634,7 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
             trigger_uri=uri,
             initial_text=rules["quiet_window"],
             max_len=13,
-            validator=lambda s: bool(re.match(r"^\d{2}:\d{2}-\d{2}:\d{2}$", s.strip())),
+            validator=_valid_quiet_window,
             on_commit=lambda s: handle_cc_notifications_prompt(cc_panel, "cc_notif_quiet", s),
         )
         return True
@@ -541,27 +655,37 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
     elif cmd == "app_pick_clear":
         STATE.set("settings", "notif_app_query", "")
     elif cmd == "max" and arg.isdigit():
-        _set_max_notifications(int(arg))
-        _NTF_MSG = t("cc_notifications.set_max_notifications_in_nc_addons", p0=arg)
+        if _set_max_notifications(int(arg)):
+            _fb(True, t("cc_notifications.set_max_notifications_in_nc_addons", p0=arg))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "urg" and arg in ("low", "normal", "critical"):
         rules["min_urgency"] = arg
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.minimum_notification_urgency_set_t", p0=arg)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.minimum_notification_urgency_set_t", p0=arg))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "group_app":
         val = (arg == "1")
         rules["group_by_app"] = val
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.fb_group_on") if val else t("cc_notifications.fb_group_off")
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.fb_group_on") if val else t("cc_notifications.fb_group_off"))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "popup_en" and arg in ("0", "1"):
         val = (arg == "1")
         rules["popup_enabled"] = val
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.fb_popup_en", p0=t("common.enabled").lower() if val else t("common.disabled").lower())
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.fb_popup_en", p0=t("common.enabled").lower() if val else t("common.disabled").lower()))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "popup_timeout" and arg.isdigit():
         sec = max(0, min(120, int(arg)))
         rules["popup_timeout"] = sec
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "inline_popup_timeout" and cc_panel:
         start_inline_input(
             "cc_notif_popup_timeout",
@@ -575,12 +699,16 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
         return True
     elif cmd == "popup_pos" and arg in _POPUP_POSITIONS:
         rules["popup_position"] = arg
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.fb_popup_pos", p0=arg)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.fb_popup_pos", p0=arg))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "popup_effect" and arg in _POPUP_EFFECTS:
         rules["popup_effect"] = arg
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.fb_popup_effect", p0=arg.replace("_", "+"))
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.fb_popup_effect", p0=arg.replace("_", "+")))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "popup_op":
         try:
             set_sys_notif_opacity_pct(int(round(float(arg))))
@@ -602,36 +730,45 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
             force=True,
         )
         if ok_p:
-            _NTF_MSG = t("cc_notifications.fb_popup_preview")
+            _fb(True, t("cc_notifications.fb_popup_preview"))
         else:
-            _NTF_ERR = t("cc_notifications.neither_nc_util_notify_sh_nor_noti")
+            _fb(False, t("cc_notifications.popup_bin_missing"))
     elif cmd == "del" and arg:
-        delete_notif(arg)
-        _NTF_MSG = t("cc_notifications.fb_notif_dismissed")
+        if delete_notif(arg):
+            _fb(True, t("cc_notifications.fb_notif_dismissed"))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "mute_app" and arg:
         STATE.set("settings", "notif_app_query", "")
-        muted = set(a.lower() for a in rules.get("muted_apps", []))
-        muted.add(arg.lower())
+        muted = {str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None and str(a).strip()}
+        muted.add(arg.strip().lower())
         rules["muted_apps"] = sorted(muted)
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.muted_notifications_from", p0=arg)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.muted_notifications_from", p0=arg))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "allow_app" and arg:
-        muted = set(a.lower() for a in rules.get("muted_apps", []))
-        muted.discard(arg.lower())
+        muted = {str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None and str(a).strip()}
+        muted.discard(arg.strip().lower())
         rules["muted_apps"] = sorted(muted)
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.allowed_notifications_from", p0=arg)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.allowed_notifications_from", p0=arg))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "click_toggle" and arg:
         cmap = dict(rules.get("clickable_apps") or {})
         key = arg.strip().lower()
         if key in cmap:
             cmap.pop(key, None)
-            _NTF_MSG = t("cc_notifications.disabled_clickable_msg", p0=arg)
+            msg = t("cc_notifications.disabled_clickable_msg", p0=arg)
         else:
             cmap[key] = {"app": arg.strip(), "cmd": ""}
-            _NTF_MSG = t("cc_notifications.enabled_clickable_msg", p0=arg)
+            msg = t("cc_notifications.enabled_clickable_msg", p0=arg)
         rules["clickable_apps"] = cmap
-        _save_rules(rules)
+        if _save_rules(rules):
+            _fb(True, msg)
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif cmd == "prompt_click_cmd" and arg:
         cmap = rules.get("clickable_apps") or {}
         cur_cmd = str((cmap.get(arg.strip().lower()) or {}).get("cmd", "")).strip()
@@ -648,22 +785,42 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
     elif cmd == "trigger_click" and arg:
         ok, executed = trigger_notification_click(arg, rules)
         if ok:
-            _NTF_MSG = t("cc_notifications.triggered_click_msg", p0=executed)
+            _fb(True, t("cc_notifications.triggered_click_msg", p0=executed))
         else:
-            _NTF_ERR = t("cc_notifications.triggered_click_err", p0=arg)
+            _fb(False, t("cc_notifications.triggered_click_err", p0=arg))
     elif cmd == "test":
-        nscript = _NOTIFY_SCRIPT if os.path.exists(_NOTIFY_SCRIPT) else (find_bin("nc-notify", fallback_aliases=("nc_util_notify.sh",)) or resolve_script_path("nc-notify", fallback_alias="nc_util_notify.sh"))
-        if nscript and os.path.exists(nscript):
-            probe.spawn_bg([nscript, "--title", "Nightcity Test", "--body", "Notification dispatch operational."])
-            _NTF_MSG = t("cc_notifications.dispatched_test_notification_via_n")
+        nscript = _resolve_notify_bin()
+        title_s = t("cc_notifications.test_title")
+        body_s = t("cc_notifications.test_body")
+        if nscript:
+            run_cmd = [nscript, "--title", title_s, "--body", body_s]
+            ok_key = "cc_notifications.dispatched_test_notification_via_n"
         elif probe.has_bin("notify-send"):
-            probe.spawn_bg(["notify-send", "Nightcity Test", "Notification dispatch operational."])
-            _NTF_MSG = t("cc_notifications.dispatched_test_notification_via_n_2")
+            run_cmd = ["notify-send", title_s, body_s]
+            ok_key = "cc_notifications.dispatched_test_notification_via_n_2"
         else:
-            _NTF_ERR = t("cc_notifications.neither_nc_util_notify_sh_nor_noti")
+            _fb(False, t("cc_notifications.neither_nc_notify_nor_notify_send"))
+            if cc_panel and cc_panel.shell:
+                cc_panel.shell.refresh_view()
+            return True
+
+        def _on_test_done(res):
+            ok_t, _out_t, err_t = res
+            if ok_t:
+                _fb(True, t(ok_key))
+            else:
+                _fb(False, t("cc_notifications.test_failed", p0=err_t or "exit != 0"))
+            if cc_panel and cc_panel.shell:
+                cc_panel.shell.refresh_view()
+            return False
+
+        probe.run_async(lambda: probe.run_cmd_full(run_cmd, timeout=2.0), on_done=_on_test_done)
+        return True
     elif cmd == "clear":
-        clear_all_notifs()
-        _NTF_MSG = t("cc_notifications.cleared_notification_archive")
+        if clear_all_notifs():
+            _fb(True, t("cc_notifications.cleared_notification_archive"))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     else:
         return False
 
@@ -673,35 +830,42 @@ def handle_cc_notifications_link(cc_panel, uri: str) -> bool:
 
 
 def handle_cc_notifications_prompt(cc_panel, action_id: str, text: str) -> bool:
-    global _NTF_MSG, _NTF_ERR
     if action_id == "cc_notif_quiet" and text.strip():
         win = text.strip()
-        if re.match(r"^\d{2}:\d{2}-\d{2}:\d{2}$", win):
+        if _valid_quiet_window(win):
             rules = _load_rules()
             rules["quiet_window"] = win
             rules["quiet_enabled"] = True
-            _save_rules(rules)
-            _NTF_MSG = t("cc_notifications.quiet_window_updated_to", p0=win)
+            if _save_rules(rules):
+                _fb(True, t("cc_notifications.quiet_window_updated_to", p0=win))
+            else:
+                _fb(False, t("cc_notifications.save_failed"))
         else:
-            _NTF_ERR = t("cc_notifications.invalid_format_use_hh_mm_hh_mm")
+            _fb(False, t("cc_notifications.invalid_format_use_hh_mm_hh_mm"))
     elif action_id == "cc_notif_popup_timeout":
         raw = text.strip()
         if raw.isdigit() and 0 <= int(raw) <= 120:
             sec = int(raw)
             rules = _load_rules()
             rules["popup_timeout"] = sec
-            _save_rules(rules)
-            _NTF_MSG = t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec)
+            if _save_rules(rules):
+                _fb(True, t("cc_notifications.fb_popup_timeout_sticky") if sec == 0 else t("cc_notifications.fb_popup_timeout_set", p0=sec))
+            else:
+                _fb(False, t("cc_notifications.save_failed"))
         else:
-            _NTF_ERR = t("cc_notifications.fb_popup_timeout_err")
-    elif action_id == "cc_notif_mute_app" and text.strip():
+            _fb(False, t("cc_notifications.fb_popup_timeout_err"))
+    elif action_id == "cc_notif_mute_app":
         app = text.strip().lower()
+        if not app:
+            return True
         rules = _load_rules()
-        muted = set(a.lower() for a in rules.get("muted_apps", []))
+        muted = {str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None and str(a).strip()}
         muted.add(app)
         rules["muted_apps"] = sorted(muted)
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.added_suppression_rule_for", p0=app)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.added_suppression_rule_for", p0=app))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     elif action_id.startswith("cc_notif_click_cmd|"):
         app_name = action_id.split("|", 1)[1].strip()
         custom_cmd = str(text or "").strip()
@@ -712,8 +876,10 @@ def handle_cc_notifications_prompt(cc_panel, action_id: str, text: str) -> bool:
         entry["cmd"] = custom_cmd
         cmap[key] = entry
         rules["clickable_apps"] = cmap
-        _save_rules(rules)
-        _NTF_MSG = t("cc_notifications.custom_action_saved", p0=app_name) if custom_cmd else t("cc_notifications.custom_action_cleared", p0=app_name)
+        if _save_rules(rules):
+            _fb(True, t("cc_notifications.custom_action_saved", p0=app_name) if custom_cmd else t("cc_notifications.custom_action_cleared", p0=app_name))
+        else:
+            _fb(False, t("cc_notifications.save_failed"))
     else:
         return False
     if cc_panel and cc_panel.shell:

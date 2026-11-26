@@ -108,7 +108,7 @@ short = "Live theme sandbox control demonstrating active state, morphology, and 
 
 ["cc_pers:inline_save_theme"]
 title = "Save Theme Profile.."
-short = "Saves the current `theme.toml` colors, opacity, typography, and ASCII glyph choices as a named preset under `~/.config/nc-ui/themes/`."
+short = "Saves the current `theme.toml` colors, opacity, typography, and ASCII glyph choices as a named preset under `~/.config/ncui/themes/`."
 
 ["cc_pers:export_theme_prompt"]
 title = "Export Theme TOML.."
@@ -120,11 +120,11 @@ short = "Prompts for a `.toml` theme file to import, validate, and apply live to
 
 ["cc_pers:reset_theme"]
 title = "Reset Theme to Defaults"
-short = "Restores all 7 semantic color axes, surface hex, typography, and ASCII primitives in `theme.toml` to Nightcity defaults."
+short = "Restores all 7 semantic color axes, surface hex, typography, and ASCII primitives in `theme.toml` to NC-UI Cyberdeck defaults."
 
 ["cc_pers:preset:*"]
 title = "Apply 1-Click Theme Preset"
-short = "Applies a complete curated palette, surface background, and border-glyph preset (`Nightcity`, `Arasaka`, `Ghost Net`, `RobCo`, `Amber Deck`, `Arctic Studio`)."
+short = "Applies a complete curated palette, surface background, and border-glyph preset (`Cyberdeck`, `Arasaka`, `Ghost Net`, `RobCo`, `Amber Deck`, `Arctic Studio`)."
 verbose = "Updates `theme.toml` live across all 7 semantic axes (`structure`, `inactive`, `schema`, `focus`, `intent`, `vitality`, `attention`, `interrupt`, `fault`), refreshes CSS, and syncs Waybar colors if enabled."
 
 ["cc_pers:wb_apply_preset_palette"]
@@ -133,11 +133,11 @@ short = "Syncs the active NC-UI theme colors into Waybar's `style.css` palette v
 
 ["cc_pers:load_theme:*"]
 title = "Load Saved Theme Profile"
-short = "Loads this saved `.toml` theme profile from `~/.config/nc-ui/themes/` and applies it live."
+short = "Loads this saved `.toml` theme profile from `~/.config/ncui/themes/` and applies it live."
 
 ["cc_pers:del_theme:*"]
 title = "Delete Saved Theme Profile"
-short = "Permanently removes this custom `.toml` theme profile file from `~/.config/nc-ui/themes/`."
+short = "Permanently removes this custom `.toml` theme profile file from `~/.config/ncui/themes/`."
 
 ["cc:trans"]
 title = "Window Transparency"
@@ -626,15 +626,15 @@ short = "Terminates the embedded Yazi PTY session and hides the file-picker card
 # ==============================================================================
 ["disp:next:*"]
 title = "Next Wallpaper"
-short = "Advances the active slideshow on this monitor to the next wallpaper via `nc_util_desktop.sh --next`."
+short = "Advances the active slideshow on this monitor to the next wallpaper."
 
 ["disp:pause:*"]
 title = "Pause Slideshow"
-short = "Pauses automatic wallpaper rotation on this monitor (`nc_util_desktop.sh --pause`)."
+short = "Pauses automatic wallpaper rotation on this monitor."
 
 ["disp:resume:*"]
 title = "Resume Slideshow"
-short = "Resumes automatic wallpaper rotation on this monitor (`nc_util_desktop.sh --resume`)."
+short = "Resumes automatic wallpaper rotation on this monitor."
 
 ["disp:set_img:*"]
 title = "Set Image Wallpaper.."
@@ -642,7 +642,7 @@ short = "Prompts for an image path (with file completion) and applies it to this
 
 ["disp:matrix:*"]
 title = "Start NC-Matrix (Green)"
-short = "Launches green ASCII `nc-matrix` live wallpaper on this monitor (`nc_util_desktop.sh -o <out> -c -C green`)."
+short = "Launches green ASCII `nc-matrix` live wallpaper on this monitor."
 
 ["disp:matrix_jp:*"]
 title = "Start NC-Matrix JP (Katakana)"

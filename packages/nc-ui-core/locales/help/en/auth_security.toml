@@ -45,7 +45,7 @@ verbose = "Deletes the `0440 root:root` drop-in file from `/etc/sudoers.d/` usin
 
 ["priv:sync_helpers"]
 title = "Sync Bundled Root Helpers to /usr/lib/ncui/sbin"
-short = "Installs or updates bundled Nightcity `nc-*` helpers into `/usr/lib/ncui/sbin` (`0755 root:root`) and verifies SHA-256 parity."
+short = "Installs or updates bundled NC-UI `nc-*` helpers into `/usr/lib/ncui/sbin` (`0755 root:root`) and verifies SHA-256 parity."
 verbose = "Copies bundled privileged helpers (`nc-usbguard`, `nc-posture`, `nc-fan-profile`, `nc-snap`, `nc-vault`, `nc-hanoi`, `nc-rescue`, `nc-chroot`, `nc-golden`, `nc-disks`) into root-owned `/usr/lib/ncui/sbin` so sudoers rules never execute user-writable scripts."
 diagram = "security_trust"
 diagram_focus = "sudoers"

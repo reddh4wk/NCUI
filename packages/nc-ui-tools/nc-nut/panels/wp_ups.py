@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """NC-UI Waybar Plugin & Popup — Generic NUT Server / UPS (`panels/wp_ups.py`)."""
 
+from core import probe
 from core.i18n import t
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, ProgressBar, StateBadge, Txt
@@ -30,8 +31,14 @@ class Panel(BasePanel):
 
     def get_bar_pill(self) -> dict:
         u = _collect_ups_data()
-        if not u["enabled"]:
+        if not u["enabled"] or not u["target"]:
             return {"text": "", "tooltip": "", "class": "module-nc-empty"}
+        if not probe.has_bin("upsc"):
+            return {
+                "text": "▂ ERR",
+                "tooltip": t("ups.upsc_missing_hint"),
+                "class": "module-nc offline",
+            }
         if not u["reachable"]:
             return {
                 "text": "▂ ERR",
@@ -62,9 +69,14 @@ class Panel(BasePanel):
         u = _collect_ups_data(async_refresh=True, cc_panel=self)
         flds = u["popup_fields"]
 
+        has_upsc = probe.has_bin("upsc")
         tone_map = {"online": "ok", "on-battery": "warn", "low-battery": "crit", "offline": "crit"}
         if not u["enabled"]:
             st_badge = StateBadge(False, "", t("ups.disabled"))
+        elif not has_upsc:
+            st_badge = Badge(t("ui.missing", p0="upsc"), style="warn")
+        elif not u["target"]:
+            st_badge = Badge(t("cc_power.not_set_badge"), style="warn")
         elif u.get("polling"):
             st_badge = Badge(t("cc_power.polling").upper(), style="warn")
         elif u["css_state"] == "online":
@@ -85,9 +97,14 @@ class Panel(BasePanel):
             min_cols=target_cols,
             max_cols=target_cols,
         )
+        box.add_row(" ")
 
         if not u["enabled"]:
             box.add_row(f"  {Txt(t('ups.disabled_hint'), role='inactive')}")
+        elif not has_upsc:
+            box.add_row(f"  {Txt(t('ups.upsc_missing_hint'), role='attention')}")
+        elif not u["target"]:
+            box.add_row(f"  {Txt(t('cc_power.not_set'), role='inactive')}")
         elif u.get("polling"):
             box.add_row(f"  {Txt(t('cc_power.polling'), role='inactive')}")
         elif not u["reachable"]:
@@ -104,7 +121,7 @@ class Panel(BasePanel):
             if flds.get("charge") and u["charge"] is not None:
                 c_val = int(u["charge"])
                 c_role = "vitality" if c_val >= 50 else ("attention" if c_val >= 20 else "fault")
-                box.add_kv(t("ups.charge"), f"{ProgressBar(c_val, width=12, color_by_threshold=False)} {Txt(f'{c_val}%', role=c_role)}")
+                box.add_kv(t("ups.charge"), f"{ProgressBar(c_val, width=12, color_by_threshold=True, invert_threshold=True)} {Txt(f'{c_val}%', role=c_role)}")
                 rows_added += 1
 
             if flds.get("runtime") and u["runtime_str"]:
@@ -161,6 +178,7 @@ class Panel(BasePanel):
         box.add_row(" ")
         open_cc_btn = ActionBtn(f"\uf013 {t('ups.open_cc')}", "ui:open_settings:power:ups", tone="neutral")
         box.add_row(f"  {open_cc_btn}")
+        box.add_row(" ")
         return [box]
 
     def on_link(self, uri: str) -> None:

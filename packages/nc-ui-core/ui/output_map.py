@@ -3,27 +3,7 @@
 
 from core import probe
 from core.i18n import t
-
-
-def _hex_rgba(hex_str: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    from core.config import _parse_rgba_components
-
-    r, g, b, _ = _parse_rgba_components(hex_str)
-    return (r / 255.0, g / 255.0, b / 255.0, alpha)
-
-
-def _rounded_rect_path(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(float(r), float(w) / 2.0, float(h) / 2.0))
-    if rad <= 0.0:
-        cr.rectangle(x, y, w, h)
-        return
-    pi = 3.141592653589793
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -pi / 2.0, 0.0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0.0, pi / 2.0)
-    cr.arc(x + rad, y + h - rad, rad, pi / 2.0, pi)
-    cr.arc(x + rad, y + rad, rad, pi, 1.5 * pi)
-    cr.close_path()
+from ui.kit import hex_to_rgba_f as _hex_rgba, rounded_rect_path as _rounded_rect_path
 
 
 def _output_hz_and_scale(info: dict) -> tuple[float, float]:

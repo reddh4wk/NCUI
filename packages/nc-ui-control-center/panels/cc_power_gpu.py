@@ -17,12 +17,19 @@ from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 from core.config import THEME  # noqa: E402
 from core.i18n import t  # noqa: E402
 from ui.canvas import Canvas  # noqa: E402
+from ui.embedded_tui import (  # noqa: E402
+    _build_tui_ncbox,
+    _compute_single_tui_size,
+)
 from ui.kit import (  # noqa: E402
     ActionBtn,
     Box,
     ProgressBar,
     Txt,
     get_semantic_palette,
+    hex_to_rgba_f as _bp_hex_rgba,
+    rounded_rect_path as _trace_rect,
+    temp_role as _temp_role,
 )
 from ui.widgets import AsciiCard  # noqa: E402
 from panels.cc_engine_power import (  # noqa: E402
@@ -36,29 +43,7 @@ from panels.cc_engine_resources import (  # noqa: E402
     _ensure_nvtop_bin,
     get_gpu_telemetry,
 )
-from panels.cc_power_cpu_ram import (  # noqa: E402
-    _build_tui_ncbox,
-    _compute_single_tui_size,
-    _pct_role,
-)
-
-
-def _trace_rect(cr, x: float, y: float, w: float, h: float, r: float = 4.0) -> None:
-    rad = max(0.0, min(r, w * 0.5, h * 0.5))
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0.0, math.pi * 0.5)
-    cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, math.pi * 1.5)
-    cr.close_path()
-
-
-def _temp_role(temp_c: float) -> str:
-    if temp_c >= 85.0:
-        return "fault"
-    if temp_c >= 75.0:
-        return "attention"
-    return "val"
+from panels.cc_power_cpu_ram import _pct_role  # noqa: E402
 
 
 _GPU_FAN_STATE = {
@@ -68,19 +53,6 @@ _GPU_FAN_STATE = {
     "smooth_pct": 0.0,
     "last_poll_ts": 0.0,
 }
-
-
-
-def _bp_hex_rgba(hx: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    s = str(hx or "#ffffff").strip().lstrip("#")
-    if len(s) == 8:
-        s = s[2:]
-    if len(s) == 6:
-        try:
-            return (int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0, float(alpha))
-        except ValueError:
-            pass
-    return (1.0, 1.0, 1.0, float(alpha))
 
 
 class _GpuHardwareBlueprintWidget(Gtk.DrawingArea):
@@ -1092,15 +1064,16 @@ def _build_gpu_summary_box(canvas: Canvas, gpu: dict) -> Box:
     if gpu.get("available"):
         gp = float(gpu["util_pct"])
         gt = float(gpu["temp_c"])
-        gt_role = "vitality" if gt < 65.0 else ("attention" if gt < 80.0 else "fault")
+        gt_role = _temp_role(gt, warn_c=65.0, fault_c=80.0, ok_role="vitality")
         vu = float(gpu["vram_used"]) / (1024 ** 3)
         vt = float(gpu["vram_total"]) / (1024 ** 3)
+        vram_str = f"{vu:.1f}/{vt:.0f} GiB" if vt > 0 else "UMA"
         pw = float(gpu.get("power_w") or 0.0)
         gpu_right = Txt(f"{pw:.0f}W", role="schema") if pw > 0 else None
         box.add_kv(
             t("cc_system.gpu_vram_row"),
             f"{ProgressBar(gp, width=20)} {Txt(f'{gp:4.1f}%', role=_pct_role(gp))}  "
-            f"{Txt(f'{gt:.0f}°C', role=gt_role)}  {Txt(f'{vu:.1f}/{vt:.0f} GiB', role='val')}",
+            f"{Txt(f'{gt:.0f}°C', role=gt_role)}  {Txt(vram_str, role='val')}",
             right_markup=gpu_right,
         )
     else:

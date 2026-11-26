@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 """NC-UI Resilience, Snapshots, Vault & Disaster Recovery Engine (`panels/cc_engine_telemetry.py`)."""
 
-import glob
 import json
 import math
 import os
 import re
-import shlex
+import threading
 import time
 from core import probe
 from core.config import THEME
-from core.i18n import get_active_language, t
-from core.paths import find_all_package_files
-from core.privileges import get_privileged_action
+from core.i18n import t
+from core.privileges import get_privileged_action, request_privilege_modal
 from core.resilience import (
-    SBIN_DST_DIR,
     exec_priv_helper as _exec_priv_helper,
+    expand_user_token,
     load_resilience_config,
+    parse_vault_share,
     read_env_kv as _read_env_kv,
     resolve_sbin_helper,
     run_helper_async as _run_helper_async,
@@ -24,17 +23,13 @@ from core.resilience import (
 from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import (
-    ActionBtn,
-    Badge,
     Box,
-    Divider,
-    FeedbackBox,
     FoldToggle,
-    ProgressBar,
-    SelectPill,
-    StateBadge,
     Txt,
     get_semantic_palette,
+    hex_to_rgba_f,
+    rounded_rect_path,
+    set_feedback,
     start_inline_input,
 )
 from ui.markup import format_bytes_short
@@ -66,46 +61,6 @@ def _start_recovery_embedded_shell(cc_panel, title_key: str, cmd: list[str]) -> 
         cmd,
         on_exit=_on_exit,
     )
-
-
-def _set_sys_fb(ok: bool, msg: str) -> None:
-    STATE.set("system", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_sys_fb() -> dict:
-    fb = STATE.get("system", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
-
-
-def _feedback_cards() -> list:
-    fb = _get_sys_fb()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_system.system_control_status"), bool(fb["ok"]), fb["msg"])]
-
-
-def _bp_hex_rgba(hx: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    s = str(hx or "#ffffff").strip().lstrip("#")
-    if len(s) == 8:
-        s = s[2:]
-    if len(s) == 6:
-        try:
-            return (int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0, float(alpha))
-        except ValueError:
-            pass
-    return (1.0, 1.0, 1.0, float(alpha))
-
-
-def _bp_rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    r = min(float(r), max(0.0, w * 0.5), max(0.0, h * 0.5))
-    cr.new_sub_path()
-    cr.arc(x + w - r, y + r, r, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - r, y + h - r, r, 0.0, math.pi * 0.5)
-    cr.arc(x + r, y + h - r, r, math.pi * 0.5, math.pi)
-    cr.arc(x + r, y + r, r, math.pi, math.pi * 1.5)
-    cr.close_path()
 
 
 class _ResilienceBlueprintMixin:
@@ -149,7 +104,7 @@ class _ResilienceBlueprintMixin:
             lay.set_alignment(align)
         lay.set_text(str(text), -1)
         _, ext = lay.get_pixel_extents()
-        cr.set_source_rgba(*_bp_hex_rgba(color_hex, alpha))
+        cr.set_source_rgba(*hex_to_rgba_f(color_hex, alpha))
         cr.move_to(x, y)
         PangoCairo.show_layout(cr, lay)
         return float(ext.width), float(ext.height)
@@ -169,7 +124,7 @@ class _ResilienceBlueprintMixin:
         elif align == Pango.Alignment.RIGHT:
             tx = x + w - float(ext.width) - float(ext.x)
         ty = y + (h - float(ext.height)) * 0.5 - float(ext.y)
-        cr.set_source_rgba(*_bp_hex_rgba(color_hex, alpha))
+        cr.set_source_rgba(*hex_to_rgba_f(color_hex, alpha))
         cr.move_to(tx, ty)
         PangoCairo.show_layout(cr, lay)
         return float(ext.width), float(ext.height)
@@ -179,7 +134,7 @@ class _ResilienceBlueprintMixin:
         ly = math.floor(y + th * 0.5) + 0.5
         if tw + 10.0 < w:
             cr.save()
-            cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.65))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.65))
             cr.set_line_width(1.0)
             cr.move_to(x + tw + 8.0, ly)
             cr.line_to(x + w, ly)
@@ -205,15 +160,15 @@ class _ResilienceBlueprintMixin:
         badge_hex: str = "",
         double_border: bool = False,
     ) -> None:
-        _bp_rounded_rect(cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 5.0)
-        cr.set_source_rgba(*_bp_hex_rgba(fill_hex, fill_alpha))
+        rounded_rect_path(cr, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 5.0)
+        cr.set_source_rgba(*hex_to_rgba_f(fill_hex, fill_alpha))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(border_hex, 0.88))
+        cr.set_source_rgba(*hex_to_rgba_f(border_hex, 0.88))
         cr.set_line_width(1.3)
         cr.stroke()
         if double_border:
-            _bp_rounded_rect(cr, x + 3.5, y + 3.5, w - 7.0, h - 7.0, 3.0)
-            cr.set_source_rgba(*_bp_hex_rgba(border_hex, 0.40))
+            rounded_rect_path(cr, x + 3.5, y + 3.5, w - 7.0, h - 7.0, 3.0)
+            cr.set_source_rgba(*hex_to_rgba_f(border_hex, 0.40))
             cr.set_line_width(0.9)
             cr.stroke()
 
@@ -225,10 +180,10 @@ class _ResilienceBlueprintMixin:
             bl_w = max(38.0, float(len(badge_txt)) * 7.6 + 12.0)
             bx0 = x + w - pad - bl_w + 2.0
             by0 = y + 5.0
-            _bp_rounded_rect(cr, bx0, by0, bl_w, 18.0, 3.0)
-            cr.set_source_rgba(*_bp_hex_rgba(pal["structure_bg"], 0.85))
+            rounded_rect_path(cr, bx0, by0, bl_w, 18.0, 3.0)
+            cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.85))
             cr.fill_preserve()
-            cr.set_source_rgba(*_bp_hex_rgba(bcol, 0.85))
+            cr.set_source_rgba(*hex_to_rgba_f(bcol, 0.85))
             cr.set_line_width(0.9)
             cr.stroke()
             self._text(cr, badge_txt, bx0 + 2.0, by0 + 2.0, f_sub, bcol, alpha=0.96, max_w=bl_w - 4.0, align=Pango.Alignment.CENTER)
@@ -244,10 +199,10 @@ class _ResilienceBlueprintMixin:
         h = max(h, 19.0)
         x0 = cx - w * 0.5
         y0 = cy - h * 0.5
-        _bp_rounded_rect(cr, x0 + 0.5, y0 + 0.5, w - 1.0, h - 1.0, 3.5)
-        cr.set_source_rgba(*_bp_hex_rgba(fill_hex, 0.88))
+        rounded_rect_path(cr, x0 + 0.5, y0 + 0.5, w - 1.0, h - 1.0, 3.5)
+        cr.set_source_rgba(*hex_to_rgba_f(fill_hex, 0.88))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(col_hex, 0.85))
+        cr.set_source_rgba(*hex_to_rgba_f(col_hex, 0.85))
         cr.set_line_width(1.0)
         cr.stroke()
         self._text(cr, text, x0 + 2.0, y0 + max(1.0, (h - 15.0) * 0.5), f_sub, col_hex, alpha=0.96, max_w=w - 4.0, align=Pango.Alignment.CENTER)
@@ -255,7 +210,7 @@ class _ResilienceBlueprintMixin:
     @staticmethod
     def _arrow(cr, x1: float, y1: float, x2: float, y2: float, col_hex: str, dashed: bool = False, bidir: bool = False) -> None:
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(col_hex, 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(col_hex, 0.92))
         cr.set_line_width(1.4)
         if dashed:
             cr.set_dash([3.0, 3.0])
@@ -298,18 +253,18 @@ class _ResilienceBlueprintMixin:
         # Polar RAM scope
         cr.save()
         cr.arc(sc_cx, sc_cy, sc_r, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(surf_hex, 0.88))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.88))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 0.85))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 0.85))
         cr.set_line_width(1.6)
         cr.stroke()
         cr.arc(sc_cx, sc_cy, sc_r * 0.64, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 0.42))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 0.42))
         cr.set_line_width(1.0)
         cr.set_dash([2.5, 2.5])
         cr.stroke()
         cr.set_dash([])
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.55))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.55))
         cr.move_to(sc_cx - sc_r + 3.0, sc_cy)
         cr.line_to(sc_cx + sc_r - 3.0, sc_cy)
         cr.move_to(sc_cx, sc_cy - sc_r + 3.0)
@@ -317,15 +272,15 @@ class _ResilienceBlueprintMixin:
         cr.stroke()
         # Rollback arc (.old) in attention yellow
         cr.arc(sc_cx, sc_cy, sc_r + 3.5, -0.75, 0.45)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["attention"], 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["attention"], 0.92))
         cr.set_line_width(1.8)
         cr.stroke()
         # Center live RAM dot
         cr.arc(sc_cx, sc_cy, 8.0, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 0.25))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 0.25))
         cr.fill()
         cr.arc(sc_cx, sc_cy, 4.0, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 1.0))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 1.0))
         cr.fill()
         cr.restore()
 
@@ -345,27 +300,27 @@ class _ResilienceBlueprintMixin:
         cr.save()
         # Outer volume ring
         cr.arc(cx2, cy2, 43.0, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(surf_hex, 0.85))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.85))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.92))
         cr.set_line_width(1.2)
         cr.stroke()
         # LUKS2 cipher ring (attention)
         cr.arc(cx2, cy2, 31.0, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["attention_bg"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["attention_bg"], 0.72))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["attention"], 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["attention"], 0.92))
         cr.set_line_width(1.6)
         cr.stroke()
         # Unlocked Root LV core (vitality)
         cr.arc(cx2, cy2, 17.5, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["vitality_bg"], 0.85))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["vitality_bg"], 0.85))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["vitality"], 0.95))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["vitality"], 0.95))
         cr.set_line_width(1.5)
         cr.stroke()
         cr.arc(cx2, cy2, 4.0, 0, math.tau)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["vitality"], 1.0))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["vitality"], 1.0))
         cr.fill()
         cr.restore()
 
@@ -377,7 +332,7 @@ class _ResilienceBlueprintMixin:
             (x2 + uw - 24.0, 122.0, "/boot", cx2 + 36.0, cy2 + 23.0),
         ]
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.65))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.65))
         cr.set_line_width(1.0)
         cr.set_dash([2.0, 2.5])
         for px, py, _lbl, rx, ry in binds:
@@ -407,10 +362,10 @@ class _ResilienceBlueprintMixin:
         )
         # Partition stripes inside NVMe host node
         for idx, bcol in enumerate((pal["vitality"], pal["intent"], pal["structure"])):
-            _bp_rounded_rect(cr, x3 + 7.0, 92.0 + idx * 18.0, cw - 14.0, 11.0, 2.5)
-            cr.set_source_rgba(*_bp_hex_rgba(bcol, 0.30 if idx == 2 else 0.45))
+            rounded_rect_path(cr, x3 + 7.0, 92.0 + idx * 18.0, cw - 14.0, 11.0, 2.5)
+            cr.set_source_rgba(*hex_to_rgba_f(bcol, 0.30 if idx == 2 else 0.45))
             cr.fill_preserve()
-            cr.set_source_rgba(*_bp_hex_rgba(bcol, 0.80))
+            cr.set_source_rgba(*hex_to_rgba_f(bcol, 0.80))
             cr.set_line_width(0.9)
             cr.stroke()
 
@@ -432,6 +387,7 @@ class _ResilienceBlueprintMixin:
 
     def _draw_snapshots(self, cr, zxs: list[float], zw: float, f_hdr, f_title, f_sub, pal: dict, surf_hex: str) -> None:
         p = self.bp_prefix
+        uki_prefix = str(load_resilience_config()["snapshots"].get("uki_prefix") or "linux")
         uw = zw - 28.0
         # Zone 1: Host Root & Hook
         x1 = zxs[0] + 14.0
@@ -456,28 +412,28 @@ class _ResilienceBlueprintMixin:
 
         self._draw_node(
             cr, x2, 38.0, uw - 6.0, 54.0,
-            f"● {t(f'cc_system.{p}_bp_auto')}", "nightcity-auto.efi",
+            f"● {t(f'cc_system.{p}_bp_auto')}", f"{uki_prefix}-auto.efi",
             pal["intent"], pal["intent_bg"], f_title, f_sub, pal,
         )
         # CoW mini bar inside AUTO card
-        _bp_rounded_rect(cr, x2 + 9.0, 77.0, uw - 24.0, 7.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.45))
+        rounded_rect_path(cr, x2 + 9.0, 77.0, uw - 24.0, 7.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.45))
         cr.fill()
-        _bp_rounded_rect(cr, x2 + 9.0, 77.0, (uw - 24.0) * 0.28, 7.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 0.90))
+        rounded_rect_path(cr, x2 + 9.0, 77.0, (uw - 24.0) * 0.28, 7.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 0.90))
         cr.fill()
 
         self._draw_pill(cr, x2 + (uw - 6.0) * 0.5, 105.0, 114.0, 19.0, t(f"cc_system.{p}_bp_cow"), pal["schema"], pal["structure_bg"], f_sub)
         self._draw_node(
             cr, x2, 118.0, uw - 6.0, 54.0,
-            f"● {t(f'cc_system.{p}_bp_stable')}", "nightcity-stable.efi",
+            f"● {t(f'cc_system.{p}_bp_stable')}", f"{uki_prefix}-stable.efi",
             pal["vitality"], pal["vitality_bg"], f_title, f_sub, pal,
         )
-        _bp_rounded_rect(cr, x2 + 9.0, 157.0, uw - 24.0, 7.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.45))
+        rounded_rect_path(cr, x2 + 9.0, 157.0, uw - 24.0, 7.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.45))
         cr.fill()
-        _bp_rounded_rect(cr, x2 + 9.0, 157.0, (uw - 24.0) * 0.44, 7.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["vitality"], 0.90))
+        rounded_rect_path(cr, x2 + 9.0, 157.0, (uw - 24.0) * 0.44, 7.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["vitality"], 0.90))
         cr.fill()
 
         # Zone 3: Limine & Promote
@@ -499,7 +455,7 @@ class _ResilienceBlueprintMixin:
         )
         # Subtle rollback loop line back to Host Root along bottom & left gutter
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["attention"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["attention"], 0.72))
         cr.set_line_width(1.2)
         cr.set_dash([3.0, 3.0])
         ret_x = x1 - 7.0
@@ -540,7 +496,7 @@ class _ResilienceBlueprintMixin:
         # Dashed shared links
         h_mid = x1 + (uw1 - 4.0) * 0.5
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["vitality"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["vitality"], 0.72))
         cr.set_line_width(1.2)
         cr.set_dash([2.5, 2.5])
         cr.move_to(h_mid, 84.0)
@@ -567,8 +523,8 @@ class _ResilienceBlueprintMixin:
         )
         # Mini vector vault bars inside Vault box
         for i, col in enumerate((pal["intent"], pal["vitality"], pal["attention"])):
-            _bp_rounded_rect(cr, vx + 10.0, 88.0 + i * 9.0, vw - 20.0 - i * 16.0, 5.0, 2.0)
-            cr.set_source_rgba(*_bp_hex_rgba(col, 0.78))
+            rounded_rect_path(cr, vx + 10.0, 88.0 + i * 9.0, vw - 20.0 - i * 16.0, 5.0, 2.0)
+            cr.set_source_rgba(*hex_to_rgba_f(col, 0.78))
             cr.fill()
 
         # Push & Pull arrows crossing from Zone 1 into Vault
@@ -634,20 +590,20 @@ class _ResilienceBlueprintMixin:
         col_retained_tier = {col_num: tier_idx for tier_idx, col_num in latest.items()}
 
         # Outer table frame & background
-        _bp_rounded_rect(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
-        cr.set_source_rgba(*_bp_hex_rgba(surf_hex, 0.62))
+        rounded_rect_path(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.62))
         cr.fill()
 
         cr.save()
-        _bp_rounded_rect(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
+        rounded_rect_path(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
         cr.clip()
 
         # Top-left diagonal corner header
         cr.rectangle(x3, ty, lbl_w, hdr_h)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure_bg"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.72))
         cr.fill()
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.65))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.65))
         cr.set_line_width(0.8)
         cr.move_to(x3, ty)
         cr.line_to(x3 + lbl_w, ty + hdr_h)
@@ -664,15 +620,15 @@ class _ResilienceBlueprintMixin:
             if ret_tier is not None:
                 _ltr, _lbl, tcol, tbg = tiers[ret_tier]
                 cr.rectangle(cx0, ty, cw, hdr_h)
-                cr.set_source_rgba(*_bp_hex_rgba(tbg, 0.92))
+                cr.set_source_rgba(*hex_to_rgba_f(tbg, 0.92))
                 cr.fill()
                 cr.rectangle(cx0, ty, cw, 2.0)
-                cr.set_source_rgba(*_bp_hex_rgba(tcol, 0.96))
+                cr.set_source_rgba(*hex_to_rgba_f(tcol, 0.96))
                 cr.fill()
                 self._text_centered(cr, str(col_num), cx0, ty + 1.5, cw, hdr_h - 2.0, f_mat_num_b, tcol, alpha=0.98)
             else:
                 cr.rectangle(cx0, ty, cw, hdr_h)
-                cr.set_source_rgba(*_bp_hex_rgba(pal["structure_bg"], 0.55))
+                cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.55))
                 cr.fill()
                 self._text_centered(cr, str(col_num), cx0, ty + 1.0, cw, hdr_h - 1.0, f_mat_num, pal["schema"], alpha=0.84)
 
@@ -681,10 +637,10 @@ class _ResilienceBlueprintMixin:
             ry = ty + hdr_h + r_idx * row_h
             # Row label background + left accent bar
             cr.rectangle(x3, ry, lbl_w, row_h)
-            cr.set_source_rgba(*_bp_hex_rgba(rbg, 0.40))
+            cr.set_source_rgba(*hex_to_rgba_f(rbg, 0.40))
             cr.fill()
             cr.rectangle(x3, ry + 1.0, 2.5, row_h - 2.0)
-            cr.set_source_rgba(*_bp_hex_rgba(rcol, 0.95))
+            cr.set_source_rgba(*hex_to_rgba_f(rcol, 0.95))
             cr.fill()
             self._text_centered(cr, rlbl, x3 + 6.0, ry, lbl_w - 8.0, row_h, f_mat_lbl, rcol, alpha=0.95, align=Pango.Alignment.LEFT)
 
@@ -697,25 +653,25 @@ class _ResilienceBlueprintMixin:
                 pad_x = 1.6
                 pad_y = 2.6
                 if col_num == latest[r_idx]:
-                    _bp_rounded_rect(cr, cx0 + pad_x, ry + pad_y, cw - pad_x * 2.0, row_h - pad_y * 2.0, 2.5)
-                    cr.set_source_rgba(*_bp_hex_rgba(rbg, 0.95))
+                    rounded_rect_path(cr, cx0 + pad_x, ry + pad_y, cw - pad_x * 2.0, row_h - pad_y * 2.0, 2.5)
+                    cr.set_source_rgba(*hex_to_rgba_f(rbg, 0.95))
                     cr.fill_preserve()
-                    cr.set_source_rgba(*_bp_hex_rgba(rcol, 0.95))
+                    cr.set_source_rgba(*hex_to_rgba_f(rcol, 0.95))
                     cr.set_line_width(1.1)
                     cr.stroke()
                     self._text_centered(cr, ltr, cx0, ry, cw, row_h, f_mat_cell, rcol, alpha=1.0)
                 else:
-                    _bp_rounded_rect(cr, cx0 + pad_x, ry + pad_y, cw - pad_x * 2.0, row_h - pad_y * 2.0, 2.5)
-                    cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.26))
+                    rounded_rect_path(cr, cx0 + pad_x, ry + pad_y, cw - pad_x * 2.0, row_h - pad_y * 2.0, 2.5)
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.26))
                     cr.fill_preserve()
-                    cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.55))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.55))
                     cr.set_line_width(0.8)
                     cr.stroke()
                     self._text_centered(cr, ltr, cx0, ry, cw, row_h, f_mat_cell, pal["inactive"], alpha=0.90)
 
         # Internal thin grid lines
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.42))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.42))
         cr.set_line_width(0.7)
         for c_idx in range(cols):
             vx_line = math.floor(x3 + lbl_w + c_idx * cw) + 0.5
@@ -731,27 +687,27 @@ class _ResilienceBlueprintMixin:
         cr.restore()  # end outer rounded table clip
 
         # Crisp outer border of table
-        _bp_rounded_rect(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.85))
+        rounded_rect_path(cr, x3 + 0.5, ty + 0.5, uw3 - 1.0, mat_h - 1.0, 4.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.85))
         cr.set_line_width(1.0)
         cr.stroke()
 
         # Compact legend strip below matrix
         ly = ty + mat_h + 8.0
         bx_dim = x3 + 2.0
-        _bp_rounded_rect(cr, bx_dim, ly + 1.0, 10.0, 10.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.28))
+        rounded_rect_path(cr, bx_dim, ly + 1.0, 10.0, 10.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.28))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.65))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.65))
         cr.set_line_width(0.8)
         cr.stroke()
         tw_old, _ = self._text(cr, t(f"cc_system.{p}_bp_mat_old"), bx_dim + 15.0, ly - 0.5, f_mat_leg, pal["schema"], alpha=0.90)
 
         bx_kept = bx_dim + 15.0 + tw_old + 14.0
-        _bp_rounded_rect(cr, bx_kept, ly + 1.0, 10.0, 10.0, 2.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent_bg"], 0.95))
+        rounded_rect_path(cr, bx_kept, ly + 1.0, 10.0, 10.0, 2.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent_bg"], 0.95))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["intent"], 0.95))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 0.95))
         cr.set_line_width(1.0)
         cr.stroke()
         self._text(
@@ -781,20 +737,20 @@ class _ResilienceBlueprintMixin:
         font_family = str((THEME.get("typography") or {}).get("font_family", "monospace") or "monospace")
 
         # 1. Outer recessed Tactical Blueprint frame
-        _bp_rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure_bg"], 0.64))
+        rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.64))
         cr.fill_preserve()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.90))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.90))
         cr.set_line_width(1.0)
         cr.stroke()
 
         cr.save()
-        _bp_rounded_rect(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
+        rounded_rect_path(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
         cr.clip()
 
         # Subtle background blueprint dots
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.25))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.25))
         gx = bx + 18.0
         while gx < bx + bw - 12.0:
             gy = 20.0
@@ -830,7 +786,7 @@ class _ResilienceBlueprintMixin:
             zws = [zw, zw, zw]
             zxs = [bx, bx + zw, bx + zw * 2.0]
         cr.save()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.42))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.42))
         cr.set_line_width(1.0)
         cr.set_dash([2.5, 4.0])
         for dx in (zxs[1], zxs[2]):
@@ -848,10 +804,10 @@ class _ResilienceBlueprintMixin:
 
         # 3. Integrated Telemetry Footer Strip
         fy = stage_h
-        cr.set_source_rgba(*_bp_hex_rgba(surf_hex, 0.80))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.80))
         cr.rectangle(bx + 1.0, fy, bw - 2.0, footer_h)
         cr.fill()
-        cr.set_source_rgba(*_bp_hex_rgba(pal["structure"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.72))
         cr.set_line_width(1.0)
         cr.move_to(bx + 1.0, fy + 0.5)
         cr.line_to(bx + bw - 1.0, fy + 0.5)
@@ -945,136 +901,19 @@ def _build_guide_box(
     return [AsciiCard(box_top, canvas, embedded_widget=bp, footer_box_model=foot)]
 
 
-from panels.cc_engine_sysinfo import _collect_about_data, _read_uptime
-
-
-_SCRIPT_DESC_KEYS = {
-    "nc-posture": "cc_system.desc_nc_gaming",
-    "nc-usbguard": "cc_system.desc_nc_usbguard",
-    "nc-fan-profile": "cc_system.desc_nc_fan",
-    "nc-snap": "cc_system.desc_nc_snapshot",
-    "nc-vault": "cc_system.desc_nc_vault",
-    "nc-hanoi": "cc_system.desc_nc_hanoi",
-    "nc-rescue": "cc_system.desc_nc_rescue",
-    "nc-chroot": "cc_system.desc_nc_chroot",
-    "nc-golden": "cc_system.desc_nc_golden",
-    "nc-disks": "cc_system.desc_nc_disks",
-}
-_NAS_SHARES = ("comics", "docker", "jellyfin", "music", "personal_folder", "photos", "torrent")
-
-
-def _read_first_line(path: str, default: str = "-") -> str:
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            val = f.readline().strip()
-            return val if val else default
-    except Exception:
-        return default
-
-
-def _discover_nc_scripts() -> list[dict]:
-    scripts = []
-    bases = [(SBIN_DST_DIR, "ncui")] + [(u, "utils") for u in find_all_package_files("utils")]
-    for base, scope in bases:
-        if not os.path.isdir(base):
-            continue
-        for fn in sorted(os.listdir(base)):
-            ok_fn = fn.startswith(("nc-", "dc-")) if scope == "ncui" else ((fn.startswith("nc") or fn.startswith("dc-")) and fn.endswith(".sh"))
-            if ok_fn:
-                scripts.append({
-                    "name": fn,
-                    "path": os.path.join(base, fn),
-                    "scope": scope,
-                    "desc_key": _SCRIPT_DESC_KEYS.get(fn, "cc_system.desc_util_generic"),
-                })
-    return scripts
-
-
-def _probe_vault_status() -> dict:
-    """Zero-fork probe of configured `[vault]` storage mount/readiness across SMB/NFS/SSH/Local."""
-    res_cfg = load_resilience_config()
-    vcfg = res_cfg["vault"]
-    icfg = res_cfg["identity"]
-    proto = str(vcfg.get("protocol") or "smb").lower()
-    mp = str(vcfg.get("mountpoint") or "/nas").rstrip("/") or "/nas"
-    shares_cfg = [str(s) for s in (vcfg.get("shares") or []) if str(s).strip()]
-    if proto in ("smb", "nfs") and not shares_cfg:
-        shares_cfg = list(_NAS_SHARES)
-
-    mounted_mps: set[str] = set()
-    try:
-        with open("/proc/self/mountinfo", "r", encoding="utf-8", errors="ignore") as f:
-            for ln in f:
-                parts = ln.split(" - ", 1)[0].split()
-                if len(parts) >= 5:
-                    m_p = parts[4].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
-                    mounted_mps.add(m_p)
-    except Exception:
-        pass
-
-    base = mp
-    active: list[str] = []
-    if proto in ("smb", "nfs"):
-        run_hits = [s for s in shares_cfg if f"/run/nas/{s}" in mounted_mps]
-        nas_hits = [s for s in shares_cfg if f"{mp}/{s}" in mounted_mps]
-        if run_hits and not nas_hits:
-            base = "/run/nas"
-            active = run_hits
-        else:
-            active = nas_hits
-        mounted = bool(active)
-        cnt = len(active)
-        tot = max(1, len(shares_cfg))
-    elif proto == "ssh":
-        is_fused = mp in mounted_mps
-        is_staged = os.path.isfile(os.path.join(mp, ".ncui_ssh_mounted"))
-        mounted = bool(is_fused or is_staged)
-        cnt = 1 if mounted else 0
-        tot = 1
-        active = ["sshfs" if is_fused else "rsync"] if mounted else []
-    else:
-        mounted = os.path.isdir(mp)
-        cnt = 1 if mounted else 0
-        tot = 1
-        active = ["local"] if mounted else []
-
-    priv_v = get_privileged_action("vault_mount")
-    priv_h = get_privileged_action("hanoi_sync")
-    backup_sub = str(vcfg.get("backup_root_subdir") or "ncui-vault").strip("/")
-    pkg_sub = str(vcfg.get("pkglist_subdir") or f"{backup_sub}/pkglists").strip("/")
-    return {
-        "mounted": mounted,
-        "count": cnt,
-        "total": tot,
-        "base": base,
-        "shares": active,
-        "shares_cfg": shares_cfg,
-        "protocol": proto,
-        "host": str(vcfg.get("host") or ""),
-        "ssh_user": str(vcfg.get("ssh_user") or ""),
-        "remote_path": str(vcfg.get("remote_path") or ""),
-        "backup_root": os.path.join(base, backup_sub),
-        "pkglist_dir": os.path.join(base, pkg_sub),
-        "backup_root_subdir": backup_sub,
-        "pkglist_subdir": pkg_sub,
-        "smb_creds_file": str(vcfg.get("smb_creds_file") or "/etc/samba/nas-cred"),
-        "sys_alias": str(icfg.get("sys_alias") or ""),
-        "sys_folder": str(icfg.get("sys_folder") or ""),
-        "priv_vault_ok": bool(priv_v and priv_v.check_installed()),
-        "priv_hanoi_ok": bool(priv_h and priv_h.check_installed()),
-    }
-
+from panels.cc_engine_telemetry_vault import (  # noqa: F401
+    handle_vault_link,
+    handle_vault_prompt,
+    is_vault_mounted as _is_nas_mounted,
+    probe_vault_status as _probe_vault_status,
+    prompt_smb_user as _prompt_smb_user,
+)
 
 def _probe_nas_shares() -> dict:
     return _probe_vault_status()
 
 
-def _is_nas_mounted() -> bool:
-    return _probe_vault_status()["mounted"]
-
-
-
-def _probe_duskcity_env() -> dict:
+def _probe_rescue_env() -> dict:
     rescue_bin = resolve_sbin_helper("nc-rescue")
     chroot_bin = resolve_sbin_helper("nc-chroot")
     golden_bin = resolve_sbin_helper("nc-golden")
@@ -1107,9 +946,6 @@ def _probe_golden_images(nas_base: str) -> list[dict]:
         if str(p or "").strip("/")
     ]
     img_root = os.path.join(nas_base, *sub_parts) if sub_parts else os.path.join(nas_base, "images")
-    if not os.path.isdir(img_root):
-        legacy_root = os.path.join(nas_base, "personal_folder/Software/Linux/duskcity-archlinux/images")
-        img_root = legacy_root if os.path.isdir(legacy_root) else img_root
     if not os.path.isdir(img_root):
         return []
     out = []
@@ -1159,49 +995,18 @@ def _probe_golden_images(nas_base: str) -> list[dict]:
     return out
 
 
-def _collect_storage_data() -> dict:
-    blk = []
-    ok, out = probe.run_cmd(["lsblk", "-J", "-o", "NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,FSUSE%"], timeout=1.5)
-    if ok and out:
-        try:
-            def _walk(nodes):
-                for n in nodes:
-                    if n.get("type") in ("disk", "part", "lvm", "crypt"):
-                        blk.append(n)
-                    if n.get("children"):
-                        _walk(n["children"])
-            _walk(json.loads(out).get("blockdevices", []))
-        except Exception:
-            pass
-    lvs = []
-    if probe.has_bin("lvs"):
-        ok_lv, out_lv = probe.run_cmd(["lvs", "--noheadings", "-o", "vg_name,lv_name,lv_size,data_percent,lv_attr"], timeout=1.5)
-        if ok_lv and out_lv:
-            lvs = [l.strip().split() for l in out_lv.splitlines() if l.strip()]
-    v_info = _probe_vault_status()
-    return {
-        "blk": blk,
-        "lvs": lvs,
-        "nas_host": v_info["host"] or v_info["base"],
-        "vault_protocol": v_info["protocol"],
-        "nas_mounted": v_info["mounted"],
-        "nas_info": v_info,
-    }
-
-
-
 def _collect_backup_data() -> dict:
     nas_info = _probe_nas_shares()
     nas_mounted = nas_info["mounted"]
     snaps = []
-    snap_meta_dir = "/var/lib/ncui/snapshots" if os.path.isdir("/var/lib/ncui/snapshots") else "/var/lib/nightcity/snapshots"
+    snap_meta_dir = "/var/lib/ncui/snapshots"
     if os.path.isdir(snap_meta_dir):
         try:
             snaps = sorted(fn for fn in os.listdir(snap_meta_dir) if not fn.startswith("."))
         except Exception:
             pass
     hanoi_env = _read_env_kv("/var/lib/nc-nas-conf/status.env")
-    dr_env = _read_env_kv("/var/lib/ncui/dr-status.env") or _read_env_kv("/var/lib/nightcity/dr-status.env")
+    dr_env = _read_env_kv("/var/lib/ncui/dr-status.env")
     rescue_env = _read_env_kv("/var/lib/ncui/rescue-status.env")
     res_cfg = load_resilience_config()
     snap_cfg = res_cfg["snapshots"]
@@ -1211,28 +1016,20 @@ def _collect_backup_data() -> dict:
     esp = snap_cfg.get("esp_mount", "/boot")
     uki_dir = os.path.join(esp, "EFI", "Linux")
     uki_prefix = snap_cfg.get("uki_prefix") or res_cfg["identity"].get("hostname", "linux").lower()
-    duskcity_ok = (
+    rescue_uki_ok = (
         rescue_env.get("UKI_PRESENT") == "1"
-        or dr_env.get("DUSKCITY_READY") == "1"
+        or dr_env.get("RESCUE_READY") == "1"
         or any(
             os.path.exists(p)
             for p in (
                 os.path.join(uki_dir, rec_cfg.get("uki_name", "nc-rescue.efi")),
                 os.path.join(uki_dir, "nc-rescue.efi"),
-                os.path.join(uki_dir, "nightcity-recovery.efi"),
-                os.path.join(uki_dir, "duskcity.efi"),
-                "/efi/EFI/Linux/duskcity.efi",
-                "/boot/EFI/Linux/duskcity.efi",
-                "/efi/EFI/Linux/nightcity-recovery.efi",
-                "/boot/EFI/Linux/nightcity-recovery.efi",
             )
         )
     )
     snap_slots = []
     for slot in ("auto", "stable"):
-        p_ncui = f"/var/lib/ncui/snapshots/{slot}.meta"
-        p_leg = f"/var/lib/nightcity/snapshots/{slot}.meta"
-        meta = _read_env_kv(p_ncui) if os.path.isfile(p_ncui) else _read_env_kv(p_leg)
+        meta = _read_env_kv(f"/var/lib/ncui/snapshots/{slot}.meta")
         uki_file = meta.get("UKI_FILE") or f"{uki_prefix}-{slot}.efi"
         uki_present = (meta.get("UKI_PRESENT") == "1") if "UKI_PRESENT" in meta else os.path.isfile(os.path.join(uki_dir, uki_file))
         max_pct_raw = str(meta.get("MAX_COW_PCT") or "0").strip()
@@ -1267,7 +1064,17 @@ def _collect_backup_data() -> dict:
 
     priv = get_privileged_action("snapshot_manage")
     helper = resolve_sbin_helper("nc-snap")
-    hook_active = os.path.isfile("/etc/pacman.d/hooks/00-nc-snapshot.hook") or (dr_env.get("PACMAN_HOOK") == "1")
+    os_fam = probe.get_os_release()["family"]
+    hook_kind = (
+        "pacman" if (os_fam == "arch" or os.path.isdir("/etc/pacman.d"))
+        else ("apt" if (os_fam == "debian" or os.path.isdir("/etc/apt/apt.conf.d")) else "none")
+    )
+    hook_active = (
+        os.path.isfile("/etc/pacman.d/hooks/00-nc-snapshot.hook")
+        or os.path.isfile("/etc/apt/apt.conf.d/00-nc-snapshot")
+        or (dr_env.get("SNAP_HOOK") == "1")
+        or (dr_env.get("PACMAN_HOOK") == "1")
+    )
 
     ts_raw = hanoi_env.get("NC_STATUS_TIMESTAMP", "")
     last_check = ""
@@ -1284,6 +1091,7 @@ def _collect_backup_data() -> dict:
         "pull_total": int(hanoi_env.get("NC_PULL_TOTAL", "0") or "0") if str(hanoi_env.get("NC_PULL_TOTAL", "0")).isdigit() else 0,
     }
     priv_r = get_privileged_action("rescue_manage")
+    chroot_mnt = rescue_env.get("CHROOT_MNT") or "/run/ncui-chroot"
     return {
         "nas_mounted": nas_mounted,
         "nas_info": nas_info,
@@ -1296,7 +1104,7 @@ def _collect_backup_data() -> dict:
         "rescue_confirm_build": bool(STATE.get("system", "rescue_confirm_build", False)),
         "rescue_confirm_rb": bool(STATE.get("system", "rescue_confirm_rb", False)),
         "golden_verified": STATE.get("system", "golden_verified_map", {}) or {},
-        "chroot_active": os.path.ismount("/run/nightcity-chroot") or rescue_env.get("CHROOT_ACTIVE") == "1",
+        "chroot_active": os.path.ismount(chroot_mnt) or rescue_env.get("CHROOT_ACTIVE") == "1",
         "chroot_cands": STATE.get("system", "chroot_candidates", None),
         "hanoi_timer_on": os.path.exists("/etc/systemd/system/timers.target.wants/nc-nas-conf.timer"),
         "hanoi_list_items": STATE.get("system", "hanoi_list_items", None),
@@ -1314,6 +1122,7 @@ def _collect_backup_data() -> dict:
         "broken_lvs": broken_lvs,
         "priv_ok": bool(priv and priv.check_installed()),
         "helper": helper,
+        "hook_kind": hook_kind,
         "pacman_hook": hook_active,
         "busy_slot": str(STATE.get("system", "snap_busy_slot", "") or ""),
         "confirm_del": str(STATE.get("system", "snap_confirm_del", "") or ""),
@@ -1324,8 +1133,8 @@ def _collect_backup_data() -> dict:
         "hanoi_env": hanoi_env,
         "hanoi_summary": hanoi_summary,
         "golden_images": _probe_golden_images(nas_info["base"]) if nas_mounted else [],
-        "duskcity_exists": duskcity_ok,
-        "duskcity_env": _probe_duskcity_env(),
+        "rescue_uki_ok": rescue_uki_ok,
+        "rescue_env_info": _probe_rescue_env(),
     }
 
 
@@ -1340,10 +1149,10 @@ def _run_nc_snap_async(cc_panel, busy_tag: str, args: list[str], stdin_data: str
         if opened_modal:
             return
         if rc == 0:
-            _set_sys_fb(True, ok_msg or t("cc_system.snap_fb_health"))
+            set_feedback("system", True, ok_msg or t("cc_system.snap_fb_health"))
         else:
             msg_s = (out.splitlines()[-1] if out else "error")[:140]
-            _set_sys_fb(False, t("cc_system.snap_fb_err", p0=msg_s))
+            set_feedback("system", False, t("cc_system.snap_fb_err", p0=msg_s))
 
     return _run_helper_async(
         cc_panel,
@@ -1355,18 +1164,6 @@ def _run_nc_snap_async(cc_panel, busy_tag: str, args: list[str], stdin_data: str
         stdin_data=stdin_data,
         timeout=90.0,
         on_done=_done,
-    )
-
-
-def _prompt_smb_user(cc_panel) -> None:
-    nas = _probe_vault_status()
-    host = nas.get("host") or "NAS"
-    cc_panel.request_prompt(
-        "cc_sys_smb_user",
-        t("cc_system.prompt_smb_user", p0=host),
-        nas.get("ssh_user") or "",
-        title=t("cc_system.prompt_smb_user_title"),
-        required=True,
     )
 
 
@@ -1493,98 +1290,26 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
     if act == "pkglist_prompt":
         cc_panel.request_prompt("cc_sys_pkglist", t("cc_system.pkglist_prompt_lbl"), "", title=t("cc_system.pkglist_prompt_title"))
         return True
-    elif act == "usbguard_list":
-        from ui.embedded_tui import start_panel_terminal
-
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0="nc-usbguard list"),
-            ["sudo", resolve_sbin_helper("nc-usbguard"), "list"],
-        )
-        return True
-    elif act.startswith("run_script:"):
-        from ui.embedded_tui import start_panel_terminal
-
-        sp = act.split(":", 1)[1]
-        cmd = ["sudo", sp] if sp.startswith(SBIN_DST_DIR + "/") else [sp]
-        start_panel_terminal(cc_panel, t("common.term_title", p0=os.path.basename(sp)), cmd)
-        return True
-    elif act.startswith("prompt_script:"):
-        sp = act.split(":", 1)[1]
-        cc_panel.request_prompt(f"cc_sys_args|{sp}", t("cc_system.arguments_for", p0=os.path.basename(sp)), "", title=os.path.basename(sp), completion="path_file")
-        return True
-    elif act == "mount_nas":
-        def _on_mount(opened: bool, rc: int, out: str):
-            if opened:
-                return
-            if rc == 10 or "CREDENTIALS_REQUIRED" in out:
-                _prompt_smb_user(cc_panel)
-            elif rc == 0:
-                STATE.set("system", "hanoi_list_items", None)
-                STATE.set("system", "hanoi_hist_items", None)
-                STATE.set("system", "pkglist_items", None)
-                STATE.set("system", "hanoi_versions_map", {})
-                _set_sys_fb(True, t("cc_system.vault_fb_mounted", p0=_probe_vault_status()["base"]))
-                _refresh_hanoi_list_silent(cc_panel, also_pkglists=True)
-            else:
-                msg_s = (out.splitlines()[-1] if out else "error")[:140]
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=msg_s))
-
-        _run_helper_async(cc_panel, "vault_busy", "MOUNT", "nc-vault", "vault_mount", ["mount"], timeout=30.0, on_done=_on_mount)
-    elif act == "nas_remount":
-        def _on_remount(opened: bool, rc: int, out: str):
-            if opened:
-                return
-            if rc == 10 or "CREDENTIALS_REQUIRED" in out:
-                _prompt_smb_user(cc_panel)
-            elif rc == 0:
-                STATE.set("system", "hanoi_list_items", None)
-                STATE.set("system", "hanoi_hist_items", None)
-                STATE.set("system", "pkglist_items", None)
-                STATE.set("system", "hanoi_versions_map", {})
-                _set_sys_fb(True, t("cc_system.vault_fb_mounted", p0=_probe_vault_status()["base"]))
-                _refresh_hanoi_list_silent(cc_panel, also_pkglists=True)
-            else:
-                msg_s = (out.splitlines()[-1] if out else "error")[:140]
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=msg_s))
-
-        _run_helper_async(cc_panel, "vault_busy", "REMOUNT", "nc-vault", "vault_mount", ["remount"], timeout=30.0, on_done=_on_remount)
-    elif act == "nas_umount":
-        def _on_umount(opened: bool, rc: int, out: str):
-            if opened:
-                return
-            if rc == 0:
-                STATE.set("system", "hanoi_list_items", None)
-                STATE.set("system", "hanoi_hist_items", None)
-                STATE.set("system", "pkglist_items", None)
-                STATE.set("system", "hanoi_versions_map", {})
-                _set_sys_fb(True, t("cc_system.vault_fb_unmounted"))
-            else:
-                msg_s = (out.splitlines()[-1] if out else "error")[:140]
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=msg_s))
-
-        _run_helper_async(cc_panel, "vault_busy", "UMOUNT", "nc-vault", "vault_mount", ["umount"], timeout=25.0, on_done=_on_umount)
-    elif act == "smart_check":
-        from ui.embedded_tui import start_panel_terminal
-
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0="NVMe SMART"),
-            ["bash", "-c", 'for d in /dev/nvme*n1; do echo "=== $d ==="; sudo smartctl -H "$d"; done'],
-        )
+    elif handle_vault_link(cc_panel, uri, on_mounted_cb=lambda: _refresh_hanoi_list_silent(cc_panel, also_pkglists=True)):
+        if cc_panel.shell:
+            cc_panel.shell.refresh_view()
         return True
     elif act == "snap_auth":
         request_privilege_modal(cc_panel, "snapshot_manage")
     elif act == "snap_health":
         opened, ok, out = _exec_nc_snap_priv(cc_panel, ["check-health"], timeout=10.0)
         if not opened:
-            _set_sys_fb(ok, t("cc_system.snap_fb_health") if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
+            set_feedback("system", ok, t("cc_system.snap_fb_health") if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
     elif act in ("snap_hook:on", "snap_hook:off"):
         cmd_arg = "hook-on" if act.endswith(":on") else "hook-off"
-        msg_k = "cc_system.snap_fb_hook_on" if act.endswith(":on") else "cc_system.snap_fb_hook_off"
+        is_apt = (probe.get_os_release()["family"] == "debian" or (not os.path.isdir("/etc/pacman.d") and os.path.isdir("/etc/apt/apt.conf.d")))
+        if is_apt:
+            msg_k = "cc_system.snap_fb_apt_hook_on" if act.endswith(":on") else "cc_system.snap_fb_apt_hook_off"
+        else:
+            msg_k = "cc_system.snap_fb_hook_on" if act.endswith(":on") else "cc_system.snap_fb_hook_off"
         opened, ok, out = _exec_nc_snap_priv(cc_panel, [cmd_arg], timeout=10.0)
         if not opened:
-            _set_sys_fb(ok, t(msg_k) if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
+            set_feedback("system", ok, t(msg_k) if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
     elif act == "snap_note_open":
         cur_note = str(STATE.get("system", "snap_note_draft", "") or "")
         start_inline_input(
@@ -1616,7 +1341,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         slot = act.split(":", 1)[1]
         cfg_s = load_resilience_config()["snapshots"]
         target_lv = cfg_s.get("root_lv") or "root"
-        meta_s = _read_env_kv(f"/var/lib/ncui/snapshots/{slot}.meta") or _read_env_kv(f"/var/lib/nightcity/snapshots/{slot}.meta")
+        meta_s = _read_env_kv(f"/var/lib/ncui/snapshots/{slot}.meta")
         best_pct = -1.0
         for part in str(meta_s.get("COW_SUMMARY", "") or "").split("·"):
             m_lv = re.match(r"^\s*([a-zA-Z0-9_+.-]+)\s+([0-9]+(?:\.[0-9]+)?)%/", part)
@@ -1678,9 +1403,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             )
     elif act.startswith("snap_cfg:") and ":" in act[len("snap_cfg:"):]:
         k, v = act[len("snap_cfg:"):].split(":", 1)
+        esp_allowed = set(probe.detect_esp_mounts()) | {"/boot", "/efi", "/boot/efi"}
         valid_cfg = (
             (k == "backend" and v in ("lvm_uki", "btrfs"))
-            or (k == "esp_mount" and v in ("/boot", "/efi"))
+            or (k == "esp_mount" and v in esp_allowed)
             or (k == "var_lv" and v in ("", "var"))
             or (k == "home_lv" and v in ("", "home"))
             or (k in ("snap_root_size", "snap_var_size") and bool(re.match(r"^[0-9]{1,4}[GM]$", v)))
@@ -1690,7 +1416,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             opened, ok, out = _exec_nc_snap_priv(cc_panel, ["config-stdin"], stdin_data=f"{k}={v}\n", timeout=8.0)
             if not opened:
                 disp = f"{k}={v or 'off'}"
-                _set_sys_fb(ok, t("cc_system.snap_fb_cfg_saved", p0=disp) if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
+                set_feedback("system", ok, t("cc_system.snap_fb_cfg_saved", p0=disp) if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
     elif act in ("snap_prefix_open", "snap_vg_open", "snap_subvol_open"):
         cfg_cur = load_resilience_config()["snapshots"]
         meta_map = {
@@ -1703,11 +1429,11 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         def _commit_cfg_field(new_val: str, key=cfg_k, pattern=pat):
             val_s = new_val.strip()
             if not val_s or ".." in val_s or not re.match(pattern, val_s):
-                _set_sys_fb(False, t("cc_system.snap_fb_err", p0=f"{key}={val_s}"))
+                set_feedback("system", False, t("cc_system.snap_fb_err", p0=f"{key}={val_s}"))
                 return
             opened, ok, out = _exec_nc_snap_priv(cc_panel, ["config-stdin"], stdin_data=f"{key}={val_s}\n", timeout=8.0)
             if not opened:
-                _set_sys_fb(ok, t("cc_system.snap_fb_cfg_saved", p0=f"{key}={val_s}") if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
+                set_feedback("system", ok, t("cc_system.snap_fb_cfg_saved", p0=f"{key}={val_s}") if ok else t("cc_system.snap_fb_err", p0=(out or "error")[:140]))
 
         start_inline_input(
             act[:-5],
@@ -1721,20 +1447,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             on_commit=_commit_cfg_field,
         )
         return True
-    elif act in ("hanoi_push", "hanoi_pull", "hanoi_check", "hanoi_backup", "hanoi_history", "hanoi_list", "hanoi_term_sync"):
-        if act in ("hanoi_history", "hanoi_term_sync"):
-            flag = "-H" if act == "hanoi_history" else "-s"
-            h_bin = resolve_sbin_helper("nc-hanoi")
-            if not _is_nas_mounted():
-                _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
-            else:
-                from ui.embedded_tui import start_panel_terminal
-
-                start_panel_terminal(cc_panel, t("common.term_title", p0=f"nc-hanoi {flag}"), ["sudo", h_bin, flag])
-                return True
-        elif not _is_nas_mounted():
-            _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
-        elif act in ("hanoi_push", "hanoi_backup"):
+    elif act in ("hanoi_push", "hanoi_pull", "hanoi_check", "hanoi_list"):
+        if not _is_nas_mounted():
+            set_feedback("system", False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
+        elif act == "hanoi_push":
             def _on_push(opened: bool, rc: int, out: str):
                 if opened:
                     return
@@ -1745,10 +1461,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                         msg = f"{msg} — {t('cc_system.hanoi_fb_conflicts_note')}"
                     STATE.set("system", "hanoi_versions_map", {})
                     STATE.set("system", "hanoi_hist_items", None)
-                    _set_sys_fb(True, msg)
+                    set_feedback("system", True, msg)
                     _refresh_hanoi_list_silent(cc_panel)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(cc_panel, "vault_busy", "PUSH", "nc-hanoi", "hanoi_sync", ["--sync-auto"], timeout=120.0, on_done=_on_push)
         elif act == "hanoi_pull":
@@ -1762,10 +1478,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                         msg = f"{msg} — {t('cc_system.hanoi_fb_conflicts_note')}"
                     STATE.set("system", "hanoi_versions_map", {})
                     STATE.set("system", "hanoi_hist_items", None)
-                    _set_sys_fb(True, msg)
+                    set_feedback("system", True, msg)
                     _refresh_hanoi_list_silent(cc_panel)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(cc_panel, "vault_busy", "PULL", "nc-hanoi", "hanoi_sync", ["--pull-auto"], timeout=120.0, on_done=_on_pull)
         elif act == "hanoi_check":
@@ -1781,9 +1497,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     rc_p, out_p, _ = probe.run_cmd_full([v_bin, "pkglist-tsv"], timeout=6.0)
                     if rc_p == 0:
                         STATE.set("system", "pkglist_items", _parse_pkglist_tsv(out_p))
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_checked", p0=_sum.get("push_total", "0"), p1=_sum.get("pull_total", "0")))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_checked", p0=_sum.get("push_total", "0"), p1=_sum.get("pull_total", "0")))
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(cc_panel, "vault_busy", "CHECK", "nc-hanoi", "hanoi_sync", ["--list-tsv"], timeout=60.0, on_done=_on_chk)
         elif act == "hanoi_list":
@@ -1793,14 +1509,14 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                 if rc == 0:
                     _sum, items = _parse_hanoi_list_tsv(out)
                     STATE.set("system", "hanoi_list_items", items)
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_loaded", p0=len(items)))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_loaded", p0=len(items)))
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(cc_panel, "vault_busy", "SCAN", "nc-hanoi", "hanoi_sync", ["--list-tsv"], timeout=60.0, on_done=_on_list)
     elif act == "hanoi_load_hist":
         if not _is_nas_mounted():
-            _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
+            set_feedback("system", False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
         else:
             def _on_hist(opened: bool, rc: int, out: str):
                 if opened:
@@ -1812,9 +1528,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     rc_p, out_p, _ = probe.run_cmd_full([v_bin, "pkglist-tsv"], timeout=6.0)
                     if rc_p == 0:
                         STATE.set("system", "pkglist_items", _parse_pkglist_tsv(out_p))
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_loaded", p0=len(hist)))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_loaded", p0=len(hist)))
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(cc_panel, "vault_busy", "HIST", "nc-hanoi", "hanoi_sync", ["--history-tsv"], timeout=60.0, on_done=_on_hist)
     elif act == "hanoi_prune_ask":
@@ -1829,7 +1545,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             if rc == 0:
                 STATE.set("system", "hanoi_versions_map", {})
                 STATE.set("system", "hanoi_hist_items", None)
-                _set_sys_fb(True, t("cc_system.hanoi_fb_pruned"))
+                set_feedback("system", True, t("cc_system.hanoi_fb_pruned"))
                 if STATE.get("system", "hanoi_view_mode", "") == "history":
                     def _on_hist_silent(op_h: bool, rc_h: int, out_h: str):
                         if not op_h and rc_h == 0:
@@ -1837,7 +1553,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
 
                     _run_helper_async(cc_panel, "vault_busy", "HIST", "nc-hanoi", "hanoi_sync", ["--history-tsv"], timeout=60.0, on_done=_on_hist_silent)
             else:
-                _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "vault_busy", "PRUNE", "nc-hanoi", "hanoi_sync", ["--prune-auto"], timeout=90.0, on_done=_on_prune)
     elif act in ("hanoi_timer:on", "hanoi_timer:off"):
@@ -1845,58 +1561,13 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         msg_k = "cc_system.hanoi_fb_timer_on" if act.endswith(":on") else "cc_system.hanoi_fb_timer_off"
         opened, rc, out = _exec_priv_helper(cc_panel, "nc-hanoi", "hanoi_sync", [arg_t], timeout=15.0)
         if not opened:
-            _set_sys_fb(rc == 0, t(msg_k) if rc == 0 else t("cc_system.hanoi_fb_err", p0=(out or "error")[:140]))
+            set_feedback("system", rc == 0, t(msg_k) if rc == 0 else t("cc_system.hanoi_fb_err", p0=(out or "error")[:140]))
     elif act == "hanoi_add_prompt":
         if not _is_nas_mounted():
-            _set_sys_fb(False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
+            set_feedback("system", False, t("cc_system.nas_not_mounted_mount_nas_10_10_0"))
         else:
             cc_panel.request_prompt("cc_sys_hanoi_add", t("cc_system.prompt_hanoi_add_lbl"), "", title=t("cc_system.prompt_hanoi_add_title"), completion="path_file", required=True)
             return True
-    elif act.startswith("vault_cfg:") and ":" in act[len("vault_cfg:"):]:
-        k, v = act[len("vault_cfg:"):].split(":", 1)
-        if k == "protocol" and v in ("smb", "nfs", "ssh", "local"):
-            opened, rc, out = _exec_priv_helper(cc_panel, "nc-vault", "vault_mount", ["config-stdin"], stdin_data=f"protocol={v}\n", timeout=8.0)
-            if not opened:
-                _set_sys_fb(rc == 0, t("cc_system.vault_fb_cfg_saved", p0=f"protocol={v}") if rc == 0 else t("cc_system.vault_fb_err", p0=(out or "error")[:140]))
-    elif act in ("vault_host_open", "vault_mp_open", "vault_shares_open", "vault_user_open", "vault_rpath_open", "vault_subdir_open", "vault_pkgdir_open", "vault_alias_open", "vault_folder_open"):
-        rcfg = load_resilience_config()
-        vcfg = rcfg["vault"]
-        icfg = rcfg["identity"]
-        sh_csv = ",".join(str(s) for s in (vcfg.get("shares") or []))
-        f_map = {
-            "vault_host_open": ("host", vcfg.get("host", ""), 64, r"^[a-zA-Z0-9_.:-]{0,64}$"),
-            "vault_mp_open": ("mountpoint", vcfg.get("mountpoint", "/nas"), 64, r"^/[a-zA-Z0-9_./-]{1,64}$"),
-            "vault_shares_open": ("shares", sh_csv, 96, r"^[a-zA-Z0-9_.,/-]{0,96}$"),
-            "vault_user_open": ("ssh_user", vcfg.get("ssh_user", ""), 32, r"^[a-zA-Z0-9_.-]{0,32}$"),
-            "vault_rpath_open": ("remote_path", vcfg.get("remote_path", ""), 80, r"^(/[a-zA-Z0-9_./-]{1,80})?$"),
-            "vault_subdir_open": ("backup_root_subdir", vcfg.get("backup_root_subdir", ""), 80, r"^[a-zA-Z0-9_./-]{1,80}$"),
-            "vault_pkgdir_open": ("pkglist_subdir", vcfg.get("pkglist_subdir", ""), 80, r"^[a-zA-Z0-9_./-]{1,80}$"),
-            "vault_alias_open": ("sys_alias", icfg.get("sys_alias", ""), 16, r"^[a-z0-9_-]{1,16}$"),
-            "vault_folder_open": ("sys_folder", icfg.get("sys_folder", ""), 48, r"^[a-zA-Z0-9_.-]{1,48}$"),
-        }
-        cfg_k, init_v, ml, pat = f_map[act]
-
-        def _commit_vault_field(new_val: str, key=cfg_k, pattern=pat):
-            val_s = new_val.strip()
-            if ".." in val_s or not re.match(pattern, val_s):
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=f"{key}={val_s}"))
-                return
-            opened, rc, out = _exec_priv_helper(cc_panel, "nc-vault", "vault_mount", ["config-stdin"], stdin_data=f"{key}={val_s}\n", timeout=8.0)
-            if not opened:
-                _set_sys_fb(rc == 0, t("cc_system.vault_fb_cfg_saved", p0=f"{key}={val_s or '-'}") if rc == 0 else t("cc_system.vault_fb_err", p0=(out or "error")[:140]))
-
-        start_inline_input(
-            act[:-5],
-            shell=cc_panel.shell,
-            trigger_uri=uri,
-            initial_text=str(init_v),
-            max_len=ml,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=lambda s, p=pat: ".." not in s and bool(re.match(p, s.strip())),
-            on_commit=_commit_vault_field,
-        )
-        return True
     elif act == "dc_commit":
         rb = resolve_sbin_helper("nc-rescue")
         arg = ["commit"] if os.path.basename(rb) == "nc-rescue" else []
@@ -1944,12 +1615,13 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                                 "scope": parts[6],
                             })
                     STATE.set("system", "chroot_candidates", cands)
-                _set_sys_fb(
+                set_feedback(
+                    "system",
                     True,
                     t("cc_system.rescue_fb_probed", p0=env_m.get("ESP_MOUNT", "/boot"), p1=env_m.get("ESP_FREE_HUMAN", "-")),
                 )
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "PROBE", "nc-rescue", "rescue_manage", ["check-health"], timeout=25.0, on_done=_on_ref)
     elif act == "rescue_build_ask":
@@ -1962,22 +1634,11 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             if opened:
                 return
             if rc == 0:
-                _set_sys_fb(True, t("cc_system.rescue_fb_built"))
+                set_feedback("system", True, t("cc_system.rescue_fb_built"))
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "BUILD", "nc-rescue", "rescue_manage", ["build-uki"], timeout=240.0, on_done=_on_build)
-    elif act in ("rescue_commit", "rescue_commit_rebuild"):
-        arg_c = "commit-rebuild" if act == "rescue_commit_rebuild" else "commit"
-        def _on_commit(opened: bool, rc: int, out: str):
-            if opened:
-                return
-            if rc == 0:
-                _set_sys_fb(True, t("cc_system.rescue_fb_committed"))
-            else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
-
-        _run_helper_async(cc_panel, "rescue_busy", "COMMIT", "nc-rescue", "rescue_manage", [arg_c], timeout=600.0, on_done=_on_commit)
     elif act == "rescue_rb_ask":
         STATE.set("system", "rescue_confirm_rb", True)
     elif act == "rescue_rb_cancel":
@@ -1988,9 +1649,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             if opened:
                 return
             if rc == 0:
-                _set_sys_fb(True, t("cc_system.rescue_fb_rolled_back"))
+                set_feedback("system", True, t("cc_system.rescue_fb_rolled_back"))
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "ROLLBACK", "nc-rescue", "rescue_manage", ["rollback-esp"], timeout=60.0, on_done=_on_rb)
     elif act == "chroot_scan":
@@ -2012,9 +1673,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                         })
                 STATE.set("system", "chroot_candidates", cands)
                 ext_n = sum(1 for c in cands if c["scope"] != "HOST")
-                _set_sys_fb(True, t("cc_system.rescue_fb_cands", p0=len(cands), p1=ext_n))
+                set_feedback("system", True, t("cc_system.rescue_fb_cands", p0=len(cands), p1=ext_n))
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "SCAN", "nc-chroot", "rescue_manage", ["candidates-tsv"], timeout=15.0, on_done=_on_cands)
     elif act == "chroot_umount":
@@ -2023,9 +1684,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                 return
             if rc == 0:
                 _exec_priv_helper(cc_panel, "nc-rescue", "rescue_manage", ["check-health"], timeout=10.0)
-                _set_sys_fb(True, t("cc_system.rescue_fb_chroot_umount"))
+                set_feedback("system", True, t("cc_system.rescue_fb_chroot_umount"))
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "UMOUNT", "nc-chroot", "rescue_manage", ["-u"], timeout=20.0, on_done=_on_um)
     elif act.startswith("golden_verify:"):
@@ -2040,11 +1701,11 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     cnt = parts[2] if len(parts) > 2 else "?"
                     vmap[target_img] = True
                     STATE.set("system", "golden_verified_map", vmap)
-                    _set_sys_fb(True, t("cc_system.rescue_fb_verified", p0=target_img, p1=cnt))
+                    set_feedback("system", True, t("cc_system.rescue_fb_verified", p0=target_img, p1=cnt))
                 else:
                     vmap[target_img] = False
                     STATE.set("system", "golden_verified_map", vmap)
-                    _set_sys_fb(False, t("cc_system.rescue_fb_verify_err", p0=target_img))
+                    set_feedback("system", False, t("cc_system.rescue_fb_verify_err", p0=target_img))
 
             _run_helper_async(
                 cc_panel,
@@ -2062,7 +1723,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         if k == "sign_sbctl" and v in ("true", "false"):
             opened, rc, out = _exec_priv_helper(cc_panel, "nc-rescue", "rescue_manage", ["config-stdin"], stdin_data=f"sign_sbctl={v}\n", timeout=10.0)
             if not opened:
-                _set_sys_fb(rc == 0, t("cc_system.rescue_fb_cfg_saved", p0=f"sign_sbctl={v}") if rc == 0 else t("cc_system.rescue_fb_err", p0=(out or "error")[:140]))
+                set_feedback("system", rc == 0, t("cc_system.rescue_fb_cfg_saved", p0=f"sign_sbctl={v}") if rc == 0 else t("cc_system.rescue_fb_err", p0=(out or "error")[:140]))
     elif act in ("rescue_uki_open", "rescue_gdir_open"):
         rcfg = load_resilience_config()["recovery"]
         rmap = {
@@ -2074,11 +1735,11 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         def _commit_rescue_field(new_val: str, key=cfg_k, pattern=pat):
             val_s = new_val.strip()
             if not val_s or ".." in val_s or not re.match(pattern, val_s):
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=f"{key}={val_s}"))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=f"{key}={val_s}"))
                 return
             opened, rc, out = _exec_priv_helper(cc_panel, "nc-rescue", "rescue_manage", ["config-stdin"], stdin_data=f"{key}={val_s}\n", timeout=10.0)
             if not opened:
-                _set_sys_fb(rc == 0, t("cc_system.rescue_fb_cfg_saved", p0=f"{key}={val_s}") if rc == 0 else t("cc_system.rescue_fb_err", p0=(out or "error")[:140]))
+                set_feedback("system", rc == 0, t("cc_system.rescue_fb_cfg_saved", p0=f"{key}={val_s}") if rc == 0 else t("cc_system.rescue_fb_err", p0=(out or "error")[:140]))
 
         start_inline_input(
             act[:-5],
@@ -2108,29 +1769,18 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         rb = resolve_sbin_helper("nc-rescue")
         _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_sync_ncui_btn", ["sudo", rb, "--sync-ncui"])
         return True
-    elif act == "recovery_term_close":
-        from ui.embedded_tui import close_panel_terminal
-
-        close_panel_terminal(cc_panel)
-        return True
     elif act == "rescue_reg_limine":
         def _on_reg(opened: bool, rc: int, out: str):
             if opened:
                 return
             if rc == 0:
-                _set_sys_fb(True, t("cc_system.rescue_fb_reg_limine"))
+                set_feedback("system", True, t("cc_system.rescue_fb_reg_limine"))
             else:
-                _set_sys_fb(False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.rescue_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "rescue_busy", "LIMINE", "nc-rescue", "rescue_manage", ["register-limine"], timeout=20.0, on_done=_on_reg)
     elif act in ("snap_select:auto", "snap_select:stable"):
         STATE.set("system", "snap_selected_slot", act.split(":", 1)[1])
-    elif act == "hanoi_term_menu":
-        from ui.embedded_tui import start_panel_terminal
-
-        h_bin = resolve_sbin_helper("nc-hanoi")
-        start_panel_terminal(cc_panel, t("common.term_title", p0="nc-hanoi"), ["sudo", h_bin])
-        return True
     elif act.startswith("hanoi_view:"):
         vw = act.split(":", 1)[1]
         if vw in ("tracked", "drift", "history", "pkglists"):
@@ -2180,7 +1830,7 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     vmap[target_p] = _parse_hanoi_versions_tsv(out)
                     STATE.set("system", "hanoi_versions_map", vmap)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(
                 cc_panel,
@@ -2204,10 +1854,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     vmap.pop(target_p, None)
                     STATE.set("system", "hanoi_versions_map", vmap)
                     STATE.set("system", "hanoi_hist_items", None)
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_push_one", p0=os.path.basename(target_p)))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_push_one", p0=os.path.basename(target_p)))
                     _refresh_hanoi_list_silent(cc_panel)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(
                 cc_panel,
@@ -2234,10 +1884,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                 if rc == 0:
                     STATE.set("system", "hanoi_versions_map", {})
                     STATE.set("system", "hanoi_hist_items", None)
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_restored", p0=os.path.basename(target_p)))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_restored", p0=os.path.basename(target_p)))
                     _refresh_hanoi_list_silent(cc_panel)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(
                 cc_panel,
@@ -2263,17 +1913,17 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             def _commit_sh(spec_raw: str, target_p=sel_p):
                 sp = spec_raw.strip().replace(" ", "") or "local"
                 if not re.match(r"^(all|local|[a-z0-9_,-]+)$", sp):
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=sp))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=sp))
                     return
 
                 def _on_sh(opened: bool, rc: int, out: str):
                     if opened:
                         return
                     if rc == 0:
-                        _set_sys_fb(True, t("cc_system.hanoi_fb_shared", p0=os.path.basename(target_p), p1=sp))
+                        set_feedback("system", True, t("cc_system.hanoi_fb_shared", p0=os.path.basename(target_p), p1=sp))
                         _refresh_hanoi_list_silent(cc_panel)
                     else:
-                        _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                        set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
                 _run_helper_async(
                     cc_panel,
@@ -2345,10 +1995,10 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
                     vmap.pop(target_p, None)
                     STATE.set("system", "hanoi_versions_map", vmap)
                     STATE.set("system", "hanoi_hist_items", None)
-                    _set_sys_fb(True, t("cc_system.hanoi_fb_ver_restored", p0=os.path.basename(target_p), p1=ts_s))
+                    set_feedback("system", True, t("cc_system.hanoi_fb_ver_restored", p0=os.path.basename(target_p), p1=ts_s))
                     _refresh_hanoi_list_silent(cc_panel)
                 else:
-                    _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                    set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
             _run_helper_async(
                 cc_panel,
@@ -2393,17 +2043,6 @@ def handle_cc_telemetry_link(cc_panel, uri: str) -> bool:
     return handle_cc_system_link(cc_panel, uri)
 
 def handle_cc_telemetry_prompt(cc_panel, action_id: str, text: str) -> bool:
-    if action_id.startswith("cc_sys_args|"):
-        from ui.embedded_tui import start_panel_terminal
-
-        sp = action_id.split("|", 1)[1]
-        prefix = "sudo " if sp.startswith(SBIN_DST_DIR + "/") else ""
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0=os.path.basename(sp)),
-            ["bash", "-c", f"{prefix}{shlex.quote(sp)} {text}"],
-        )
-        return True
     if action_id == "cc_sys_pkglist":
         nm = str(text or "").strip() or "snapshot"
         def _on_pkg(opened: bool, rc: int, out: str):
@@ -2417,72 +2056,28 @@ def handle_cc_telemetry_prompt(cc_panel, action_id: str, text: str) -> bool:
                 _op_p, rc_p, out_p = _exec_priv_helper(cc_panel, "nc-vault", "vault_mount", ["pkglist-tsv"], timeout=10.0)
                 if rc_p == 0:
                     STATE.set("system", "pkglist_items", _parse_pkglist_tsv(out_p))
-                _set_sys_fb(True, t("cc_system.vault_fb_pkg_saved", p0=fp, p1=cnt, p2=aur))
+                set_feedback("system", True, t("cc_system.vault_fb_pkg_saved", p0=fp, p1=cnt, p2=aur))
             else:
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.vault_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(cc_panel, "vault_busy", "PKGLIST", "nc-vault", "vault_mount", ["pkglist-stdin"], stdin_data=f"{nm}\n", timeout=20.0, on_done=_on_pkg)
         return True
-    if action_id == "cc_sys_smb_user":
-        smb_u = str(text or "").strip()
-        if not smb_u:
-            return True
-        nas = _probe_vault_status()
-        host = nas.get("host") or "NAS"
-        creds_f = nas.get("smb_creds_file") or "/etc/samba/nas-cred"
-        cc_panel.request_prompt(
-            f"cc_sys_smb_pass|{smb_u}",
-            t("cc_system.prompt_smb_pass", p0=smb_u, p1=host, p2=creds_f),
-            "",
-            secret=True,
-            title=t("cc_system.prompt_smb_pass_title"),
-            required=True,
-        )
-        return True
-    if action_id.startswith("cc_sys_smb_pass|"):
-        smb_u = action_id.split("|", 1)[1]
-        smb_p = str(text or "")
-        if not smb_u or not smb_p:
-            return True
-        def _on_creds(opened: bool, rc: int, out: str):
-            if opened:
-                return
-            if rc == 0:
-                STATE.set("system", "hanoi_list_items", None)
-                STATE.set("system", "hanoi_hist_items", None)
-                STATE.set("system", "pkglist_items", None)
-                STATE.set("system", "hanoi_versions_map", {})
-                _set_sys_fb(True, t("cc_system.vault_fb_creds_ok"))
-                _refresh_hanoi_list_silent(cc_panel, also_pkglists=True)
-            else:
-                _set_sys_fb(False, t("cc_system.vault_fb_err", p0=(out.splitlines()[-1] if out else "auth failed")[:140]))
-
-        _run_helper_async(
-            cc_panel,
-            "vault_busy",
-            "AUTH",
-            "nc-vault",
-            "vault_mount",
-            ["creds-stdin"],
-            stdin_data=f"{smb_u}\n{smb_p}\n1\n",
-            timeout=25.0,
-            on_done=_on_creds,
-        )
+    if handle_vault_prompt(cc_panel, action_id, text, on_mounted_cb=lambda: _refresh_hanoi_list_silent(cc_panel, also_pkglists=True)):
         return True
     if action_id == "cc_sys_hanoi_add":
         add_p = str(text or "").strip()
         if not add_p or ".." in add_p or not add_p.startswith("/") or not os.path.exists(add_p):
-            _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=add_p or "missing path"))
+            set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=add_p or "missing path"))
             return True
         def _on_add(opened: bool, rc: int, out: str):
             if opened:
                 return
             if rc == 0:
                 STATE.set("system", "hanoi_hist_items", None)
-                _set_sys_fb(True, t("cc_system.hanoi_fb_added", p0=add_p))
+                set_feedback("system", True, t("cc_system.hanoi_fb_added", p0=add_p))
                 _refresh_hanoi_list_silent(cc_panel)
             else:
-                _set_sys_fb(False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.hanoi_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(
             cc_panel,

@@ -1,9 +1,4 @@
 {
   "orphans": [],
-  "custom_actions": [
-    {
-      "action": "spawn \"/usr/bin/robcolm\" \"--lock\" \"--user\" \"damiano\"",
-      "label": "/usr/bin/robcolm --lock --user damiano"
-    }
-  ]
+  "custom_actions": []
 }

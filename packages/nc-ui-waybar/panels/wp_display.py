@@ -1,18 +1,59 @@
 #!/usr/bin/env python3
+import glob
 import json
 import os
-import shutil
-from core.config import (
-    get_ui_transparency_pct,
-    set_ui_transparency_pct,
-    apply_waybar_transparency,
-)
+import time
+from core import probe, wallpaper as wp
 from core.i18n import t
-from core.paths import run_desktop_cli
 from ui.canvas import Canvas
-from ui.kit import Box, Slider, Txt, ActionBtn, StateBadge, sync_boxes_width
+from ui.kit import Box, Slider, Txt, ActionBtn, StateBadge, set_slider_meta_value, sync_boxes_width
 from ui.output_map import NiriOutputMap
 from panels.base import BasePanel
+
+
+def _get_backlight_info() -> dict | None:
+    devs = sorted(glob.glob("/sys/class/backlight/*"))
+    if not devs:
+        return None
+    def _rank(p: str) -> tuple[int, str]:
+        bn = os.path.basename(p)
+        if bn.startswith("intel_backlight"):
+            return (0, bn)
+        if bn.startswith("amdgpu_bl"):
+            return (1, bn)
+        if bn.startswith("acpi_video"):
+            return (2, bn)
+        return (3, bn)
+    for d in sorted(devs, key=_rank):
+        try:
+            with open(os.path.join(d, "max_brightness"), "r", encoding="utf-8") as f:
+                max_b = int(f.read().strip())
+            with open(os.path.join(d, "brightness"), "r", encoding="utf-8") as f:
+                cur = int(f.read().strip())
+            if max_b <= 0:
+                continue
+            pct = max(1, min(100, int(round((cur / max_b) * 100.0))))
+            writable = probe.has_bin("brightnessctl") or os.access(os.path.join(d, "brightness"), os.W_OK)
+            return {"dev": os.path.basename(d), "path": d, "cur": cur, "max": max_b, "pct": pct, "writable": writable}
+        except Exception:
+            continue
+    return None
+
+
+def _apply_backlight(pct: int) -> None:
+    bl = _get_backlight_info()
+    if not bl or not bl["writable"]:
+        return
+    clamped = max(1, min(100, int(pct)))
+    if probe.has_bin("brightnessctl"):
+        probe.run_cmd(["brightnessctl", "-d", bl["dev"], "set", f"{clamped}%"], timeout=1.5)
+    else:
+        try:
+            raw = max(1, min(bl["max"], int(round((clamped / 100.0) * bl["max"]))))
+            with open(os.path.join(bl["path"], "brightness"), "w", encoding="utf-8") as f:
+                f.write(str(raw))
+        except OSError:
+            pass
 
 
 class Panel(BasePanel):
@@ -23,6 +64,30 @@ class Panel(BasePanel):
         self.title = t("display.title") if shell is not None else self.id
         super().__init__(shell)
         self.niri_map = None
+        self._bl_pending: tuple[float, int] | None = None
+
+    def _current_bl_pct(self, bl: dict | None) -> int:
+        pending = self._bl_pending
+        if pending is not None:
+            ts, val = pending
+            if (time.monotonic() - ts) < 0.5:
+                return val
+            self._bl_pending = None
+        return bl["pct"] if bl else 50
+
+    def _queue_backlight(self, val: int) -> None:
+        clamped = max(1, min(100, int(val)))
+        self._bl_pending = (time.monotonic(), clamped)
+        set_slider_meta_value("disp:bl", str(clamped))
+
+        def _commit(v: int = clamped) -> None:
+            _apply_backlight(v)
+            pending = self._bl_pending
+            if pending is not None and pending[1] == v:
+                self._bl_pending = None
+
+        probe.enqueue_latest("disp_backlight", _commit, debounce_ms=80)
+        self.request_throttled_refresh()
 
     def is_busy(self) -> bool:
         return bool(self.niri_map and self.niri_map.drag_state is not None)
@@ -43,8 +108,9 @@ class Panel(BasePanel):
             logical = out_info.get("logical", {})
             if not logical:
                 continue
-            res = f"{logical.get('width', 0)}x{logical.get('height', 0)} (Scale {logical.get('scale', 1.0)}x)"
-            state_file = os.path.expanduser(f"~/.local/nc-desktop/state/{out_name}.json")
+            res = f"{logical.get('width', 0)}x{logical.get('height', 0)} ({t('display.scale_tag')} {logical.get('scale', 1.0)}x)"
+            desk_base = os.environ.get("NC_DESKTOP_BASE") or os.path.expanduser("~/.local/nc-desktop")
+            state_file = os.path.join(desk_base, "state", f"{out_name}.json")
             mode, detail = nd_lbl, no_bg_lbl
             if os.path.exists(state_file):
                 try:
@@ -52,11 +118,12 @@ class Panel(BasePanel):
                         st = json.load(f)
                     mode = st.get("mode", nd_lbl)
                     if mode in ("ncmatrix", "cmatrix"):
-                        jp_tag = " JP" if st.get("japanese") == "true" else ""
+                        is_jp = st.get("japanese") in (True, "true") or st.get("charset") == "katakana"
+                        jp_tag = " JP" if is_jp else ""
                         detail = f"NCMatrix{jp_tag}: {st.get('color', 'green')} | {t('display.speed_label')}: {st.get('speed', '4')}"
                     elif mode == "slideshow":
                         detail = f"{t('display.dir_label')}: {os.path.basename(st.get('target', '').rstrip('/'))} | {st.get('interval', '')}"
-                    elif mode == "image":
+                    elif mode in ("image", "scene"):
                         detail = f"{t('display.file_label')}: {os.path.basename(st.get('target', ''))}"
                     elif mode == "solid":
                         detail = f"{t('display.color_label')}: {st.get('target', '')}"
@@ -65,9 +132,9 @@ class Panel(BasePanel):
 
             m_box = Box(out_name, icon="\uf108", highlighted=False)
             m_box.add_row(" ")
-            m_box.add_row(f"  {Txt(t('display.resolution_label') + ':', role='schema')} {Txt(res, role='val')}")
+            m_box.add_kv(t("display.resolution_label"), Txt(res, role="val"), key_width=12)
             wp_badge = StateBadge(mode != nd_lbl, mode.upper(), nd_lbl, on_tone="ok")
-            m_box.add_row(f"  {Txt(t('display.wallpaper_label') + ':', role='schema')} {wp_badge}")
+            m_box.add_kv(t("display.wallpaper_label"), wp_badge, key_width=12)
             m_box.add_row(f"  {Txt(canvas.truncate_plain(detail, 36), role='inactive' if detail == no_bg_lbl else 'schema')}")
             m_box.add_section(t("display.controls_section"))
             if mode == "slideshow":
@@ -86,6 +153,32 @@ class Panel(BasePanel):
             m_box.add_row(" ")
             out_boxes.append(m_box)
 
+        extra_boxes = []
+        bl = _get_backlight_info()
+        if bl is not None:
+            bl_box = Box(t("display.backlight_title"), icon="\uf185", highlighted=False)
+            bl_box.add_row(" ")
+            bl_slider = Slider(
+                self._current_bl_pct(bl),
+                "disp:bl",
+                min_val=1,
+                max_val=100,
+                width=16,
+                show_pct=True,
+                step_buttons=True,
+                step=5,
+                scroll_prefix="disp:bl_scroll",
+                enabled=bl["writable"],
+            )
+            bl_box.add_kv(
+                t("display.brightness_kv"),
+                bl_slider,
+                key_width=12,
+                requires=(None if bl["writable"] else ["brightnessctl"]),
+            )
+            bl_box.add_row(" ")
+            extra_boxes.append(bl_box)
+
         if out_boxes:
             from ui.widgets import AsciiCard
             map_box = Box(t("cc_display.multi_monitor_spatial_topology_nir"), icon="\uf108", highlighted=False)
@@ -94,7 +187,7 @@ class Panel(BasePanel):
             foot = Box("", highlighted=False)
             foot.open_top = True
             foot.add_row(" ")
-            shared_cols = sync_boxes_width([map_box, foot, *out_boxes], canvas, canvas.total_cols)
+            shared_cols = sync_boxes_width([map_box, foot, *out_boxes, *extra_boxes], canvas, canvas.total_cols)
             self.niri_map = NiriOutputMap(
                 outputs_data,
                 refresh_cb=(lambda: self.shell.refresh_view() if self.shell else None),
@@ -108,13 +201,16 @@ class Panel(BasePanel):
             return [
                 AsciiCard(map_box, canvas, embedded_widget=self.niri_map, footer_box_model=foot),
                 *out_boxes,
+                *extra_boxes,
             ]
 
         map_box = Box(t("cc_display.multi_monitor_spatial_topology_nir"), icon="\uf108", highlighted=False)
         map_box.add_row(" ")
         map_box.add_row(f"  {Txt(t('cc_display.output_powered_off_in_niri'), role='inactive')}")
         map_box.add_row(" ")
-        return [map_box]
+        if extra_boxes:
+            sync_boxes_width([map_box, *extra_boxes], canvas, canvas.total_cols)
+        return [map_box, *extra_boxes]
 
     def on_prompt_submit(self, action_id: str, text: str) -> None:
         val = str(text or "").strip()
@@ -122,7 +218,7 @@ class Panel(BasePanel):
             return
         if action_id.startswith("disp_set_img|"):
             out_name = action_id.split("|", 1)[1]
-            run_desktop_cli(["-o", out_name, "-i", val])
+            wp.apply_image(out_name, val)
             if self.shell:
                 from gi.repository import GLib
                 GLib.timeout_add(350, lambda: not self.shell.refresh_view())
@@ -132,34 +228,18 @@ class Panel(BasePanel):
         if not uri.startswith("disp:"):
             return
         act = uri[len("disp:"):]
-        if act.startswith("trans:"):
+        if act.startswith("bl:"):
             try:
-                val = int(round(float(act.split(":", 1)[1])))
-                set_ui_transparency_pct(val, sync_waybar=False)
-                if self.shell:
-                    self.shell._apply_css()
-                    self.shell.refresh_view()
+                self._queue_backlight(int(round(float(act.split(":", 1)[1]))))
             except Exception:
                 pass
             return
-        if act.startswith("trans_scroll:"):
+        if act.startswith("bl_scroll:"):
             direction = act.rsplit(":", 1)[1]
-            cur = get_ui_transparency_pct()
-            set_ui_transparency_pct(cur + (5 if direction == "up" else -5), sync_waybar=False)
-            if self.shell:
-                self.shell._apply_css()
-                self.shell.refresh_view()
+            cur = self._current_bl_pct(_get_backlight_info())
+            self._queue_backlight(cur + (5 if direction == "up" else -5))
             return
-        if act == "trans_apply":
-            if self.shell:
-                self.shell.bump_leave_guard(1.5)
-            apply_waybar_transparency()
-            return
-        if act == "swap":
-            run_desktop_cli(["--swap", "1", "2"])
-        elif act == "restore":
-            run_desktop_cli(["--restore"])
-        elif act.startswith("set_img:"):
+        if act.startswith("set_img:"):
             out_name = act.split(":", 1)[1]
             ph = t("display.enter_image_path")
             self.request_prompt(
@@ -171,16 +251,13 @@ class Panel(BasePanel):
                 completion="path_file",
             )
             return
-        elif act.startswith("next:"):
-            run_desktop_cli(["-o", act.split(":", 1)[1], "--next"])
-        elif act.startswith("pause:"):
-            run_desktop_cli(["-o", act.split(":", 1)[1], "--pause"])
-        elif act.startswith("resume:"):
-            run_desktop_cli(["-o", act.split(":", 1)[1], "--resume"])
+        elif act.startswith(("next:", "pause:", "resume:")):
+            cmd_k, out_name = act.split(":", 1)
+            wp.control_slideshow(out_name, cmd_k)
         elif act.startswith("matrix:"):
-            run_desktop_cli(["-o", act.split(":", 1)[1], "-c", "-C", "green"])
+            wp.apply_ncmatrix(act.split(":", 1)[1], {"charset": "ascii", "color": "green"})
         elif act.startswith("matrix_jp:"):
-            run_desktop_cli(["-o", act.split(":", 1)[1], "-c", "-C", "green", "-j"])
+            wp.apply_ncmatrix(act.split(":", 1)[1], {"charset": "katakana", "color": "green"})
 
         if self.shell:
             from gi.repository import GLib

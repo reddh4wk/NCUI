@@ -73,8 +73,9 @@ def iter_package_roots() -> list[str]:
                             _add(sp)
         _add(REPO_ROOT)
 
-    for sys_dir in ("/usr/lib/ncui", "/usr/share/ncui", "/usr/local/lib/nc-ui"):
-        _add(sys_dir)
+    if not REPO_ROOT:
+        for sys_dir in ("/usr/lib/ncui", "/usr/share/ncui"):
+            _add(sys_dir)
     return roots
 
 
@@ -87,10 +88,9 @@ def bootstrap_sys_path(start_file: str | None = None) -> str:
             REPO_ROOT = found
             CORE_ROOT = os.path.join(REPO_ROOT, "packages", "nc-ui-core")
 
-    roots = iter_package_roots()
-    for p in reversed(roots):
-        if os.path.isdir(p) and p not in sys.path:
-            sys.path.insert(0, p)
+    roots = [p for p in iter_package_roots() if os.path.isdir(p)]
+    root_set = set(roots)
+    sys.path[:] = roots + [p for p in sys.path if p not in root_set]
     return CORE_ROOT
 
 
@@ -126,9 +126,11 @@ def find_all_package_files(*rel_parts: str) -> list[str]:
 
 def iter_user_plugin_dirs() -> list[str]:
     """Return user plugin directories outside/alongside config in priority order."""
+    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip() or os.path.expanduser("~/.local/share")
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip() or os.path.expanduser("~/.config")
     return [
-        os.path.expanduser("~/.local/share/nc-ui/plugins"),
-        os.path.expanduser("~/.config/nc-ui/plugins"),
+        os.path.join(os.path.expanduser(xdg_data), "ncui", "plugins"),
+        os.path.join(os.path.expanduser(xdg_cfg), "ncui", "plugins"),
     ]
 
 
@@ -174,7 +176,7 @@ def find_libexec_helper(name: str) -> str:
     return ""
 
 
-def resolve_script_path(script_name: str = "nc_util_desktop.sh", fallback_alias: str = "") -> str:
+def resolve_script_path(script_name: str, fallback_alias: str = "") -> str:
     """Locate an NC-UI utility script or renamed binary across packages and system paths."""
     names = [script_name] + ([fallback_alias] if fallback_alias else [])
     for n in names:
@@ -186,8 +188,6 @@ def resolve_script_path(script_name: str = "nc_util_desktop.sh", fallback_alias:
         for sys_cand in (
             f"/usr/share/ncui/utils/{n}",
             f"/usr/lib/ncui/utils/{n}",
-            f"/usr/local/lib/nc-ui/utils/{n}",
-            f"/usr/local/lib/nc-ui/{n}",
             f"/usr/bin/{n}",
             f"/usr/local/bin/{n}",
             shutil.which(n) or "",
@@ -195,18 +195,3 @@ def resolve_script_path(script_name: str = "nc_util_desktop.sh", fallback_alias:
             if sys_cand and os.path.isfile(sys_cand):
                 return sys_cand
     return script_name
-
-
-def run_desktop_cli(args: list) -> None:
-    """Execute `nc_util_desktop.sh` detached in the background."""
-    script = resolve_script_path()
-    try:
-        subprocess.Popen(
-            ["bash", script] + [str(a) for a in args],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except Exception:
-        pass

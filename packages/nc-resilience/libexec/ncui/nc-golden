@@ -12,10 +12,14 @@ CFG_VAULT_MP="/nas"
 CFG_BACKUP_SUBDIR="ncui-vault"
 CFG_GOLDEN_SUBDIR="images"
 CFG_VG_NAME="vg0"
-CFG_UKI_PREFIX="nightcity"
+CFG_HOSTNAME=""
+CFG_UKI_PREFIX=""
 CFG_RECOVERY_UKI="nc-rescue.efi"
 
 load_golden_resilience_config() {
+    local host_def
+    host_def="$(uname -n 2>/dev/null | cut -d. -f1 || true)"
+    CFG_HOSTNAME="${host_def:-linux}"
     if [[ -r "$CONF_FILE" ]]; then
         local sec="" line k v
         while IFS= read -r line || [[ -n "$line" ]]; do
@@ -29,6 +33,7 @@ load_golden_resilience_config() {
             if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*\"([^\"]*)\"$ ]]; then
                 k="${BASH_REMATCH[1]}"; v="${BASH_REMATCH[2]}"
                 case "${sec}.${k}" in
+                    identity.hostname)        [[ -n "$v" ]] && CFG_HOSTNAME="$v" ;;
                     vault.mountpoint)         [[ -n "$v" ]] && CFG_VAULT_MP="${v%/}" ;;
                     vault.backup_root_subdir) [[ -n "$v" ]] && CFG_BACKUP_SUBDIR="${v#/}" && CFG_BACKUP_SUBDIR="${CFG_BACKUP_SUBDIR%/}" ;;
                     snapshots.vg_name)        [[ -n "$v" ]] && CFG_VG_NAME="$v" ;;
@@ -39,6 +44,10 @@ load_golden_resilience_config() {
             fi
         done < "$CONF_FILE"
     fi
+    if [[ -z "$CFG_UKI_PREFIX" ]]; then
+        CFG_UKI_PREFIX="$(printf '%s' "${CFG_HOSTNAME:-linux}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    fi
+    [[ -n "$CFG_UKI_PREFIX" ]] || CFG_UKI_PREFIX="linux"
     return 0
 }
 load_golden_resilience_config
@@ -117,9 +126,9 @@ ${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
   ${bin_name} [OPZIONI]
 
 ${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
-  Motore unificato di salvataggio, ripristino e re-keying per Golden Image di
-  Nightcity / Duskcity Arch Linux. Include discovery dinamico dei volumi LUKS,
-  filtro intelligente di Main Kernel, Recovery e pulizia di limine.conf,
+  Motore unificato di salvataggio, ripristino e re-keying per Golden Image
+  NC-UI Linux. Include discovery dinamico dei volumi LUKS,
+  filtro intelligente di Main Kernel, Recovery e pulizia bootloader,
   auto-mount del NAS, catalogo interattivo, verifica e smontaggio preventivo
   dei dischi target, sblocco TPM2 (PCR 0+7), delega chroot a nc-chroot,
   doppia barra di progresso reale (Lettura RAM -> Scrittura Disco), navigazione
@@ -262,7 +271,7 @@ cleanup() {
 
     if (( exit_code != 0 && RESTORE_IN_PROGRESS == 1 )); then
         log_warn "Messa in sicurezza: smontaggio e chiusura mapper LVM/LUKS temporanei..."
-        if [[ -x "$CHROOT_SCRIPT" ]] && mountpoint -q "/run/nightcity-chroot" 2>/dev/null; then
+        if [[ -x "$CHROOT_SCRIPT" ]] && mountpoint -q "${NC_CHROOT_MNT_BASE:-/run/ncui-chroot}" 2>/dev/null; then
             "$CHROOT_SCRIPT" -u >/dev/null 2>&1 || true
         fi
         if [[ -n "$ACTIVE_TARGET_VG" ]] && ! is_live_host_vg "$ACTIVE_TARGET_VG"; then
@@ -306,13 +315,25 @@ run_cryptsetup_with_pass() {
 # Utilità, Parsing Sicuro Manifest & Input
 # ------------------------------------------------------------------------------
 check_dependencies() {
-    local missing=() cmd
+    local missing=() cmd os_id=""
     for cmd in "${REQUIRED_CMDS[@]}"; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if (( ${#missing[@]} > 0 )); then
         log_err "Mancano i seguenti comandi richiesti: ${missing[*]}"
-        echo -e "         Installali con: ${C_BOLD}sudo pacman -S --needed ${missing[*]}${C_RESET}" >&2
+        if [[ -r /etc/os-release ]]; then
+            os_id="$(awk -F= '/^ID=/{gsub(/["[:space:]]/,"",$2); print tolower($2); exit}' /etc/os-release 2>/dev/null || true)"
+        fi
+        case "$os_id" in
+            debian|ubuntu|pop|linuxmint)
+                echo -e "         Installa i pacchetti mancanti con: ${C_BOLD}sudo apt-get install ...${C_RESET} (${missing[*]})" >&2 ;;
+            fedora|rhel|centos|rocky|almalinux)
+                echo -e "         Installa i pacchetti mancanti con: ${C_BOLD}sudo dnf install ...${C_RESET} (${missing[*]})" >&2 ;;
+            opensuse*|suse|sles)
+                echo -e "         Installa i pacchetti mancanti con: ${C_BOLD}sudo zypper install ...${C_RESET} (${missing[*]})" >&2 ;;
+            *)
+                echo -e "         Installa i pacchetti mancanti con: ${C_BOLD}sudo pacman -S --needed ${missing[*]}${C_RESET}" >&2 ;;
+        esac
         exit 1
     fi
 }
@@ -632,7 +653,7 @@ ensure_nas_mounted() {
 
     resolve_existing_nas_path() {
         local cand_root="$1"
-        if mountpoint -q "${cand_root}/personal_folder" 2>/dev/null; then
+        if mountpoint -q "$cand_root" 2>/dev/null || [[ -n "$(ls -A "$cand_root" 2>/dev/null || true)" ]]; then
             if [[ "$target_path" == /nas/* && "$cand_root" != "/nas" ]]; then
                 RESOLVED_NAS_DIR="${cand_root}/${target_path#/nas/}"
             elif [[ "$target_path" == "/nas" && "$cand_root" != "/nas" ]]; then
@@ -1024,13 +1045,16 @@ discover_source_system() {
 # ==============================================================================
 analyze_esp_and_limine() {
     local efi_mnt="$1" root_mnt="$2"
-    local limine_file="${efi_mnt}/limine.conf"
+    local limine_file=""
+    for cand_lc in "${efi_mnt}/limine.conf" "${efi_mnt}/limine/limine.conf"; do
+        [[ -f "$cand_lc" ]] && { limine_file="$cand_lc"; break; }
+    done
 
     MAIN_UKI_NAME="" FALLBACK_UKI_NAME="" RECOVERY_UKI_NAME="" MAIN_VMLINUZ_NAME=""
     SECONDARY_UKI_NAMES=() EXCLUDED_EFI_PATTERNS=()
     declare -A SNAPSHOT_UKIS=()
 
-    if [[ -f "$limine_file" ]]; then
+    if [[ -n "$limine_file" && -f "$limine_file" ]]; then
         local role fname
         while IFS='|' read -r role fname; do
             [[ -n "$fname" ]] || continue
@@ -1056,33 +1080,50 @@ analyze_esp_and_limine() {
                 sub(/[[:space:]#].*$/, "", p)
                 if (sub_sec ~ /^Snapshots/ || top_sec ~ /^Snapshots/) {
                     print "SNAPSHOT|" p
-                } else if (top_sec ~ /^Arch Linux/) {
-                    if (sub_sec == "") {
-                        if (!main_found) { print "MAIN|" p; main_found=1 }
-                    } else if (tolower(p) ~ /-fallback\.efi$/) {
-                        print "FALLBACK|" p
-                    } else {
-                        if (!main_found) { print "MAIN|" p; main_found=1 }
-                    }
                 } else if (top_sec ~ /^Disaster Recovery/) {
-                    if (tolower(p) ~ /recovery/) print "RECOVERY|" p
+                    if (tolower(p) ~ /(recovery|rescue)/) print "RECOVERY|" p
                     else print "FALLBACK|" p
+                } else {
+                    if (tolower(p) ~ /-fallback\.efi$/) {
+                        print "FALLBACK|" p
+                    } else if (!main_found) {
+                        print "MAIN|" p; main_found=1
+                    }
                 }
             }
         ' "$limine_file")
     fi
 
-    [[ -z "$MAIN_UKI_NAME" ]] && MAIN_UKI_NAME="cachyos-linux-hardened.efi"
     if [[ -z "$RECOVERY_UKI_NAME" ]]; then
         if [[ -n "$CFG_RECOVERY_UKI" && -f "${efi_mnt}/EFI/Linux/${CFG_RECOVERY_UKI}" ]]; then
             RECOVERY_UKI_NAME="$CFG_RECOVERY_UKI"
-        elif [[ -f "${efi_mnt}/EFI/Linux/nightcity-recovery.efi" ]]; then
-            RECOVERY_UKI_NAME="nightcity-recovery.efi"
         else
             RECOVERY_UKI_NAME="${CFG_RECOVERY_UKI:-nc-rescue.efi}"
         fi
     fi
-    if [[ -z "$FALLBACK_UKI_NAME" && -f "${efi_mnt}/EFI/Linux/${MAIN_UKI_NAME%.efi}-fallback.efi" ]]; then
+
+    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-auto.efi"]=1
+    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-stable.efi"]=1
+    if [[ -d "${efi_mnt}/EFI/Linux" ]]; then
+        local snap_cand snap_b
+        for snap_cand in "${efi_mnt}/EFI/Linux"/*-auto.efi "${efi_mnt}/EFI/Linux"/*-stable.efi; do
+            [[ -f "$snap_cand" ]] || continue
+            snap_b="$(basename "$snap_cand")"
+            SNAPSHOT_UKIS["$snap_b"]=1
+        done
+    fi
+
+    if [[ -z "$MAIN_UKI_NAME" && -d "${efi_mnt}/EFI/Linux" ]]; then
+        local efi_c eb
+        for efi_c in "${efi_mnt}/EFI/Linux"/*.efi; do
+            [[ -f "$efi_c" ]] || continue
+            eb="$(basename "$efi_c")"
+            [[ "$eb" == "$RECOVERY_UKI_NAME" || "$eb" == *-fallback.efi || -n "${SNAPSHOT_UKIS[$eb]:-}" ]] && continue
+            MAIN_UKI_NAME="$eb"
+            break
+        done
+    fi
+    if [[ -n "$MAIN_UKI_NAME" && -z "$FALLBACK_UKI_NAME" && -f "${efi_mnt}/EFI/Linux/${MAIN_UKI_NAME%.efi}-fallback.efi" ]]; then
         FALLBACK_UKI_NAME="${MAIN_UKI_NAME%.efi}-fallback.efi"
     fi
 
@@ -1090,19 +1131,19 @@ analyze_esp_and_limine() {
         local preset kver_path
         for preset in "${root_mnt}/etc/mkinitcpio.d"/*.preset; do
             [[ -f "$preset" ]] || continue
-            if grep -Fq "$MAIN_UKI_NAME" "$preset" 2>/dev/null; then
+            if [[ -n "$MAIN_UKI_NAME" ]] && grep -Fq "$MAIN_UKI_NAME" "$preset" 2>/dev/null; then
                 kver_path=$(awk -F'=' '/^[[:space:]]*ALL_kver=/ {gsub(/["'\''[:space:]]/, "", $2); print $2; exit}' "$preset")
                 [[ -n "$kver_path" ]] && MAIN_VMLINUZ_NAME="$(basename "$kver_path")"
                 break
             fi
         done
     fi
-    [[ -z "$MAIN_VMLINUZ_NAME" ]] && MAIN_VMLINUZ_NAME="vmlinuz-linux-cachyos-hardened"
-
-    SNAPSHOT_UKIS["nightcity-auto.efi"]=1
-    SNAPSHOT_UKIS["nightcity-stable.efi"]=1
-    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-auto.efi"]=1
-    SNAPSHOT_UKIS["${CFG_UKI_PREFIX}-stable.efi"]=1
+    if [[ -z "$MAIN_VMLINUZ_NAME" ]]; then
+        local vm
+        for vm in "${efi_mnt}"/vmlinuz-* "${root_mnt}/boot"/vmlinuz-*; do
+            [[ -f "$vm" ]] && { MAIN_VMLINUZ_NAME="$(basename "$vm")"; break; }
+        done
+    fi
 
     EXCLUDED_EFI_PATTERNS+=(
         "./recovery.squashfs" "./recovery.squashfs.old"
@@ -1209,7 +1250,7 @@ generate_clean_limine_conf() {
                 p = $0
                 sub(/.*\/EFI\/Linux\//, "", p)
                 sub(/[[:space:]#].*$/, "", p)
-                if (p == "nightcity-auto.efi" || p == "nightcity-stable.efi") {
+                if (p ~ /^.*-(auto|stable)\.efi$/) {
                     entry_drop = 1
                 } else if (drop_re != "" && p ~ drop_re) {
                     entry_drop = 1
@@ -1267,7 +1308,7 @@ rewrite_target_fstab() {
         mv -f "${fstab_path}.tmp.$$" "$fstab_path"
     else
         cat <<FSTAB > "$fstab_path"
-# Static file system information for Arch Linux (Newborn: ${new_vg})
+# Static file system information (Newborn: ${new_vg})
 UUID=${_uuids[root]}    /                   ext4    defaults,noatime,errors=remount-ro                          0       1
 UUID=${new_efi_uuid}     /boot               vfat    defaults,noatime,nodev,nosuid,noexec,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro 0 2
 UUID=${_uuids[var]}     /var                ext4    defaults,noatime,nodev,nosuid                               0       2
@@ -1330,7 +1371,7 @@ run_rekey_engine() {
         [[ -n "${n_lv_uuids[$lv]}" ]] || { log_err "UUID non rilevato per ${lv_dev}"; exit 1; }
     done
 
-    local dm_vg_escaped="${new_vg//-/--}" chroot_mnt="/run/nightcity-chroot"
+    local dm_vg_escaped="${new_vg//-/--}" chroot_mnt="${NC_CHROOT_MNT_BASE:-${DC_CHROOT_MNT_BASE:-/run/ncui-chroot}}"
     log_sub "Nuovo LUKS UUID : ${C_BOLD}${new_luks_uuid}${C_RESET}"
     log_sub "Nuovo EFI UUID  : ${C_BOLD}${new_efi_uuid}${C_RESET}"
 
@@ -1389,7 +1430,7 @@ run_rekey_engine() {
     fi
 
     rm -f "${chroot_mnt}/etc/lvm/devices/system.devices" 2>/dev/null || true
-    rm -rf "${chroot_mnt}/var/lib/nightcity/snapshots"/* 2>/dev/null || true
+    rm -rf "${chroot_mnt}/var/lib/ncui/snapshots"/* 2>/dev/null || true
 
     systemd-machine-id-setup --root="$chroot_mnt" >/dev/null 2>&1 || true
     local new_machine_id=""
@@ -1397,9 +1438,11 @@ run_rekey_engine() {
     [[ "$new_machine_id" =~ ^[0-9a-f]{32}$ ]] || { log_err "Rigenerazione /etc/machine-id fallita."; exit 1; }
 
     local limine_conf="${chroot_mnt}/boot/limine.conf"
+    [[ -f "$limine_conf" ]] || limine_conf="${chroot_mnt}/boot/limine/limine.conf"
     if [[ -f "$limine_conf" ]]; then
         sed -i -E \
-            -e "s|^interface_branding:.*|interface_branding: Nightcity Newborn [VG: ${new_vg}]|" \
+            -e "s|^interface_branding:.*|interface_branding: ${CFG_HOSTNAME:-Linux} Newborn [VG: ${new_vg}]|" \
+            -e "s|^/\+Linux.*|/+Linux [${new_vg}]|" \
             -e "s|^/\+Arch Linux.*|/+Arch Linux [${new_vg}]|" \
             -e "s/machine-id=[0-9a-fA-F]+/machine-id=${new_machine_id}/g" \
             "$limine_conf"
@@ -1408,8 +1451,9 @@ run_rekey_engine() {
     local loader_path='\EFI\BOOT\BOOTX64.EFI'
     [[ -f "${chroot_mnt}/boot/EFI/limine/limine_x64.efi" ]] && loader_path='\EFI\limine\limine_x64.efi'
     [[ -f "${chroot_mnt}/boot/EFI/limine/BOOTX64.EFI" ]] && loader_path='\EFI\limine\BOOTX64.EFI'
+    [[ -f "${chroot_mnt}/boot/EFI/systemd/systemd-bootx64.efi" ]] && loader_path='\EFI\systemd\systemd-bootx64.efi'
 
-    log_sub "Esecuzione in $(basename "$CHROOT_SCRIPT"): policy USBGuard, compilazione UKI multi-kernel e sbctl..."
+    log_sub "Esecuzione in $(basename "$CHROOT_SCRIPT"): policy USBGuard, compilazione UKI/initramfs e sbctl..."
     run_protected env NC_ESP_DEV="$new_esp_part" "$CHROOT_SCRIPT" -d "$new_luks_part" -g "$new_vg" -- /usr/bin/env bash -c '
 set -euo pipefail
 if command -v usbguard &>/dev/null && [[ -d /etc/usbguard ]]; then
@@ -1424,30 +1468,36 @@ fi
 
 mkdir -p /boot/EFI/Linux
 built_any=0
-for preset_file in /etc/mkinitcpio.d/*.preset; do
-    [[ -f "$preset_file" ]] || continue
-    pname=$(basename "$preset_file" .preset)
-    kver_img=$(awk -F"=" "/^[[:space:]]*ALL_kver=/ {gsub(/[\"\x27[:space:]]/, \"\", \$2); print \$2; exit}" "$preset_file")
-    if [[ -n "$kver_img" && ! -f "$kver_img" ]]; then
-        matched_vm=""
-        for pb in /usr/lib/modules/*/pkgbase; do
-            [[ -f "$pb" ]] || continue
-            if [[ "$(<"$pb")" == "$pname" && -f "${pb%/pkgbase}/vmlinuz" ]]; then
-                matched_vm="${pb%/pkgbase}/vmlinuz"; break
-            fi
-        done
-        [[ -z "$matched_vm" ]] && matched_vm=$(find /usr/lib/modules -maxdepth 2 -name "vmlinuz" | sort | tail -n 1 || true)
-        [[ -n "$matched_vm" ]] && cp -f "$matched_vm" "$kver_img"
-    fi
-    if [[ -n "$kver_img" && -f "$kver_img" ]]; then
-        mkinitcpio -p "$pname" >/dev/null
-        built_any=1
-    fi
-done
-(( built_any == 0 )) && mkinitcpio -P >/dev/null
+if command -v mkinitcpio &>/dev/null && compgen -G "/etc/mkinitcpio.d/*.preset" >/dev/null 2>&1; then
+    for preset_file in /etc/mkinitcpio.d/*.preset; do
+        [[ -f "$preset_file" ]] || continue
+        pname=$(basename "$preset_file" .preset)
+        kver_img=$(awk -F"=" "/^[[:space:]]*ALL_kver=/ {gsub(/[\"\x27[:space:]]/, \"\", \$2); print \$2; exit}" "$preset_file")
+        if [[ -n "$kver_img" && ! -f "$kver_img" ]]; then
+            matched_vm=""
+            for pb in /usr/lib/modules/*/pkgbase; do
+                [[ -f "$pb" ]] || continue
+                if [[ "$(<"$pb")" == "$pname" && -f "${pb%/pkgbase}/vmlinuz" ]]; then
+                    matched_vm="${pb%/pkgbase}/vmlinuz"; break
+                fi
+            done
+            [[ -z "$matched_vm" ]] && matched_vm=$(find /usr/lib/modules -maxdepth 2 -name "vmlinuz" | sort | tail -n 1 || true)
+            [[ -n "$matched_vm" ]] && cp -f "$matched_vm" "$kver_img"
+        fi
+        if [[ -n "$kver_img" && -f "$kver_img" ]]; then
+            mkinitcpio -p "$pname" >/dev/null
+            built_any=1
+        fi
+    done
+    (( built_any == 0 )) && mkinitcpio -P >/dev/null
+elif command -v dracut &>/dev/null; then
+    dracut --regenerate-all --force >/dev/null || true
+    built_any=1
+fi
 
-rm -f /boot/EFI/Linux/nightcity-auto.efi /boot/EFI/Linux/nightcity-stable.efi \
-      /boot/EFI/Linux/nightcity-*.meta /boot/EFI/Linux/nightcity-*.pkgs \
+rm -f /boot/EFI/Linux/*-auto.efi /boot/EFI/Linux/*-stable.efi \
+      /boot/EFI/Linux/*-auto.meta /boot/EFI/Linux/*-stable.meta \
+      /boot/EFI/Linux/*-auto.pkgs /boot/EFI/Linux/*-stable.pkgs \
       /boot/EFI/Linux/*_pre_merge.vg /boot/EFI/Linux/*.pre-rollback
 
 if command -v sbctl &>/dev/null && [[ -d /var/lib/sbctl/keys ]]; then
@@ -1462,7 +1512,7 @@ fi
     wait_and_sync "Scrittura UKI"
 
     if [[ "${register_nvram,,}" == "y" ]]; then
-        register_limine_nvram "$new_esp_part" "$loader_path" "Archlinux-Limine (${new_vg})"
+        register_limine_nvram "$new_esp_part" "$loader_path" "NC-UI Boot (${new_vg})"
     else
         log_sub "Registrazione NVRAM saltata su scelta utente."
     fi
@@ -1474,7 +1524,7 @@ fi
 # ==============================================================================
 do_save() {
     check_dependencies
-    ui_header "CREAZIONE GOLDEN IMAGE ARCH LINUX"
+    ui_header "CREAZIONE GOLDEN IMAGE"
     discover_source_system
 
     mkdir -p "$MNT_BASE"
@@ -1516,11 +1566,11 @@ do_save() {
     analyze_esp_and_limine "${MNT_BASE}/efi" "${MNT_BASE}/root"
 
     ui_section "SELEZIONE KERNEL E PULIZIA LIMINE.CONF"
-    log_ok "Main Kernel rilevato da limine.conf : ${C_BOLD}${MAIN_UKI_NAME}${C_RESET}${FALLBACK_UKI_NAME:+ (+ fallback: ${FALLBACK_UKI_NAME})}"
+    log_ok "Main Kernel rilevato             : ${C_BOLD}${MAIN_UKI_NAME:-none}${C_RESET}${FALLBACK_UKI_NAME:+ (+ fallback: ${FALLBACK_UKI_NAME})}"
     if [[ -f "${MNT_BASE}/efi/EFI/Linux/${RECOVERY_UKI_NAME}" || -f "${MNT_BASE}/efi/recovery.squashfs" ]]; then
         log_ok "Immagine Recovery rilevata          : ${C_BOLD}${RECOVERY_UKI_NAME}${C_RESET} + ${C_BOLD}recovery.squashfs${C_RESET}"
     fi
-    log_sub "Gli snapshot UKI (nightcity-auto/stable) e la sezione /Snapshots verranno esclusi."
+    log_sub "Gli snapshot UKI (${CFG_UKI_PREFIX}-auto/stable) e la sezione /Snapshots verranno esclusi."
 
     local dropped_secondary_ukis=()
     if (( ${#SECONDARY_UKI_NAMES[@]} > 0 )); then
@@ -1799,7 +1849,7 @@ MANIFEST
 # ==============================================================================
 do_restore() {
     check_dependencies
-    ui_header "RIPRISTINO GOLDEN IMAGE ARCH LINUX"
+    ui_header "RIPRISTINO GOLDEN IMAGE"
 
     ensure_nas_mounted "$DEFAULT_DIR" || true
     local catalog_dir="${RESOLVED_NAS_DIR:-$DEFAULT_DIR}"
@@ -2100,7 +2150,7 @@ do_restore() {
             log_sub "Nota TPM2: l'enrollment da Live misura PCR 0+7 correnti; al 1° boot potrebbe richiedere passphrase manuale una volta se lo stato Secure Boot varia."
         fi
     fi
-    prompt_yes_no "Vuoi registrare nella NVRAM UEFI la voce Limine per il nuovo disco?" "y" && UPDATE_NVRAM="y"
+    prompt_yes_no "Vuoi registrare nella NVRAM UEFI la voce di avvio per il nuovo disco?" "y" && UPDATE_NVRAM="y"
 
     ui_header "RIEPILOGO OPERAZIONE DI RESTORE"
     echo -e "  Golden Image: ${C_BOLD}${IMAGE_TITLE}${C_RESET} | Modalità: ${C_BOLD}${RESTORE_MODE^^}${C_RESET} | Target: ${C_BOLD}${TARGET_DISK}${C_RESET}"
@@ -2318,8 +2368,8 @@ UNCLOAK
     if [[ "$RESTORE_MODE" == "rekey" ]]; then
         run_rekey_engine "$ORIG_CAPTURED_VG" "$TARGET_VG" "$PART2" "$PART1" "$UPDATE_NVRAM"
     elif [[ "${UPDATE_NVRAM,,}" == "y" ]]; then
-        log_step "7/7" "Registrazione voce UEFI Limine in NVRAM..."
-        register_limine_nvram "$PART1" "$clone_loader" "Archlinux-Limine"
+        log_step "7/7" "Registrazione voce UEFI in NVRAM..."
+        register_limine_nvram "$PART1" "$clone_loader" "NC-UI Boot"
     else
         log_step "7/7" "Registrazione NVRAM saltata."
     fi

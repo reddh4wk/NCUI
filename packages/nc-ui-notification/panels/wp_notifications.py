@@ -143,12 +143,12 @@ class Panel(BasePanel):
                             title_m = f"<a href='{Canvas.escape(f'notif:click:{nid}')}'><span underline='none'>{title_m}</span></a>"
                         app_box.add_row(title_m, right_markup=del_btn)
 
-                        body = n.get("body", "")
+                        body = str(n.get("body") or "")
                         lines_added = 0
                         if body:
                             for raw_l in body.splitlines():
                                 for w_l in wrap_pango_markup(Canvas.escape(raw_l), max_chars=wrap_w - 6):
-                                    body_m = f"    {Txt(html.unescape(w_l), role='inactive')}"
+                                    body_m = f"    {Txt(html.unescape(w_l), role='val')}"
                                     if is_app_clickable:
                                         body_m = f"<a href='{Canvas.escape(f'notif:click:{nid}')}'><span underline='none'>{body_m}</span></a>"
                                     app_box.add_row(body_m)
@@ -180,7 +180,7 @@ class Panel(BasePanel):
 
                 n_box = Box(summary, icon=icon, actions=actions, highlighted=False)
                 n_box.add_row(" ")
-                body = n.get("body", "")
+                body = str(n.get("body") or "")
                 lines_added = 0
                 for raw_l in body.splitlines():
                     for w_l in wrap_pango_markup(Canvas.escape(raw_l), max_chars=wrap_w):

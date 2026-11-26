@@ -5,28 +5,179 @@ import glob
 import json
 import os
 import re
-import shlex
-import time
 from core import probe
 from core.i18n import t
 from core.privileges import get_privileged_action
 from core.resilience import read_env_kv as _read_env_kv, run_helper_async as _run_helper_async
 from core.state import STATE
-from ui.kit import FeedbackBox, start_inline_input
-
-_LIMINE_CANDIDATES = ("/boot/limine.conf", "/efi/limine/limine.conf", "/boot/limine/limine.conf")
-_DEFAULT_ENTRIES = ["linux-cachyos", "linux-cachyos-hardened", "Golden Image Recovery", "Windows"]
+from ui.kit import set_feedback, start_inline_input
 
 
-def _set_sys_fb(ok: bool, msg: str) -> None:
-    STATE.set("system", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
+def _esp_candidates() -> list[str]:
+    mounts = probe.detect_esp_mounts()
+    return mounts if mounts else ["/boot", "/efi", "/boot/efi"]
 
 
-def _feedback_cards() -> list:
-    fb = STATE.get("system", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return [FeedbackBox(t("cc_system.system_control_status"), bool(fb["ok"]), fb["msg"])]
-    return []
+def _find_limine_conf(search_esps: list[str] | None = None) -> str:
+    for esp in (search_esps or _esp_candidates()):
+        for rel in ("limine.conf", os.path.join("limine", "limine.conf")):
+            cand = os.path.join(esp, rel)
+            if os.path.exists(cand):
+                return cand
+    return ""
+
+
+def detect_bootloader() -> dict:
+    """Detect active bootloader (`limine` | `systemd-boot` | `grub` | `none`) and ESP state."""
+    esp_mounts = probe.detect_esp_mounts()
+    search_esps = esp_mounts or ["/boot", "/efi", "/boot/efi"]
+    ukis: list[str] = []
+    for esp in search_esps:
+        for p in sorted(glob.glob(os.path.join(esp, "EFI", "Linux", "*.efi"))):
+            if p not in ukis:
+                ukis.append(p)
+    has_bootctl = probe.has_bin("bootctl")
+
+    limine_conf = _find_limine_conf(search_esps)
+    rescue_env = _read_env_kv("/var/lib/ncui/rescue-status.env")
+    if not limine_conf and rescue_env.get("LIMINE_CONF_PATH") and os.path.exists(rescue_env["LIMINE_CONF_PATH"]):
+        limine_conf = rescue_env["LIMINE_CONF_PATH"]
+
+    def _limine_result() -> dict:
+        return {
+            "kind": "limine",
+            "conf_path": limine_conf or rescue_env.get("LIMINE_CONF_PATH") or os.path.join(search_esps[0], "limine.conf"),
+            "esp_mounts": esp_mounts,
+            "ukis": ukis,
+            "entries": [],
+            "loader_cfg": {},
+            "has_bootctl": has_bootctl,
+        }
+
+    if limine_conf:
+        return _limine_result()
+
+    # systemd-boot detection
+    sd_conf = ""
+    sd_esp = ""
+    for esp in search_esps:
+        cand = os.path.join(esp, "loader", "loader.conf")
+        if os.path.isfile(cand):
+            sd_conf = cand
+            sd_esp = esp
+            break
+    sd_installed = bool(sd_conf)
+    if not sd_installed and has_bootctl:
+        ok_bc, out_bc = probe.run_cmd(["bootctl", "is-installed"], timeout=1.5)
+        sd_installed = ok_bc and out_bc.strip().lower() == "yes"
+    if sd_installed:
+        loader_cfg: dict[str, str] = {}
+        if sd_conf:
+            try:
+                with open(sd_conf, "r", encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        s = ln.strip()
+                        if not s or s.startswith("#"):
+                            continue
+                        parts = s.split(None, 1)
+                        if len(parts) == 2:
+                            loader_cfg[parts[0].lower()] = parts[1].strip()
+            except Exception:
+                pass
+        entries: list[dict] = []
+        seen_ids: set[str] = set()
+        for esp in ([sd_esp] if sd_esp else search_esps):
+            for ep in sorted(glob.glob(os.path.join(esp, "loader", "entries", "*.conf"))):
+                eid = os.path.basename(ep)
+                if eid in seen_ids:
+                    continue
+                seen_ids.add(eid)
+                meta = {"id": eid, "title": eid, "version": "-", "target": "-"}
+                try:
+                    with open(ep, "r", encoding="utf-8", errors="ignore") as f:
+                        for ln in f:
+                            s = ln.strip()
+                            if not s or s.startswith("#"):
+                                continue
+                            parts = s.split(None, 1)
+                            if len(parts) != 2:
+                                continue
+                            k, v = parts[0].lower(), parts[1].strip()
+                            if k == "title":
+                                meta["title"] = v
+                            elif k == "version":
+                                meta["version"] = v
+                            elif k in ("linux", "efi"):
+                                meta["target"] = v
+                except Exception:
+                    pass
+                entries.append(meta)
+        for uki in ukis:
+            ub = os.path.basename(uki)
+            if ub not in seen_ids:
+                entries.append({"id": ub, "title": ub, "version": "UKI", "target": uki})
+        return {
+            "kind": "systemd-boot",
+            "conf_path": sd_conf or os.path.join(search_esps[0], "loader", "loader.conf"),
+            "esp_mounts": esp_mounts,
+            "ukis": ukis,
+            "entries": entries,
+            "loader_cfg": loader_cfg,
+            "has_bootctl": has_bootctl,
+        }
+
+    # GRUB detection
+    grub_cands = ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"]
+    for esp in search_esps:
+        grub_cands.extend(sorted(glob.glob(os.path.join(esp, "EFI", "*", "grub.cfg"))))
+    grub_cfg = next((p for p in grub_cands if os.path.isfile(p)), "")
+    if grub_cfg or os.path.isfile("/etc/default/grub"):
+        loader_cfg = {}
+        if os.path.isfile("/etc/default/grub"):
+            try:
+                with open("/etc/default/grub", "r", encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        s = ln.strip()
+                        if not s or s.startswith("#") or "=" not in s:
+                            continue
+                        k, v = s.split("=", 1)
+                        loader_cfg[k.strip()] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+        entries = []
+        if grub_cfg:
+            try:
+                with open(grub_cfg, "r", encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        m = re.match(r"^\s*menuentry\s+(['\"])(.+?)\1", ln)
+                        if m:
+                            entries.append({"id": str(len(entries) + 1), "title": m.group(2), "version": "-", "target": grub_cfg})
+                            if len(entries) >= 24:
+                                break
+            except Exception:
+                pass
+        return {
+            "kind": "grub",
+            "conf_path": "/etc/default/grub" if os.path.isfile("/etc/default/grub") else grub_cfg,
+            "esp_mounts": esp_mounts,
+            "ukis": ukis,
+            "entries": entries,
+            "loader_cfg": loader_cfg,
+            "has_bootctl": has_bootctl,
+        }
+
+    if os.path.isfile("/var/lib/ncui/limine.conf.cache"):
+        return _limine_result()
+
+    return {
+        "kind": "none",
+        "conf_path": "",
+        "esp_mounts": esp_mounts,
+        "ukis": ukis,
+        "entries": [],
+        "loader_cfg": {},
+        "has_bootctl": has_bootctl,
+    }
 
 
 def _norm_hex6(raw: str, default: str = "#ffffff") -> str:
@@ -58,7 +209,7 @@ _LIMINE_THEME_PRESETS: dict[str, dict] = {
         "term_palette": ["#000000", "#ff0000", "#67d97a", "#ffff00", "#0000ff", "#ff00ff", "#67d97a", "#ffffff"],
         "term_palette_bright": ["#333333", "#ff0000", "#67d97a", "#ffff00", "#0000ff", "#ff00ff", "#67d97a", "#ffffff"],
     },
-    "nightcity": {
+    "cyber": {
         "term_foreground": "#8c9bba",
         "term_foreground_bright": "#00f0ff",
         "term_background_rgb": "#080a0f",
@@ -318,7 +469,8 @@ def _clone_limine_model(m: dict) -> dict:
 
 
 def _load_limine_studio_data() -> dict:
-    conf_path = next((p for p in _LIMINE_CANDIDATES if os.path.exists(p)), "")
+    esps = _esp_candidates()
+    conf_path = _find_limine_conf(esps)
     raw = ""
     readable = False
     cached = False
@@ -365,7 +517,7 @@ def _load_limine_studio_data() -> dict:
         sel_id = leaf_ids[0] if leaf_ids else (0 if model["nodes"] else -1)
 
     return {
-        "conf_path": conf_path or "/boot/limine.conf",
+        "conf_path": conf_path or os.path.join(esps[0], "limine.conf"),
         "readable": readable,
         "cached": cached,
         "is_dirty": is_dirty,
@@ -386,91 +538,41 @@ def _stage_limine_draft(mutator) -> None:
     STATE.set("telemetry", "limine_draft", draft)
 
 
-
-def _probe_limine() -> dict:
-    conf_path = next((p for p in _LIMINE_CANDIDATES if os.path.exists(p)), "")
-    timeout = "5"
-    default_entry = "1"
-    entries = []
-    readable = False
-    cached = False
-    if conf_path:
-        try:
-            raw = open(conf_path, "r", encoding="utf-8", errors="ignore").read()
-            readable = True
-            m_to = re.search(r"(?m)^\s*timeout\s*:\s*(\d+)", raw)
-            if m_to:
-                timeout = m_to.group(1)
-            m_df = re.search(r"(?m)^\s*default_entry\s*:\s*(\d+)", raw)
-            if m_df:
-                default_entry = m_df.group(1)
-            for ln in raw.splitlines():
-                s = ln.strip()
-                if s.startswith("/"):
-                    entries.append(s.lstrip("/").strip())
-        except Exception:
-            pass
-    rescue_env = _read_env_kv("/var/lib/ncui/rescue-status.env")
-    if not readable and rescue_env:
-        if rescue_env.get("LIMINE_CONF_PATH"):
-            conf_path = rescue_env["LIMINE_CONF_PATH"]
-            cached = True
-        if rescue_env.get("LIMINE_TIMEOUT"):
-            timeout = rescue_env["LIMINE_TIMEOUT"]
-        if rescue_env.get("LIMINE_DEFAULT_ENTRY"):
-            default_entry = rescue_env["LIMINE_DEFAULT_ENTRY"]
-        if rescue_env.get("LIMINE_ENTRIES"):
-            entries = [e for e in rescue_env["LIMINE_ENTRIES"].split("||") if e]
-            cached = True
-    if not entries:
-        entries = list(_DEFAULT_ENTRIES)
-    ukis = sorted(glob.glob("/boot/EFI/Linux/*.efi") + glob.glob("/efi/EFI/Linux/*.efi"))
-    dr_env = _read_env_kv("/var/lib/ncui/dr-status.env") or _read_env_kv("/var/lib/nightcity/dr-status.env")
-    if not ukis:
-        ukis = [f"/boot/EFI/Linux/{u}" for u in dr_env.get("UKI_NAMES", "").split(",") if u]
-    snap_dir = "/var/lib/ncui/snapshots" if os.path.isdir("/var/lib/ncui/snapshots") else "/var/lib/nightcity/snapshots"
-    snaps_n = len([p for p in glob.glob(f"{snap_dir}/*") if not os.path.basename(p).startswith(".")]) if os.path.isdir(snap_dir) else 0
-    return {
-        "conf_path": conf_path or "/boot/limine.conf",
-        "readable": readable,
-        "cached": cached,
-        "timeout": timeout,
-        "default_entry": default_entry,
-        "entries": entries[:8],
-        "ukis": ukis,
-        "snaps": snaps_n,
-    }
+def _open_boot_config_in_editor(cp: str) -> None:
+    if not cp:
+        set_feedback("system", False, t("cc_system.boot_no_entries"))
+        return
+    ok_ed, ed_info = probe.open_in_editor(cp, sudo=True)
+    if ok_ed:
+        set_feedback("system", True, t("cc_settings.opened_in_terminal_editor", p0=cp))
+    elif ed_info == "unset":
+        set_feedback("system", False, t("common.editor_not_configured"))
+    else:
+        set_feedback("system", False, t("common.editor_not_found", p0=ed_info.split(":", 1)[-1]))
 
 
 def handle_cc_boot_link(cc_panel, uri: str) -> bool:
-    if uri.startswith("cc_set:limine_"):
-        parts = uri.split(":", 2)
-        cmd = parts[1]
-        arg = parts[2] if len(parts) > 2 else ""
-        if cmd == "limine_edit":
-            cp = _probe_limine()["conf_path"]
-            ok_ed, ed_info = probe.open_in_editor(cp, sudo=True)
-            if ok_ed:
-                _set_sys_fb(True, t("cc_settings.opened_in_terminal_editor", p0=cp))
-            elif ed_info == "unset":
-                _set_sys_fb(False, t("common.editor_not_configured"))
-            else:
-                _set_sys_fb(False, t("common.editor_not_found", p0=ed_info.split(":", 1)[-1]))
-        elif cmd in ("limine_to", "limine_def") and arg.isdigit():
-            lkey = "timeout" if cmd == "limine_to" else "default_entry"
-            _stage_limine_draft(lambda m, k=lkey, v=str(int(arg)): m.__setitem__(k, v))
-            if cc_panel and cc_panel.shell:
-                cc_panel.shell.refresh_view()
-            return True
+    if uri == "cc_set:limine_edit":
+        _open_boot_config_in_editor(_load_limine_studio_data()["conf_path"])
         if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
     if uri.startswith("cc_boot:"):
         sub = uri[len("cc_boot:"):]
-        if sub == "apply":
+        if sub == "open_editor":
+            _open_boot_config_in_editor(detect_bootloader().get("conf_path", ""))
+        elif sub == "bootctl_status":
+            if probe.has_bin("bootctl"):
+                from ui.embedded_tui import start_panel_terminal
+
+                start_panel_terminal(cc_panel, t("common.term_title", p0="bootctl status"), ["bootctl", "status"])
+            else:
+                set_feedback("system", False, "MISSING: bootctl")
+            return True
+        elif sub == "apply":
             draft = STATE.get("telemetry", "limine_draft", None)
             if not isinstance(draft, dict):
-                _set_sys_fb(True, t("cc_system.limine_fb_no_changes"))
+                set_feedback("system", True, t("cc_system.limine_fb_no_changes"))
             else:
                 conf_txt = _render_limine_conf(draft)
                 def _on_apply(opened: bool, rc: int, out: str):
@@ -479,15 +581,15 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
                     if rc == 0:
                         STATE.set("telemetry", "limine_draft", None)
                         STATE.set("telemetry", "limine_wp_preview_path", "")
-                        _set_sys_fb(True, t("cc_system.limine_fb_applied"))
+                        set_feedback("system", True, t("cc_system.limine_fb_applied"))
                     else:
-                        _set_sys_fb(False, t("cc_system.limine_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                        set_feedback("system", False, t("cc_system.limine_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
                 _run_helper_async(cc_panel, "rescue_busy", "LIMINE", "nc-rescue", "rescue_manage", ["limine-apply-stdin"], stdin_data=conf_txt, timeout=25.0, on_done=_on_apply)
         elif sub == "reset":
             STATE.set("telemetry", "limine_draft", None)
             STATE.set("telemetry", "limine_wp_preview_path", "")
-            _set_sys_fb(True, t("cc_system.limine_fb_reset"))
+            set_feedback("system", True, t("cc_system.limine_fb_reset"))
         elif sub.startswith("preset:"):
             pid = sub.split(":", 1)[1]
             pres = _LIMINE_THEME_PRESETS.get(pid)
@@ -546,10 +648,6 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
         elif sub == "wp_clear":
             STATE.set("telemetry", "limine_wp_preview_path", "")
             _stage_limine_draft(lambda m: m.__setitem__("wallpaper", ""))
-        elif sub.startswith("wp_esp:"):
-            rel_i = sub.split(":", 1)[1]
-            if rel_i and ".." not in rel_i and re.match(r"^[a-zA-Z0-9._/-]+\.(png|jpg|jpeg|bmp)$", rel_i, re.IGNORECASE):
-                _stage_limine_draft(lambda m, r=rel_i: m.__setitem__("wallpaper", f"boot():/{r.lstrip('/')}"))
         elif sub == "wp_import":
             cc_panel.request_prompt("cc_boot_wp_path", t("cc_system.boot_prompt_wp_lbl"), "", title=t("cc_system.boot_prompt_wp_title"), completion="path_file", required=True)
             return True
@@ -566,16 +664,6 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
                 on_commit=lambda s: _stage_limine_draft(lambda m, v=s.strip(): m.__setitem__("interface_branding", v)),
             )
             return True
-        elif sub.startswith("set_col:"):
-            _, ckey, hx = sub.split(":", 2)
-            valid_h = _norm_hex6(hx, "")
-            if valid_h:
-                if ckey in ("term_foreground", "term_foreground_bright", "term_background_rgb", "interface_branding_color", "backdrop"):
-                    _stage_limine_draft(lambda m, k=ckey, v=valid_h: m.__setitem__(k, v))
-                elif ckey.startswith("pal_") and ckey[4:].isdigit():
-                    idx = int(ckey[4:])
-                    if 0 <= idx < 8:
-                        _stage_limine_draft(lambda m, i=idx, v=valid_h: m["term_palette"].__setitem__(i, v))
         elif sub.startswith("inline_col:"):
             ckey = sub.split(":", 1)[1]
             st = _load_limine_studio_data()
@@ -590,7 +678,7 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
             def _commit_hx(raw_h: str, k=ckey):
                 vh = _norm_hex6(raw_h, "")
                 if not vh:
-                    _set_sys_fb(False, t("cc_system.limine_fb_err", p0=raw_h))
+                    set_feedback("system", False, t("cc_system.limine_fb_err", p0=raw_h))
                     return
                 if k.startswith("pal_"):
                     i = int(k[4:])
@@ -672,6 +760,8 @@ def handle_cc_boot_link(cc_panel, uri: str) -> bool:
         elif sub == "add_entry":
             cc_panel.request_prompt("cc_boot_add_title", t("cc_system.boot_prompt_add_lbl"), "", title=t("cc_system.boot_prompt_add_title"), required=True)
             return True
+        else:
+            return False
 
         if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
@@ -683,7 +773,7 @@ def handle_cc_boot_prompt(cc_panel, action_id: str, text: str) -> bool:
     if action_id == "cc_boot_wp_path":
         wp_p = str(text or "").strip()
         if not wp_p or ".." in wp_p or not os.path.isfile(wp_p):
-            _set_sys_fb(False, t("cc_system.limine_fb_err", p0=wp_p or "missing file"))
+            set_feedback("system", False, t("cc_system.limine_fb_err", p0=wp_p or "missing file"))
             return True
         def _on_wp(opened: bool, rc: int, out: str, src_f=wp_p):
             if opened:
@@ -695,9 +785,9 @@ def handle_cc_boot_prompt(cc_panel, action_id: str, text: str) -> bool:
                 if wp_val:
                     STATE.set("telemetry", "limine_wp_preview_path", src_f)
                     _stage_limine_draft(lambda m, val=wp_val: m.__setitem__("wallpaper", val))
-                _set_sys_fb(True, t("cc_system.limine_fb_wp_staged", p0=wp_name))
+                set_feedback("system", True, t("cc_system.limine_fb_wp_staged", p0=wp_name))
             else:
-                _set_sys_fb(False, t("cc_system.limine_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
+                set_feedback("system", False, t("cc_system.limine_fb_err", p0=(out.splitlines()[-1] if out else "error")[:140]))
 
         _run_helper_async(
             cc_panel,
@@ -745,7 +835,7 @@ def handle_cc_boot_prompt(cc_panel, action_id: str, text: str) -> bool:
             })
             STATE.set("telemetry", "limine_selected_id", len(nodes) - 1)
         _stage_limine_draft(_add_n)
-        _set_sys_fb(True, t("cc_system.limine_fb_entry_added", p0=title_s))
+        set_feedback("system", True, t("cc_system.limine_fb_entry_added", p0=title_s))
         if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True

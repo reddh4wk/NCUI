@@ -1,14 +1,41 @@
 #!/usr/bin/env python3
 """NC-UI Resilience Config, Hardware Auto-Discovery & Root Helper Sync (`core/resilience.py`)."""
 
+import getpass
 import hashlib
 import os
+import platform
+import re
 import shlex
 import socket
 import subprocess
 import threading
 import tomllib
 from core.paths import CORE_ROOT, find_libexec_helper, find_package_file
+
+
+def expand_user_token(path: str) -> str:
+    """Expand `~/`, `$USER`, and `{user}` placeholders deterministically for the active user."""
+    s = str(path or "").strip()
+    if not s:
+        return ""
+    user = getpass.getuser() or os.environ.get("USER", "root")
+    s = s.replace("$USER", user).replace("{user}", user)
+    if s == "~" or s.startswith("~/"):
+        s = os.path.expanduser(s)
+    return s
+
+
+def parse_vault_share(spec: str, base_mp: str) -> tuple[str, str]:
+    """Parse `<remote>` or `<remote>:</local/mountpoint>` into `(remote_spec, target_mountpoint)`."""
+    raw = str(spec or "").strip()
+    if ":/" in raw:
+        rem, loc = raw.split(":/", 1)
+        tgt = expand_user_token("/" + loc).rstrip("/") or "/"
+        return rem.strip(), tgt
+    name = raw.rstrip("/").rsplit("/", 1)[-1]
+    base = expand_user_token(base_mp).rstrip("/") or "/nas"
+    return raw, os.path.join(base, name) if name else base
 
 RESILIENCE_CONF_PATH = "/etc/ncui/resilience.toml"
 RESILIENCE_EXAMPLE_PATH = find_package_file("config", "ncui", "resilience.example.toml") or os.path.join(
@@ -57,10 +84,6 @@ def _read_env_kv(path: str) -> dict[str, str]:
     return out
 
 
-def _unescape_dm_name(dm_part: str) -> str:
-    return dm_part.replace("--", "-")
-
-
 def _detect_storage_layout() -> dict:
     """Inspect `/proc/self/mounts` (world-readable) for root fstype and LVM VG/LV layout."""
     layout = {
@@ -78,25 +101,9 @@ def _detect_storage_layout() -> dict:
     def _parse_lv(src: str) -> tuple[str, str]:
         if src.startswith("/dev/mapper/") and "-" in src[len("/dev/mapper/"):]:
             raw = src[len("/dev/mapper/"):]
-            # Device-mapper separates VG and LV with single `-`, escaping literal `-` as `--`.
-            parts = []
-            cur = []
-            i = 0
-            while i < len(raw):
-                if raw[i] == "-":
-                    if i + 1 < len(raw) and raw[i + 1] == "-":
-                        cur.append("-")
-                        i += 2
-                        continue
-                    parts.append("".join(cur))
-                    cur = []
-                    i += 1
-                else:
-                    cur.append(raw[i])
-                    i += 1
-            parts.append("".join(cur))
-            if len(parts) == 2 and parts[0] and parts[1]:
-                return parts[0], parts[1]
+            m = re.match(r"^((?:[^-]|--)+)-((?:[^-]|--)+)$", raw)
+            if m:
+                return m.group(1).replace("--", "-"), m.group(2).replace("--", "-")
         if src.startswith("/dev/") and src.count("/") == 3:
             segs = src.split("/")
             if segs[2] not in ("mapper", "disk", "by-uuid", "by-label", "by-partuuid"):
@@ -222,10 +229,18 @@ def _seed_defaults() -> dict:
     except Exception:
         pass
 
+    try:
+        os_id = str(platform.freedesktop_os_release().get("ID", "linux") or "linux").strip().lower()
+    except OSError:
+        os_id = "linux"
+
     nc_prof = _read_env_kv("/etc/nc.profile")
-    snap_conf = _read_env_kv("/etc/nightcity-snap.conf")
+    snap_conf = _read_env_kv("/etc/ncui/snap.conf")
     st_layout = _detect_storage_layout()
-    esp = snap_conf.get("ESP_MOUNT", "").rstrip("/") or ("/efi" if os.path.isdir("/efi/EFI/Linux") else "/boot")
+    esp = snap_conf.get("ESP_MOUNT", "").rstrip("/") or (
+        "/efi" if os.path.isdir("/efi/EFI/Linux")
+        else ("/boot/efi" if os.path.isdir("/boot/efi/EFI") else "/boot")
+    )
     if not esp:
         esp = "/boot"
 
@@ -243,28 +258,27 @@ def _seed_defaults() -> dict:
     primary_uki = _expand_uki_vars(snap_conf.get("PRIMARY_UKI", ""), esp)
     hook_path = "/etc/pacman.d/hooks/00-nc-snapshot.hook"
     hook_default = os.path.isfile(hook_path) if os.path.isdir("/etc/pacman.d/hooks") else True
-    sys_folder = nc_prof.get("NC_SYS_FOLDER", f"{host}-archlinux")
+    sys_folder = nc_prof.get("NC_SYS_FOLDER", f"{host}-{os_id}")
     v_det = _detect_vault_mounts(nc_prof.get("NC_NAS_MOUNTPOINT", "/nas"), sys_folder=sys_folder)
 
-    dr_env = _read_env_kv("/var/lib/ncui/dr-status.env") or _read_env_kv("/var/lib/nightcity/dr-status.env")
+    dr_env = _read_env_kv("/var/lib/ncui/dr-status.env")
     uki_names = {u.strip() for u in dr_env.get("UKI_NAMES", "").split(",") if u.strip()}
-    if "nightcity-recovery.efi" in uki_names or os.path.isfile(f"{esp}/EFI/Linux/nightcity-recovery.efi"):
-        rec_uki = "nightcity-recovery.efi"
-    elif "duskcity.efi" in uki_names or os.path.isfile(f"{esp}/EFI/Linux/duskcity.efi"):
-        rec_uki = "duskcity.efi"
+    host_rescue = f"{host.lower()}-rescue.efi"
+    if host_rescue in uki_names or os.path.isfile(f"{esp}/EFI/Linux/{host_rescue}"):
+        rec_uki = host_rescue
     else:
-        rec_uki = "nc-rescue.efi"
+        rec_uki = next((u for u in sorted(uki_names) if u.endswith("-rescue.efi")), "nc-rescue.efi")
 
     b_root_sub = str(v_det["backup_root_subdir"] or "").strip("/")
     b_root_abs = os.path.join(v_det["mountpoint"], b_root_sub) if b_root_sub else v_det["mountpoint"]
-    golden_subdir = "duskcity-archlinux/images" if os.path.isdir(os.path.join(b_root_abs, "duskcity-archlinux", "images")) else "images"
+    golden_subdir = f"{sys_folder}/images" if os.path.isdir(os.path.join(b_root_abs, sys_folder, "images")) else "images"
 
     return {
         "identity": {
             "sys_alias": nc_prof.get("NC_SYS_ALIAS", host[:8].lower()),
             "hostname": nc_prof.get("NC_SYS_HOSTNAME", host),
             "hw_uuid": (nc_prof.get("NC_SYS_UUID", "") or hw_uuid).lower(),
-            "sys_folder": nc_prof.get("NC_SYS_FOLDER", f"{host}-archlinux"),
+            "sys_folder": sys_folder,
         },
         "posture": dict(DEFAULT_POSTURE_CFG),
         "snapshots": {
@@ -286,9 +300,14 @@ def _seed_defaults() -> dict:
             "protocol": v_det["protocol"],
             "host": v_det["host"],
             "mountpoint": v_det["mountpoint"],
+            "mount_visibility": "symlink",
+            "user_symlink_dir": "~/NAS",
             "ssh_user": v_det["ssh_user"],
             "remote_path": v_det["remote_path"],
             "smb_creds_file": "/etc/samba/nas-cred",
+            "smb_version": "auto",
+            "port": "",
+            "mount_opts": "",
             "shares": list(v_det["shares"]),
             "backup_root_subdir": v_det["backup_root_subdir"],
             "sync_paths": [],
@@ -344,7 +363,19 @@ def load_resilience_config() -> dict:
     if proto not in ("smb", "nfs", "ssh", "local"):
         proto = "smb"
     vl["protocol"] = proto
-    vl["mountpoint"] = str(vl.get("mountpoint") or "/nas").strip().rstrip("/") or "/nas"
+    vl["mountpoint"] = expand_user_token(str(vl.get("mountpoint") or "/nas")).rstrip("/") or "/nas"
+    vis = str(vl.get("mount_visibility") or "symlink").strip().lower()
+    if vis not in ("symlink", "filemanager", "both", "none"):
+        vis = "symlink"
+    vl["mount_visibility"] = vis
+    vl["user_symlink_dir"] = str(vl.get("user_symlink_dir") if vl.get("user_symlink_dir") is not None else "~/NAS").strip()
+    smb_ver = str(vl.get("smb_version") or "auto").strip().lower()
+    if smb_ver not in ("auto", "3.1.1", "3.0", "2.1", "2.0", "1.0"):
+        smb_ver = "auto"
+    vl["smb_version"] = smb_ver
+    port_s = str(vl.get("port") or "").strip()
+    vl["port"] = port_s if (port_s.isdigit() and 1 <= int(port_s) <= 65535) else ""
+    vl["mount_opts"] = str(vl.get("mount_opts") or "").strip()
     for fill_k in ("host", "shares", "backup_root_subdir", "pkglist_subdir"):
         if not vl.get(fill_k) and seeds["vault"].get(fill_k):
             vl[fill_k] = seeds["vault"][fill_k]
@@ -444,8 +475,9 @@ def probe_bundled_helpers() -> list[dict]:
 
 
 def resolve_sbin_helper(name: str, legacy_fallback: str = "") -> str:
-    """Return installed NC-UI helper path `/usr/lib/ncui/sbin/<name>`."""
-    return os.path.join(SBIN_DST_DIR, name)
+    """Resolve installed helper `/usr/lib/ncui/sbin/<name>`, delegating fallback to `core.paths.find_libexec_helper`."""
+    sbin = os.path.join(SBIN_DST_DIR, name)
+    return sbin if os.path.isfile(sbin) else (find_libexec_helper(name) or sbin)
 
 
 read_env_kv = _read_env_kv

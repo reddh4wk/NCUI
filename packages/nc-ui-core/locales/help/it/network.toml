@@ -50,7 +50,7 @@ verbose = "Inserisci il nome del bridge (es. `br0`). Esegue `nmcli connection ad
 ["net:inline_vlan"]
 title = "Crea Interfaccia VLAN 802.1Q.."
 short = "Apre l'input inline (`padre|vlan_id`) per creare una connessione VLAN 802.1Q taggata in NetworkManager."
-verbose = "Digita `<interfaccia>|<1..4094>` (es. `enp5s0|10`). Esegue `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` e aggiorna la tabella."
+verbose = "Digita `<interfaccia>|<1..4094>` (es. `eth0|10`). Esegue `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` e aggiorna la tabella."
 diagram = "network_stack"
 diagram_focus = "iface"
 
@@ -88,7 +88,7 @@ short = "Crea e verifica una nuova connessione NetworkManager DHCP persistente a
 ["net:inline_new_prof:*"]
 title = "Crea Profilo NM con Nome.."
 short = "Apre l'input inline per creare un nuovo profilo di connessione NetworkManager persistente per questa interfaccia."
-verbose = "Inserisci il nome del profilo (es. `enp5s0-static`). Crea la connessione con `nmcli`, ne verifica la registrazione e la seleziona per configurare IPv4/IPv6/L2."
+verbose = "Inserisci il nome del profilo (es. `eth0-static`). Crea la connessione con `nmcli`, ne verifica la registrazione e la seleziona per configurare IPv4/IPv6/L2."
 
 ["net:inline_rename_prof:*:*"]
 title = "Rinomina Profilo NM.."
@@ -236,11 +236,11 @@ short = "Apre l'input numerico (`-999..999`) per mettere in bozza `connection.au
 
 ["net:inline_field:net_ip:*"]
 title = "Modifica IPv4 / CIDR Statico.."
-short = "Apre l'input inline per `ipv4.addresses` (es. `10.10.0.10/24`) e commuta automaticamente il metodo in `manual`."
+short = "Apre l'input inline per `ipv4.addresses` (es. `192.168.1.10/24`) e commuta automaticamente il metodo in `manual`."
 
 ["net:inline_field:net_gw:*"]
 title = "Modifica Gateway IPv4.."
-short = "Apre l'input inline per `ipv4.gateway` (es. `10.10.0.1`) e commuta automaticamente il metodo in `manual`."
+short = "Apre l'input inline per `ipv4.gateway` (es. `192.168.1.1`) e commuta automaticamente il metodo in `manual`."
 
 ["net:inline_field:net_dns:*"]
 title = "Modifica Server DNS IPv4.."
@@ -431,12 +431,12 @@ short = "Apre l'input inline per impostare i resolver `ipv4.dns` applicati quand
 ["net:proxy_mode:none"]
 title = "Modalità Proxy: Diretto (Nessun Proxy)"
 short = "Imposta la modalità proxy su `none` e scrive `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY ...` in `proxy.env`."
-verbose = "Rigenera `~/.config/nc-ui/proxy.env` con `PROXY_MODE=\"none\"` rimuovendo le variabili d'ambiente proxy esportate per le nuove shell."
+verbose = "Rigenera `~/.config/ncui/proxy.env` con `PROXY_MODE=\"none\"` rimuovendo le variabili d'ambiente proxy esportate per le nuove shell."
 
 ["net:proxy_mode:manual"]
 title = "Modalità Proxy: Manuale HTTP / SOCKS5"
 short = "Imposta `proxy.env` su `manual` esportando `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5) ed esclusioni `NO_PROXY`."
-verbose = "Scrive `~/.config/nc-ui/proxy.env` con gli endpoint HTTP/HTTPS e SOCKS5 configurati più le esclusioni `NO_PROXY` per `localhost`, `127.0.0.1` e subnet private RFC1918."
+verbose = "Scrive `~/.config/ncui/proxy.env` con gli endpoint HTTP/HTTPS e SOCKS5 configurati più le esclusioni `NO_PROXY` per `localhost`, `127.0.0.1` e subnet private RFC1918."
 
 ["net:proxy_mode:auto"]
 title = "Modalità Proxy: Automatico PAC URL"

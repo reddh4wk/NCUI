@@ -30,14 +30,16 @@ from core.config import (
     get_surface_bg_rgb,
     get_toast_opacity,
     get_toast_style,
+    get_waybar_config_dir,
     get_waybar_look,
     get_effective_window_bg,
     get_layout_margins,
-    sync_waybar_outer_margin,
+    strip_jsonc_comments,
     _parse_rgba_components,
 )
 from core.completion import search_control_center
 from core.i18n import t
+from core.paths import CORE_ROOT, find_bin
 from core import probe, log
 from core.state import STATE
 from ui.canvas import Canvas
@@ -183,10 +185,6 @@ class ShellWindow(Gtk.Window):
         self._nav_sized = False
         self._last_win_size = None
         self._last_sw_size = None
-
-        if self.mode == "settings" and os.environ.get("NC_UI_OFFSCREEN") != "1":
-            _, _init_outer_mar = get_layout_margins()
-            sync_waybar_outer_margin(_init_outer_mar, reload_bar=True)
 
         self.wb_look = get_waybar_look()
         self.geom = THEME["geometry"]
@@ -468,7 +466,7 @@ class ShellWindow(Gtk.Window):
 
     def _create_waybar_pango_layout(self) -> Pango.Layout:
         wb_font_px = 13.0
-        wb_css = os.path.expanduser("~/.config/waybar/style.css")
+        wb_css = os.path.join(get_waybar_config_dir(), "style.css")
         if os.path.exists(wb_css):
             try:
                 with open(wb_css, "r", encoding="utf-8") as f:
@@ -628,7 +626,8 @@ class ShellWindow(Gtk.Window):
             "mod_to_panel": mod_to_panel,
         }
 
-        wb_css = os.path.expanduser("~/.config/waybar/style.css")
+        wb_dir = get_waybar_config_dir()
+        wb_css = os.path.join(wb_dir, "style.css")
         if os.path.exists(wb_css):
             try:
                 with open(wb_css, "r", encoding="utf-8") as f:
@@ -641,14 +640,11 @@ class ShellWindow(Gtk.Window):
             except Exception:
                 pass
 
-        wb_conf = os.path.expanduser("~/.config/waybar/config.jsonc")
+        wb_conf = os.path.join(wb_dir, "config.jsonc")
         if os.path.exists(wb_conf):
             try:
                 with open(wb_conf, "r", encoding="utf-8") as f:
-                    raw = f.read()
-                cleaned = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*', lambda m: m.group(1) if m.group(1) else "", raw)
-                cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-                loaded = json.loads(cleaned)
+                    loaded = json.loads(strip_jsonc_comments(f.read()))
 
                 data = loaded
                 if isinstance(loaded, list) and loaded:
@@ -737,7 +733,7 @@ class ShellWindow(Gtk.Window):
             self.click_x = -1
             self.switch_panel(next_pid)
             return
-        nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
+        nc_ctl_bin = find_bin("nc-ctl") or os.path.join(CORE_ROOT, "bin", "nc-ctl")
         if next_mode == "settings":
             probe.spawn_bg([sys.executable, nc_ctl_bin, "settings"])
         else:
@@ -1389,6 +1385,27 @@ class ShellWindow(Gtk.Window):
         ]
         return next((c for c in cards if c.is_hovered and getattr(c.box_model, "scroll_action", None)), None)
 
+    def _can_card_consume_scroll(self, card: AsciiCard, direction: str) -> bool:
+        vadj = self.scrolled_window.get_vadjustment() if hasattr(self, "scrolled_window") else None
+        if vadj is None:
+            return True
+        upper = float(vadj.get_upper())
+        page = float(vadj.get_page_size())
+        if upper <= page + 2.0:
+            return True
+        alloc = card.get_allocation()
+        if alloc.height <= 0:
+            return True
+        vp_top = float(vadj.get_value())
+        vp_bot = vp_top + page
+        card_top = float(alloc.y)
+        card_bot = card_top + float(alloc.height)
+        if direction == "down" and card_bot > (vp_bot + 4.0) and card_top > (vp_top + 4.0):
+            return False
+        if direction == "up" and card_top < (vp_top - 4.0) and card_bot < (vp_bot - 4.0):
+            return False
+        return True
+
     def _on_scrolled_window_scroll(self, sw_widget, event) -> bool:
         self._mouse_inside = True
         self._cancel_leave_close()
@@ -1400,6 +1417,9 @@ class ShellWindow(Gtk.Window):
                 return res
         target = self._resolve_active_scroll_card()
         if target is not None:
+            ev_time = int(getattr(event, "time", 0) or (event.get_time() if hasattr(event, "get_time") else 0))
+            if ev_time > 0 and ev_time == getattr(target, "_passthrough_scroll_ev_time", 0):
+                return False
             return target._on_scroll(sw_widget, event)
         return False
 
@@ -2293,7 +2313,7 @@ class ShellWindow(Gtk.Window):
                         self.panel.set_subtab(sub_id)
                     self.refresh_view()
             else:
-                nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
+                nc_ctl_bin = find_bin("nc-ctl") or os.path.join(CORE_ROOT, "bin", "nc-ctl")
                 cmd_args = [sys.executable, nc_ctl_bin, "settings"]
                 if sec_id:
                     cmd_args.append(sec_id)
@@ -2790,6 +2810,7 @@ class ShellWindow(Gtk.Window):
             card_w.on_anchor_hover_change = self._on_card_anchor_hover
             card_w.on_pointer_activity = self._on_card_pointer_activity
             card_w.on_scroll_intercept = self._intercept_card_scroll
+            card_w.on_scroll_can_consume = self._can_card_consume_scroll
             if card_obj is not None:
                 card_w.on_row_click = card_obj.on_row_click
                 card_w.on_link = card_obj.on_link or self.dispatch_uri
@@ -2819,6 +2840,7 @@ class ShellWindow(Gtk.Window):
                     c.on_anchor_hover_change = self._on_card_anchor_hover
                     c.on_pointer_activity = self._on_card_pointer_activity
                     c.on_scroll_intercept = self._intercept_card_scroll
+                    c.on_scroll_can_consume = self._can_card_consume_scroll
                     c.box_model.selected = False
                     c.refresh_markup()
                 else:
@@ -2833,6 +2855,7 @@ class ShellWindow(Gtk.Window):
                     )
                     c.on_anchor_hover_change = self._on_card_anchor_hover
                     c.on_scroll_intercept = self._intercept_card_scroll
+                    c.on_scroll_can_consume = self._can_card_consume_scroll
                 return c, c.hover_enable
             return card_obj, False
 
@@ -3132,7 +3155,7 @@ class ShellWindow(Gtk.Window):
                 self.open_cc_global_search()
                 return True
             STATE.set("control_center", "open_global_search", True)
-            nc_ctl_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "nc-ctl")
+            nc_ctl_bin = find_bin("nc-ctl") or os.path.join(CORE_ROOT, "bin", "nc-ctl")
             probe.spawn_bg([sys.executable, nc_ctl_bin, "settings"])
             Gtk.main_quit()
             return True

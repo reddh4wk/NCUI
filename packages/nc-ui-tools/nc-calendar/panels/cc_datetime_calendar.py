@@ -4,9 +4,10 @@ from core import probe
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, Divider, FeedbackBox, InlineField, ProgressBar, SelectPill, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, Divider, InlineField, ProgressBar, SelectPill, StateBadge, Txt
 from ui.markup import format_date_it
 from panels.cc_engine_calendar import (
+    _feedback_cards,
     is_calendar_initialized,
     get_calendar_mode,
     get_calendar_horizon_telemetry,
@@ -24,7 +25,6 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     mode = get_calendar_mode()
     stats = get_db_stats()
     hz = get_calendar_horizon_telemetry(days=7)
-    status_msg = STATE.get("calendar", "cc_status_msg", "")
     feeds = get_ical_feeds()
     feed_names = get_ical_feed_names()
     enabled_cnt = sum(1 for f in feeds if f.get("enabled", True))
@@ -33,7 +33,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     sync_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_sync)) if last_sync > 0 else t("cc_calendar.never")
     rem_mins = get_reminder_minutes()
 
-    cards = []
+    cards = _feedback_cards()
 
     # ── CARD 1: Engine, Reminders & 7-Day Horizon Split Telemetry ──
     init_badge = (
@@ -63,7 +63,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     presets = [0, 5, 10, 15, 30, 60]
     p_btns = []
     for p in presets:
-        lbl = t("cc_power.off") if p == 0 else f"{p}m"
+        lbl = t("common.off") if p == 0 else f"{p}m"
         p_btns.append(SelectPill(lbl, f"cc_cal:rem_set:{p}", selected=(rem_mins == p)))
     is_custom_rem = rem_mins not in presets
     p_btns.append(
@@ -81,7 +81,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     )
     m_box.add_kv(t("cc_calendar.lead_time").rstrip(":"), "  ".join(p_btns), key_width=18)
 
-    stat_desc = f"(Local: {stats['local']} \u00b7 iCal: {stats['ical']} \u00b7 {stats['size_kb']:.1f} KB)"
+    stat_desc = f"({t('cc_calendar.local_label')}: {stats['local']} \u00b7 iCal: {stats['ical']} \u00b7 {stats['size_kb']:.1f} KB)"
     m_box.add_kv(
         t("cc_calendar.stored_events"),
         f"{Txt(str(stats['total']), role='val')} {Txt(stat_desc, role='schema')}",
@@ -319,7 +319,4 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     )
     io_box.add_row(" ")
     cards.append(io_box)
-    if status_msg:
-        is_ok = bool(STATE.get("calendar", "cc_status_ok", True))
-        cards.append(FeedbackBox(t("cc_datetime.status_title"), is_ok, status_msg))
     return cards

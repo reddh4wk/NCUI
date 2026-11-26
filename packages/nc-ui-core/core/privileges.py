@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import time
 from core import probe
-from core.config import CONFIG_DIR
+from core.config import CONFIG_DIR, get_config_dir
 from core.i18n import t
 from core.resilience import (
     SBIN_DST_DIR,
@@ -165,11 +165,17 @@ def _current_user() -> str:
     return u if re.match(r"^[a-zA-Z_][a-zA-Z0-9_.-]*$", u) else "root"
 
 
+def _sudoers_state_path() -> str:
+    return os.path.join(get_config_dir(), "sudoers_state.json")
+
+
 def _read_sudoers_state() -> dict:
-    if not os.path.exists(SUDOERS_STATE_FILE):
+    p = _sudoers_state_path()
+    if not os.path.exists(p):
         return {}
     try:
-        data = json.load(open(SUDOERS_STATE_FILE, "r", encoding="utf-8"))
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -179,8 +185,9 @@ def _write_sudoers_state(action_id: str, installed: bool) -> None:
     st = _read_sudoers_state()
     st[action_id] = bool(installed)
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(SUDOERS_STATE_FILE, "w", encoding="utf-8") as f:
+        p = _sudoers_state_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
             json.dump(st, f, indent=2)
     except Exception:
         pass

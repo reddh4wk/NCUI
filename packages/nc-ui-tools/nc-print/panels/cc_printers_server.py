@@ -5,7 +5,7 @@ import re
 from core.i18n import t
 from core.privileges import build_privilege_modal_card, get_privileged_action
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, SelectPill, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, SelectPill, StateBadge, Txt
 from ui.markup import format_bytes_short
 from panels.cc_engine_printers import (
     feedback_cards,
@@ -62,7 +62,7 @@ def _policy_row_val(flag_name: str, is_on: bool, is_up: bool) -> str:
     )
 
 
-def _build_server_standard(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     cards = feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
     daemon = get_cups_daemon_state()
     srv = get_cups_server_settings()
@@ -80,7 +80,12 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
     )
 
     cups_badge = StateBadge(is_up, t("common.active"), t("cc_printers.stopped"))
-    if is_up:
+    has_sc = daemon.get("has_systemctl", True)
+    if not daemon["cups_installed"]:
+        cups_btns = Badge(t("ui.missing", p0="cups"), style="warn")
+    elif not has_sc:
+        cups_btns = Badge(t("ui.missing", p0="systemctl"), style="warn")
+    elif is_up:
         cups_btns = (
             f"{ActionBtn(t('cc_printers.restart_btn'), 'cc_prn:svc:restart:cups.service', tone='warn')} "
             f"{ActionBtn(t('cc_printers.stop_btn'), 'cc_prn:svc:stop:cups.service', tone='danger_soft')}"
@@ -93,14 +98,15 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
         f"{SelectPill(t('common.enabled'), 'cc_prn:svc:enable:cups.service', selected=daemon['service_enabled'])} "
         f"{SelectPill(t('common.disabled'), 'cc_prn:svc:disable:cups.service', selected=not daemon['service_enabled'])}"
     )
-    svc_box.add_kv(t("cc_printers.boot_autostart"), boot_pills)
+    svc_box.add_kv(t("cc_printers.boot_autostart"), boot_pills, requires=["systemctl"])
 
     avahi_badge = StateBadge(daemon["avahi_active"], t("common.active"), t("cc_printers.stopped"))
-    avahi_btn = (
-        ActionBtn(t("cc_printers.restart_btn"), "cc_prn:svc:restart:avahi-daemon.service", tone="neutral")
-        if daemon["avahi_active"]
-        else ActionBtn(t("cc_printers.start_btn"), "cc_prn:svc:start:avahi-daemon.service", tone="apply")
-    )
+    if not has_sc:
+        avahi_btn = Badge(t("ui.missing", p0="systemctl"), style="warn")
+    elif daemon["avahi_active"]:
+        avahi_btn = ActionBtn(t("cc_printers.restart_btn"), "cc_prn:svc:restart:avahi-daemon.service", tone="warn")
+    else:
+        avahi_btn = ActionBtn(t("cc_printers.start_btn"), "cc_prn:svc:start:avahi-daemon.service", tone="apply")
     svc_box.add_kv(t("cc_printers.kv_avahi_mdns"), avahi_badge, right_markup=avahi_btn, requires=["avahi-browse"])
 
     priv_svc = get_privileged_action("cups_service")
@@ -231,7 +237,3 @@ def _build_server_standard(cc_panel, canvas: Canvas) -> list:
 
     cards.append(pol_box)
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_server_standard(cc_panel, canvas)

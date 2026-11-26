@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -10,7 +11,7 @@ import sys
 import time
 from core import probe
 from core.completion import catalog_xkb_layouts, rank_candidates
-from core.config import CONFIG_DIR
+from core.config import CONFIG, get_config_dir
 from core.i18n import get_active_language, set_language, t
 from core.paths import find_bin
 from core.privileges import (
@@ -21,43 +22,139 @@ from core.privileges import (
 )
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, FeedbackBox, ProgressBar, SelectPill, Slider, StateBadge, Txt, start_inline_input
+from ui.kit import ActionBtn, Badge, Box, ProgressBar, SelectPill, Slider, StateBadge, Txt, set_feedback, start_inline_input
 
-NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
-MACROS_FILE = os.path.join(CONFIG_DIR, "macros.json")
-MACROS_EXPORT_FILE = os.path.join(CONFIG_DIR, "macros_export.json")
-SHORTCUTS_STORE_FILE = os.path.join(CONFIG_DIR, "shortcuts_store.json")
-MACRO_PLAY_BIN = find_bin("nc-macro-play") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "nc-macro-play")
 XKB_BASE_LST = "/usr/share/X11/xkb/rules/base.lst"
 
-DEFAULT_NIRI_SHORTCUTS = [
-    # Window defaults
-    {"id": "win_close", "cat": "window", "combo": "Mod+Q", "action": "close-window"},
-    {"id": "win_f_left", "cat": "window", "combo": "Mod+Left", "action": "focus-column-left"},
-    {"id": "win_f_right", "cat": "window", "combo": "Mod+Right", "action": "focus-column-right"},
-    {"id": "win_f_up", "cat": "window", "combo": "Mod+Up", "action": "focus-window-up"},
-    {"id": "win_f_down", "cat": "window", "combo": "Mod+Down", "action": "focus-window-down"},
-    {"id": "win_m_left", "cat": "window", "combo": "Mod+Shift+Left", "action": "move-column-left"},
-    {"id": "win_m_right", "cat": "window", "combo": "Mod+Shift+Right", "action": "move-column-right"},
-    {"id": "win_m_up", "cat": "window", "combo": "Mod+Shift+Up", "action": "move-window-up"},
-    {"id": "win_m_down", "cat": "window", "combo": "Mod+Shift+Down", "action": "move-window-down"},
-    {"id": "win_max", "cat": "window", "combo": "Mod+F", "action": "maximize-column"},
-    {"id": "win_full", "cat": "window", "combo": "Mod+Shift+F", "action": "fullscreen-window"},
-    {"id": "win_center", "cat": "window", "combo": "Mod+C", "action": "center-column"},
-    {"id": "win_float", "cat": "window", "combo": "Mod+V", "action": "toggle-window-floating"},
-    {"id": "win_shot", "cat": "window", "combo": "Print", "action": "screenshot"},
-    # System & Layout defaults
-    {"id": "sys_kbd_next", "cat": "system", "combo": "Mod+Space", "action": 'switch-layout "next"'},
-    {"id": "sys_nc_cc", "cat": "system", "combo": "Mod+I", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "popup" "settings"'},
-    {"id": "sys_nc_shot", "cat": "system", "combo": "Mod+Print", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "action" "capture" "repeat"'},
-    {"id": "sys_overlay", "cat": "system", "combo": "Mod+Shift+Slash", "action": 'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" "popup" "hotkeys"'},
-    {"id": "sys_quit", "cat": "system", "combo": "Mod+Shift+E", "action": "quit"},
-    # Apps defaults
-    {"id": "app_term", "cat": "apps", "combo": "Mod+Return", "action": 'spawn "ghostty"'},
-    {"id": "app_launch", "cat": "apps", "combo": "Mod+D", "action": 'spawn "walker"'},
-    {"id": "app_browser", "cat": "apps", "combo": "Mod+B", "action": 'spawn "brave"'},
-    {"id": "app_files", "cat": "apps", "combo": "Mod+N", "action": 'spawn "nautilus"'},
-]
+
+def _niri_config_file() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip() or os.path.expanduser("~/.config")
+    return os.path.join(os.path.expanduser(base), "niri", "config.kdl")
+
+
+def _macros_file() -> str:
+    return os.path.join(get_config_dir(), "macros.json")
+
+
+def _macros_export_file() -> str:
+    return os.path.join(get_config_dir(), "macros_export.json")
+
+
+def _shortcuts_store_file() -> str:
+    return os.path.join(get_config_dir(), "shortcuts_store.json")
+
+
+def _nc_ctl_cmd() -> str:
+    return find_bin("nc-ctl") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "nc-ctl")
+
+
+def _macro_play_bin() -> str:
+    return find_bin("nc-macro-play")
+
+
+def _desktop_exec_bin(desktop_id: str) -> str:
+    if not desktop_id:
+        return ""
+    xdg_data = os.environ.get("XDG_DATA_HOME", "").strip() or os.path.expanduser("~/.local/share")
+    for d in (
+        os.path.join(os.path.expanduser(xdg_data), "applications"),
+        "/usr/local/share/applications",
+        "/usr/share/applications",
+    ):
+        fp = os.path.join(d, desktop_id)
+        if not os.path.isfile(fp):
+            continue
+        try:
+            for ln in open(fp, "r", encoding="utf-8", errors="ignore"):
+                if ln.startswith("Exec="):
+                    cmd = ln.split("=", 1)[1].strip()
+                    toks = shlex.split(cmd) if cmd else []
+                    for tok in toks:
+                        if tok in ("env",) or "=" in tok:
+                            continue
+                        bn = os.path.basename(tok)
+                        if bn and probe.has_bin(bn):
+                            return bn
+                        break
+        except Exception:
+            pass
+    stem = desktop_id[:-8] if desktop_id.endswith(".desktop") else desktop_id
+    return stem if probe.has_bin(stem) else ""
+
+
+_DEFAULT_APPS_CACHE: dict[str, str] | None = None
+
+
+def _detect_default_apps() -> dict[str, str]:
+    global _DEFAULT_APPS_CACHE
+    if _DEFAULT_APPS_CACHE is not None:
+        return dict(_DEFAULT_APPS_CACHE)
+    pref_t = str((CONFIG.get("general") or {}).get("terminal", "auto") or "auto").strip()
+    env_t = str(os.environ.get("TERMINAL", "") or "").strip()
+    term = next(
+        (c for c in ([pref_t] if pref_t and pref_t != "auto" else []) + ([env_t] if env_t else []) + probe.list_installed_terminals() if c and probe.has_bin(c)),
+        "foot",
+    )
+    launch = next((b for b in ("walker", "fuzzel", "rofi", "wofi", "tofi", "bemenu-run") if probe.has_bin(b)), "fuzzel")
+
+    browser = ""
+    if probe.has_bin("xdg-settings"):
+        ok_b, out_b = probe.run_cmd(["xdg-settings", "get", "default-web-browser"], timeout=0.8)
+        if ok_b and out_b.strip():
+            browser = _desktop_exec_bin(out_b.strip().splitlines()[0])
+    if not browser and probe.has_bin("xdg-mime"):
+        ok_b, out_b = probe.run_cmd(["xdg-mime", "query", "default", "x-scheme-handler/https"], timeout=0.8)
+        if ok_b and out_b.strip():
+            browser = _desktop_exec_bin(out_b.strip().splitlines()[0])
+    if not browser:
+        browser = next((b for b in ("firefox", "chromium", "brave", "google-chrome", "vivaldi", "librewolf", "epiphany") if probe.has_bin(b)), "firefox")
+
+    files = ""
+    if probe.has_bin("xdg-mime"):
+        ok_f, out_f = probe.run_cmd(["xdg-mime", "query", "default", "inode/directory"], timeout=0.8)
+        if ok_f and out_f.strip():
+            files = _desktop_exec_bin(out_f.strip().splitlines()[0])
+    if not files:
+        files = next((b for b in ("nautilus", "thunar", "dolphin", "nemo", "pcmanfm", "pcmanfm-qt", "caja") if probe.has_bin(b)), "nautilus")
+
+    _DEFAULT_APPS_CACHE = {"term": term, "launch": launch, "browser": browser, "files": files}
+    return dict(_DEFAULT_APPS_CACHE)
+
+
+def _build_default_niri_shortcuts() -> list[dict]:
+    nc_ctl = _nc_ctl_cmd()
+    apps = _detect_default_apps()
+    return [
+        # Window defaults
+        {"id": "win_close", "cat": "window", "combo": "Mod+Q", "action": "close-window"},
+        {"id": "win_f_left", "cat": "window", "combo": "Mod+Left", "action": "focus-column-left"},
+        {"id": "win_f_right", "cat": "window", "combo": "Mod+Right", "action": "focus-column-right"},
+        {"id": "win_f_up", "cat": "window", "combo": "Mod+Up", "action": "focus-window-up"},
+        {"id": "win_f_down", "cat": "window", "combo": "Mod+Down", "action": "focus-window-down"},
+        {"id": "win_m_left", "cat": "window", "combo": "Mod+Shift+Left", "action": "move-column-left"},
+        {"id": "win_m_right", "cat": "window", "combo": "Mod+Shift+Right", "action": "move-column-right"},
+        {"id": "win_m_up", "cat": "window", "combo": "Mod+Shift+Up", "action": "move-window-up"},
+        {"id": "win_m_down", "cat": "window", "combo": "Mod+Shift+Down", "action": "move-window-down"},
+        {"id": "win_max", "cat": "window", "combo": "Mod+F", "action": "maximize-column"},
+        {"id": "win_full", "cat": "window", "combo": "Mod+Shift+F", "action": "fullscreen-window"},
+        {"id": "win_center", "cat": "window", "combo": "Mod+C", "action": "center-column"},
+        {"id": "win_float", "cat": "window", "combo": "Mod+V", "action": "toggle-window-floating"},
+        {"id": "win_shot", "cat": "window", "combo": "Print", "action": "screenshot"},
+        # System & Layout defaults
+        {"id": "sys_kbd_next", "cat": "system", "combo": "Mod+Space", "action": 'switch-layout "next"'},
+        {"id": "sys_nc_cc", "cat": "system", "combo": "Mod+I", "action": f'spawn "{nc_ctl}" "popup" "settings"'},
+        {"id": "sys_nc_shot", "cat": "system", "combo": "Mod+Print", "action": f'spawn "{nc_ctl}" "action" "capture" "repeat"'},
+        {"id": "sys_overlay", "cat": "system", "combo": "Mod+Shift+Slash", "action": f'spawn "{nc_ctl}" "popup" "hotkeys"'},
+        {"id": "sys_quit", "cat": "system", "combo": "Mod+Shift+E", "action": "quit"},
+        # Apps defaults
+        {"id": "app_term", "cat": "apps", "combo": "Mod+Return", "action": f'spawn "{apps["term"]}"'},
+        {"id": "app_launch", "cat": "apps", "combo": "Mod+D", "action": f'spawn "{apps["launch"]}"'},
+        {"id": "app_browser", "cat": "apps", "combo": "Mod+B", "action": f'spawn "{apps["browser"]}"'},
+        {"id": "app_files", "cat": "apps", "combo": "Mod+N", "action": f'spawn "{apps["files"]}"'},
+    ]
+
+
+DEFAULT_NIRI_SHORTCUTS = _build_default_niri_shortcuts()
 
 _MOD_KEYS = {
     "Super_L", "Super_R", "Meta_L", "Meta_R", "Hyper_L", "Hyper_R",
@@ -115,21 +212,9 @@ _FALLBACK_XKB_LAYOUTS = [
 
 _RUNTIME_REC = {"held": {}, "last_ts": 0.0, "steps": []}
 _XKB_LAYOUTS_CACHE: list[tuple[str, str]] | None = None
+_LOCALECTL_LAYOUT_CACHE: str | None = None
 _OPT_KBD: dict[str, tuple[float, int]] = {}
 _OPT_MOUSE: dict[str, tuple[float, float]] = {}
-
-
-from core.config import _update_toml_key_in_section
-
-# -*- coding: utf-8 -*-
-"""NC-UI Control Center — Mouse & Touchpad (`panels/cc_mouse.py`) [Single Backend / Dual View]"""
-
-
-NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
-_MSG = ""
-_ERR = ""
-
-
 
 
 def _load_all_xkb_layouts() -> list[tuple[str, str]]:
@@ -162,45 +247,64 @@ def _xkb_layout_names_map() -> dict[str, str]:
     return dict(_load_all_xkb_layouts())
 
 
+def _detect_system_xkb_layout() -> str:
+    global _LOCALECTL_LAYOUT_CACHE
+    env_l = os.environ.get("XKB_DEFAULT_LAYOUT", "").split(",")[0].strip()
+    if env_l:
+        return env_l
+    if _LOCALECTL_LAYOUT_CACHE is None:
+        detected = ""
+        if probe.has_bin("localectl"):
+            ok, out = probe.run_cmd(["localectl", "status"], timeout=1.0)
+            if ok and out:
+                known = _xkb_layout_names_map()
+                m_x11 = re.search(r"(?m)^\s*X11 Layout:\s*([^\s,]+)", out)
+                if m_x11 and m_x11.group(1).lower() not in ("(unset)", "n/a"):
+                    detected = m_x11.group(1).strip()
+                else:
+                    m_vc = re.search(r"(?m)^\s*VC Keymap:\s*([^\s]+)", out)
+                    if m_vc:
+                        cand = m_vc.group(1).strip()
+                        if cand.lower() not in ("(unset)", "n/a") and cand in known:
+                            detected = cand
+        _LOCALECTL_LAYOUT_CACHE = detected or "us"
+    return _LOCALECTL_LAYOUT_CACHE
+
+
 def _set_kbd_feedback(ok: bool, msg: str) -> None:
-    STATE.set("keyboard", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_kbd_feedback() -> dict:
-    fb = STATE.get("keyboard", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
+    set_feedback("keyboard", ok, msg)
 
 
 def _read_niri_kdl() -> str:
-    if not os.path.exists(NIRI_CONFIG_FILE):
+    cfg = _niri_config_file()
+    if not os.path.exists(cfg):
         return ""
     try:
-        with open(NIRI_CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(cfg, "r", encoding="utf-8") as f:
             return f.read()
     except Exception:
         return ""
 
 
 def _write_niri_kdl(new_text: str, auto_reload: bool = False) -> tuple[bool, str]:
+    cfg = _niri_config_file()
     try:
-        os.makedirs(os.path.dirname(NIRI_CONFIG_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
         old_text = _read_niri_kdl()
-        with open(NIRI_CONFIG_FILE, "w", encoding="utf-8") as f:
+        with open(cfg, "w", encoding="utf-8") as f:
             f.write(new_text)
         if probe.has_bin("niri"):
-            ok, _out, err = probe.run_cmd_full(["niri", "validate", "-c", NIRI_CONFIG_FILE], timeout=2.5)
+            ok, _out, err = probe.run_cmd_full(["niri", "validate", "-c", cfg], timeout=2.5)
             if not ok:
-                with open(NIRI_CONFIG_FILE, "w", encoding="utf-8") as f:
+                with open(cfg, "w", encoding="utf-8") as f:
                     f.write(old_text)
-                return False, f"niri validate failed: {err or 'syntax error'}"
-        with open(NIRI_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return False, t("cc_keyboard.niri_validate_err", p0=err or "syntax error")
+        with open(cfg, "r", encoding="utf-8") as f:
             if f.read() != new_text:
-                return False, "Read-back verification mismatch on config.kdl"
+                return False, t("cc_keyboard.niri_readback_err")
         if auto_reload and probe.has_bin("niri"):
             probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
-        return True, "Applied, validated & loaded in Niri" if auto_reload else "Applied & verified in config.kdl"
+        return True, t("cc_keyboard.niri_applied_reloaded") if auto_reload else t("cc_keyboard.niri_applied_saved")
     except Exception as e:
         return False, str(e)
 
@@ -226,16 +330,35 @@ def _norm_action_str(act: str) -> str:
     return re.sub(r"\s+", " ", str(act or "").strip().rstrip(";"))
 
 
+class _ActionLookupDict(dict):
+    """Dict matching any installed or legacy `.../nc-ctl` spawn path against canonical shortcuts."""
+
+    @staticmethod
+    def _canon(k: str) -> str:
+        return re.sub(r'^spawn\s+"[^"]*/(nc-ctl\b)', r'spawn "\1', str(k or ""))
+
+    def get(self, key, default=None):
+        if super().__contains__(key):
+            return super().get(key, default)
+        return super().get(self._canon(key), default)
+
+    def __contains__(self, key) -> bool:
+        return super().__contains__(key) or super().__contains__(self._canon(key))
+
+
 def _std_action_lookup() -> dict[str, dict]:
-    res = {}
+    res = _ActionLookupDict()
     by_id = {}
     for d in DEFAULT_NIRI_SHORTCUTS:
         res[_norm_action_str(d["action"])] = d
         by_id[d["id"]] = d
-    # Also recognize single-string nc-ctl command variants & legacy overlay
-    res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl popup settings"'] = by_id["sys_nc_cc"]
-    res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl action capture repeat"'] = by_id["sys_nc_shot"]
-    res['spawn "/usr/local/lib/nc-ui/bin/nc-ctl popup hotkeys"'] = by_id["sys_overlay"]
+    # Match canonical nc-ctl paths (both multi-arg & single-string forms) and legacy overlay
+    res['spawn "nc-ctl" "popup" "settings"'] = by_id["sys_nc_cc"]
+    res['spawn "nc-ctl popup settings"'] = by_id["sys_nc_cc"]
+    res['spawn "nc-ctl" "action" "capture" "repeat"'] = by_id["sys_nc_shot"]
+    res['spawn "nc-ctl action capture repeat"'] = by_id["sys_nc_shot"]
+    res['spawn "nc-ctl" "popup" "hotkeys"'] = by_id["sys_overlay"]
+    res['spawn "nc-ctl popup hotkeys"'] = by_id["sys_overlay"]
     res["show-hotkey-overlay"] = by_id["sys_overlay"]
     return res
 
@@ -265,7 +388,7 @@ def _collect_keyboard_state() -> dict:
         "repeat_rate": 25,
         "numlock": False,
         "track_layout": "global",
-        "layout": "it",
+        "layout": _detect_system_xkb_layout(),
         "variant": "",
         "options": "",
         "binds": [],
@@ -312,7 +435,8 @@ def _collect_keyboard_state() -> dict:
 
 def get_live_keyboard_layouts() -> dict:
     st = _collect_keyboard_state()
-    codes = [x.strip() for x in st["layout"].split(",") if x.strip()] or ["it"]
+    def_l = _detect_system_xkb_layout()
+    codes = [x.strip() for x in st["layout"].split(",") if x.strip()] or [def_l]
     names_map = _xkb_layout_names_map()
     cur_idx = int(STATE.get("keyboard", "active_layout_idx", 0) or 0)
     if probe.has_bin("niri"):
@@ -327,7 +451,7 @@ def get_live_keyboard_layouts() -> dict:
     if cur_idx < 0 or cur_idx >= len(codes):
         cur_idx = 0
     items = [{"idx": i, "code": c, "name": names_map.get(c, c.upper())} for i, c in enumerate(codes)]
-    cur_item = items[cur_idx] if items else {"idx": 0, "code": "it", "name": "Italian"}
+    cur_item = items[cur_idx] if items else {"idx": 0, "code": def_l, "name": names_map.get(def_l, def_l.upper())}
     return {"items": items, "codes": codes, "current_idx": cur_idx, "current": cur_item}
 
 
@@ -339,38 +463,39 @@ def switch_active_keyboard_layout(idx_or_code) -> tuple[bool, str]:
     elif str(idx_or_code) in codes:
         idx = codes.index(str(idx_or_code))
     else:
-        return False, f"Unknown layout: {idx_or_code}"
+        return False, t("cc_keyboard.unknown_layout", p0=idx_or_code)
     if idx < 0 or idx >= len(codes):
-        return False, "Layout index out of range"
+        return False, t("cc_keyboard.layout_out_of_range")
     STATE.set("keyboard", "active_layout_idx", idx)
     if probe.has_bin("niri"):
         probe.run_cmd(["niri", "msg", "action", "switch-layout", str(idx)], timeout=0.6)
-    return True, f"Switched layout to {codes[idx].upper()}"
+    return True, t("cc_keyboard.switched_layout", p0=codes[idx].upper())
 
 
 def cycle_active_keyboard_layout() -> tuple[bool, str]:
     info = get_live_keyboard_layouts()
     codes = info["codes"]
     if not codes:
-        return False, "No layouts"
+        return False, t("cc_keyboard.no_layouts")
     nxt = (info["current_idx"] + 1) % len(codes)
     STATE.set("keyboard", "active_layout_idx", nxt)
     if probe.has_bin("niri"):
         probe.run_cmd(["niri", "msg", "action", "switch-layout", "next"], timeout=0.6)
-    return True, f"Cycled layout to {codes[nxt].upper()}"
+    return True, t("cc_keyboard.cycled_layout", p0=codes[nxt].upper())
 
 
 def _update_kbd_kdl(key: str, value) -> tuple[bool, str]:
-    content = _read_niri_kdl() or 'input {\n    keyboard {\n        xkb {\n            layout "it"\n        }\n    }\n}\n'
+    def_l = _detect_system_xkb_layout()
+    content = _read_niri_kdl() or f'input {{\n    keyboard {{\n        xkb {{\n            layout "{def_l}"\n        }}\n    }}\n}}\n'
     inp_span = _find_block_span(content, "input")
     if not inp_span:
-        content = 'input {\n    keyboard {\n        xkb {\n            layout "it"\n        }\n    }\n}\n\n' + content
+        content = f'input {{\n    keyboard {{\n        xkb {{\n            layout "{def_l}"\n        }}\n    }}\n}}\n\n' + content
         inp_span = _find_block_span(content, "input")
 
     kbd_span = _find_block_span(content, "keyboard", inp_span[0], inp_span[1])
     if not kbd_span:
         pos = inp_span[0] + content[inp_span[0]:inp_span[1]].find("{") + 1
-        content = content[:pos] + '\n    keyboard {\n        xkb {\n            layout "it"\n        }\n    }' + content[pos:]
+        content = content[:pos] + f'\n    keyboard {{\n        xkb {{\n            layout "{def_l}"\n        }}\n    }}' + content[pos:]
         inp_span = _find_block_span(content, "input")
         kbd_span = _find_block_span(content, "keyboard", inp_span[0], inp_span[1])
 
@@ -379,7 +504,7 @@ def _update_kbd_kdl(key: str, value) -> tuple[bool, str]:
         xkb_span = _find_block_span(kbd_blk, "xkb")
         if not xkb_span:
             pos = kbd_blk.find("{") + 1
-            kbd_blk = kbd_blk[:pos] + '\n        xkb {\n            layout "it"\n        }' + kbd_blk[pos:]
+            kbd_blk = kbd_blk[:pos] + f'\n        xkb {{\n            layout "{def_l}"\n        }}' + kbd_blk[pos:]
             xkb_span = _find_block_span(kbd_blk, "xkb")
         xkb_blk = kbd_blk[xkb_span[0]:xkb_span[1]]
         pat = re.compile(rf'(?m)^([ \t]*{key}\s+)"[^"]*"')
@@ -413,7 +538,7 @@ def _update_kbd_kdl(key: str, value) -> tuple[bool, str]:
 def _update_niri_bind(combo: str, action: str = None, remove: bool = False, auto_reload: bool = True) -> tuple[bool, str]:
     clean_c = str(combo or "").strip()
     if not clean_c or any(ch in clean_c for ch in ("{", "}", "\n", " ")):
-        return False, "Invalid key combination"
+        return False, t("cc_keyboard.invalid_combo")
     content = _read_niri_kdl()
     binds_span = _find_block_span(content, "binds")
     if not binds_span:
@@ -426,7 +551,7 @@ def _update_niri_bind(combo: str, action: str = None, remove: bool = False, auto
     else:
         clean_a = str(action or "").strip().rstrip(";")
         if not clean_a:
-            return False, "Empty bind action"
+            return False, t("cc_keyboard.empty_bind_action")
         new_line = f"    {clean_c} {{ {clean_a}; }}\n"
         if pat.search(b_blk):
             b_blk = pat.sub(new_line, b_blk, count=1)
@@ -437,9 +562,10 @@ def _update_niri_bind(combo: str, action: str = None, remove: bool = False, auto
 
 
 def _load_shortcuts_store() -> dict:
-    if os.path.exists(SHORTCUTS_STORE_FILE):
+    sf = _shortcuts_store_file()
+    if os.path.exists(sf):
         try:
-            d = json.load(open(SHORTCUTS_STORE_FILE, "r", encoding="utf-8"))
+            d = json.load(open(sf, "r", encoding="utf-8"))
             if isinstance(d, dict):
                 return {"orphans": list(d.get("orphans", [])), "custom_actions": list(d.get("custom_actions", []))}
         except Exception:
@@ -448,9 +574,10 @@ def _load_shortcuts_store() -> dict:
 
 
 def _save_shortcuts_store(store: dict) -> None:
+    sf = _shortcuts_store_file()
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(SHORTCUTS_STORE_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(sf), exist_ok=True)
+        with open(sf, "w", encoding="utf-8") as f:
             json.dump(store, f, indent=2)
     except Exception:
         pass
@@ -527,7 +654,8 @@ def _start_restore_defaults(cc_panel, scope: str, is_it: bool = False) -> None:
             if not ok:
                 _set_kbd_feedback(False, msg)
                 return
-        probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
+        if probe.has_bin("niri"):
+            probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
         _set_kbd_feedback(True, t("cc_keyboard.restored_default_keybindings", p0=len(free_list), p1=scope))
         return
 
@@ -550,7 +678,8 @@ def _apply_conflict_overwrite(wizard: dict) -> None:
         if c.get("old_default_combo") and c["old_default_combo"] != c["combo"]:
             _update_niri_bind(c["old_default_combo"], remove=True, auto_reload=False)
         _update_niri_bind(c["combo"], c["default_action"], auto_reload=False)
-    probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
+    if probe.has_bin("niri"):
+        probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
     STATE.set("keyboard", "conflict_wizard", {})
     _set_kbd_feedback(True, t("cc_keyboard.restored_defaults_displaced_binds", p0=len(wizard.get('conflicts', [])) + len(wizard.get('free', []))))
 
@@ -567,10 +696,11 @@ def _advance_conflict_wizard(cc_panel, wizard: dict, mode_msg: str = "") -> None
     wizard["step"] = int(wizard.get("step", 0)) + 1
     if wizard["step"] >= len(wizard.get("conflicts", [])):
         _apply_wizard_free_items(wizard)
-        probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
+        if probe.has_bin("niri"):
+            probe.run_cmd(["niri", "msg", "action", "load-config-file"], timeout=1.5)
         STATE.set("keyboard", "conflict_wizard", {})
         _stop_capture(cc_panel)
-        _set_kbd_feedback(True, mode_msg or "Guided default restore completed")
+        _set_kbd_feedback(True, mode_msg or t("cc_keyboard.guided_restore_done"))
     else:
         STATE.set("keyboard", "conflict_wizard", wizard)
 
@@ -603,7 +733,8 @@ def _norm_macro(m: dict, idx: int = 0) -> dict:
 
 
 def _load_macros() -> list[dict]:
-    if not os.path.exists(MACROS_FILE):
+    mf = _macros_file()
+    if not os.path.exists(mf):
         return [
             _norm_macro({
                 "id": "mac_gg", "name": "GG Quick Chat", "combo": "",
@@ -619,7 +750,7 @@ def _load_macros() -> list[dict]:
             }, 0),
         ]
     try:
-        with open(MACROS_FILE, "r", encoding="utf-8") as f:
+        with open(mf, "r", encoding="utf-8") as f:
             data = json.load(f)
             return [_norm_macro(m, i) for i, m in enumerate(data)] if isinstance(data, list) else []
     except Exception:
@@ -627,9 +758,10 @@ def _load_macros() -> list[dict]:
 
 
 def _save_macros(macros: list[dict]) -> None:
+    mf = _macros_file()
     try:
-        os.makedirs(os.path.dirname(MACROS_FILE), exist_ok=True)
-        with open(MACROS_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(mf), exist_ok=True)
+        with open(mf, "w", encoding="utf-8") as f:
             json.dump(macros, f, indent=2)
     except Exception:
         pass
@@ -736,7 +868,10 @@ def _save_macro_draft_entry(d: dict) -> list[dict]:
     return macros
 
 
-def _ensure_uinput_or_request(cc_panel) -> bool:
+def _ensure_uinput_or_request(cc_panel, fb_ns: str = "keyboard") -> bool:
+    if not os.path.exists("/dev/uinput"):
+        set_feedback(fb_ns, False, t("cc_keyboard.uinput_missing"))
+        return False
     if os.access("/dev/uinput", os.W_OK):
         return True
     priv = get_privileged_action("uinput_unlock")
@@ -777,7 +912,7 @@ def _build_niri_action_from_draft(d: dict) -> str:
     if mode == "ncui":
         parts = d.get("nc_target", "popup network").split()
         args = " ".join(f'"{p}"' for p in parts)
-        return f'spawn "/usr/local/lib/nc-ui/bin/nc-ctl" {args}'
+        return f'spawn "{_nc_ctl_cmd()}" {args}'
     cmd_str = str(d.get("cmd", "") or "").strip()
     if not cmd_str:
         return ""
@@ -834,7 +969,7 @@ def _decode_gdk_event(event) -> tuple[str, list[str], str, int]:
 def _stop_capture(cc_panel) -> None:
     STATE.set("keyboard", "capture_mode", "")
     STATE.set("keyboard", "capture_preview", "")
-    if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+    if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
         cc_panel.shell.set_key_capture_grab(False)
 
 
@@ -845,7 +980,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         if keysym in ("F12", "Pause") and not mods and _is_macro_engine_running():
             _stop_active_macros()
             _set_kbd_feedback(True, t("cc_keyboard.panic_stopped_msg", p0=keysym))
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
         return False
@@ -859,7 +994,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             if now - prev_esc < 1.2:
                 _stop_capture(cc_panel)
                 _set_kbd_feedback(True, t("cc_keyboard.exited_live_key_inspector"))
-                if cc_panel.shell:
+                if cc_panel and cc_panel.shell:
                     cc_panel.shell.refresh_view()
                 return True
             STATE.set("keyboard", "esc_ts", now)
@@ -869,7 +1004,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             "combo": combo, "keysym": keysym, "keyval_hex": f"0x{event.keyval:04x}",
             "evdev": evdev_code, "mods": "+".join(mods) or "None",
         })
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
@@ -877,7 +1012,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         if keysym == "Escape" and not mods:
             _stop_capture(cc_panel)
             _set_kbd_feedback(True, t("cc_keyboard.key_capture_cancelled"))
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
 
@@ -887,7 +1022,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             if mod_lbl not in cur_m:
                 cur_m.append(mod_lbl)
             STATE.set("keyboard", "capture_preview", "+".join(cur_m) + "+...")
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
 
@@ -898,7 +1033,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
             from panels.cc_input_controllers import apply_captured_pad_key
             codes = resolve_combo_codes(combo, extra_code=evdev_code)
             apply_captured_pad_key(combo, codes)
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
         if cap_mode == "conflict_rebind":
@@ -911,8 +1046,8 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
                     _update_niri_bind(c["old_default_combo"], remove=True, auto_reload=False)
                 _update_niri_bind(c["combo"], c["default_action"], auto_reload=False)
                 _update_niri_bind(combo, c["current_action"], auto_reload=False)
-                _advance_conflict_wizard(cc_panel, wiz, f"Guided restore finished; rebound user action to {combo}")
-                if cc_panel.shell:
+                _advance_conflict_wizard(cc_panel, wiz, t("cc_keyboard.guided_restore_rebound", p0=combo))
+                if cc_panel and cc_panel.shell:
                     cc_panel.shell.refresh_view()
                 return True
 
@@ -922,7 +1057,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         else:
             _set_macro_draft(combo=combo)
         _set_kbd_feedback(True, t("cc_keyboard.captured_shortcut", p0=combo))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
@@ -941,7 +1076,7 @@ def handle_cc_keyboard_key_press(cc_panel, event) -> bool:
         _RUNTIME_REC["held"][evdev_code] = (len(steps) - 1, now)
         STATE.set("keyboard", "macro_sel_step", len(steps) - 1)
         _set_macro_draft(steps=list(steps))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
@@ -962,13 +1097,13 @@ def handle_cc_keyboard_key_release(cc_panel, event) -> bool:
         if 0 <= idx < len(_RUNTIME_REC["steps"]):
             _RUNTIME_REC["steps"][idx]["hold_ms"] = hold_ms
             _set_macro_draft(steps=list(_RUNTIME_REC["steps"]))
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
         return True
 
     if cap_mode in ("shortcut_combo", "macro_trigger", "conflict_rebind", "ctrl_bind"):
         STATE.set("keyboard", "capture_preview", "")
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
@@ -984,15 +1119,8 @@ def _finish_macro_recording(cc_panel) -> None:
     _stop_capture(cc_panel)
     _set_macro_draft(steps=list(_RUNTIME_REC["steps"]))
     _set_kbd_feedback(True, t("cc_keyboard.recorded_keystrokes", p0=len(_RUNTIME_REC['steps'])))
-    if cc_panel.shell:
+    if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
-
-
-def _feedback_box(is_it: bool = False) -> list:
-    fb = _get_kbd_feedback()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_keyboard.keyboard_configuration_status"), bool(fb["ok"]), fb["msg"])]
 
 
 def compile_macro_timeline(steps: list, timing_mode: str, fixed_ms: int, speed: float) -> tuple[list[dict], int]:
@@ -1085,44 +1213,67 @@ def _text_to_macro_steps(text: str, existing_count: int = 0) -> list[dict]:
 
 
 def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
-    if not uri.startswith("cc_kbd:"):
+    if not isinstance(uri, str) or not uri.startswith("cc_kbd:"):
         return False
     act = uri[len("cc_kbd:"):]
     st = _collect_keyboard_state()
 
     if act.startswith("rate:"):
-        rate = max(10, min(100, int(round(float(act.split(":", 1)[1])))))
+        try:
+            rate = max(10, min(100, int(round(float(act.split(":", 1)[1])))))
+        except (ValueError, TypeError, OverflowError):
+            return False
         _OPT_KBD["repeat_rate"] = (time.monotonic(), rate)
         probe.enqueue_latest("kbd_kdl_rate", lambda r=rate: _update_kbd_kdl("repeat-rate", r), debounce_ms=160)
         if cc_panel:
             cc_panel.request_throttled_refresh()
         return True
     elif act.startswith("delay:"):
-        delay = max(150, min(1000, int(round(float(act.split(":", 1)[1])))))
+        try:
+            delay = max(150, min(1000, int(round(float(act.split(":", 1)[1])))))
+        except (ValueError, TypeError, OverflowError):
+            return False
         _OPT_KBD["repeat_delay"] = (time.monotonic(), delay)
         probe.enqueue_latest("kbd_kdl_delay", lambda d=delay: _update_kbd_kdl("repeat-delay", d), debounce_ms=160)
         if cc_panel:
             cc_panel.request_throttled_refresh()
         return True
     elif act.startswith("numlock:"):
-        ok, msg = _update_kbd_kdl("numlock", act.split(":", 1)[1] == "on")
+        nl = act.split(":", 1)[1]
+        if nl not in ("on", "off"):
+            return False
+        ok, msg = _update_kbd_kdl("numlock", nl == "on")
         _set_kbd_feedback(ok, msg)
     elif act.startswith("track:"):
-        ok, msg = _update_kbd_kdl("track-layout", act.split(":", 1)[1])
+        trk = act.split(":", 1)[1]
+        if trk not in ("global", "window"):
+            return False
+        ok, msg = _update_kbd_kdl("track-layout", trk)
         _set_kbd_feedback(ok, msg)
     elif act.startswith("preset:"):
-        r, d = (50, 200) if act.endswith(":fast") else (25, 600)
+        p_nm = act.split(":", 1)[1]
+        if p_nm not in ("fast", "std"):
+            return False
+        r, d = (50, 200) if p_nm == "fast" else (25, 600)
         ok, msg = _update_kbd_kdl("repeat-rate", r)
         if ok:
             ok, msg = _update_kbd_kdl("repeat-delay", d)
         _set_kbd_feedback(ok, msg)
     elif act == "validate":
-        ok, out, err = probe.run_cmd_full(["niri", "validate", "-c", NIRI_CONFIG_FILE], timeout=2.5)
-        _set_kbd_feedback(ok, out or err or ("KDL syntax valid" if ok else "Validation failed"))
+        if not probe.has_bin("niri"):
+            _set_kbd_feedback(False, t("cc_keyboard.niri_missing"))
+        else:
+            ok, out, err = probe.run_cmd_full(["niri", "validate", "-c", _niri_config_file()], timeout=2.5)
+            _set_kbd_feedback(ok, out or err or (t("cc_keyboard.niri_kdl_valid") if ok else t("cc_keyboard.niri_kdl_invalid")))
     elif act == "reload_niri":
-        ok, out, err = probe.run_cmd_full(["niri", "msg", "action", "load-config-file"], timeout=2.5)
-        _set_kbd_feedback(ok, "Niri config reloaded" if ok else (err or out or "Reload failed"))
+        if not probe.has_bin("niri"):
+            _set_kbd_feedback(False, t("cc_keyboard.niri_missing"))
+        else:
+            ok, out, err = probe.run_cmd_full(["niri", "msg", "action", "load-config-file"], timeout=2.5)
+            _set_kbd_feedback(ok, t("cc_keyboard.niri_reloaded") if ok else (err or out or t("cc_keyboard.niri_reload_failed")))
     elif act == "test_inline":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_kbd_test_inline",
             shell=cc_panel.shell,
@@ -1135,9 +1286,11 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         return True
     elif act.startswith("cap_start:"):
         mode = act.split(":", 1)[1]
+        if mode not in ("inspector", "shortcut_combo", "macro_trigger", "conflict_rebind", "ctrl_bind"):
+            return False
         STATE.set("keyboard", "capture_mode", mode)
         STATE.set("keyboard", "capture_preview", "")
-        if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+        if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
             cc_panel.shell.set_key_capture_grab(True)
     elif act == "cap_stop":
         _stop_capture(cc_panel)
@@ -1146,26 +1299,38 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         if insp.get("combo"):
             _set_bind_draft(combo=insp["combo"])
             _stop_capture(cc_panel)
-            cc_panel.set_subtab("shortcuts")
+            if cc_panel:
+                cc_panel.set_subtab("shortcuts")
             _set_kbd_feedback(True, t("cc_keyboard.loaded_into_shortcut_builder", p0=insp['combo']))
     elif act == "launch_wev":
-        probe.open_terminal(["bash", "-c", "wev || read -p 'wev not installed. Enter...'"])
-        return True
+        if not probe.has_bin("wev"):
+            _set_kbd_feedback(False, t("cc_keyboard.probe_missing", p0="wev"))
+        elif probe.open_terminal(["wev"]):
+            return True
+        else:
+            _set_kbd_feedback(False, t("cc_keyboard.no_terminal_found"))
     elif act == "launch_libinput":
-        from ui.embedded_tui import start_panel_terminal
+        if not probe.has_bin("libinput"):
+            _set_kbd_feedback(False, t("cc_keyboard.probe_missing", p0="libinput"))
+        else:
+            from ui.embedded_tui import start_panel_terminal
 
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0="libinput debug-events"),
-            ["sudo", "libinput", "debug-events"],
-        )
-        return True
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0="libinput debug-events"),
+                ["sudo", "libinput", "debug-events"],
+            )
+            return True
     elif act == "launch_xkbcli":
-        probe.open_terminal(["bash", "-c", "xkbcli interactive-wayland || read -p 'Enter...'"])
-        return True
+        if not probe.has_bin("xkbcli"):
+            _set_kbd_feedback(False, t("cc_keyboard.probe_missing", p0="xkbcli"))
+        elif probe.open_terminal(["xkbcli", "interactive-wayland"]):
+            return True
+        else:
+            _set_kbd_feedback(False, t("cc_keyboard.no_terminal_found"))
     elif act == "localectl":
         ok, out, err = probe.run_cmd_full(["localectl", "status"], timeout=2.0)
-        _set_kbd_feedback(ok, (out.splitlines()[0] if out else err) or "localectl queried")
+        _set_kbd_feedback(ok, (out.splitlines()[0] if out else err) or t("cc_keyboard.localectl_queried"))
 
     # --- Active Layouts & Live XKB Search (Punto B) ---
     elif act == "cycle_layout":
@@ -1175,13 +1340,15 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         ok, msg = switch_active_keyboard_layout(act.split(":", 1)[1])
         _set_kbd_feedback(ok, msg)
     elif act == "layout_search_open":
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur_q = str(STATE.get("keyboard", "layout_query", "") or "")
         def _commit_raw_xkb(txt: str) -> None:
             val = str(txt or "").strip()
             STATE.set("keyboard", "layout_query", "")
             if not val:
                 return
-            cur = [x.strip() for x in _collect_keyboard_state()["layout"].split(",") if x.strip()] or ["it"]
+            cur = [x.strip() for x in _collect_keyboard_state()["layout"].split(",") if x.strip()] or [_detect_system_xkb_layout()]
             ranked = rank_candidates(catalog_xkb_layouts(exclude=set(cur)), val, limit=1)
             chosen = ranked[0][0] if ranked else val.lower()
             if chosen and chosen not in cur:
@@ -1204,26 +1371,31 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "layout_query", "")
     elif act.startswith("add_layout:"):
         code = act.split(":", 1)[1]
-        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or ["it"]
+        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or [_detect_system_xkb_layout()]
         if code not in cur:
             cur.append(code)
             ok, msg = _update_kbd_kdl("layout", ",".join(cur))
             _set_kbd_feedback(ok, t("cc_keyboard.added_to_active_layouts", p0=code.upper(), p1=msg))
         STATE.set("keyboard", "layout_query", "")
-        if cc_panel.shell and cc_panel.shell.prompt_bar.get_visible():
+        if cc_panel and cc_panel.shell and cc_panel.shell.prompt_bar.get_visible():
             cc_panel.shell.hide_prompt()
     elif act.startswith("rem_layout:"):
         code = act.split(":", 1)[1]
-        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or ["it"]
+        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or [_detect_system_xkb_layout()]
         if code in cur and len(cur) > 1:
             cur.remove(code)
             ok, msg = _update_kbd_kdl("layout", ",".join(cur))
             STATE.set("keyboard", "active_layout_idx", 0)
             _set_kbd_feedback(ok, t("cc_keyboard.removed", p0=code.upper(), p1=msg))
     elif act.startswith("move_layout:"):
-        _, s_i, s_d = act.split(":", 2)
-        idx, delta = int(s_i), int(s_d)
-        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or ["it"]
+        parts = act.split(":", 2)
+        if len(parts) != 3:
+            return False
+        try:
+            idx, delta = int(parts[1]), int(parts[2])
+        except (ValueError, TypeError):
+            return False
+        cur = [x.strip() for x in st["layout"].split(",") if x.strip()] or [_detect_system_xkb_layout()]
         nxt = idx + delta
         if 0 <= idx < len(cur) and 0 <= nxt < len(cur):
             cur[idx], cur[nxt] = cur[nxt], cur[idx]
@@ -1263,7 +1435,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "capture_mode", "macro_rec")
         STATE.set("keyboard", "macro_sel_step", 0)
         _set_macro_draft(steps=[])
-        if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+        if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
             cc_panel.shell.set_key_capture_grab(True)
     elif act == "macro_rec_append":
         d = _get_macro_draft()
@@ -1271,7 +1443,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         _RUNTIME_REC["steps"] = [dict(s) for s in d["steps"]]
         _RUNTIME_REC["last_ts"] = time.monotonic()
         STATE.set("keyboard", "capture_mode", "macro_rec")
-        if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+        if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
             cc_panel.shell.set_key_capture_grab(True)
     elif act == "macro_rec_stop":
         _finish_macro_recording(cc_panel)
@@ -1283,6 +1455,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
     elif act == "sandbox_clear":
         STATE.set("keyboard", "sandbox_output", "")
     elif act == "sandbox_inline":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_mac_sandbox",
             shell=cc_panel.shell,
@@ -1302,8 +1476,14 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         if pk in ("F12", "Pause"):
             _set_macro_draft(panic_key=pk)
     elif act.startswith("macro_countdown:"):
-        _set_macro_draft(countdown_s=max(0, min(15, int(act.split(":", 1)[1]))))
+        try:
+            cd = max(0, min(15, int(act.split(":", 1)[1])))
+        except (ValueError, TypeError):
+            return False
+        _set_macro_draft(countdown_s=cd)
     elif act == "macro_inline_name":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_mac_name",
             shell=cc_panel.shell,
@@ -1314,6 +1494,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act == "macro_inline_combo":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_mac_combo",
             shell=cc_panel.shell,
@@ -1344,13 +1526,31 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
     elif act.startswith("macro_tmode:"):
         _set_macro_draft(timing_mode=act.split(":", 1)[1])
     elif act.startswith("macro_fixedms:"):
-        _set_macro_draft(fixed_delay_ms=int(act.split(":", 1)[1]))
+        try:
+            fms = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
+        _set_macro_draft(fixed_delay_ms=fms)
     elif act.startswith("macro_speed:"):
-        _set_macro_draft(speed_mult=float(act.split(":", 1)[1]))
+        try:
+            spd = float(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
+        if not math.isfinite(spd):
+            return False
+        _set_macro_draft(speed_mult=spd)
     elif act.startswith("macro_rep:"):
-        _, rmode, rcnt = act.split(":", 2)
-        _set_macro_draft(repeat_mode=rmode, repeat_count=int(rcnt))
+        parts = act.split(":", 2)
+        if len(parts) != 3:
+            return False
+        try:
+            rcnt = int(parts[2])
+        except (ValueError, TypeError):
+            return False
+        _set_macro_draft(repeat_mode=parts[1], repeat_count=rcnt)
     elif act == "macro_inline_rep":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_mac_rep",
             shell=cc_panel.shell,
@@ -1373,6 +1573,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "macro_sel_step", 0)
         _set_macro_draft(steps=[])
     elif act == "macro_inline_text":
+        if not cc_panel or not cc_panel.shell:
+            return False
         def _commit_text_steps(txt: str) -> None:
             val = str(txt or "")
             if not val:
@@ -1395,13 +1597,22 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act.startswith("step_select:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         steps = _get_macro_draft()["steps"]
         if steps:
             STATE.set("keyboard", "macro_sel_step", max(0, min(len(steps) - 1, idx)))
     elif act.startswith("step_nudge:"):
-        _, s_i, fld, s_delta = act.split(":", 3)
-        idx, delta = int(s_i), int(s_delta)
+        parts = act.split(":", 3)
+        if len(parts) != 4:
+            return False
+        try:
+            idx, delta = int(parts[1]), int(parts[3])
+        except (ValueError, TypeError):
+            return False
+        fld = parts[2]
         steps = [dict(s) for s in _get_macro_draft()["steps"]]
         if 0 <= idx < len(steps) and fld in ("delay_ms", "hold_ms"):
             lo = 0 if fld == "delay_ms" else 10
@@ -1409,16 +1620,24 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             STATE.set("keyboard", "macro_sel_step", idx)
             _set_macro_draft(steps=steps)
     elif act.startswith("step_set_timing:"):
-        _, s_i, s_del, s_hold = act.split(":", 3)
-        idx = int(s_i)
+        parts = act.split(":", 3)
+        if len(parts) != 4:
+            return False
+        try:
+            idx, d_val, h_val = int(parts[1]), int(parts[2]), int(parts[3])
+        except (ValueError, TypeError):
+            return False
         steps = [dict(s) for s in _get_macro_draft()["steps"]]
         if 0 <= idx < len(steps):
-            steps[idx]["delay_ms"] = max(0, min(10000, int(s_del)))
-            steps[idx]["hold_ms"] = max(10, min(10000, int(s_hold)))
+            steps[idx]["delay_ms"] = max(0, min(10000, d_val))
+            steps[idx]["hold_ms"] = max(10, min(10000, h_val))
             STATE.set("keyboard", "macro_sel_step", idx)
             _set_macro_draft(steps=steps)
     elif act.startswith("step_dup:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         steps = [dict(s) for s in _get_macro_draft()["steps"]]
         if 0 <= idx < len(steps):
             clone = dict(steps[idx])
@@ -1428,6 +1647,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             STATE.set("keyboard", "macro_sel_step", idx + 1)
             _set_macro_draft(steps=steps)
     elif act == "step_inline_add":
+        if not cc_panel or not cc_panel.shell:
+            return False
         def _commit_step_add(txt: str) -> None:
             val = str(txt or "").strip()
             if not val:
@@ -1451,7 +1672,12 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act.startswith("step_inline_edit:"):
-        idx = int(act.split(":", 1)[1])
+        if not cc_panel or not cc_panel.shell:
+            return False
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         steps = _get_macro_draft()["steps"]
         if 0 <= idx < len(steps):
             s = steps[idx]
@@ -1475,8 +1701,13 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             )
             return True
     elif act.startswith("step_move:"):
-        _, s_i, s_d = act.split(":", 2)
-        idx, delta = int(s_i), int(s_d)
+        parts = act.split(":", 2)
+        if len(parts) != 3:
+            return False
+        try:
+            idx, delta = int(parts[1]), int(parts[2])
+        except (ValueError, TypeError):
+            return False
         steps = _get_macro_draft()["steps"]
         nxt = idx + delta
         if 0 <= idx < len(steps) and 0 <= nxt < len(steps):
@@ -1484,7 +1715,10 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             STATE.set("keyboard", "macro_sel_step", nxt)
             _set_macro_draft(steps=steps)
     elif act.startswith("step_del:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         steps = _get_macro_draft()["steps"]
         if 0 <= idx < len(steps):
             steps.pop(idx)
@@ -1496,15 +1730,19 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         _set_kbd_feedback(True, t("cc_keyboard.saved_macro_steps", p0=d['name'], p1=len(d['steps'])))
     elif act in ("macro_play_draft", "macro_run_engine"):
         d = _get_macro_draft()
-        if _ensure_uinput_or_request(cc_panel):
+        mp_bin = _macro_play_bin()
+        if not mp_bin:
+            _set_kbd_feedback(False, t("cc_keyboard.macro_play_missing"))
+        elif _ensure_uinput_or_request(cc_panel):
             _save_macro_draft_entry(d)
-            probe.spawn_bg([MACRO_PLAY_BIN, d["id"]])
+            probe.spawn_bg([mp_bin, d["id"]])
             _set_kbd_feedback(True, t("cc_keyboard.replaying_macro_via_nc_macro_play", p0=d['name']))
     elif act == "macro_bind_draft":
         d = _get_macro_draft()
         if d["combo"]:
             _save_macro_draft_entry(d)
-            ok, msg = _update_niri_bind(d["combo"], f'spawn "{MACRO_PLAY_BIN}" "{d["id"]}"')
+            mp_cmd = _macro_play_bin() or "nc-macro-play"
+            ok, msg = _update_niri_bind(d["combo"], f'spawn "{mp_cmd}" "{d["id"]}"')
             _set_kbd_feedback(ok, msg)
     elif act == "macro_unbind_draft":
         d = _get_macro_draft()
@@ -1512,32 +1750,48 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             ok, msg = _update_niri_bind(d["combo"], remove=True)
             _set_kbd_feedback(ok, msg)
     elif act.startswith("macro_load:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         macros = _load_macros()
         if 0 <= idx < len(macros):
             _RUNTIME_REC["steps"].clear()
             STATE.set("keyboard", "macro_sel_step", 0)
             STATE.set("keyboard", "macro_draft", macros[idx])
     elif act.startswith("run_macro:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         macros = _load_macros()
         if 0 <= idx < len(macros):
             m = macros[idx]
-            if _ensure_uinput_or_request(cc_panel):
-                probe.spawn_bg([MACRO_PLAY_BIN, m["id"]])
+            mp_bin = _macro_play_bin()
+            if not mp_bin:
+                _set_kbd_feedback(False, t("cc_keyboard.macro_play_missing"))
+            elif _ensure_uinput_or_request(cc_panel):
+                probe.spawn_bg([mp_bin, m["id"]])
                 _set_kbd_feedback(True, t("cc_keyboard.running_macro", p0=m['name']))
     elif act.startswith("bind_macro:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         macros = _load_macros()
         if 0 <= idx < len(macros):
             m = macros[idx]
             if not m["combo"]:
                 _set_kbd_feedback(False, t("cc_keyboard.load_macro_and_capture_a_trigger_s"))
             else:
-                ok, msg = _update_niri_bind(m["combo"], f'spawn "{MACRO_PLAY_BIN}" "{m["id"]}"')
+                mp_cmd = _macro_play_bin() or "nc-macro-play"
+                ok, msg = _update_niri_bind(m["combo"], f'spawn "{mp_cmd}" "{m["id"]}"')
                 _set_kbd_feedback(ok, msg)
     elif act.startswith("del_macro:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         macros = _load_macros()
         if 0 <= idx < len(macros):
             macros.pop(idx)
@@ -1547,6 +1801,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
     elif act.startswith("lib_flt:"):
         STATE.set("keyboard", "macro_lib_filter", act.split(":", 1)[1])
     elif act == "lib_search_open":
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur_q = str(STATE.get("keyboard", "macro_lib_query", "") or "")
         start_inline_input(
             entry_id="cc_kbd_lib_flt",
@@ -1563,17 +1819,18 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
     elif act == "macro_export":
         macros = _load_macros()
         payload = json.dumps(macros, indent=2)
+        exp_f = _macros_export_file()
         try:
-            os.makedirs(os.path.dirname(MACROS_EXPORT_FILE), exist_ok=True)
-            with open(MACROS_EXPORT_FILE, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(exp_f), exist_ok=True)
+            with open(exp_f, "w", encoding="utf-8") as f:
                 f.write(payload)
-            ok_rb = open(MACROS_EXPORT_FILE, "r", encoding="utf-8").read() == payload
+            ok_rb = open(exp_f, "r", encoding="utf-8").read() == payload
             if ok_rb and probe.has_bin("wl-copy"):
                 try:
                     subprocess.run(["wl-copy"], input=payload.encode("utf-8"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5)
                 except Exception:
                     pass
-            _set_kbd_feedback(ok_rb, t("cc_keyboard.exported_macros_msg", p0=len(macros), p1=MACROS_EXPORT_FILE))
+            _set_kbd_feedback(ok_rb, t("cc_keyboard.exported_macros_msg", p0=len(macros), p1=exp_f))
         except Exception as e:
             _set_kbd_feedback(False, str(e))
 
@@ -1591,7 +1848,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "conflict_wizard", wiz)
         STATE.set("keyboard", "capture_mode", "conflict_rebind")
         STATE.set("keyboard", "capture_preview", "")
-        if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+        if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
             cc_panel.shell.set_key_capture_grab(True)
     elif act == "conflict_step_orphan":
         wiz = dict(STATE.get("keyboard", "conflict_wizard", {}) or {})
@@ -1603,7 +1860,7 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             if c.get("old_default_combo") and c["old_default_combo"] != c["combo"]:
                 _update_niri_bind(c["old_default_combo"], remove=True, auto_reload=False)
             _update_niri_bind(c["combo"], c["default_action"], auto_reload=False)
-            _advance_conflict_wizard(cc_panel, wiz, "Guided default restore completed; moved user bind to Orphans")
+            _advance_conflict_wizard(cc_panel, wiz, t("cc_keyboard.guided_restore_orphaned"))
     elif act == "conflict_step_skip":
         wiz = dict(STATE.get("keyboard", "conflict_wizard", {}) or {})
         _advance_conflict_wizard(cc_panel, wiz)
@@ -1611,6 +1868,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "conflict_wizard", {})
         _stop_capture(cc_panel)
     elif act == "bind_inline_combo":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_bind_combo",
             shell=cc_panel.shell,
@@ -1621,6 +1880,8 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         )
         return True
     elif act == "bind_flt_open":
+        if not cc_panel or not cc_panel.shell:
+            return False
         start_inline_input(
             entry_id="cc_bind_flt",
             shell=cc_panel.shell,
@@ -1635,7 +1896,11 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "shortcut_query", "")
         STATE.set("keyboard", "bind_page", 0)
     elif act.startswith("bind_page:"):
-        STATE.set("keyboard", "bind_page", max(0, int(act.split(":", 1)[1])))
+        try:
+            pg = max(0, int(act.split(":", 1)[1]))
+        except (ValueError, TypeError):
+            return False
+        STATE.set("keyboard", "bind_page", pg)
     elif act == "bind_new":
         STATE.set("keyboard", "bind_draft", {})
         _stop_capture(cc_panel)
@@ -1670,10 +1935,13 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             _set_bind_draft(combo="", mode="standard", std_cat=d["cat"], std_act=d["action"])
             STATE.set("keyboard", "capture_mode", "shortcut_combo")
             STATE.set("keyboard", "capture_preview", "")
-            if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+            if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
                 cc_panel.shell.set_key_capture_grab(True)
     elif act.startswith("bind_orphan:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         by_norm = {_norm_action_str(b["action"]) for b in st["binds"]}
         orphans = [o for o in _load_shortcuts_store()["orphans"] if _norm_action_str(o.get("action")) not in by_norm]
         if 0 <= idx < len(orphans):
@@ -1683,16 +1951,21 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
                 _set_bind_draft(mode="standard", std_act=o["action"])
             STATE.set("keyboard", "capture_mode", "shortcut_combo")
             STATE.set("keyboard", "capture_preview", "")
-            if cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
+            if cc_panel and cc_panel.shell and hasattr(cc_panel.shell, "set_key_capture_grab"):
                 cc_panel.shell.set_key_capture_grab(True)
     elif act.startswith("del_orphan:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         by_norm = {_norm_action_str(b["action"]) for b in st["binds"]}
         store = _load_shortcuts_store()
         orphans = [o for o in store["orphans"] if _norm_action_str(o.get("action")) not in by_norm]
         if 0 <= idx < len(orphans):
             _remove_orphan_action(orphans[idx]["action"])
     elif act == "bind_prompt_cmd":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt("cc_kbd_bind_cmd", t("cc_keyboard.command_app_to_launch_e_g_ghostty"), _get_bind_draft()["cmd"], title=t("cc_keyboard.custom_launch_command"), required=True, completion="shell_cmd")
         return True
     elif act.startswith("bind_nc:"):
@@ -1716,7 +1989,10 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
                 STATE.set("keyboard", "bind_draft", {})
             _set_kbd_feedback(ok, msg)
     elif act.startswith("bind_edit:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         if 0 <= idx < len(st["binds"]):
             b = st["binds"][idx]
             a_str = b["action"]
@@ -1735,7 +2011,10 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
             else:
                 _set_bind_draft(combo=b["combo"], mode="standard", std_cat="window", std_act=a_str, edit_orig=b["combo"])
     elif act.startswith("unbind:"):
-        idx = int(act.split(":", 1)[1])
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
         if 0 <= idx < len(st["binds"]):
             b = st["binds"][idx]
             _add_orphan_action(b["action"], prev_combo=b["combo"])
@@ -1745,10 +2024,15 @@ def handle_cc_keyboard_link(cc_panel, uri: str) -> bool:
         STATE.set("keyboard", "bind_filter", act.split(":", 1)[1])
         STATE.set("keyboard", "bind_page", 0)
     elif act.startswith("del_bind:"):
-        ok, msg = _update_niri_bind(act.split(":", 1)[1], remove=True, auto_reload=True)
+        combo = act.split(":", 1)[1]
+        if not combo:
+            return False
+        ok, msg = _update_niri_bind(combo, remove=True, auto_reload=True)
         _set_kbd_feedback(ok, msg)
+    else:
+        return False
 
-    if cc_panel.shell:
+    if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
     return True
 
@@ -1828,51 +2112,60 @@ def handle_cc_keyboard_prompt(cc_panel, action_id: str, text: str) -> bool:
     return False
 
 
-def _mouse_read_kdl() -> str:
-    if not os.path.exists(NIRI_CONFIG_FILE):
-        return ""
+def _proc_bit_has(hex_line: str, bit_num: int) -> bool:
+    if not hex_line:
+        return False
+    words = hex_line.strip().split()
+    word_idx = bit_num // 64
+    bit_pos = bit_num % 64
+    if word_idx >= len(words):
+        return False
     try:
-        return open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read()
-    except Exception:
-        return ""
+        return bool((int(words[len(words) - 1 - word_idx], 16) >> bit_pos) & 1)
+    except ValueError:
+        return False
 
 
-def _mouse_write_kdl(new_text: str) -> tuple[bool, str]:
+def detect_touchpads() -> list[dict]:
+    """Scan `/proc/bus/input/devices` for real touchpads (excluding mice, touchscreens, styluses, and gamepads)."""
+    if not os.path.exists("/proc/bus/input/devices"):
+        return []
     try:
-        os.makedirs(os.path.dirname(NIRI_CONFIG_FILE), exist_ok=True)
-        old_text = _mouse_read_kdl()
-        with open(NIRI_CONFIG_FILE, "w", encoding="utf-8") as f:
-            f.write(new_text)
-        if probe.has_bin("niri"):
-            ok, _out, err = probe.run_cmd_full(["niri", "validate", "-c", NIRI_CONFIG_FILE], timeout=2.5)
-            if not ok:
-                with open(NIRI_CONFIG_FILE, "w", encoding="utf-8") as f:
-                    f.write(old_text)
-                return False, f"niri validate failed: {err or 'syntax error'}"
-        if _mouse_read_kdl() != new_text:
-            return False, "Read-back mismatch on config.kdl"
-        probe.spawn_bg(["niri", "msg", "action", "load-config-file"])
-        return True, "Updated & validated in ~/.config/niri/config.kdl"
-    except Exception as e:
-        return False, str(e)
-
-
-def _mouse_find_block_span(text: str, block_name: str, start: int = 0, end: int | None = None) -> tuple[int, int] | None:
-    sub = text[start:end]
-    m = re.search(rf"(?m)^[ \t]*{re.escape(block_name)}\s*\{{", sub)
-    if not m:
-        return None
-    brace_open = start + m.end() - 1
-    depth = 0
-    limit = end if end is not None else len(text)
-    for i in range(brace_open, limit):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return start + m.start(), i + 1
-    return None
+        txt = open("/proc/bus/input/devices", "r", encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return []
+    tps: list[dict] = []
+    for blk in txt.strip().split("\n\n"):
+        name, handlers, ev, key, prop = "", [], "", "", ""
+        for ln in blk.splitlines():
+            if ln.startswith("N: Name="):
+                name = ln.split("=", 1)[1].strip().strip('"')
+            elif ln.startswith("H: Handlers="):
+                handlers = ln.split("=", 1)[1].strip().split()
+            elif ln.startswith("B: EV="):
+                ev = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: KEY="):
+                key = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: PROP="):
+                prop = ln.split("=", 1)[1].strip()
+        if not name or "nc-ui-" in name.lower():
+            continue
+        nl = name.lower()
+        has_abs = _proc_bit_has(ev, 0x03)
+        if not has_abs:
+            continue
+        if _proc_bit_has(prop, 1) or _proc_bit_has(key, 0x140) or _proc_bit_has(key, 0x130):
+            continue
+        is_tp = (
+            _proc_bit_has(key, 0x145)
+            or any(_proc_bit_has(prop, b) for b in (2, 3, 4))
+            or "touchpad" in nl
+            or "trackpad" in nl
+        )
+        if is_tp:
+            ev_h = next((h for h in handlers if h.startswith("event")), "")
+            tps.append({"name": name, "evdev": f"/dev/input/{ev_h}" if ev_h else ""})
+    return tps
 
 
 def _mouse_has_flag(block: str, flag: str) -> bool:
@@ -1902,7 +2195,8 @@ def _mouse_set_kv_in_block(block: str, key: str, raw_val: str, indent: str = "  
 
 
 def _collect_mouse_state() -> dict:
-    txt = _mouse_read_kdl()
+    txt = _read_niri_kdl()
+    tps = detect_touchpads()
     st = {
         "focus_follows_mouse": False,
         "left_handed": False,
@@ -1914,14 +2208,17 @@ def _collect_mouse_state() -> dict:
         "tp_tap": False,
         "tp_dwt": False,
         "tp_natural_scroll": False,
+        "tp_middle_emulation": False,
+        "touchpads": tps,
+        "has_touchpad": bool(tps),
     }
-    inp = _mouse_find_block_span(txt, "input")
+    inp = _find_block_span(txt, "input")
     if not inp:
         return st
     inp_blk = txt[inp[0]:inp[1]]
     st["focus_follows_mouse"] = _mouse_has_flag(inp_blk, "focus-follows-mouse")
 
-    ms = _mouse_find_block_span(txt, "mouse", inp[0], inp[1])
+    ms = _find_block_span(txt, "mouse", inp[0], inp[1])
     if ms:
         mb = txt[ms[0]:ms[1]]
         st["left_handed"] = _mouse_has_flag(mb, "left-handed")
@@ -1943,12 +2240,13 @@ def _collect_mouse_state() -> dict:
         if m_ap:
             st["accel_profile"] = m_ap.group(1)
 
-    tp = _mouse_find_block_span(txt, "touchpad", inp[0], inp[1])
+    tp = _find_block_span(txt, "touchpad", inp[0], inp[1])
     if tp:
         tb = txt[tp[0]:tp[1]]
         st["tp_tap"] = _mouse_has_flag(tb, "tap")
         st["tp_dwt"] = _mouse_has_flag(tb, "dwt")
         st["tp_natural_scroll"] = _mouse_has_flag(tb, "natural-scroll")
+        st["tp_middle_emulation"] = _mouse_has_flag(tb, "middle-emulation")
     ov_as = _OPT_MOUSE.get("accel_speed")
     if ov_as and (time.monotonic() - ov_as[0]) < 2.5:
         st["accel_speed"] = ov_as[1]
@@ -1956,38 +2254,32 @@ def _collect_mouse_state() -> dict:
 
 
 def _mutate_niri_input(subblock: str | None, updater) -> tuple[bool, str]:
-    txt = _mouse_read_kdl()
-    inp = _mouse_find_block_span(txt, "input")
+    txt = _read_niri_kdl()
+    inp = _find_block_span(txt, "input")
     if not inp:
         txt = txt.rstrip() + "\n\ninput {\n}\n"
-        inp = _mouse_find_block_span(txt, "input")
+        inp = _find_block_span(txt, "input")
     if not inp:
-        return False, "Could not locate or create input { } block"
+        return False, t("cc_mouse.niri_input_block_err")
 
     if subblock is None:
         blk = txt[inp[0]:inp[1]]
         new_blk = updater(blk)
-        return _mouse_write_kdl(txt[:inp[0]] + new_blk + txt[inp[1]:])
+        return _write_niri_kdl(txt[:inp[0]] + new_blk + txt[inp[1]:], auto_reload=True)
 
-    sp = _mouse_find_block_span(txt, subblock, inp[0], inp[1])
+    sp = _find_block_span(txt, subblock, inp[0], inp[1])
     if not sp:
         idx = inp[1] - 1
         prefix = "" if txt[:idx].endswith("\n") else "\n"
         txt = txt[:idx] + f"{prefix}    {subblock} {{\n    }}\n" + txt[idx:]
-        inp = _mouse_find_block_span(txt, "input")
-        sp = _mouse_find_block_span(txt, subblock, inp[0], inp[1])
+        inp = _find_block_span(txt, "input")
+        sp = _find_block_span(txt, subblock, inp[0], inp[1])
     if not sp:
-        return False, f"Failed creating {subblock} {{ }} block"
+        return False, t("cc_mouse.niri_subblock_err", p0=subblock)
 
     blk = txt[sp[0]:sp[1]]
     new_blk = updater(blk)
-    return _mouse_write_kdl(txt[:sp[0]] + new_blk + txt[sp[1]:])
-
-
-def _mouse_feedback_cards() -> list:
-    if not _MSG and not _ERR:
-        return []
-    return [FeedbackBox(t("cc_mouse.status_title"), not bool(_ERR), _ERR if _ERR else _MSG)]
+    return _write_niri_kdl(txt[:sp[0]] + new_blk + txt[sp[1]:], auto_reload=True)
 
 
 def _mouse_toggle_pair(uri_on: str, uri_off: str, cur: bool) -> str:
@@ -1995,50 +2287,63 @@ def _mouse_toggle_pair(uri_on: str, uri_off: str, cur: bool) -> str:
 
 
 def handle_cc_mouse_link(cc_panel, uri: str) -> bool:
-    global _MSG, _ERR
-    if not uri.startswith("cc_mouse:"):
+    if not isinstance(uri, str) or not uri.startswith("cc_mouse:"):
         return False
-    _MSG = ""
-    _ERR = ""
     parts = uri.split(":")
-    cmd = parts[1]
+    cmd = parts[1] if len(parts) > 1 else ""
 
-    ok, msg = False, "Unknown command"
-    if cmd == "flag" and len(parts) >= 4:
+    ok, msg = False, t("cc_mouse.unknown_cmd")
+    if cmd == "flag" and len(parts) == 4 and parts[2] in ("left-handed", "natural-scroll", "middle-emulation") and parts[3] in ("0", "1"):
         flag, en = parts[2], (parts[3] == "1")
         ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_flag_in_block(b, flag, en))
-    elif cmd == "inflag" and len(parts) >= 4:
+    elif cmd == "inflag" and len(parts) == 4 and parts[2] == "focus-follows-mouse" and parts[3] in ("0", "1"):
         flag, en = parts[2], (parts[3] == "1")
         ok, msg = _mutate_niri_input(None, lambda b: _mouse_set_flag_in_block(b, flag, en, indent="    "))
-    elif cmd == "sf" and len(parts) >= 3:
-        val = parts[2]
-        ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "scroll-factor", val))
+    elif cmd == "sf" and len(parts) == 3:
+        try:
+            sf_val = float(parts[2])
+        except (ValueError, TypeError):
+            return False
+        if not math.isfinite(sf_val) or not (0.0 <= sf_val <= 20.0):
+            return False
+        ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "scroll-factor", f"{sf_val}"))
     elif cmd == "prof" and len(parts) >= 3 and parts[2] in ("adaptive", "flat"):
         prof = parts[2]
         ok, msg = _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-profile", f'"{prof}"'))
     elif cmd == "accel" and len(parts) >= 3:
-        val = max(-1.0, min(1.0, float(parts[2])))
+        try:
+            fval = float(parts[2])
+        except (ValueError, TypeError):
+            return False
+        if not math.isfinite(fval):
+            return False
+        val = max(-1.0, min(1.0, fval))
         _OPT_MOUSE["accel_speed"] = (time.monotonic(), val)
         probe.enqueue_latest("mouse_accel_kdl", lambda v=val: _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{v:.2f}")), debounce_ms=160)
         if cc_panel:
             cc_panel.request_throttled_refresh()
         return True
     elif cmd == "accel_step" and len(parts) >= 3:
+        try:
+            delta = float(parts[2])
+        except (ValueError, TypeError):
+            return False
+        if not math.isfinite(delta):
+            return False
         cur = _collect_mouse_state()["accel_speed"]
-        val = max(-1.0, min(1.0, round(cur + float(parts[2]), 2)))
+        val = max(-1.0, min(1.0, round(cur + delta, 2)))
         _OPT_MOUSE["accel_speed"] = (time.monotonic(), val)
         probe.enqueue_latest("mouse_accel_kdl", lambda v=val: _mutate_niri_input("mouse", lambda b: _mouse_set_kv_in_block(b, "accel-speed", f"{v:.2f}")), debounce_ms=160)
         if cc_panel:
             cc_panel.request_throttled_refresh()
         return True
-    elif cmd == "tp" and len(parts) >= 4:
+    elif cmd == "tp" and len(parts) == 4 and parts[2] in ("tap", "dwt", "natural-scroll", "middle-emulation") and parts[3] in ("0", "1"):
         flag, en = parts[2], (parts[3] == "1")
         ok, msg = _mutate_niri_input("touchpad", lambda b: _mouse_set_flag_in_block(b, flag, en))
     else:
         return False
 
-    _MSG = msg if ok else ""
-    _ERR = "" if ok else msg
+    set_feedback("mouse", ok, msg)
     if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
     return True
@@ -2046,6 +2351,8 @@ def handle_cc_mouse_link(cc_panel, uri: str) -> bool:
 
 
 def handle_cc_input_link(cc_panel, uri: str) -> bool:
+    if not isinstance(uri, str) or not uri:
+        return False
     if handle_cc_keyboard_link(cc_panel, uri):
         return True
     if uri.startswith("cc_ctrl:"):
@@ -2055,6 +2362,8 @@ def handle_cc_input_link(cc_panel, uri: str) -> bool:
 
 
 def handle_cc_input_prompt(cc_panel, action_id: str, text: str) -> bool:
+    if not isinstance(action_id, str) or not action_id:
+        return False
     if action_id.startswith("cc_ctrl_"):
         from panels.cc_input_controllers import handle_cc_controllers_prompt
         return handle_cc_controllers_prompt(cc_panel, action_id, text)

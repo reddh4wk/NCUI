@@ -14,7 +14,7 @@ def _bootstrap_ncui() -> None:
             break
         cur = os.path.dirname(cur)
     else:
-        for sys_root in ("/usr/lib/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
+        for sys_root in ("/usr/lib/ncui", "/usr/share/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
             if os.path.isdir(sys_root) and sys_root not in sys.path:
                 sys.path.insert(0, sys_root)
     from core.paths import bootstrap_sys_path

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""NC-UI Control Center — Auth, Security & Keys (`panels/cc_auth.py`) [Single Backend / Dual View]"""
+"""NC-UI Control Center — Auth, Security & Keys (`panels/cc_engine_auth.py`)"""
 
 import glob
 import os
@@ -8,30 +8,20 @@ import shlex
 import stat
 import subprocess
 from core import probe
-from core.i18n import get_active_language, t
+from core.i18n import t
 from core.privileges import (
-    build_privilege_modal_card,
     get_privileged_action,
     has_polkit_agent,
-    list_privileged_actions,
     request_privilege_modal,
 )
 from core.resilience import resolve_sbin_helper
 from core.state import STATE
-from ui.canvas import Canvas
 from ui.kit import (
-    ActionBtn,
-    Badge,
-    Box,
-    FeedbackBox,
-    StateBadge,
-    Txt,
     cancel_inline_entry,
+    feedback_cards,
+    set_feedback,
     start_inline_input,
 )
-
-_MSG = ""
-_ERR = ""
 
 _USB_VENDOR_FALLBACKS = {
     "1b1c": "Corsair USB Device",
@@ -45,11 +35,8 @@ _USB_VENDOR_FALLBACKS = {
 }
 
 
-
 def _feedback_cards() -> list:
-    if not _MSG and not _ERR:
-        return []
-    return [FeedbackBox(t("cc_auth.status_title"), not bool(_ERR), _ERR if _ERR else _MSG)]
+    return feedback_cards("auth", "cc_auth.status_title")
 
 
 def _probe_tpm_luks() -> dict:
@@ -57,7 +44,7 @@ def _probe_tpm_luks() -> dict:
     sb_setup = sb_enabled = False
     sb_lines = []
     if probe.has_bin("sbctl"):
-        rc, out, _ = probe.run_cmd_full(["sbctl", "status"], timeout=1.5)
+        _, out, _ = probe.run_cmd_full(["sbctl", "status"], timeout=1.5)
         if out:
             sb_lines = [ln.strip() for ln in out.splitlines() if ln.strip()][:8]
             low = out.lower()
@@ -66,7 +53,8 @@ def _probe_tpm_luks() -> dict:
     else:
         for p in glob.glob("/sys/firmware/efi/efivars/SecureBoot-*"):
             try:
-                raw = open(p, "rb").read()
+                with open(p, "rb") as f:
+                    raw = f.read()
                 sb_enabled = len(raw) >= 5 and raw[4] == 1
             except Exception:
                 pass
@@ -79,14 +67,16 @@ def _probe_tpm_luks() -> dict:
             if len(parts) >= 2 and parts[1] == "crypto_LUKS":
                 luks_devs.append((parts[0], parts[2] if len(parts) > 2 else ""))
 
-    ukis = sorted(glob.glob("/boot/EFI/Linux/*.efi") + glob.glob("/efi/EFI/Linux/*.efi"))
+    ukis: list[str] = []
+    for mp in probe.detect_esp_mounts():
+        ukis.extend(glob.glob(os.path.join(mp, "EFI", "Linux", "*.efi")))
     return {
         "tpm": tpm_present,
         "sb_enabled": sb_enabled,
         "sb_setup": sb_setup,
         "sb_lines": sb_lines,
         "luks_devs": luks_devs,
-        "ukis": ukis,
+        "ukis": sorted(set(ukis)),
     }
 
 
@@ -118,7 +108,8 @@ def _probe_keys() -> dict:
     ssh_pubs = []
     for p in sorted(glob.glob(os.path.expanduser("~/.ssh/*.pub"))):
         try:
-            content = open(p, "r", encoding="utf-8", errors="ignore").read().strip()
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
             parts = content.split()
             ktype = parts[0] if parts else "key"
             comment = parts[2] if len(parts) > 2 else os.path.basename(p)
@@ -153,14 +144,24 @@ def _probe_polkit() -> dict:
 
     _, grp_out, _ = probe.run_cmd_full(["id", "-Gn"], timeout=1.5)
     groups = grp_out.split() if grp_out else []
-    in_wheel = "wheel" in groups
-    fido_mod = os.path.exists("/usr/lib/security/pam_u2f.so")
-    fido_keys = os.path.exists(os.path.expanduser("~/.config/Yubico/u2f_keys"))
+    priv_group = "wheel" if "wheel" in groups else ("sudo" if "sudo" in groups else "")
+    fido_mod = any(
+        glob.glob(pat)
+        for pat in (
+            "/usr/lib/security/pam_u2f.so",
+            "/usr/lib64/security/pam_u2f.so",
+            "/usr/lib/*/security/pam_u2f.so",
+            "/lib/*/security/pam_u2f.so",
+        )
+    )
+    cfg_base = os.environ.get("XDG_CONFIG_HOME", "").strip() or os.path.expanduser("~/.config")
+    fido_keys = os.path.exists(os.path.join(os.path.expanduser(cfg_base), "Yubico", "u2f_keys"))
     _, usb_out, _ = probe.run_cmd_full(["systemctl", "is-active", "usbguard"], timeout=1.5)
     usb_active = usb_out.strip() == "active"
     return {
         "agents": agents,
-        "in_wheel": in_wheel,
+        "in_wheel": bool(priv_group),
+        "priv_group": priv_group,
         "groups": groups,
         "fido_mod": fido_mod,
         "fido_keys": fido_keys,
@@ -329,54 +330,63 @@ def _apply_usbguard_rule(cc_panel, op: str, dev_id: str, persist_mode: str) -> t
 
 
 def handle_cc_auth_link(cc_panel, uri: str) -> bool:
-    global _MSG, _ERR
     if not uri.startswith("cc_auth:"):
         return False
-    _MSG = ""
-    _ERR = ""
     cancel_inline_entry(refresh=False)
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
 
     if cmd == "sbctl_verify":
-        from ui.embedded_tui import start_panel_terminal
+        if not probe.has_bin("sbctl"):
+            set_feedback("auth", False, t("cc_auth.sbctl_missing_err"))
+        else:
+            from ui.embedded_tui import start_panel_terminal
 
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0="sbctl verify"),
-            ["bash", "-c", "sudo sbctl status; echo; sudo sbctl verify"],
-        )
-        return True
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0="sbctl verify"),
+                ["bash", "-c", "sudo sbctl status; echo; sudo sbctl verify"],
+            )
+            return True
     elif cmd == "luks_term":
-        from ui.embedded_tui import start_panel_terminal
-
         d = _probe_tpm_luks()
-        dev = d["luks_devs"][0][0] if d["luks_devs"] else "/dev/nvme0n1p3"
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0=f"luksDump {os.path.basename(dev)}"),
-            ["sudo", "cryptsetup", "luksDump", dev],
-        )
-        return True
+        if not d["luks_devs"]:
+            set_feedback("auth", False, t("cc_auth.no_luks_container"))
+        else:
+            from ui.embedded_tui import start_panel_terminal
+
+            dev = d["luks_devs"][0][0]
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0=f"luksDump {os.path.basename(dev)}"),
+                ["sudo", "cryptsetup", "luksDump", dev],
+            )
+            return True
     elif cmd == "tpm_enroll":
-        from ui.embedded_tui import start_panel_terminal
-
         d = _probe_tpm_luks()
-        dev = d["luks_devs"][0][0] if d["luks_devs"] else "/dev/nvme0n1p3"
-        start_panel_terminal(
-            cc_panel,
-            t("common.term_title", p0=f"TPM2 {os.path.basename(dev)}"),
-            ["bash", "-c", f"echo 'Inspect or wipe/enroll TPM2 slots:'; sudo systemd-cryptenroll {shlex.quote(dev)} --tpm2-device=list"],
-        )
-        return True
+        if not d["luks_devs"]:
+            set_feedback("auth", False, t("cc_auth.no_luks_container"))
+        elif not probe.has_bin("systemd-cryptenroll"):
+            set_feedback("auth", False, t("cc_auth.cryptenroll_missing_err"))
+        else:
+            from ui.embedded_tui import start_panel_terminal
+
+            dev = d["luks_devs"][0][0]
+            start_panel_terminal(
+                cc_panel,
+                t("common.term_title", p0=f"TPM2 {os.path.basename(dev)}"),
+                ["bash", "-c", f"echo 'Inspect or wipe/enroll TPM2 slots:'; sudo systemd-cryptenroll {shlex.quote(dev)} --tpm2-device=list"],
+            )
+            return True
     elif cmd == "copy_pub" and arg:
         p = os.path.expanduser(f"~/.ssh/{os.path.basename(arg)}")
         if os.path.isfile(p):
-            probe.copy_clipboard(open(p, "r", encoding="utf-8", errors="ignore").read().strip())
-            _MSG = t("cc_auth.copied_to_clipboard", p0=arg)
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                probe.copy_clipboard(f.read().strip())
+            set_feedback("auth", True, t("cc_auth.copied_to_clipboard", p0=arg))
         else:
-            _ERR = t("cc_auth.not_found", p0=arg)
+            set_feedback("auth", False, t("cc_auth.not_found", p0=arg))
     elif cmd == "ssh_add":
         from ui.embedded_tui import start_panel_terminal
 
@@ -408,7 +418,8 @@ def handle_cc_auth_link(cc_panel, uri: str) -> bool:
                     continue
                 priv_keys.append(priv_p)
                 try:
-                    pub_flds = open(pub_p, "r", encoding="utf-8", errors="ignore").read().strip().split()
+                    with open(pub_p, "r", encoding="utf-8", errors="ignore") as f:
+                        pub_flds = f.read().strip().split()
                 except Exception:
                     pub_flds = []
                 if len(pub_flds) < 2 or (pub_flds[0], pub_flds[1]) not in loaded_set:
@@ -477,9 +488,9 @@ def handle_cc_auth_link(cc_panel, uri: str) -> bool:
         if not opened_modal:
             if ok:
                 scope_lbl = t("cc_auth.usb_persist_temp") if persist == "temp" else t("cc_auth.usb_persist_perm")
-                _MSG = t("cc_auth.fb_usb_ok", p0=op.upper(), p1=did, p2=scope_lbl)
+                set_feedback("auth", True, t("cc_auth.fb_usb_ok", p0=op.upper(), p1=did, p2=scope_lbl))
             else:
-                _ERR = msg or t("cc_auth.fb_usb_err", p0=did)
+                set_feedback("auth", False, msg or t("cc_auth.fb_usb_err", p0=did))
     elif cmd == "priv_inspect" and arg:
         STATE.set("privileges", "inspect_id", arg)
     else:

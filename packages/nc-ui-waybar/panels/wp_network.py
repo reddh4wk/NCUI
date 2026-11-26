@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import glob
 import time
 from core.config import CONFIG, THEME, get_network_show_bar_speed
 from core.state import STATE
@@ -9,6 +10,7 @@ from ui.kit import (
     Box,
     Txt,
     ActionBtn,
+    Badge,
     StateBadge,
 )
 from ui.markup import format_speed
@@ -17,6 +19,7 @@ from panels.cc_engine_network import (
     _NET_LOCK,
     _NET_STATE,
     get_interfaces_fast,
+    is_resolved_wan_ip,
 )
 
 
@@ -85,13 +88,15 @@ class Panel(_CCBackendPanel):
         )
         wan_box.add_row(" ")
 
-        wan_ip = str(wan.get("ip", "N/D"))
+        wan_ip = str(wan.get("ip") or t("common.nd"))
         wan_badge_txt = str(wan.get("badge", "")).strip()
         wan_b_style = wan.get("badge_style", "info")
         if wan_badge_txt and wan_b_style == "accent":
             wan_dot = f"{Txt('\u25cf', role='vitality')} "
         elif wan_badge_txt and wan_b_style == "warn":
             wan_dot = f"{Txt('\u25cf', role='attention')} "
+        elif wan_badge_txt and wan_b_style == "crit":
+            wan_dot = f"{Txt('\u25cf', role='fault')} "
         else:
             wan_dot = ""
 
@@ -104,20 +109,23 @@ class Panel(_CCBackendPanel):
             gw_left = f"{Txt(t('network.gateway_2'), role='schema')}   {Txt(t('network.none'), role='inactive')}"
             gw_right = ""
 
+        wan_resolved = is_resolved_wan_ip(wan_ip)
+        wan_copy_btn = ActionBtn(t("network.copy"), f"ui:copy:{wan_ip}", tone="neutral") if wan_resolved else ""
         wan_rows = [
             [
-                f"{Txt(t('network.wan_ip_2'), role='schema')}  {wan_dot}{Txt(wan_ip, role='val')}",
-                ActionBtn(t("network.copy"), f"ui:copy:{wan_ip}", tone="neutral"),
+                f"{Txt(t('network.wan_ip_2'), role='schema')}  {wan_dot}{Txt(wan_ip, role='val' if wan_resolved else 'inactive')}",
+                wan_copy_btn,
             ],
             [" ", " "],
             [gw_left, gw_right],
         ]
         if wan_badge_txt:
-            wan_line_val = (
-                StateBadge(True, wan_badge_txt, on_tone="ok" if wan_b_style == "accent" else "warn")
-                if wan_b_style in ("accent", "warn")
-                else Txt(wan_badge_txt, role="schema")
-            )
+            if wan_b_style == "crit":
+                wan_line_val = Badge(wan_badge_txt, style="crit")
+            elif wan_b_style in ("accent", "warn"):
+                wan_line_val = StateBadge(True, wan_badge_txt, on_tone="ok" if wan_b_style == "accent" else "warn")
+            else:
+                wan_line_val = Txt(wan_badge_txt, role="schema")
             wan_rows.insert(
                 1,
                 [
@@ -289,63 +297,69 @@ class Panel(_CCBackendPanel):
             cards.append(wifi_box)
 
         # =====================================================================
-        # CARD 4: BLUETOOTH
+        # CARD 4: BLUETOOTH (Se presente controller BT)
         # =====================================================================
-        bt_on = bool(bt.get("powered"))
-        bt_toggle = (
-            ActionBtn(t("network.off"), "bt:power:off", tone="danger_soft")
-            if bt_on
-            else ActionBtn(t("network.on"), "bt:power:on", tone="apply")
+        has_bt_hw = bool(bt.get("available")) and (
+            bool(glob.glob("/sys/class/bluetooth/hci*"))
+            or bool(bt.get("powered"))
+            or bool(bt.get("paired"))
         )
-        bt_box = Box(
-            t("cc_network.bt_bluez_short"),
-            icon="\uf294",
-            actions=[
-                bt_toggle,
-                ActionBtn("\uf013", "ui:open_settings:network:wifi_bt", tone="neutral"),
-            ],
-            fixed_width=True,
-            min_cols=target_cols,
-            max_cols=target_cols,
-        )
-        bt_box.add_row(" ")
-
-        if not bt_on:
-            bt_box.add_row(f"  {Txt(t("network.controller_off"), role='inactive')}")
-        elif not bt.get("paired"):
-            bt_box.add_row(f"  {Txt(t("network.no_paired_devices"), role='inactive')}")
-        else:
-            bt_rows = []
-            for idx, dev in enumerate(bt["paired"][:5]):
-                if idx > 0:
-                    bt_rows.append([" ", " "])
-                is_conn = bool(dev.get("connected"))
-                dot = Txt("\u25cf" if is_conn else "\u25cb", role="vitality" if is_conn else "inactive")
-                name_short = canvas.truncate_plain(dev["name"], 17)
-                bat_v = dev.get("battery")
-                bat = f" {Txt(str(bat_v) + '%', role='ok_soft')}" if bat_v is not None else ""
-                left_cell = (
-                    f"{dot}  {Txt(dev['icon'], role='schema')}  "
-                    f"{Txt(name_short, role='focus' if is_conn else 'inactive')}{bat}"
-                )
-                act_btn = (
-                    ActionBtn(t("network.disc_btn"), f"bt:disc:{dev['mac']}", tone="danger_soft")
-                    if is_conn
-                    else ActionBtn(t("network.conn_btn"), f"bt:conn:{dev['mac']}", tone="apply")
-                )
-                bt_rows.append([left_cell, act_btn])
-
-            bt_box.add_table(
-                headers=[],
-                widths=["flex", 9],
-                rows=bt_rows,
-                aligns=["left", "right"],
-                uniform_row_height=True,
-                show_headers=False,
+        if has_bt_hw:
+            bt_on = bool(bt.get("powered"))
+            bt_toggle = (
+                ActionBtn(t("network.off"), "bt:power:off", tone="danger_soft")
+                if bt_on
+                else ActionBtn(t("network.on"), "bt:power:on", tone="apply")
             )
+            bt_box = Box(
+                t("cc_network.bt_bluez_short"),
+                icon="\uf294",
+                actions=[
+                    bt_toggle,
+                    ActionBtn("\uf013", "ui:open_settings:network:wifi_bt", tone="neutral"),
+                ],
+                fixed_width=True,
+                min_cols=target_cols,
+                max_cols=target_cols,
+            )
+            bt_box.add_row(" ")
 
-        bt_box.add_row(" ")
-        cards.append(bt_box)
+            if not bt_on:
+                bt_box.add_row(f"  {Txt(t('network.controller_off'), role='inactive')}")
+            elif not bt.get("paired"):
+                bt_box.add_row(f"  {Txt(t('network.no_paired_devices'), role='inactive')}")
+            else:
+                bt_rows = []
+                for idx, dev in enumerate(bt["paired"][:5]):
+                    if idx > 0:
+                        bt_rows.append([" ", " "])
+                    is_conn = bool(dev.get("connected"))
+                    dot = Txt("\u25cf" if is_conn else "\u25cb", role="vitality" if is_conn else "inactive")
+                    name_short = canvas.truncate_plain(dev["name"], 17)
+                    bat_v = dev.get("battery")
+                    bat = f" {Txt(str(bat_v) + '%', role='ok_soft')}" if bat_v is not None else ""
+                    left_cell = (
+                        f"{dot}  {Txt(dev['icon'], role='schema')}  "
+                        f"{Txt(name_short, role='focus' if is_conn else 'inactive')}{bat}"
+                    )
+                    act_btn = (
+                        ActionBtn(t("network.disc_btn"), f"bt:disc:{dev['mac']}", tone="danger_soft")
+                        if is_conn
+                        else ActionBtn(t("network.conn_btn"), f"bt:conn:{dev['mac']}", tone="apply")
+                    )
+                    bt_rows.append([left_cell, act_btn])
+
+                bt_box.add_table(
+                    headers=[],
+                    widths=["flex", 9],
+                    rows=bt_rows,
+                    aligns=["left", "right"],
+                    uniform_row_height=True,
+                    show_headers=False,
+                )
+
+            bt_box.add_row(" ")
+            cards.append(bt_box)
 
         return cards
 

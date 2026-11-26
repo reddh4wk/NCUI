@@ -38,8 +38,6 @@ except ImportError:
     pass
 
 from core.pad_mapper_core import (  # noqa: E402
-    CONTROLLERS_FILE,
-    MACROS_FILE,
     MOUSE_TARGET_TO_EVDEV,
     PAD_MAPPER_PID_FILE,
     PAD_MAPPER_STATUS_FILE,
@@ -56,11 +54,15 @@ from core.pad_mapper_core import (  # noqa: E402
     _REL_WHEEL,
     _REL_X,
     _REL_Y,
+    _controllers_path,
     _detect_family,
+    _macros_path,
     apply_stick_calibration,
+    bitmask_has,
     compile_macro_events,
     eval_8way_directions,
     eval_trigger_curve,
+    iter_proc_input_blocks,
     load_pad_store,
     match_window_to_profile,
     resolve_evdev_axis_map,
@@ -98,50 +100,14 @@ def _on_reload(_sig, _frm) -> None:
     _RELOAD_NEEDED = True
 
 
-def _bitmask_has(hex_line: str, bit_num: int) -> bool:
-    if not hex_line:
-        return False
-    words = hex_line.strip().split()
-    word_idx = bit_num // 64
-    bit_pos = bit_num % 64
-    if word_idx >= len(words):
-        return False
-    try:
-        val = int(words[len(words) - 1 - word_idx], 16)
-        return bool((val >> bit_pos) & 1)
-    except ValueError:
-        return False
-
-
 def _discover_active_gamepad(prefer_path: str = "") -> dict | None:
-    if not os.path.exists("/proc/bus/input/devices"):
-        return None
-    try:
-        txt = open("/proc/bus/input/devices", "r", encoding="utf-8", errors="ignore").read()
-    except OSError:
-        return None
-
     cands = []
-    for blk in txt.strip().split("\n\n"):
-        info = {"vendor": "", "product": "", "name": "", "uniq": "", "handlers": [], "key": ""}
-        for ln in blk.splitlines():
-            if ln.startswith("I:"):
-                m = re.search(r"Vendor=([0-9a-fA-F]+)\s+Product=([0-9a-fA-F]+)", ln)
-                if m:
-                    info["vendor"], info["product"] = m.group(1).lower(), m.group(2).lower()
-            elif ln.startswith("N: Name="):
-                info["name"] = ln.split("=", 1)[1].strip().strip('"')
-            elif ln.startswith("U: Uniq="):
-                info["uniq"] = ln.split("=", 1)[1].strip()
-            elif ln.startswith("H: Handlers="):
-                info["handlers"] = ln.split("=", 1)[1].strip().split()
-            elif ln.startswith("B: KEY="):
-                info["key"] = ln.split("=", 1)[1].strip()
+    for info in iter_proc_input_blocks():
         nl = info["name"].lower()
-        if not info["name"] or any(s in nl for s in ("touchpad", "motion sensors", "consumer control", "keyboard", "mouse", "nc-ui-")):
+        if any(s in nl for s in ("touchpad", "motion sensors", "consumer control", "keyboard", "mouse", "nc-ui-")):
             continue
         has_js = any(h.startswith("js") for h in info["handlers"])
-        has_gp = _bitmask_has(info["key"], _BTN_SOUTH) or _bitmask_has(info["key"], 0x120)
+        has_gp = bitmask_has(info["key"], _BTN_SOUTH) or bitmask_has(info["key"], 0x120)
         if not (has_js or has_gp):
             continue
         ev_h = next((h for h in info["handlers"] if h.startswith("event")), "")
@@ -168,10 +134,11 @@ def _discover_active_gamepad(prefer_path: str = "") -> dict | None:
 
 def _load_hw_profile(dev_id: str) -> dict:
     base = {"layout": "xbox", "curve": "linear", "inner_dz": 8, "outer_th": 95, "trigger_cut": 85, "inv_ly": False, "inv_ry": False, "swap_sticks": False, "cal_lx": 0.0, "cal_ly": 0.0, "cal_rx": 0.0, "cal_ry": 0.0, "stick_calc": "radial"}
-    if not dev_id or not os.path.exists(CONTROLLERS_FILE):
+    ctrl_file = _controllers_path()
+    if not dev_id or not os.path.exists(ctrl_file):
         return base
     try:
-        data = json.load(open(CONTROLLERS_FILE, "r", encoding="utf-8"))
+        data = json.load(open(ctrl_file, "r", encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get(dev_id), dict):
             base.update(data[dev_id])
     except Exception:
@@ -181,10 +148,11 @@ def _load_hw_profile(dev_id: str) -> dict:
 
 def _load_macros_map() -> dict[str, dict]:
     out: dict[str, dict] = {}
-    if not os.path.exists(MACROS_FILE):
+    m_file = _macros_path()
+    if not os.path.exists(m_file):
         return out
     try:
-        data = json.load(open(MACROS_FILE, "r", encoding="utf-8"))
+        data = json.load(open(m_file, "r", encoding="utf-8"))
         if isinstance(data, list):
             for idx, m in enumerate(data):
                 if isinstance(m, dict):
@@ -954,6 +922,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="NC-UI Controller Compatibility Layer Daemon")
     ap.add_argument("--device", default="", help="Preferred /dev/input/eventX or controller id")
     args = ap.parse_args()
+    if not os.path.exists(UINPUT_PATH):
+        sys.stderr.write(f"{UINPUT_PATH} does not exist (kernel uinput module unloaded)\n")
+        return 1
     if not os.access(UINPUT_PATH, os.W_OK):
         sys.stderr.write(f"Cannot write {UINPUT_PATH} (run Unlock uinput first)\n")
         return 1

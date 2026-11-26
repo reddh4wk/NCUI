@@ -11,9 +11,9 @@ from ui.kit import ActionBtn, Box, CyclePill, InlineField, InlineFilter, Inspect
 from panels.cc_engine_apps import (
     CUSTOM_EXT_MIME_PREFIX,
     DEFAULT_CATEGORIES,
-    USER_MIMEAPPS,
     _feedback_cards,
     app_display_name,
+    get_user_mimeapps_path,
     load_mime_globs,
     mime_display_ext,
     parse_extension_spec,
@@ -578,11 +578,12 @@ def _build_mime_standard(cc_panel, canvas: Canvas) -> list:
         cfg_box.add_kv(t("cc_apps.custom_exts_kv"), rm_btns, key_width=kv_w)
 
     def _build_mimeapps_preview(bx: Box) -> None:
-        if not os.path.exists(USER_MIMEAPPS):
+        user_mimeapps = get_user_mimeapps_path()
+        if not os.path.exists(user_mimeapps):
             bx.add_row(f"  {Txt(t('cc_apps.mimeapps_missing'), role='inactive')}")
             return
         try:
-            lines = open(USER_MIMEAPPS, "r", encoding="utf-8", errors="ignore").read().splitlines()
+            lines = open(user_mimeapps, "r", encoding="utf-8", errors="ignore").read().splitlines()
         except OSError:
             lines = []
         for ln in lines[:40]:
@@ -593,7 +594,7 @@ def _build_mime_standard(cc_panel, canvas: Canvas) -> list:
         "apps_mimeapps_preview",
         t("cc_apps.mimeapps_preview_title"),
         _build_mimeapps_preview,
-        summary=USER_MIMEAPPS,
+        summary=get_user_mimeapps_path(),
     )
     cfg_box.add_row(" ")
     cards.append(cfg_box)

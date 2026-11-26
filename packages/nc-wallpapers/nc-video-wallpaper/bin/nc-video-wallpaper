@@ -49,7 +49,7 @@ def _query_niri_output(out_name: str) -> dict:
             return data[out_name] or {}
     except Exception:
         pass
-    cfg_p = os.path.expanduser("~/.config/niri/config.kdl")
+    cfg_p = os.path.join(os.path.expanduser(os.environ.get("XDG_CONFIG_HOME", "").strip() or "~/.config"), "niri", "config.kdl")
     if os.path.isfile(cfg_p):
         try:
             txt = open(cfg_p, "r", encoding="utf-8").read()

@@ -110,11 +110,27 @@ def _is_mouse_wheel_smooth_event(event, last_discrete_ts: float, now: float) -> 
             src_kind = src_dev.get_source()
         except Exception:
             src_kind = None
-    if "wheel" in dev_name:
-        return True
-    if (src_dev is None or src_kind == Gdk.InputSource.MOUSE) and (now - last_discrete_ts) < 0.050:
+    if ("wheel" in dev_name or src_dev is None or src_kind == Gdk.InputSource.MOUSE) and (now - last_discrete_ts) < 0.050:
         return True
     return False
+
+
+def _is_continuous_scroll_event(event) -> bool:
+    """Return True only for continuous touchpad / fractional smooth streams, not discrete mouse wheel notches."""
+    if event.direction != Gdk.ScrollDirection.SMOOTH:
+        return False
+    src_dev = event.get_source_device() if hasattr(event, "get_source_device") else getattr(event, "device", None)
+    src_kind = None
+    if src_dev is not None:
+        try:
+            src_kind = src_dev.get_source()
+        except Exception:
+            src_kind = None
+    if src_kind == Gdk.InputSource.TOUCHPAD:
+        return True
+    _ok_d, dx, dy = event.get_scroll_deltas()
+    delta = abs(dy) if abs(dy) >= abs(dx) else abs(dx)
+    return delta < 0.85
 
 
 def _extract_and_strip_bg_spans(markup_str: str) -> tuple[str, list[tuple[int, int, str, float, str]]]:
@@ -389,6 +405,8 @@ class AsciiCard(Gtk.ListBoxRow):
         self._last_scroll_ev_time = 0
         self._last_discrete_scroll_ts = 0.0
         self._last_smooth_wheel_ts = 0.0
+        self.on_scroll_can_consume = None
+        self._passthrough_scroll_ev_time = 0
         self._bg_byte_spans = []
         self._footer_bg_byte_spans = []
         self._focusable_links = []
@@ -1544,6 +1562,9 @@ class AsciiCard(Gtk.ListBoxRow):
         return direction
 
     def _on_scroll(self, widget, event):
+        ev_time = int(getattr(event, "time", 0) or (event.get_time() if hasattr(event, "get_time") else 0))
+        if ev_time > 0 and ev_time == self._passthrough_scroll_ev_time:
+            return False
         if self.on_pointer_activity:
             self.on_pointer_activity("scroll")
         if not self.is_hovered:
@@ -1566,11 +1587,22 @@ class AsciiCard(Gtk.ListBoxRow):
             return False
         if direction == "":
             return True
-        is_smooth = (event.direction == Gdk.ScrollDirection.SMOOTH)
-        if allow_step_input(continuous=is_smooth):
-            if is_smooth:
-                self._scroll_accum = 0.0
+        can_dir = (
+            getattr(self.box_model, "scroll_can_up", True)
+            if direction == "up"
+            else getattr(self.box_model, "scroll_can_down", True)
+        )
+        if not can_dir or (self.on_scroll_can_consume and not self.on_scroll_can_consume(self, direction)):
+            if ev_time > 0:
+                self._passthrough_scroll_ev_time = ev_time
+            self._scroll_accum = 0.0
+            return False
+        is_cont = _is_continuous_scroll_event(event)
+        if allow_step_input(continuous=is_cont):
+            self._scroll_accum = 0.0
             self.on_link(f"{scroll_act}:{direction}")
+        elif not is_cont:
+            self._scroll_accum = 0.0
         return True
 
     def refresh_markup(self) -> None:

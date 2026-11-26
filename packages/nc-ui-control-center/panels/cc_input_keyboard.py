@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
+from core import probe
 from core.completion import catalog_xkb_layouts, rank_candidates
-from core.i18n import get_active_language, t
+from core.config import get_hide_unavailable_settings
+from core.i18n import get_active_language, list_available_languages, t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, Divider, InlineField, SelectPill, Slider, StateBadge, Txt, get_active_inline_entry
+from ui.kit import ActionBtn, Badge, Box, Divider, InlineField, SelectPill, Slider, StateBadge, Txt, feedback_cards, get_active_inline_entry
 from panels.cc_engine_input import (
-    NIRI_CONFIG_FILE,
     _collect_keyboard_state,
-    _feedback_box,
+    _niri_config_file,
     get_live_keyboard_layouts,
 )
 
@@ -50,7 +51,7 @@ def _build_keyboard_standard(cc_panel, canvas: Canvas, st: dict) -> list:
             right_markup=f"{ActionBtn(t('cc_keyboard.gaming_fast'), 'cc_kbd:preset:fast', tone='apply')} {ActionBtn(t('cc_keyboard.default'), 'cc_kbd:preset:std', tone='neutral')}",
         )
         b.add_row(
-            f"  {Txt(t('cc_keyboard.config_path'), role='schema')} {Txt(NIRI_CONFIG_FILE, role='val')}",
+            f"  {Txt(t('cc_keyboard.config_path'), role='schema')} {Txt(_niri_config_file(), role='val')}",
             right_markup=ActionBtn(t("cc_keyboard.validate_kdl"), "cc_kbd:validate", tone="neutral"),
             requires=["niri"],
         )
@@ -81,12 +82,25 @@ def _build_keyboard_standard(cc_panel, canvas: Canvas, st: dict) -> list:
             right_markup=ActionBtn(t("cc_keyboard.use_in_shortcut_builder"), "cc_kbd:use_inspected", tone="apply"),
         )
         cap_box.add_kv(t("cc_keyboard.xkb_keysym_hex"), f"{Txt(insp.get('keysym', ''), role='focus')}  {Txt('(' + insp.get('keyval_hex', '') + ')', role='schema')}")
-        cap_box.add_kv(t("cc_keyboard.linux_evdev_mods"), f"{Txt('code ' + str(insp.get('evdev', 0)), role='val')}  |  {Txt(t('cc_keyboard.modifiers_lbl') + ': ' + str(insp.get('mods') or '-'), role='val')}")
+        cap_box.add_kv(t("cc_keyboard.linux_evdev_mods"), f"{Txt(t('cc_keyboard.evdev_code', p0=insp.get('evdev', 0)), role='val')}  |  {Txt(t('cc_keyboard.modifiers_lbl') + ': ' + str(insp.get('mods') or '-'), role='val')}")
     else:
         cap_box.add_row(f"  {Txt(t('cc_keyboard.click_capture_keys_above_and_press'), role='schema')}")
 
     def _build_ext_probes(b: Box):
-        b.add_kv(t("cc_keyboard.external_probes"), f"{ActionBtn('wev (Term)', 'cc_kbd:launch_wev', tone='neutral')} {ActionBtn('libinput (Term)', 'cc_kbd:launch_libinput', tone='neutral')} {ActionBtn('xkbcli', 'cc_kbd:launch_xkbcli', tone='neutral')}")
+        probe_specs = [
+            ("wev", t("cc_keyboard.probe_btn_term", p0="wev"), "cc_kbd:launch_wev"),
+            ("libinput", t("cc_keyboard.probe_btn_term", p0="libinput"), "cc_kbd:launch_libinput"),
+            ("xkbcli", "xkbcli", "cc_kbd:launch_xkbcli"),
+        ]
+        hide_unavail = get_hide_unavailable_settings()
+        probe_items = []
+        for bin_nm, lbl, uri in probe_specs:
+            if probe.has_bin(bin_nm):
+                probe_items.append(ActionBtn(lbl, uri, tone="neutral"))
+            elif not hide_unavail:
+                probe_items.append(Badge(t("ui.missing", p0=bin_nm), style="warn"))
+        probes_markup = " ".join(probe_items) if probe_items else Txt(t("cc_keyboard.no_probes_installed"), role="inactive")
+        b.add_kv(t("cc_keyboard.external_probes"), probes_markup)
         b.add_table(
             headers=[t("cc_keyboard.special_key"), t("cc_keyboard.xkb_keysym"), t("cc_keyboard.suggested_niri_action")],
             widths=[18, 26, "flex"],
@@ -173,7 +187,12 @@ def _build_layout_standard(cc_panel, canvas: Canvas, st: dict) -> list:
     vars_list = [("", t("cc_keyboard.var_default")), ("nodeadkeys", "NoDeadKeys"), ("intl", "Intl"), ("dvorak", "Dvorak"), ("colemak", "Colemak")]
     box.add_section(t("cc_keyboard.locale_modifiers"))
     box.add_kv(t("cc_keyboard.variant"), " ".join(SelectPill(lbl, f"cc_kbd:variant:{v}", selected=(cur_var == v)) for v, lbl in vars_list))
-    box.add_kv(t("cc_keyboard.nc_ui_language"), f"{SelectPill('English (en)', 'cc_kbd:ui_lang:en', selected=(cur_lang == 'en'))}  {SelectPill('Italiano (it)', 'cc_kbd:ui_lang:it', selected=(cur_lang == 'it'))}")
+    lang_names = {"en": "English (en)", "it": "Italiano (it)"}
+    lang_pills = "  ".join(
+        SelectPill(lang_names.get(lc, lc.upper()), f"cc_kbd:ui_lang:{lc}", selected=(cur_lang == lc))
+        for lc in (list_available_languages() or ["en", "it"])
+    )
+    box.add_kv(t("cc_keyboard.nc_ui_language"), lang_pills)
 
     def _build_xkb_opts(b: Box):
         opts = [
@@ -195,7 +214,7 @@ def _build_layout_standard(cc_panel, canvas: Canvas, st: dict) -> list:
 
 def build_cards(cc_panel, canvas: Canvas) -> list:
     ks = _collect_keyboard_state()
-    cards = _feedback_box()
+    cards = feedback_cards("keyboard", "cc_keyboard.keyboard_configuration_status")
     cards.extend(_build_keyboard_standard(cc_panel, canvas, ks))
     cards.extend(_build_layout_standard(cc_panel, canvas, ks))
     return cards

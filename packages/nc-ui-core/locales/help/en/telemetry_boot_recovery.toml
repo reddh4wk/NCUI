@@ -39,7 +39,7 @@ verbose = "Updates the live Cairo bezel preview and stages `term_margin:` in you
 
 ["cc_boot:preset:*"]
 title = "Apply Limine Theme Preset"
-short = "Applies a curated color palette (`Fallout`, `Nightcity`, `Amber CRT`, or `Arch Blue`) to the Limine draft."
+short = "Applies a curated color palette (`Fallout`, `Cyberdeck`, `Amber CRT`, or `Arch Blue`) to the Limine draft."
 verbose = "Updates foreground, bright foreground, terminal background RGB, branding accent, backdrop, and all 8 ANSI palette slots in the live preview without touching disk until you click Apply."
 
 ["cc_boot:wp_import"]
@@ -136,7 +136,7 @@ title = "Adjust Limine Boot Setting"
 short = "Stages a `timeout` or `default_entry` change in the pending `limine.conf` draft."
 
 # ==============================================================================
-# TELEMETRY -> RECOVERY, DUSKCITY LIVE & GOLDEN IMAGES (`cc_telemetry_recovery.py`)
+# TELEMETRY -> RECOVERY, LIVE RESCUE & GOLDEN IMAGES (`cc_telemetry_recovery.py`)
 # ==============================================================================
 ["cc_sys:rescue_refresh"]
 title = "Probe Recovery & Chroot Environment"
@@ -146,7 +146,7 @@ verbose = "Queries free ESP space, `recovery.squashfs` and `nc-rescue.efi` prese
 ["cc_sys:rescue_build_full_term"]
 title = "Build Full Rescue SquashFS + UKI"
 short = "Opens an interactive root terminal running `nc-rescue --build-recovery` to pack a fresh `recovery.squashfs` and UKI."
-verbose = "Creates a bootable live-in-RAM SquashFS image of the Nightcity environment alongside its initramfs/UKI on the ESP so you can recover even if the encrypted root LV fails."
+verbose = "Creates a bootable live-in-RAM SquashFS image of the NC-UI rescue environment alongside its initramfs/UKI on the ESP so you can recover even if the encrypted root LV fails."
 diagram = "boot_recovery"
 diagram_focus = "rescue"
 
@@ -156,7 +156,7 @@ short = "Runs `sudo nc-rescue --sync-ncui` in a terminal to update NC-UI inside 
 
 ["cc_sys:rescue_build_ask"]
 title = "Rebuild & Sign Rescue UKI"
-short = "Requests confirmation before rebuilding the Duskcity Rescue UKI (`nc-rescue.efi`) on the ESP."
+short = "Requests confirmation before rebuilding the Live Rescue UKI (`nc-rescue.efi`) on the ESP."
 
 ["cc_sys:rescue_build_do"]
 title = "Confirm Rescue UKI Build"
@@ -185,7 +185,7 @@ short = "Configures `nc-rescue` (`sign_sbctl=false`) to skip Secure Boot signing
 ["cc_sys:dc_commit"]
 title = "Commit Live RAM Changes to Disk"
 short = "Launches `sudo nc-rescue commit` in a terminal to persist changes from the live RAM SquashFS overlay onto the root LV."
-verbose = "Designed for Duskcity live-recovery sessions: syncs your repaired `/etc`, packages, or configs from RAM back to the physical encrypted root partition."
+verbose = "Designed for Live Rescue recovery sessions: syncs your repaired `/etc`, packages, or configs from RAM back to the physical encrypted root partition."
 diagram = "boot_recovery"
 diagram_focus = "commit"
 
@@ -211,14 +211,14 @@ short = "Runs `nc-chroot candidates-tsv` to enumerate host and external disks wi
 
 ["cc_sys:dc_chroot"]
 title = "Open Encrypted Chroot Terminal"
-short = "Launches `sudo nc-chroot` in a terminal to unlock LUKS2, activate LVM, mount `/run/nightcity-chroot`, and enter shell."
+short = "Launches `sudo nc-chroot` in a terminal to unlock LUKS2, activate LVM, mount `/run/ncui-chroot`, and enter shell."
 verbose = "Automatically binds `/dev`, `/proc`, `/sys`, `/run`, and the target ESP so you can repair kernels, `mkinitcpio`, `sbctl`, or `limine.conf` offline."
 diagram = "boot_recovery"
 diagram_focus = "chroot"
 
 ["cc_sys:chroot_umount"]
 title = "Unmount & Close Chroot"
-short = "Runs `nc-chroot -u` to unmount `/run/nightcity-chroot` cleanly and close any unlocked LVM/LUKS mappers."
+short = "Runs `nc-chroot -u` to unmount `/run/ncui-chroot` cleanly and close any unlocked LVM/LUKS mappers."
 
 ["cc_sys:dc_golden_save"]
 title = "Capture Golden Image to Vault"

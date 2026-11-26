@@ -16,13 +16,13 @@ from ui.kit import (
     SelectPill,
     StateBadge,
     Txt,
+    feedback_cards,
     get_active_inline_entry,
     get_inline_entry_buffer,
 )
 from panels.cc_engine_telemetry import (
     _build_guide_box,
     _collect_backup_data,
-    _feedback_cards,
     ensure_backups_loaded,
 )
 
@@ -55,13 +55,12 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     vcfg = data["vault_cfg"]
     icfg = data["ident_cfg"]
     h_sum = data["hanoi_summary"]
-    cfg_open, cfg_fold_btn = FoldToggle(cc_panel, "backups_cfg_open", uri_prefix="ui:state")
 
-    cards = _feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
-    bak_stat = f"{icfg.get('sys_alias', 'nc')} · {str(vcfg.get('protocol', 'smb')).upper()}"
+    cards = feedback_cards("system", "cc_system.system_control_status") + build_privilege_modal_card(cc_panel, canvas)
+    bak_stat = f"{icfg.get('sys_alias') or icfg.get('hostname', '-')} · {str(vcfg.get('protocol', 'smb')).upper()}"
     cards.extend(_build_guide_box(cc_panel, canvas, "guide_backups_open", "guide_bak", "backups", bak_stat))
 
-    # ── Card 1 (TOP): Vault & Identity Configuration + Mount Status ───────────
+    # ── Card 1 (TOP): Vault Target Strip (Config lives in telemetry/vault) ────
     proto = str(vcfg.get("protocol", "smb")).upper()
     tgt = vcfg.get("host") or nas.get("base") or "-"
     hdr1_acts = [StateBadge(nas_mounted, t("cc_system.vault_mounted"), t("cc_system.vault_offline"))]
@@ -72,46 +71,16 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         ])
     else:
         hdr1_acts.append(ActionBtn(t("cc_system.mount_nas"), "cc_sys:mount_nas", tone="apply"))
-    hdr1_acts.append(cfg_fold_btn)
+    hdr1_acts.append(ActionBtn(t("cc_system.vault_configure_btn"), "cc_sys:vault_goto_tab", tone="neutral"))
 
-    box1 = Box(t("cc_system.vault_cfg_sec"), icon="\uf013", actions=hdr1_acts, highlighted=False)
+    box1 = Box(t("cc_system.vault_cfg_sec"), icon="\uf233", actions=hdr1_acts, highlighted=False)
     box1.add_row(" ")
-    if cfg_open:
-        cur_p = str(vcfg.get("protocol", "smb")).lower()
-        p_pills = " ".join(
-            SelectPill(p.upper(), f"cc_sys:vault_cfg:protocol:{p}", selected=(cur_p == p))
-            for p in ("smb", "nfs", "ssh", "local")
-        )
-        box1.add_kv(t("cc_system.vault_cfg_proto"), p_pills)
-
-        host_fld = InlineField("vault_host", "cc_sys:vault_host_open", value=str(vcfg.get("host", "")), placeholder=t("cc_system.vault_ph_host"), width=20)
-        mp_fld = InlineField("vault_mp", "cc_sys:vault_mp_open", value=str(vcfg.get("mountpoint", "/nas")), placeholder="/nas..", width=20)
-        box1.add_kv(t("cc_system.vault_cfg_host_mp"), f"{host_fld}   {Txt('->', role='schema')}   {mp_fld}")
-
-        if cur_p == "smb":
-            sh_val = ",".join(str(s) for s in (vcfg.get("shares") or []))
-            sh_fld = InlineField("vault_shares", "cc_sys:vault_shares_open", value=sh_val, placeholder=t("cc_system.vault_ph_shares"), width=34)
-            box1.add_kv(t("cc_system.vault_cfg_shares"), sh_fld)
-        else:
-            rp_fld = InlineField("vault_rpath", "cc_sys:vault_rpath_open", value=str(vcfg.get("remote_path", "")), placeholder="/export/..", width=34)
-            box1.add_kv(t("cc_system.vault_cfg_rpath"), rp_fld)
-
-        if cur_p == "ssh":
-            u_fld = InlineField("vault_user", "cc_sys:vault_user_open", value=str(vcfg.get("ssh_user", "")), placeholder="user..", width=20)
-            box1.add_kv(t("cc_system.vault_cfg_ssh_user"), u_fld)
-
-        sub_fld = InlineField("vault_subdir", "cc_sys:vault_subdir_open", value=str(vcfg.get("backup_root_subdir", "")), width=20)
-        pkg_fld = InlineField("vault_pkgdir", "cc_sys:vault_pkgdir_open", value=str(vcfg.get("pkglist_subdir", "")), width=20)
-        box1.add_kv(t("cc_system.vault_cfg_subdirs"), f"{sub_fld}   {Txt('/', role='schema')}   {pkg_fld}")
-
-        al_fld = InlineField("vault_alias", "cc_sys:vault_alias_open", value=str(icfg.get("sys_alias", "")), width=14)
-        fo_fld = InlineField("vault_folder", "cc_sys:vault_folder_open", value=str(icfg.get("sys_folder", "")), width=22)
-        box1.add_kv(t("cc_system.vault_cfg_identity"), f"{al_fld}   {Txt('/', role='schema')}   {fo_fld}")
-    else:
-        box1.add_kv(
-            t("cc_system.vault_cfg_summary"),
-            Txt(f"{proto} · {tgt} -> {nas['base']} · {icfg.get('sys_alias', '-')}/{icfg.get('sys_folder', '-')}", role="val"),
-        )
+    vis_k = f"cc_system.vault_vis_{str(vcfg.get('mount_visibility', 'symlink')).lower()}"
+    sum_txt = f"{proto} · {tgt} -> {nas['base']} ({nas['count']}/{nas['total']})"
+    box1.add_kv(
+        t("cc_system.vault_cfg_summary"),
+        f"{Txt(sum_txt, role='val')}  {Txt(t(vis_k), role='schema')}",
+    )
     box1.add_row(" ")
     cards.append(box1)
 
@@ -187,7 +156,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         trigger_uri="cc_sys:hanoi_filter_open",
         clear_uri="cc_sys:hanoi_filter_clear",
         width=22,
-        active=bool(raw_q),
+        active=False,
     )
 
     items = data["hanoi_list_items"] or []
@@ -309,7 +278,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         role_lbl = sel_item["role"] if sel_item else "-"
         box4.add_kv(
             t("cc_system.hanoi_insp_path"),
-            Txt(sel_path, role="focus"),
+            Txt(sel_path, role="val"),
             right_markup=f"{Txt(st_lbl, role=_state_role(st_lbl))}  {Txt(role_lbl, role='schema')}",
         )
 

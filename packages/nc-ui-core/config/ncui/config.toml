@@ -1,17 +1,17 @@
 [general]
-hover_tooltip_delay = 2.0
-language = "en"# "en", "it", o qualsiasi file <lang>.toml in locales/ o ~/.config/nc-ui/locales/
+hover_tooltip_delay = 0.7
+language = "en" # "en", "it", or any <lang>.toml in locales/ or ~/.config/ncui/locales/
 log_file = "/tmp/nc-ui.log"
 log_level = 3
 enable_hover_tooltips = true
-terminal = "ghostty"# "auto" cerca ghostty, kitty, foot, alacritty
-pkg_manager = "paru" # "auto", "paru", "yay", "pacman", "apt", "dnf", "zypper"
+terminal = "auto" # "auto" searches installed terminals (ghostty, kitty, foot, alacritty, ...)
+pkg_manager = "auto" # "auto", "paru", "yay", "pacman", "apt", "dnf", "zypper"
 
 [control_center]
 hide_unavailable_settings = false
 panel_style = "standard"
 width_px = 960
-side = "right" # "left" oppure "right"
+side = "right" # "left" or "right"
 inner_padding = 10
 outer_margin = 8
 
@@ -21,8 +21,9 @@ action = "clipboard_satty" # "clipboard" | "satty" | "save" | "clipboard_satty"
 [panels.refresh_ms]
 calendar      = 0
 notifications = 1500
-ram           = 2000
-cpu           = 2000
+ram           = 1000
+cpu           = 1000
+gpu           = 1000
 network       = 1500
 audio         = 1500
 capture       = 0
@@ -30,58 +31,42 @@ display       = 2000
 clipboard     = 1500
 power         = 3000
 ups           = 3000
+kb_layout     = 2000
 storage       = 5000
+session       = 0
 
 [network]
-# "auto" rileva tutte le interfacce fisiche e tunnel attivi
+# "auto" monitors all active physical interfaces and tunnels
 monitored_interfaces = "auto"
-default_speed_unit = "bytes" # "bytes" (kB/s, MB/s) oppure "bits" (kb/s, Mb/s)
-show_bar_speed = false       # true mostra download/upload e interfaccia sulla Waybar, false mostra solo le 3 icone
+default_speed_unit = "bytes" # "bytes" (kB/s, MB/s) or "bits" (kb/s, Mb/s)
+show_bar_speed = false       # true shows download/upload and interface on Waybar; false shows compact status icons
 
 [network.wan]
-# Lascia primary_ip = "" su macchine generiche per disattivare il rilevamento failover
-primary_ip = "212.97.58.189"
-primary_label = "FTTH Primary"
-failover_label = "4G Failover"
+# Leave primary_ip = "" on generic hosts to disable dual-WAN failover tracking
+primary_ip = ""
+primary_label = "Primary WAN"
+failover_label = "Failover WAN"
 
-# Nodi monitorati nel Tab Diagnostica. Se la lista è vuota, usa Default Gateway + 1.1.1.1
-[[network.watchdog]]
-name = "EVA01 Router"
-host = "10.10.0.1"
-
-[[network.watchdog]]
-name = "AdGuard DNS"
-host = "10.10.0.2"
-
-[[network.watchdog]]
-name = "Cudy Switch"
-host = "10.10.0.3"
-
-[[network.watchdog]]
-name = "NASUS UGREEN"
-host = "10.10.0.20"
-
-[[network.watchdog]]
-name = "Cloudflare WAN"
-host = "1.1.1.1"
+# Watchdog nodes monitored in Network -> WAN & Routing. If empty, uses Default Gateway + 1.1.1.1
+watchdog = []
 
 [power.nut]
-enabled = true
-host = "10.99.99.1"
+enabled = false
+host = "127.0.0.1"
 port = 3493
-ups_name = "ups0"
+ups_name = ""
 poll_interval = 5
 low_pct = 20
 
 [storage.nas]
-enabled = true
-host = "10.10.0.20"
-ssh_user = "damiano"
+enabled = false
+host = ""
+ssh_user = ""
 
 [waybar_plugins]
-lock_cmd = "/usr/bin/robcolm \"--lock\" \"--user\" \"damiano\""
-media_width_pct = 60
-window_width_pct = 40
+lock_cmd = ""
+media_width_pct = 35
+window_width_pct = 45
 
 [wallpaper]
 # Optional explicit path to the nc-matrix binary; leave empty to auto-detect from PATH.

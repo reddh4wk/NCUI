@@ -10,19 +10,98 @@ import signal
 import time
 
 try:
-    from core.config import CONFIG_DIR
+    from core.config import get_config_dir
 except ImportError:
-    CONFIG_DIR = os.path.expanduser("~/.config/nc-ui")
+    def get_config_dir() -> str:
+        base = os.path.expanduser(os.environ.get("XDG_CONFIG_HOME", "").strip() or "~/.config")
+        ncui = os.path.join(base, "ncui")
+        legacy = os.path.join(base, "nc-ui")
+        if not os.path.exists(ncui) and os.path.isdir(legacy) and not os.path.islink(legacy):
+            return legacy
+        return ncui
 
+try:
+    from core.paths import find_bin as _find_bin
+except ImportError:
+    _find_bin = None
+
+CONFIG_DIR = get_config_dir()
 PAD_PROFILES_FILE = os.path.join(CONFIG_DIR, "pad_profiles.json")
 PAD_MAPPER_PID_FILE = "/tmp/nc_pad_mapper.pid"
 PAD_MAPPER_STATUS_FILE = "/tmp/nc_pad_mapper_status.json"
 PAD_MAPPER_BIN = (
-    shutil.which("nc-pad-mapper")
+    (_find_bin("nc-pad-mapper") if _find_bin else "")
+    or shutil.which("nc-pad-mapper")
     or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "bin", "nc-pad-mapper")
 )
 MACROS_FILE = os.path.join(CONFIG_DIR, "macros.json")
 CONTROLLERS_FILE = os.path.join(CONFIG_DIR, "controllers.json")
+
+
+def _pad_profiles_path() -> str:
+    return os.path.join(get_config_dir(), "pad_profiles.json")
+
+
+def _macros_path() -> str:
+    return os.path.join(get_config_dir(), "macros.json")
+
+
+def _controllers_path() -> str:
+    return os.path.join(get_config_dir(), "controllers.json")
+
+
+def bitmask_has(hex_line: str, bit_num: int) -> bool:
+    if not isinstance(hex_line, str) or not hex_line or not isinstance(bit_num, int) or isinstance(bit_num, bool) or bit_num < 0:
+        return False
+    words = hex_line.strip().split()
+    word_idx = bit_num // 64
+    bit_pos = bit_num % 64
+    if word_idx >= len(words):
+        return False
+    try:
+        val = int(words[len(words) - 1 - word_idx], 16)
+        return bool((val >> bit_pos) & 1)
+    except ValueError:
+        return False
+
+
+def iter_proc_input_blocks() -> list[dict]:
+    """Parse `/proc/bus/input/devices` into normalized device info dicts."""
+    if not os.path.exists("/proc/bus/input/devices"):
+        return []
+    try:
+        txt = open("/proc/bus/input/devices", "r", encoding="utf-8", errors="ignore").read()
+    except OSError:
+        return []
+    blocks: list[dict] = []
+    for blk in txt.strip().split("\n\n"):
+        info = {"bus": "", "vendor": "", "product": "", "name": "", "phys": "", "uniq": "", "handlers": [], "ev": "", "key": "", "abs": "", "ff": "", "prop": ""}
+        for ln in blk.splitlines():
+            if ln.startswith("I:"):
+                m = re.search(r"Bus=([0-9a-fA-F]+)\s+Vendor=([0-9a-fA-F]+)\s+Product=([0-9a-fA-F]+)", ln)
+                if m:
+                    info["bus"], info["vendor"], info["product"] = m.group(1).lower(), m.group(2).lower(), m.group(3).lower()
+            elif ln.startswith("N: Name="):
+                info["name"] = ln.split("=", 1)[1].strip().strip('"')
+            elif ln.startswith("P: Phys="):
+                info["phys"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("U: Uniq="):
+                info["uniq"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("H: Handlers="):
+                info["handlers"] = ln.split("=", 1)[1].strip().split()
+            elif ln.startswith("B: EV="):
+                info["ev"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: KEY="):
+                info["key"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: ABS="):
+                info["abs"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: FF="):
+                info["ff"] = ln.split("=", 1)[1].strip()
+            elif ln.startswith("B: PROP="):
+                info["prop"] = ln.split("=", 1)[1].strip()
+        if info["name"]:
+            blocks.append(info)
+    return blocks
 
 # Verified against <linux/input.h> and <linux/input-event-codes.h> on x86_64
 _EV_KEY = 0x01
@@ -587,10 +666,11 @@ def norm_pad_store(raw: dict | None) -> dict:
 
 
 def load_pad_store() -> dict:
-    if not os.path.exists(PAD_PROFILES_FILE):
+    p_file = _pad_profiles_path()
+    if not os.path.exists(p_file):
         return default_pad_store()
     try:
-        data = json.load(open(PAD_PROFILES_FILE, "r", encoding="utf-8"))
+        data = json.load(open(p_file, "r", encoding="utf-8"))
         return norm_pad_store(data)
     except Exception:
         return default_pad_store()
@@ -598,14 +678,15 @@ def load_pad_store() -> dict:
 
 def save_pad_store(store: dict) -> bool:
     norm = norm_pad_store(store)
+    p_file = _pad_profiles_path()
     try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
+        os.makedirs(os.path.dirname(p_file), exist_ok=True)
         payload = json.dumps(norm, indent=2)
-        tmp = f"{PAD_PROFILES_FILE}.tmp"
+        tmp = f"{p_file}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(payload)
-        os.replace(tmp, PAD_PROFILES_FILE)
-        return os.path.exists(PAD_PROFILES_FILE)
+        os.replace(tmp, p_file)
+        return os.path.exists(p_file)
     except OSError:
         return False
 
@@ -697,14 +778,30 @@ def eval_8way_directions(
 
 def compile_macro_events(macro: dict) -> list[tuple[float, int, int]]:
     """Compile a Macro Studio dict into sorted (time_ms, evdev_keycode, value) tuples."""
+    if not isinstance(macro, dict):
+        return []
     steps = macro.get("steps") or []
+    if not isinstance(steps, (list, tuple)):
+        return []
     t_mode = str(macro.get("timing_mode", "recorded"))
-    fixed_ms = max(5, int(macro.get("fixed_delay_ms", 25) or 25))
-    speed = max(0.1, float(macro.get("speed_mult", 1.0) or 1.0))
+    try:
+        fixed_ms = max(5, int(macro.get("fixed_delay_ms", 25) or 25))
+    except (ValueError, TypeError):
+        fixed_ms = 25
+    try:
+        speed_f = float(macro.get("speed_mult", 1.0) or 1.0)
+        speed = max(0.1, speed_f) if math.isfinite(speed_f) else 1.0
+    except (ValueError, TypeError):
+        speed = 1.0
     events: list[tuple[float, int, int]] = []
     cur_ms = 0.0
     for st in steps:
-        kc = int(st.get("keycode", 0) or 0)
+        if not isinstance(st, dict):
+            continue
+        try:
+            kc = int(st.get("keycode", 0) or 0)
+        except (ValueError, TypeError):
+            continue
         if kc <= 0 or kc >= 256:
             continue
         if t_mode == "zero":
@@ -718,8 +815,15 @@ def compile_macro_events(macro: dict) -> list[tuple[float, int, int]]:
             events.append((cur_ms, kc, 1))
             events.append((cur_ms + hold, kc, 0))
         else:
-            wait = max(0.0, float(st.get("delay_ms", 0))) / speed
-            hold = max(10.0, float(st.get("hold_ms", 50))) / speed
+            try:
+                raw_delay = float(st.get("delay_ms", 0) or 0)
+                raw_hold = float(st.get("hold_ms", 50) or 50)
+            except (ValueError, TypeError):
+                continue
+            if not (math.isfinite(raw_delay) and math.isfinite(raw_hold)):
+                continue
+            wait = max(0.0, raw_delay) / speed
+            hold = max(10.0, raw_hold) / speed
             cur_ms += wait
             events.append((cur_ms, kc, 1))
             events.append((cur_ms + hold, kc, 0))

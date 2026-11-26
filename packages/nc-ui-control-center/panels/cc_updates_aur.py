@@ -11,11 +11,21 @@ from panels.cc_engine_updates import (
     build_sync_actions,
     compute_table_fit_rows,
     ensure_updates_loaded,
+    get_pkg_backend,
     get_tab_query,
 )
 
 
 def _build_aur_card(cc_panel, canvas: Canvas) -> Box:
+    backend = get_pkg_backend()
+    if backend != "pacman":
+        b = Box(t("cc_updates.aur_card_title"), icon="\uf1b3", highlighted=False)
+        b.fill_window = True
+        b.add_row(" ")
+        b.add_row(f"  {Txt(t('cc_updates.aur_arch_only'), role='inactive')}")
+        b.add_row(" ")
+        return b
+
     aur = _STATE["aur"]
     foreign = _STATE["foreign"]
     aur_f = _STATE.get("aur_filter", "all")
@@ -23,7 +33,7 @@ def _build_aur_card(cc_panel, canvas: Canvas) -> Box:
         aur_f = "all"
     raw_q, q = get_tab_query("aur")
     show_all = bool(_STATE.get("show_all_aur"))
-    aur_tool = probe.get_preferred_pkg_manager(aur_only=True) or "paru"
+    aur_tool = probe.get_preferred_pkg_manager(aur_only=True)
 
     b = Box(
         t("cc_updates.aur_card_title"),
@@ -34,10 +44,12 @@ def _build_aur_card(cc_panel, canvas: Canvas) -> Box:
     b.fill_window = True
     b.add_row(" ")
     b.add_kv(
-        t("cc_updates.aur_paru", p0=aur_tool),
+        t("cc_updates.aur_paru", p0=aur_tool or t("common.none")),
         Txt(t("cc_updates.aur_summary", p0=len(aur), p1=len(foreign)), role="attention" if aur else "vitality"),
-        right_markup=ActionBtn(t("cc_updates.upgrade_aur"), "cc_upd:upgrade_aur", tone="apply") if aur else "",
+        right_markup=ActionBtn(t("cc_updates.upgrade_aur"), "cc_upd:upgrade_aur", tone="apply") if (aur and aur_tool) else "",
     )
+    if not aur_tool:
+        b.add_row(f"  {Txt(t('cc_updates.aur_helper_missing'), role='attention')}")
 
     hdr_kv_count = len(b._ops)
     max_fit = compute_table_fit_rows(cc_panel, canvas, header_kv_count=hdr_kv_count, has_section=True)
@@ -100,7 +112,7 @@ def _build_aur_card(cc_panel, canvas: Canvas) -> Box:
             nm = e["name"]
             if e["pending"]:
                 st_cell = Txt(e["new_ver"], role="vitality")
-                act_btn = ActionBtn(t("cc_updates.update_one"), f"cc_upd:pkg_up:{nm}", tone="apply", min_chars=btn_w)
+                act_btn = ActionBtn(t("cc_updates.update_one"), f"cc_upd:pkg_up:{nm}", tone="apply", min_chars=btn_w) if aur_tool else ""
             else:
                 st_cell = Txt(t("cc_updates.installed_foreign_badge"), role="schema")
                 act_btn = ActionBtn(t("cc_updates.remove_btn"), f"cc_upd:rm_foreign:{nm}", tone="danger_soft", min_chars=btn_w)

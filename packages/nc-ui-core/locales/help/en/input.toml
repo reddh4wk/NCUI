@@ -107,7 +107,7 @@ short = "Reads a cursor archive file path from the Wayland clipboard and install
 
 ["cc_pers:del_cursor:*"]
 title = "Delete User Cursor Theme"
-short = "Deletes this user-installed cursor theme folder from `~/.local/share/icons/` (and `~/.config/nc-ui/cursors/`)."
+short = "Deletes this user-installed cursor theme folder from `~/.local/share/icons/` (and `~/.config/ncui/cursors/`)."
 
 # ==============================================================================
 # INPUT -> KEYBOARD & LAYOUTS (`panels/cc_input_keyboard.py`)
@@ -452,7 +452,7 @@ short = "Clears the Shortcut Composer draft to create a brand-new `niri` keybind
 ["cc_kbd:restore_defaults:*"]
 title = "Restore Default Niri Shortcuts"
 short = "Checks default `niri` bindings for this scope (`window`, `system`, or `apps`) and launches the Conflict Wizard if any user binds overlap."
-verbose = "Compares canonical Nightcity/Niri shortcuts against your active `config.kdl` `binds` block; overlapping keys open the Conflict Resolution Wizard rather than silently overwriting custom bindings."
+verbose = "Compares canonical NC-UI/Niri shortcuts against your active `config.kdl` `binds` block; overlapping keys open the Conflict Resolution Wizard rather than silently overwriting custom bindings."
 
 ["cc_kbd:reload_niri"]
 title = "Reload Niri Configuration"

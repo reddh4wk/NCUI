@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 from urllib.parse import quote
 from core import probe
+from core.config import get_hide_unavailable_settings
 from core.i18n import t
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, SelectPill, Slider, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, SelectPill, Slider, StateBadge, Txt, feedback_cards
 from panels.cc_engine_sound import (
     ALERT_SOUNDS,
     speaker_icon,
@@ -11,8 +12,8 @@ from panels.cc_engine_sound import (
     get_alert_sound,
     get_audio_devices,
     is_easyeffects_running,
+    is_pipewire_running,
     channel_short_label,
-    _feedback_cards,
     _get_loopback_active,
 )
 
@@ -47,8 +48,9 @@ def _alert_label(sid: str) -> str:
 def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
     devs = get_audio_devices(is_input=is_input)
     max_vol = get_max_volume()
+    vol_w = 30 if max_vol > 100 else 20
     scope = "in" if is_input else "out"
-    cards = _feedback_cards()
+    cards = feedback_cards("sound", "cc_audio.pipewire_audio_status")
 
     top_box = Box(
         t("cc_audio.input_loopback_noise_filter") if is_input else t("cc_audio.output_amplification_channel_test"),
@@ -62,16 +64,17 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
             f"{SelectPill(t('cc_audio.100_safe'), 'cc_aud:max_vol:100', selected=not over_on)} {SelectPill(t('cc_audio.150_boost'), 'cc_aud:max_vol:150', selected=over_on)}",
         )
         def_sink = next((d for d in devs if d.get("is_default")), devs[0] if devs else None)
-        chs = def_sink.get("channels", []) if def_sink else []
-        if not chs:
-            chs = ["front-left", "front-right"]
-        n_ch = max(1, min(8, len(chs)))
-        sweep_btn = ActionBtn(t("cc_audio.test_channels_n", p0=n_ch), "cc_aud:test_ch", tone="neutral")
-        pos_btns = " ".join(
-            ActionBtn(channel_short_label(ch), f"cc_aud:test_pos:{idx + 1}", tone="neutral")
-            for idx, ch in enumerate(chs[:6])
-        )
-        top_box.add_kv(t("cc_audio.speaker_test"), f"{sweep_btn}  {pos_btns}", requires=["speaker-test"])
+        if def_sink:
+            chs = def_sink.get("channels") or ["front-left", "front-right"]
+            n_ch = max(1, min(8, len(chs)))
+            sweep_btn = ActionBtn(t("cc_audio.test_channels_n", p0=n_ch), "cc_aud:test_ch", tone="neutral")
+            pos_btns = " ".join(
+                ActionBtn(channel_short_label(ch), f"cc_aud:test_pos:{idx + 1}", tone="neutral")
+                for idx, ch in enumerate(chs[:6])
+            )
+            top_box.add_kv(t("cc_audio.speaker_test"), f"{sweep_btn}  {pos_btns}", requires=["speaker-test"])
+        else:
+            top_box.add_kv(t("cc_audio.speaker_test"), Txt(t("audio.no_output_detected"), role="inactive"), requires=["speaker-test"])
         cur_alert = get_alert_sound()
         alert_pills = " ".join(
             SelectPill(_alert_label(sid), f"cc_aud:alert:{sid}", selected=(cur_alert == sid))
@@ -101,7 +104,7 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
             f"cc_aud:{scope}:vol:{q_name}",
             min_val=0,
             max_val=max_vol,
-            width=20,
+            width=vol_w,
             show_pct=True,
             step_buttons=True,
             scroll_prefix=f"cc_aud:{scope}:scroll:{q_name}",
@@ -110,7 +113,7 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
         def_b = SelectPill(t("cc_audio.default"), f"cc_aud:{scope}:def:{q_name}", selected=d["is_default"])
         mut_b = ActionBtn(t("audio.unmute") if d["mute"] else t("audio.mute"), f"cc_aud:{scope}:mute:{q_name}", tone="apply" if d["mute"] else "danger_soft")
         box = Box(
-            canvas.truncate_plain(d["desc"], 44),
+            d["desc"],
             icon="\uf130" if is_input else speaker_icon(d["vol"], d["mute"]),
             actions=[def_b, mut_b],
             highlighted=False,
@@ -154,7 +157,7 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
                     f"cc_aud:out:lfe:{q_name}",
                     min_val=0,
                     max_val=max_vol,
-                    width=20,
+                    width=vol_w,
                     show_pct=True,
                     step_buttons=True,
                     scroll_prefix=f"cc_aud:out:lfe_scroll:{q_name}",
@@ -162,11 +165,17 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
                 )
                 box.add_kv(t("cc_audio.subwoofer_lfe"), lfe_sl, requires=["pactl"])
         st_badge = StateBadge(d["state"] == "RUNNING", d["state"], d["state"])
-        mute_badge = f"  {StateBadge(False, '', t('cc_audio.mute'))}" if d["mute"] else ""
+        mute_badge = f"  {Badge(t('cc_audio.mute'), style='warn')}" if d["mute"] else ""
         box.add_kv(t("cc_audio.state_spec"), f"{st_badge}{mute_badge}  {Txt(d['spec'], role='val')}")
         cards.append(box)
     if not devs:
-        eb = Box(t("cc_audio.no_device"), icon="\uf6a9", highlighted=False)
+        eb_actions = []
+        if not probe.has_bin("pactl"):
+            if not get_hide_unavailable_settings():
+                eb_actions.append(Badge(t("ui.missing", p0="pactl"), style="warn"))
+        elif not is_pipewire_running():
+            eb_actions.append(StateBadge(False, "", t("cc_audio.pipewire_offline")))
+        eb = Box(t("cc_audio.no_device"), icon="\uf131" if is_input else "\uf6a9", actions=eb_actions, highlighted=False)
         eb.add_row(f"  {Txt(t('audio.no_input_detected') if is_input else t('audio.no_output_detected'), role='inactive')}")
         cards.append(eb)
     return cards

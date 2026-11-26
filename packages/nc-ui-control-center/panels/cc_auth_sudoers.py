@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-import glob
-import os
-import shlex
-from core import probe
 from core.i18n import t
 from core.privileges import (
     build_privilege_modal_card,
@@ -116,7 +112,7 @@ def _build_sudoers_standard(cc_panel, canvas: Canvas) -> list:
             t("cc_auth.sha_col"),
             t("cc_auth.state"),
         ],
-        widths=[18, "flex", 15, 13],
+        widths=[18, "flex", 22, 13],
         rows=h_rows,
         aligns=["left", "left", "left", "right"],
     )

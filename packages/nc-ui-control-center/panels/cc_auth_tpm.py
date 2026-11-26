@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-import glob
-import os
-import shlex
 from core import probe
 from core.i18n import t
-from core.privileges import (
-    build_privilege_modal_card,
-    get_privileged_action,
-    list_privileged_actions,
-)
-from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Box, StateBadge, Txt
-from panels.cc_engine_auth import (
-    _feedback_cards,
-    _probe_tpm_luks,
-)
+from panels.cc_engine_auth import _feedback_cards, _probe_tpm_luks
 
 
 def _build_tpm_standard(cc_panel, canvas: Canvas) -> list:
@@ -39,10 +27,15 @@ def _build_tpm_standard(cc_panel, canvas: Canvas) -> list:
         b.add_collapsible(cc_panel, "auth_sbctl", t("cc_auth.sbctl_status_details"), _fill_sb)
 
     luks_label = ", ".join(f"{dev} ({sz})" for dev, sz in d["luks_devs"]) or t("cc_auth.none_detected_or_hidden")
+    luks_acts = []
+    if d["luks_devs"]:
+        luks_acts.append(ActionBtn(t("cc_auth.inspect_slots_term"), "cc_auth:luks_term", tone="neutral"))
+        if d["tpm"] and probe.has_bin("systemd-cryptenroll"):
+            luks_acts.append(ActionBtn(t("cc_auth.tpm2_enroll_term"), "cc_auth:tpm_enroll", tone="warn"))
     b.add_kv(
         t("cc_auth.luks2_containers"),
         Txt(luks_label, role="val" if d["luks_devs"] else "inactive"),
-        right_markup=f"{ActionBtn(t('cc_auth.inspect_slots_term'), 'cc_auth:luks_term', tone='neutral')} {ActionBtn(t('cc_auth.tpm2_enroll_term'), 'cc_auth:tpm_enroll', tone='warn')}",
+        right_markup=" ".join(luks_acts),
         requires=["cryptsetup"],
     )
     b.add_row(" ")

@@ -8,6 +8,7 @@ gi.require_version("Pango", "1.0")
 gi.require_version("PangoCairo", "1.0")
 from gi.repository import Gdk, Gtk, Pango, PangoCairo  # noqa: E402
 
+from core import probe  # noqa: E402
 from core.config import THEME  # noqa: E402
 from core.i18n import t  # noqa: E402
 from core.privileges import build_privilege_modal_card  # noqa: E402
@@ -23,6 +24,9 @@ from ui.kit import (  # noqa: E402
     StateBadge,
     Txt,
     get_semantic_palette,
+    hex_to_rgba_f as _hex_rgba,
+    rounded_rect_path as _rounded_rect,
+    temp_role,
 )
 from ui.markup import format_bytes_short  # noqa: E402
 from ui.widgets import AsciiCard  # noqa: E402
@@ -46,35 +50,7 @@ def _use_role(pct: float | None) -> str:
 
 
 def _temp_role(temp_c: int | None) -> str:
-    if temp_c is None:
-        return "inactive"
-    if temp_c >= 70:
-        return "fault"
-    if temp_c >= 60:
-        return "attention"
-    return "vitality"
-
-
-def _hex_rgba(hx: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    s = str(hx or "#ffffff").strip().lstrip("#")
-    if len(s) == 8:
-        s = s[2:]
-    if len(s) == 6:
-        try:
-            return (int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0, float(alpha))
-        except ValueError:
-            pass
-    return (1.0, 1.0, 1.0, float(alpha))
-
-
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    r = min(float(r), max(0.0, w * 0.5), max(0.0, h * 0.5))
-    cr.new_sub_path()
-    cr.arc(x + w - r, y + r, r, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - r, y + h - r, r, 0.0, math.pi * 0.5)
-    cr.arc(x + r, y + h - r, r, math.pi * 0.5, math.pi)
-    cr.arc(x + r, y + r, r, math.pi, math.pi * 1.5)
-    cr.close_path()
+    return temp_role(temp_c, warn_c=60.0, fault_c=70.0, ok_role="vitality")
 
 
 def _usage_hex(pct: float | None, pal: dict) -> str:
@@ -530,7 +506,7 @@ class DiskPartitionMapWidget(Gtk.EventBox):
                 ),
                 (
                     t("cc_system.disks_map_spare"),
-                    f"{spare_p}% · {bad_s or 0} bad" if spare_p is not None else t("cc_system.disks_smart_na"),
+                    f"{spare_p}% · {bad_s or 0} {t('cc_system.disks_bad_lbl')}" if spare_p is not None else t("cc_system.disks_smart_na"),
                     float(spare_p) if spare_p is not None else (100.0 if bad_s == 0 else 0.0),
                     "vitality" if (bad_s or 0) == 0 else "fault",
                 ),
@@ -703,10 +679,11 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         sm = sel_obj["smart"]
         bd = sm.get("bad_detail") if isinstance(sm.get("bad_detail"), dict) else {}
         disk_vols = [v for v in dm["volumes"] if v["disk"] == sel_obj["name"]]
+        i_acts = [ActionBtn(t("cc_system.disks_smart_term"), f"cc_sys:disk_smart_term:{sel_obj['path']}", tone="neutral")] if probe.has_bin("smartctl") else None
         i_hdr = Box(
             t("cc_system.disks_insp_title", p0=sel_obj["path"], p1=canvas.truncate_plain(sel_obj["model"], 30)),
             icon="\uf1c0",
-            actions=[ActionBtn(t("cc_system.disks_smart_term"), f"cc_sys:disk_smart_term:{sel_obj['path']}", tone="neutral")],
+            actions=i_acts,
             highlighted=False,
             open_bottom=True,
         )
@@ -754,7 +731,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         if poh is not None:
             end_parts.append(f"{poh}h")
         if pcy is not None:
-            end_parts.append(f"{pcy} cycles")
+            end_parts.append(f"{pcy} {t('cc_system.disks_cycles_lbl')}")
         end_right = Txt(t("cc_system.disks_written_lbl", p0=format_bytes_short(tbw)), role="schema") if tbw else ""
         i_foot.add_kv(
             t("cc_system.disks_insp_endurance"),

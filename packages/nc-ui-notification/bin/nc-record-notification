@@ -6,72 +6,43 @@ import argparse
 import datetime
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
 import sys
 
-HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
-RULES_FILE = os.path.expanduser("~/.config/nc-ui/notifications_rules.json")
-ADDONS_CONF = os.path.expanduser("~/.config/nc-ui/nc-addons.conf")
+
+def _bootstrap_ncui() -> None:
+    cur = os.path.dirname(os.path.realpath(__file__))
+    while cur and cur != os.path.dirname(cur):
+        core_pkg = os.path.join(cur, "packages", "nc-ui-core")
+        if os.path.isdir(core_pkg):
+            if core_pkg not in sys.path:
+                sys.path.insert(0, core_pkg)
+            break
+        cur = os.path.dirname(cur)
+    else:
+        for sys_root in ("/usr/lib/ncui", os.path.dirname(os.path.dirname(os.path.realpath(__file__)))):
+            if os.path.isdir(sys_root) and sys_root not in sys.path:
+                sys.path.insert(0, sys_root)
+    from core.paths import bootstrap_sys_path
+    bootstrap_sys_path(__file__)
+
+
+_bootstrap_ncui()
+
+from core.paths import find_bin
+from panels.cc_engine_notifications import (
+    _get_max_notifications,
+    _load_rules,
+    get_popup_socket_path,
+    is_in_quiet_hours,
+    load_notifs,
+    save_notifs,
+)
+
 _BIN_DIR = os.path.dirname(os.path.realpath(__file__))
-POPUP_BIN = shutil.which("nc-notify-popup") or os.path.join(_BIN_DIR, "nc-notify-popup")
-
-
-def _load_rules() -> dict:
-    base = {
-        "dnd": False,
-        "quiet_enabled": False,
-        "quiet_window": "23:00-07:00",
-        "min_urgency": "low",
-        "muted_apps": [],
-        "popup_enabled": False,
-        "popup_timeout": 5,
-        "popup_position": "top-right",
-        "popup_effect": "slide",
-    }
-    if os.path.exists(RULES_FILE):
-        try:
-            with open(RULES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    base.update(data)
-        except Exception:
-            pass
-    return base
-
-
-def _in_quiet_hours(rules: dict) -> bool:
-    if not rules.get("quiet_enabled"):
-        return False
-    m = re.match(r"^\s*(\d{2}):(\d{2})-(\d{2}):(\d{2})\s*$", str(rules.get("quiet_window") or ""))
-    if not m:
-        return False
-    sh, sm, eh, em = (int(x) for x in m.groups())
-    if sh > 23 or eh > 23 or sm > 59 or em > 59:
-        return False
-    now = datetime.datetime.now()
-    cur_m = now.hour * 60 + now.minute
-    start_m = sh * 60 + sm
-    end_m = eh * 60 + em
-    if start_m == end_m:
-        return True
-    if start_m > end_m:
-        return cur_m >= start_m or cur_m < end_m
-    return start_m <= cur_m < end_m
-
-
-def _get_max_notifications() -> int:
-    if os.path.exists(ADDONS_CONF):
-        try:
-            for ln in open(ADDONS_CONF, "r", encoding="utf-8", errors="ignore"):
-                m = re.match(r"^\s*max_notifications\s*=\s*(\d+)", ln)
-                if m:
-                    return int(m.group(1))
-        except Exception:
-            pass
-    return 50
+POPUP_BIN = find_bin("nc-notify-popup") or os.path.join(_BIN_DIR, "nc-notify-popup")
 
 
 def _dispatch_popup(item: dict) -> None:
@@ -87,7 +58,7 @@ def _dispatch_popup(item: dict) -> None:
             pass
 
     raw = json.dumps(item, ensure_ascii=False)
-    sock_path = f"/tmp/nc_notify_popup_{os.getuid()}.sock"
+    sock_path = get_popup_socket_path()
     if os.path.exists(sock_path):
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -98,7 +69,7 @@ def _dispatch_popup(item: dict) -> None:
         except Exception:
             pass
 
-    if os.path.exists(POPUP_BIN):
+    if POPUP_BIN and os.path.exists(POPUP_BIN):
         try:
             subprocess.Popen(
                 [sys.executable, POPUP_BIN, "--payload", raw],
@@ -115,8 +86,8 @@ def record_notification(app_name: str, summary: str, body: str, urgency: str = "
     if not summary and not body:
         return
 
-    rules = _load_rules()
-    muted = [a.lower() for a in rules.get("muted_apps", [])]
+    rules = _load_rules(check_swaync=False)
+    muted = [str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None]
     if (app_name or "").strip().lower() in muted:
         return
 
@@ -147,38 +118,27 @@ def record_notification(app_name: str, summary: str, body: str, urgency: str = "
     }
 
     max_n = _get_max_notifications()
-    notifs = []
-    if os.path.exists(HIST_FILE):
-        try:
-            with open(HIST_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, list):
-                    notifs = loaded
-        except Exception:
-            pass
+    notifs = load_notifs()
 
     # Avoid duplicate identical items within 1.5 seconds
     if notifs:
         latest = notifs[0]
+        latest_id = latest.get("id")
         if (
-            latest.get("title") == new_item["title"]
+            isinstance(latest_id, (int, float))
+            and not isinstance(latest_id, bool)
+            and latest.get("title") == new_item["title"]
             and latest.get("body") == new_item["body"]
             and latest.get("app_name") == new_item["app_name"]
-            and abs(latest.get("id", 0) - new_item["id"]) < 1500
+            and abs(latest_id - new_item["id"]) < 1500
         ):
             return
 
     notifs.insert(0, new_item)
     notifs = notifs[:max_n]
+    save_notifs(notifs)
 
-    try:
-        os.makedirs(os.path.dirname(HIST_FILE), exist_ok=True)
-        with open(HIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(notifs, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-    if rules.get("popup_enabled") and not rules.get("dnd") and not _in_quiet_hours(rules):
+    if rules.get("popup_enabled") and not rules.get("dnd") and not is_in_quiet_hours(rules, now):
         _dispatch_popup(new_item)
 
 

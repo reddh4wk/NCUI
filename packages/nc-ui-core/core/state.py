@@ -5,20 +5,29 @@ import os
 import tempfile
 import threading
 
-STATE_DIR = os.path.expanduser("~/.cache/nc-ui")
+from core.config import get_cache_dir
+
+STATE_DIR = get_cache_dir()
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 
 
 class StateManager:
-    def __init__(self, path: str = STATE_FILE):
-        self.path = path
+    def __init__(self, path: str | None = None):
+        self._fixed_path = path
         self._lock = threading.RLock()
         self._cache_data: dict | None = None
         self._cache_stat: tuple[int, int, int] | None = None
         self._dirty: bool = False
         self._flush_timer: threading.Timer | None = None
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        except OSError:
+            pass
         atexit.register(self.flush)
+
+    @property
+    def path(self) -> str:
+        return self._fixed_path or os.path.join(get_cache_dir(), "state.json")
 
     def _stat_sig(self) -> tuple[int, int, int] | None:
         try:

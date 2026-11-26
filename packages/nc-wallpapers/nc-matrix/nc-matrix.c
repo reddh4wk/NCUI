@@ -41,7 +41,7 @@
 #include <gtk-layer-shell/gtk-layer-shell.h>
 #include <glib-unix.h>
 
-#define NCMATRIX_VERSION "nc-matrix 1.0.0 (Nightcity high-perf Matrix engine)"
+#define NCMATRIX_VERSION "nc-matrix 1.0.0 (NC-UI high-perf Matrix engine)"
 #define ATLAS_COLS 16
 #define MAX_GLYPHS 256
 #define PALETTE_SIZE 128

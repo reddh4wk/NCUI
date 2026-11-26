@@ -11,26 +11,57 @@ from core.completion import _scan_desktop_entries, invalidate_desktop_cache, nor
 from core.config import CONFIG, _update_toml_key_in_section
 from core.i18n import t
 from core.state import STATE
-from ui.kit import FeedbackBox, start_inline_input
+from ui.kit import feedback_cards, set_feedback, start_inline_input
 
-NIRI_CONFIG_FILE = os.path.expanduser("~/.config/niri/config.kdl")
 
-_DEFAULT_USER_MIMEAPPS = os.path.expanduser("~/.config/mimeapps.list")
-USER_MIMEAPPS = _DEFAULT_USER_MIMEAPPS
+def _xdg_config_home() -> str:
+    val = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    return os.path.expanduser(val) if val else os.path.expanduser("~/.config")
+
+
+def _xdg_data_home() -> str:
+    val = os.environ.get("XDG_DATA_HOME", "").strip()
+    return os.path.expanduser(val) if val else os.path.expanduser("~/.local/share")
+
+
+def get_niri_config_file() -> str:
+    return os.path.join(_xdg_config_home(), "niri", "config.kdl")
+
+
+def get_user_mimeapps_path() -> str:
+    return os.path.join(_xdg_config_home(), "mimeapps.list")
+
+
 SYS_MIMEAPPS_PATHS = [
     "/etc/xdg/mimeapps.list",
     "/usr/local/share/applications/mimeapps.list",
     "/usr/share/applications/mimeapps.list",
 ]
-MIMEINFO_CACHE_PATHS = [
-    os.path.expanduser("~/.local/share/applications/mimeinfo.cache"),
-    "/usr/share/applications/mimeinfo.cache",
-    "/var/lib/flatpak/exports/share/applications/mimeinfo.cache",
-]
+
+
+def _mimeinfo_cache_paths() -> list[str]:
+    return [
+        os.path.join(_xdg_data_home(), "applications", "mimeinfo.cache"),
+        "/usr/share/applications/mimeinfo.cache",
+        "/var/lib/flatpak/exports/share/applications/mimeinfo.cache",
+    ]
+
+
 MIME_GLOBS2_PATH = "/usr/share/mime/globs2"
-USER_MIME_DIR = os.path.expanduser("~/.local/share/mime")
-USER_MIME_XML = os.path.join(USER_MIME_DIR, "packages", "ncui-custom-extensions.xml")
-USER_MIME_GLOBS2 = os.path.join(USER_MIME_DIR, "globs2")
+
+
+def _user_mime_dir() -> str:
+    return os.path.join(_xdg_data_home(), "mime")
+
+
+def _user_mime_xml() -> str:
+    return os.path.join(_user_mime_dir(), "packages", "ncui-custom-extensions.xml")
+
+
+def _user_mime_globs2() -> str:
+    return os.path.join(_user_mime_dir(), "globs2")
+
+
 CUSTOM_EXT_MIME_PREFIX = "text/x-ncui-ext-"
 _GENERIC_MIMES = {"text/plain", "application/octet-stream"}
 
@@ -87,21 +118,11 @@ def invalidate_mime_caches() -> None:
 
 
 def _set_apps_fb(ok: bool, msg: str) -> None:
-    STATE.set("apps", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_apps_fb() -> dict:
-    fb = STATE.get("apps", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
+    set_feedback("apps", ok, msg)
 
 
 def _feedback_cards() -> list:
-    fb = _get_apps_fb()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_apps.apps_systemd_status"), bool(fb["ok"]), fb["msg"])]
+    return feedback_cards("apps", "cc_apps.apps_systemd_status")
 
 
 # --- XDG MIME & Globs2 Engine ---
@@ -137,14 +158,15 @@ def _read_globs2_file(path: str, raw_by_mime: dict, ext_best: dict, weight_boost
 
 def load_mime_globs() -> tuple[dict[str, list[str]], dict[str, str]]:
     global _GLOBS_CACHE
-    cache_id = (MIME_GLOBS2_PATH, USER_MIME_GLOBS2)
+    user_globs2 = _user_mime_globs2()
+    cache_id = (MIME_GLOBS2_PATH, user_globs2)
     if _GLOBS_CACHE is not None and _GLOBS_CACHE[0] == cache_id:
         return _GLOBS_CACHE[1]
 
     raw_by_mime: dict[str, list[tuple[int, str]]] = {}
     ext_best: dict[str, tuple[int, str]] = {}
     _read_globs2_file(MIME_GLOBS2_PATH, raw_by_mime, ext_best, weight_boost=0)
-    _read_globs2_file(USER_MIME_GLOBS2, raw_by_mime, ext_best, weight_boost=1000)
+    _read_globs2_file(user_globs2, raw_by_mime, ext_best, weight_boost=1000)
 
     mime_to_exts: dict[str, list[str]] = {}
     for mime, pairs in raw_by_mime.items():
@@ -207,9 +229,10 @@ def parse_extension_spec(raw: str) -> tuple[str, str, str]:
 
 def _load_custom_ext_map() -> dict[str, str]:
     res: dict[str, str] = {}
-    if os.path.exists(USER_MIME_XML):
+    xml_path = _user_mime_xml()
+    if os.path.exists(xml_path):
         try:
-            root = ET.parse(USER_MIME_XML).getroot()
+            root = ET.parse(xml_path).getroot()
             for mt in root:
                 if not mt.tag.endswith("mime-type"):
                     continue
@@ -228,14 +251,16 @@ def _load_custom_ext_map() -> dict[str, str]:
 
 
 def _save_custom_ext_map(mapping: dict[str, str]) -> tuple[bool, str]:
+    user_xml = _user_mime_xml()
+    user_dir = _user_mime_dir()
     if not mapping:
-        if os.path.exists(USER_MIME_XML):
+        if os.path.exists(user_xml):
             try:
-                os.unlink(USER_MIME_XML)
+                os.unlink(user_xml)
             except OSError as e:
                 return False, str(e)
     else:
-        pkg_dir = os.path.dirname(os.path.abspath(USER_MIME_XML))
+        pkg_dir = os.path.dirname(os.path.abspath(user_xml))
         os.makedirs(pkg_dir, exist_ok=True)
         ns = "http://www.freedesktop.org/standards/shared-mime-info"
         ET.register_namespace("", ns)
@@ -254,7 +279,7 @@ def _save_custom_ext_map(mapping: dict[str, str]) -> tuple[bool, str]:
             with tempfile.NamedTemporaryFile("wb", dir=pkg_dir, prefix=".ncui_mime_", delete=False) as tf:
                 tmp_path = tf.name
                 ET.ElementTree(root).write(tf, encoding="utf-8", xml_declaration=True)
-            os.replace(tmp_path, USER_MIME_XML)
+            os.replace(tmp_path, user_xml)
         except OSError as e:
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -263,18 +288,18 @@ def _save_custom_ext_map(mapping: dict[str, str]) -> tuple[bool, str]:
                     pass
             return False, str(e)
 
-    if os.path.isdir(USER_MIME_DIR) and probe.has_bin("update-mime-database"):
-        ok, _o, err = probe.run_cmd_full(["update-mime-database", USER_MIME_DIR], timeout=5.0)
+    if os.path.isdir(user_dir) and probe.has_bin("update-mime-database"):
+        ok, _o, err = probe.run_cmd_full(["update-mime-database", user_dir], timeout=5.0)
         if not ok:
             invalidate_mime_caches()
-            return False, err or "update-mime-database failed"
+            return False, err or t("cc_apps.fb_update_mime_db_fail")
 
     invalidate_mime_caches()
     if mapping:
         m2e, _e2m = load_mime_globs()
         missing = [m for m, ext in mapping.items() if ext not in m2e.get(m, [])]
         if missing:
-            return False, t("cc_apps.fb_mime_verify_fail", p0=USER_MIME_GLOBS2, p1=", ".join(missing[:3]))
+            return False, t("cc_apps.fb_mime_verify_fail", p0=_user_mime_globs2(), p1=", ".join(missing[:3]))
     return True, ""
 
 
@@ -347,7 +372,7 @@ def read_xdg_mime_state() -> dict:
     apps_by_id = {e["id"]: e for e in entries}
     apps_with_mimes = [e for e in entries if e.get("mimes_list")]
 
-    user_sec = _parse_ini_sections(USER_MIMEAPPS)
+    user_sec = _parse_ini_sections(get_user_mimeapps_path())
     user_defaults: dict[str, str] = {}
     for k, v in user_sec.get("Default Applications", []):
         vals = _split_desktop_list(v)
@@ -370,7 +395,7 @@ def read_xdg_mime_state() -> dict:
                 sys_defaults[k] = _split_desktop_list(v)
 
     cache_handlers: dict[str, list[str]] = {}
-    for cp in MIMEINFO_CACHE_PATHS:
+    for cp in _mimeinfo_cache_paths():
         sec = _parse_ini_sections(cp)
         for k, v in sec.get("MIME Cache", []):
             lst = cache_handlers.setdefault(k, [])
@@ -439,10 +464,11 @@ def read_xdg_mime_state() -> dict:
 
 
 def _rewrite_user_mimeapps(mutator) -> tuple[bool, str]:
+    user_mimeapps = get_user_mimeapps_path()
     existing_lines: list[str] = []
-    if os.path.exists(USER_MIMEAPPS):
+    if os.path.exists(user_mimeapps):
         try:
-            with open(USER_MIMEAPPS, "r", encoding="utf-8", errors="ignore") as f:
+            with open(user_mimeapps, "r", encoding="utf-8", errors="ignore") as f:
                 existing_lines = f.read().splitlines()
         except OSError as e:
             return False, str(e)
@@ -484,14 +510,14 @@ def _rewrite_user_mimeapps(mutator) -> tuple[bool, str]:
         out_lines.append(f"[{sec_name}]")
         out_lines.extend(body)
 
-    parent = os.path.dirname(os.path.abspath(USER_MIMEAPPS))
+    parent = os.path.dirname(os.path.abspath(user_mimeapps))
     os.makedirs(parent, exist_ok=True)
     tmp_path = ""
     try:
         with tempfile.NamedTemporaryFile("w", dir=parent, prefix=".mimeapps_", delete=False, encoding="utf-8") as tf:
             tmp_path = tf.name
             tf.write("\n".join(out_lines) + "\n")
-        os.replace(tmp_path, USER_MIMEAPPS)
+        os.replace(tmp_path, user_mimeapps)
         return True, ""
     except OSError as e:
         if tmp_path and os.path.exists(tmp_path):
@@ -514,18 +540,19 @@ def set_mime_default(desktop_id: str, mimes: list[str], label: str = "") -> tupl
             seen.add(pm)
             clean_mimes.append(pm)
     if not clean_mimes:
-        return False, "No MIME types specified"
+        return False, t("cc_apps.fb_no_mimes")
 
-    if os.path.abspath(USER_MIMEAPPS) == os.path.abspath(_DEFAULT_USER_MIMEAPPS) and probe.has_bin("xdg-mime"):
+    user_mimeapps = get_user_mimeapps_path()
+    if probe.has_bin("xdg-mime"):
         ok, _out, err = probe.run_cmd_full(["xdg-mime", "default", desk, *clean_mimes], timeout=3.0)
         if not ok:
-            return False, err or "xdg-mime failed"
+            return False, err or t("cc_apps.fb_xdg_mime_fail")
     else:
         ok, err = _rewrite_user_mimeapps(lambda d: d.update({m: desk for m in clean_mimes}))
         if not ok:
             return False, err
 
-    sec = _parse_ini_sections(USER_MIMEAPPS)
+    sec = _parse_ini_sections(user_mimeapps)
     actual = {k: _split_desktop_list(v)[0] for k, v in sec.get("Default Applications", []) if _split_desktop_list(v)}
     mismatched = [m for m in clean_mimes if actual.get(m) != desk]
     invalidate_mime_caches()
@@ -542,7 +569,7 @@ def set_mime_default(desktop_id: str, mimes: list[str], label: str = "") -> tupl
 def reset_mime_defaults(mimes: list[str]) -> tuple[bool, str]:
     targets = {str(m or "").strip().lower() for m in mimes if str(m or "").strip()}
     if not targets:
-        return False, "No MIME types specified"
+        return False, t("cc_apps.fb_no_mimes")
     removed_n = [0]
 
     def _mut(d: dict[str, str]) -> None:
@@ -570,40 +597,43 @@ def reset_mime_defaults(mimes: list[str]) -> tuple[bool, str]:
                 return False, err_xml
     invalidate_mime_caches()
 
-    sec = _parse_ini_sections(USER_MIMEAPPS)
+    user_mimeapps = get_user_mimeapps_path()
+    sec = _parse_ini_sections(user_mimeapps)
     remaining = {k for k, _v in sec.get("Default Applications", []) if k in targets}
     if remaining:
-        return False, t("cc_apps.fb_mime_verify_fail", p0=USER_MIMEAPPS, p1=", ".join(sorted(remaining)[:3]))
+        return False, t("cc_apps.fb_mime_verify_fail", p0=user_mimeapps, p1=", ".join(sorted(remaining)[:3]))
     if removed_exts and removed_n[0] <= len(removed_exts):
         return True, t("cc_apps.fb_ext_removed", p0=", ".join(removed_exts))
     return True, t("cc_apps.fb_mime_reset", p0=removed_n[0])
 
 
 def reset_all_mime_defaults() -> tuple[bool, str]:
-    if os.path.exists(USER_MIMEAPPS):
+    user_mimeapps = get_user_mimeapps_path()
+    if os.path.exists(user_mimeapps):
         try:
-            shutil.copy2(USER_MIMEAPPS, USER_MIMEAPPS + ".bak")
+            shutil.copy2(user_mimeapps, user_mimeapps + ".bak")
         except OSError as e:
             return False, str(e)
     ok, err = _rewrite_user_mimeapps(lambda d: d.clear())
-    if ok and os.path.exists(USER_MIME_XML):
+    if ok and os.path.exists(_user_mime_xml()):
         _save_custom_ext_map({})
     invalidate_mime_caches()
     if not ok:
         return False, err
-    sec = _parse_ini_sections(USER_MIMEAPPS)
+    sec = _parse_ini_sections(user_mimeapps)
     if sec.get("Default Applications"):
-        return False, t("cc_apps.fb_mime_verify_fail", p0=USER_MIMEAPPS, p1="Default Applications")
+        return False, t("cc_apps.fb_mime_verify_fail", p0=user_mimeapps, p1="Default Applications")
     return True, t("cc_apps.fb_mime_reset_all")
 
 
 # --- Niri & Systemd Helpers (Preserved for cc_apps_floating & cc_apps_autostart) ---
 
 def get_niri_floating_rules() -> list[str]:
-    if not os.path.exists(NIRI_CONFIG_FILE):
+    cfg = get_niri_config_file()
+    if not os.path.exists(cfg):
         return []
     try:
-        content = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read()
+        content = open(cfg, "r", encoding="utf-8").read()
         pat = re.compile(r'window-rule\s*\{\s*match\s+app-id="([^"]+)"\s+open-floating\s+true\s*\}', re.MULTILINE)
         return sorted(set(m.group(1).replace("\\.", ".") for m in pat.finditer(content)))
     except Exception:
@@ -629,10 +659,11 @@ def get_niri_active_windows() -> list[dict]:
 def toggle_niri_floating_rule(app_id: str) -> tuple[bool, str]:
     clean_id = str(app_id or "").strip()
     if not clean_id:
-        return False, "Empty app-id"
+        return False, t("cc_apps.flt_empty")
     esc_app = clean_id.replace(".", "\\.")
-    os.makedirs(os.path.dirname(NIRI_CONFIG_FILE), exist_ok=True)
-    content = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read() if os.path.exists(NIRI_CONFIG_FILE) else ""
+    cfg = get_niri_config_file()
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    content = open(cfg, "r", encoding="utf-8").read() if os.path.exists(cfg) else ""
     rule_re = re.compile(r'\n*window-rule\s*\{\s*match\s+app-id="' + re.escape(esc_app) + r'"\s+open-floating\s+true\s*\}', re.MULTILINE)
     removed = bool(rule_re.search(content))
     if removed:
@@ -640,17 +671,18 @@ def toggle_niri_floating_rule(app_id: str) -> tuple[bool, str]:
     else:
         new_content = content.rstrip() + f'\n\nwindow-rule {{\n    match app-id="{esc_app}"\n    open-floating true\n}}\n'
     try:
-        open(NIRI_CONFIG_FILE, "w", encoding="utf-8").write(new_content)
-        return True, f"{'Removed' if removed else 'Added'} floating rule for {clean_id}"
+        open(cfg, "w", encoding="utf-8").write(new_content)
+        return True, t("cc_apps.flt_removed", p0=clean_id) if removed else t("cc_apps.flt_added", p0=clean_id)
     except Exception as e:
         return False, str(e)
 
 
 def _read_niri_spawns() -> list[dict]:
-    if not os.path.exists(NIRI_CONFIG_FILE):
+    cfg = get_niri_config_file()
+    if not os.path.exists(cfg):
         return []
     items = []
-    for idx, line in enumerate(open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read().splitlines()):
+    for idx, line in enumerate(open(cfg, "r", encoding="utf-8").read().splitlines()):
         m = re.match(r"^\s*(//\s*)?spawn-at-startup\s+(.+?)\s*$", line)
         if m:
             disabled = bool(m.group(1))
@@ -660,11 +692,12 @@ def _read_niri_spawns() -> list[dict]:
 
 
 def _toggle_niri_spawn(line_idx: int, remove: bool = False) -> tuple[bool, str]:
-    if not os.path.exists(NIRI_CONFIG_FILE):
-        return False, "config.kdl missing"
-    lines = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read().splitlines()
+    cfg = get_niri_config_file()
+    if not os.path.exists(cfg):
+        return False, t("cc_apps.kdl_missing")
+    lines = open(cfg, "r", encoding="utf-8").read().splitlines()
     if not (0 <= line_idx < len(lines)):
-        return False, "Invalid spawn line"
+        return False, t("cc_apps.spawn_invalid_line")
     if remove:
         lines.pop(line_idx)
     else:
@@ -673,18 +706,20 @@ def _toggle_niri_spawn(line_idx: int, remove: bool = False) -> tuple[bool, str]:
             lines[line_idx] = re.sub(r"^(\s*)//\s*", r"\1", ln, count=1)
         else:
             lines[line_idx] = "// " + ln.lstrip()
-    open(NIRI_CONFIG_FILE, "w", encoding="utf-8").write("\n".join(lines) + "\n")
-    return True, "Updated spawn-at-startup in config.kdl"
+    open(cfg, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    return True, t("cc_apps.autostart_updated")
 
 
 def _add_niri_spawn(cmd_args: str) -> tuple[bool, str]:
     tokens = [tok.strip() for tok in cmd_args.strip().split() if tok.strip()]
     if not tokens:
-        return False, "Empty command"
+        return False, t("cc_apps.autostart_empty")
     quoted = " ".join(f'"{tok}"' for tok in tokens)
-    txt = open(NIRI_CONFIG_FILE, "r", encoding="utf-8").read() if os.path.exists(NIRI_CONFIG_FILE) else ""
-    open(NIRI_CONFIG_FILE, "w", encoding="utf-8").write(txt.rstrip() + f"\nspawn-at-startup {quoted}\n")
-    return True, f"Added spawn-at-startup {quoted}"
+    cfg = get_niri_config_file()
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    txt = open(cfg, "r", encoding="utf-8").read() if os.path.exists(cfg) else ""
+    open(cfg, "w", encoding="utf-8").write(txt.rstrip() + f"\nspawn-at-startup {quoted}\n")
+    return True, t("cc_apps.autostart_added", p0=quoted)
 
 
 def _read_systemd_services(user: bool = True) -> list[dict]:
@@ -711,9 +746,13 @@ def _cat_mimes(cid: str) -> list[str]:
 
 
 def handle_cc_apps_link(cc_panel, uri: str) -> bool:
+    if not isinstance(uri, str) or not uri:
+        return False
     if uri.startswith("cc_flt:"):
         act = uri[len("cc_flt:"):]
         if act == "pick_open":
+            if not cc_panel or not cc_panel.shell:
+                return False
             cur_q = str(STATE.get("apps", "flt_query", "") or "")
 
             def _commit_raw_flt(txt: str) -> None:
@@ -740,19 +779,25 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
             return True
         if act.startswith("add_app:"):
             aid = act.split(":", 1)[1]
+            if not aid:
+                return False
             STATE.set("apps", "flt_query", "")
-            if aid and aid not in get_niri_floating_rules():
+            if aid not in get_niri_floating_rules():
                 ok, msg = toggle_niri_floating_rule(aid)
                 _set_apps_fb(ok, msg)
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
         if act.startswith("toggle:"):
-            ok, msg = toggle_niri_floating_rule(act.split(":", 1)[1])
+            aid = act.split(":", 1)[1]
+            if not aid:
+                return False
+            ok, msg = toggle_niri_floating_rule(aid)
             _set_apps_fb(ok, msg)
-            if cc_panel.shell:
+            if cc_panel and cc_panel.shell:
                 cc_panel.shell.refresh_view()
             return True
+        return False
 
     if not uri.startswith("cc_apps:"):
         return False
@@ -763,11 +808,14 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
         invalidate_mime_caches()
     elif act.startswith("view:"):
         mode = act.split(":", 1)[1]
-        if mode in ("category", "app", "type"):
-            STATE.set("apps", "mime_view", mode)
-            STATE.set("apps", "mime_other_open", "")
-            STATE.set("apps", "mime_add_ext_target", "")
+        if mode not in ("category", "app", "type"):
+            return False
+        STATE.set("apps", "mime_view", mode)
+        STATE.set("apps", "mime_other_open", "")
+        STATE.set("apps", "mime_add_ext_target", "")
     elif act == "qfind_open":
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur_q = str(STATE.get("apps", "mime_qfind", "") or "")
 
         def _on_qfind(txt: str) -> None:
@@ -789,24 +837,40 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
     elif act == "qfind_clear":
         STATE.set("apps", "mime_qfind", "")
     elif act.startswith("cat_sel:"):
-        STATE.set("apps", "mime_cat_sel", act.split(":", 1)[1])
+        cid = act.split(":", 1)[1]
+        if not cid:
+            return False
+        STATE.set("apps", "mime_cat_sel", cid)
         STATE.set("apps", "mime_other_open", "")
     elif act.startswith("cat_apply:"):
-        _, cid, desk = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return False
+        _, cid, desk = parts
         mimes = _cat_mimes(cid)
+        if not mimes or not re.fullmatch(r"[A-Za-z0-9._-]+", desk):
+            return False
         ok, msg = set_mime_default(desk, mimes, label=t(f"cc_apps.cat_{cid}"))
         STATE.set("apps", "mime_other_open", "")
         _set_apps_fb(ok, msg)
     elif act.startswith("cat_reset:"):
         cid = act.split(":", 1)[1]
-        ok, msg = reset_mime_defaults(_cat_mimes(cid))
+        mimes = _cat_mimes(cid)
+        if not mimes:
+            return False
+        ok, msg = reset_mime_defaults(mimes)
         _set_apps_fb(ok, msg)
     elif act.startswith("app_sel:"):
-        STATE.set("apps", "mime_app_sel", act.split(":", 1)[1])
+        desk = act.split(":", 1)[1]
+        if not desk:
+            return False
+        STATE.set("apps", "mime_app_sel", desk)
         STATE.set("apps", "mime_app_subflt", "all")
         STATE.set("apps", "mime_other_open", "")
         STATE.set("apps", "mime_add_ext_target", "")
     elif act == "app_flt_open":
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur_q = str(STATE.get("apps", "mime_app_flt", "") or "")
         start_inline_input(
             entry_id="apps_app_flt",
@@ -822,24 +886,35 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
         STATE.set("apps", "mime_app_flt", "")
     elif act.startswith("app_subflt:"):
         sub = act.split(":", 1)[1]
-        if sub in ("all", "owned", "other"):
-            STATE.set("apps", "mime_app_subflt", sub)
+        if sub not in ("all", "owned", "other"):
+            return False
+        STATE.set("apps", "mime_app_subflt", sub)
     elif act.startswith("app_set_all:"):
         desk = act.split(":", 1)[1]
+        if not desk:
+            return False
         st = read_xdg_mime_state()
         ent = st["apps_by_id"].get(desk)
-        if ent and ent.get("mimes_list"):
-            ok, msg = set_mime_default(desk, ent["mimes_list"], label=ent["name"])
-            _set_apps_fb(ok, msg)
+        if not ent or not ent.get("mimes_list"):
+            return False
+        ok, msg = set_mime_default(desk, ent["mimes_list"], label=ent["name"])
+        _set_apps_fb(ok, msg)
     elif act.startswith("app_clear:"):
         desk = act.split(":", 1)[1]
+        if not desk:
+            return False
         st = read_xdg_mime_state()
         owned = [m for m, d in st["user_defaults"].items() if d == desk]
-        if owned:
-            ok, msg = reset_mime_defaults(owned)
-            _set_apps_fb(ok, msg)
+        if not owned:
+            return False
+        ok, msg = reset_mime_defaults(owned)
+        _set_apps_fb(ok, msg)
     elif act.startswith("add_ext_open:"):
+        if not cc_panel or not cc_panel.shell:
+            return False
         target = act.split(":", 1)[1]
+        if not target:
+            return False
         STATE.set("apps", "mime_add_ext_target", target)
 
         def _commit_ext(txt: str, tgt: str = target) -> None:
@@ -874,6 +949,8 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
         return True
     elif act.startswith("register_ext:"):
         raw = act.split(":", 1)[1]
+        if not raw:
+            return False
         ok_reg, mime, disp_tok, err = register_extension_mime(raw)
         if not ok_reg:
             _set_apps_fb(False, err)
@@ -885,7 +962,10 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
             STATE.set("apps", "mime_other_open", f"mime|{mime}")
             _set_apps_fb(True, t("cc_apps.fb_ext_registered", p0=disp_tok, p1=mime))
     elif act.startswith("type_sel:"):
-        STATE.set("apps", "mime_type_sel", act.split(":", 1)[1])
+        m_type = act.split(":", 1)[1]
+        if not m_type:
+            return False
+        STATE.set("apps", "mime_type_sel", m_type)
         STATE.set("apps", "mime_other_open", "")
     elif act == "type_kind_cycle":
         seq = ("ALL", "FILES", "LINKS", "OVERRIDES")
@@ -893,17 +973,28 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
         nxt = seq[(seq.index(cur) + 1) % len(seq)] if cur in seq else seq[0]
         STATE.set("apps", "mime_type_kind", nxt)
     elif act.startswith("mime_set:"):
-        _, mime, desktop = act.split(":", 2)
+        parts = act.split(":", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            return False
+        _, mime, desktop = parts
+        if not re.match(r"^[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+$", mime) or not re.fullmatch(r"[A-Za-z0-9._-]+", desktop):
+            return False
         STATE.set("apps", "mime_other_open", "")
         STATE.set("apps", "mime_other_query", "")
         ok, msg = set_mime_default(desktop, [mime])
         _set_apps_fb(ok, msg)
     elif act.startswith("mime_reset:"):
         mime = act.split(":", 1)[1]
+        if not mime:
+            return False
         ok, msg = reset_mime_defaults([mime])
         _set_apps_fb(ok, msg)
     elif act.startswith("pick_other:"):
+        if not cc_panel or not cc_panel.shell:
+            return False
         target = act.split(":", 1)[1]
+        if not target:
+            return False
         STATE.set("apps", "mime_other_open", target)
         cur_q = str(STATE.get("apps", "mime_other_query", "") or "")
 
@@ -946,29 +1037,56 @@ def handle_cc_apps_link(cc_panel, uri: str) -> bool:
         _set_apps_fb(ok, msg)
     elif act.startswith("set_term:"):
         term = act.split(":", 1)[1]
+        if not term or not re.fullmatch(r"[A-Za-z0-9._+-]+", term):
+            return False
         CONFIG.setdefault("general", {})["terminal"] = term
         _update_toml_key_in_section("general", "terminal", f'"{term}"')
         _set_apps_fb(True, t("cc_apps.default_nc_ui_terminal_set_to", p0=term))
     elif act.startswith("set_pkg_mgr:"):
         pm = act.split(":", 1)[1]
+        if not pm or not re.fullmatch(r"[A-Za-z0-9._+-]+", pm):
+            return False
         CONFIG.setdefault("general", {})["pkg_manager"] = pm
         _update_toml_key_in_section("general", "pkg_manager", f'"{pm}"')
         _set_apps_fb(True, t("cc_apps.default_pkg_mgr_set_to", p0=pm))
     elif act == "prompt_spawn":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt("cc_apps_spawn", t("cc_apps.command_args_to_spawn_at_startup_e"), "", title=t("cc_apps.spawn_at_startup"), required=True, completion="shell_cmd")
         return True
     elif act.startswith("toggle_spawn:"):
-        ok, msg = _toggle_niri_spawn(int(act.split(":", 1)[1]), remove=False)
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
+        ok, msg = _toggle_niri_spawn(idx, remove=False)
         _set_apps_fb(ok, msg)
+        if not ok:
+            return False
     elif act.startswith("del_spawn:"):
-        ok, msg = _toggle_niri_spawn(int(act.split(":", 1)[1]), remove=True)
+        try:
+            idx = int(act.split(":", 1)[1])
+        except (ValueError, TypeError):
+            return False
+        ok, msg = _toggle_niri_spawn(idx, remove=True)
         _set_apps_fb(ok, msg)
+        if not ok:
+            return False
     elif act.startswith("svc_user:"):
-        _, op, unit = act.split(":", 2)
+        parts = act.split(":", 2)
+        if (
+            len(parts) != 3
+            or parts[1] not in ("start", "stop", "restart", "reload", "enable", "disable")
+            or not re.fullmatch(r"[A-Za-z0-9@._:-]+", parts[2])
+        ):
+            return False
+        _, op, unit = parts
         ok, _o, err = probe.run_cmd_full(["systemctl", "--user", op, unit], timeout=3.0)
-        _set_apps_fb(ok, f"systemctl --user {op} {unit}" if ok else (err or "Service action failed"))
+        _set_apps_fb(ok, t("cc_apps.svc_action_ok", p0=op, p1=unit) if ok else (err or t("cc_apps.svc_action_err")))
+    else:
+        return False
 
-    if cc_panel.shell:
+    if cc_panel and cc_panel.shell:
         cc_panel.shell.refresh_view()
     return True
 
@@ -977,10 +1095,6 @@ def handle_cc_apps_prompt(cc_panel, action_id: str, text: str) -> bool:
     val = str(text or "").strip()
     if not val:
         return False
-    if action_id == "cc_flt_add":
-        ok, msg = toggle_niri_floating_rule(val)
-        _set_apps_fb(ok, msg)
-        return True
     if action_id == "cc_apps_spawn":
         ok, msg = _add_niri_spawn(val)
         _set_apps_fb(ok, msg)

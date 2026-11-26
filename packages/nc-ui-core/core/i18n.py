@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os
-from core.config import CONFIG, CONFIG_DIR, ROOT_DIR, _load_toml, _deep_merge, _update_toml_key_in_section
-from core.paths import CORE_ROOT, find_all_package_files
+from core.config import CONFIG, CONFIG_DIR, ROOT_DIR, _deep_merge, _load_toml, _update_toml_key_in_section, _xdg_base, get_config_dir
+from core.paths import CORE_ROOT, REPO_ROOT, find_all_package_files
 from core.state import STATE
 
 SYS_LOCALES_DIR = os.path.join(CORE_ROOT, "locales")
@@ -14,11 +14,13 @@ _DICT_CACHE = {}
 def _candidate_dirs() -> list[str]:
     seen = set()
     out = []
-    for d in (
-        [SYS_LOCALES_DIR]
-        + find_all_package_files("locales")
-        + ["/usr/share/ncui/locales", USER_LOCALES_DIR, os.path.expanduser("~/.local/share/nc-ui/locales")]
-    ):
+    sys_installed = os.path.realpath("/usr/share/ncui/locales") if REPO_ROOT else ""
+    pkg_dirs = [d for d in find_all_package_files("locales") if not sys_installed or os.path.realpath(d) != sys_installed]
+    tail_dirs = ([] if REPO_ROOT else ["/usr/share/ncui/locales"]) + [
+        os.path.join(get_config_dir(), "locales"),
+        os.path.join(_xdg_base("XDG_DATA_HOME", "~/.local/share"), "ncui", "locales"),
+    ]
+    for d in ([SYS_LOCALES_DIR] + pkg_dirs + tail_dirs):
         rp = os.path.realpath(d)
         if rp not in seen:
             seen.add(rp)

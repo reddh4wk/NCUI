@@ -8,6 +8,7 @@ from ui.widgets import AsciiCard
 from panels.cc_engine_display import (
     _feedback_cards,
     _get_night_light_state,
+    get_backlight_info,
     get_niri_outputs_data,
 )
 
@@ -47,12 +48,13 @@ def _build_night_light_dpms_box(canvas: Canvas) -> Box:
         actions=[StateBadge(nl["active"], nl_on_lbl, t("cc_display.daylight"), on_tone="warn")],
     )
     nl_temp_txt = Txt(f"{nl['temp']}K", role="val" if nl["active"] else "inactive")
-    slider_w = 16 if canvas.inner_cols < 84 else 20
+    slider_w = 16 if canvas.inner_cols < 76 else 20
+    nl_step = 300 if slider_w < 20 else 250
     nl_box.add_kv(
         t("cc_display.night_light_wlsunset"),
         f"{SelectPill(t('common.on'), 'cc_desk:nl:on', selected=nl['active'])} "
         f"{SelectPill(t('common.off'), 'cc_desk:nl:off', selected=not nl['active'])}  "
-        + Slider(nl["temp"], "cc_desk:nl_temp", min_val=1700, max_val=6500, width=slider_w, show_pct=False, step_buttons=True, step=250, enabled=bool(nl["active"]))
+        + Slider(nl["temp"], "cc_desk:nl_temp", min_val=1700, max_val=6500, width=slider_w, show_pct=False, step_buttons=True, step=nl_step, enabled=bool(nl["active"]))
         + f" {nl_temp_txt}",
     )
     sched = nl["schedule"]
@@ -115,7 +117,7 @@ def _build_selected_output_box(cc_panel, canvas: Canvas, out_name: str, info: di
     max_hz_pills = 3 if canvas.inner_cols < 76 else (4 if canvas.inner_cols < 84 else 6)
 
     o_box = Box(
-        f"{out_name} \u2014 {info.get('model', 'Display')}",
+        f"{out_name} \u2014 {info.get('model') or t('cc_display.display_fallback')}",
         icon="\uf26c",
         actions=[
             StateBadge(is_on, t("cc_display.enabled"), t("common.off")),
@@ -241,9 +243,36 @@ def _build_selected_output_box(cc_panel, canvas: Canvas, out_name: str, info: di
     return o_box
 
 
+def _build_backlight_box(canvas: Canvas) -> Box | None:
+    bl = get_backlight_info()
+    if not bl:
+        return None
+    bl_box = Box(
+        t("cc_display.backlight"),
+        icon="\uf185",
+        actions=[Txt(bl["device"], role="schema")],
+        highlighted=False,
+    )
+    sw = 16 if canvas.inner_cols < 76 else 20
+    bl_step = 10 if sw < 20 else 5
+    presets = " ".join(
+        SelectPill(f"{p}%", f"cc_desk:backlight_preset:{p}", selected=(abs(bl["pct"] - p) <= 2))
+        for p in (25, 50, 75, 100)
+    )
+    bl_box.add_kv(
+        t("cc_display.brightness"),
+        Slider(bl["pct"], "cc_desk:backlight", min_val=5, max_val=100, width=sw, show_pct=True, step_buttons=True, step=bl_step)
+        + f"  {presets}",
+    )
+    return bl_box
+
+
 def _build_layout_standard(cc_panel, canvas: Canvas, outputs_data: dict) -> list:
     cards = _feedback_cards()
     cards.append(_build_night_light_dpms_box(canvas))
+    bl_box = _build_backlight_box(canvas)
+    if bl_box is not None:
+        cards.append(bl_box)
 
     out_names = sorted(outputs_data.keys())
     hdr = Box(

@@ -8,12 +8,12 @@ set -euo pipefail
 CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
 STATE_DIR="${NC_RESCUE_STATE_DIR:-/var/lib/ncui}"
 UPPER_DIR="${NC_RESCUE_UPPER_DIR:-/run/recovery-ram/upper}"
-CHROOT_STATE="${NC_CHROOT_STATE_FILE:-/run/dc-arch-chroot.state}"
-CHROOT_MNT="${NC_CHROOT_MNT_BASE:-/run/nightcity-chroot}"
+CHROOT_STATE="${NC_CHROOT_STATE_FILE:-/run/nc-chroot.state}"
+CHROOT_MNT="${NC_CHROOT_MNT_BASE:-${DC_CHROOT_MNT_BASE:-/run/ncui-chroot}}"
 INITCPIO_HOOK_PATH="${NC_RESCUE_HOOK_PATH:-/etc/initcpio/hooks/recovery-ram}"
 INITCPIO_INST_PATH="${NC_RESCUE_INST_PATH:-/etc/initcpio/install/recovery-ram}"
 MKINIT_CONF="${NC_RESCUE_MKINIT_CONF:-/etc/mkinitcpio-recovery.conf}"
-ROLLBACK_BIN="${NC_RESCUE_ROLLBACK_BIN:-/usr/bin/dc-rollback}"
+ROLLBACK_BIN="${NC_RESCUE_ROLLBACK_BIN:-/usr/bin/nc-rollback}"
 UKI_STATE_FILE="${NC_RESCUE_UKI_STATE:-/etc/initcpio/.uki-state.sha256}"
 BOOT_COMMIT_FLAG="/run/recovery-committed-this-boot"
 RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
@@ -49,7 +49,7 @@ Actions:
   status                    Human-readable recovery & ESP artifact summary
   status-env                Print machine-readable KEY=VALUE rescue telemetry
   check-health              Refresh ${STATE_DIR}/rescue-status.env and print it
-  install-hooks             Install/update recovery-ram mkinitcpio hook & dc-rollback
+  install-hooks             Install/update recovery-ram initramfs hook & nc-rollback
   build-uki                 Build/rebuild Recovery UKI on ESP & register Limine entry
   commit, -c                Commit Live RAM OverlayFS into ESP recovery.squashfs
   commit-rebuild, -r        Rebuild Recovery UKI and commit Live RAM SquashFS
@@ -113,11 +113,292 @@ IN_FINAL_SWAP=0
 COMMIT_COMPLETED=0
 NEW_SQUASHFS=""
 NEW_UKI=""
+ARCH_BOOTSTRAP_DIR=""
+ARCH_BOOTSTRAP_CACHE="${NC_ARCH_BOOTSTRAP_DIR:-}"
+ARCH_BOOTSTRAP_URL="${NC_ARCH_BOOTSTRAP_URL:-https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst}"
+ARCH_BOOTSTRAP_SHA_URL="${NC_ARCH_BOOTSTRAP_SHA_URL:-https://geo.mirror.pkgbuild.com/iso/latest/sha256sums.txt}"
+
+_dir_allows_exec() {
+    local d="$1" opts=""
+    while [[ -n "$d" && ! -e "$d" && "$d" != "/" ]]; do
+        d="$(dirname "$d")"
+    done
+    [[ -n "$d" && -e "$d" ]] || return 1
+    opts="$(findmnt -n -o OPTIONS -T "$d" 2>/dev/null || true)"
+    [[ ",${opts}," != *",noexec,"* ]]
+}
+
+_pick_exec_work_base() {
+    local min_bytes="${1:-0}" c p avail best_c="" best_avail=-1
+    if [[ -n "${NC_BUILD_TMPDIR:-}" ]]; then
+        if ! _dir_allows_exec "$NC_BUILD_TMPDIR"; then
+            msg_err "NC_BUILD_TMPDIR '${NC_BUILD_TMPDIR}' is mounted noexec." >&2
+            return 1
+        fi
+        mkdir -p "$NC_BUILD_TMPDIR"
+        printf '%s\n' "$NC_BUILD_TMPDIR"
+        return 0
+    fi
+    for c in "/var/tmp" "/var/lib/ncui/work" "/root/.cache/ncui-work" "/tmp"; do
+        _dir_allows_exec "$c" || continue
+        p="$c"
+        while [[ -n "$p" && ! -d "$p" && "$p" != "/" ]]; do
+            p="$(dirname "$p")"
+        done
+        avail="$(df -PB1 "$p" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+        [[ "$avail" =~ ^[0-9]+$ ]] || avail=0
+        if (( avail > best_avail )); then
+            best_avail="$avail"
+            best_c="$c"
+        fi
+        if (( avail >= min_bytes )); then
+            mkdir -p "$c"
+            printf '%s\n' "$c"
+            return 0
+        fi
+    done
+    if [[ -n "$best_c" ]]; then
+        mkdir -p "$best_c"
+        printf '%s\n' "$best_c"
+        return 0
+    fi
+    msg_err "No exec-capable temporary directory found (all candidates mounted noexec). Set NC_BUILD_TMPDIR." >&2
+    return 1
+}
+
+_mount_chroot_api() {
+    local dir="$1"
+    [[ -n "$dir" && -d "$dir" ]] || return 1
+    mkdir -p "${dir}/proc" "${dir}/sys" "${dir}/dev" "${dir}/dev/pts" "${dir}/run" "${dir}/etc"
+    mountpoint -q "${dir}/proc" 2>/dev/null || mount -t proc proc "${dir}/proc"
+    mountpoint -q "${dir}/sys" 2>/dev/null || mount -t sysfs sysfs "${dir}/sys"
+    mountpoint -q "${dir}/dev" 2>/dev/null || { mount --bind /dev "${dir}/dev"; mount --make-rslave "${dir}/dev" 2>/dev/null || true; }
+    mountpoint -q "${dir}/dev/pts" 2>/dev/null || mount -t devpts devpts "${dir}/dev/pts" 2>/dev/null || true
+    mountpoint -q "${dir}/run" 2>/dev/null || mount -t tmpfs -o mode=0755,nosuid,nodev run "${dir}/run"
+    if [[ -f /etc/resolv.conf ]]; then
+        rm -f "${dir}/etc/resolv.conf" 2>/dev/null || true
+        cp -L /etc/resolv.conf "${dir}/etc/resolv.conf" 2>/dev/null || true
+    fi
+}
+
+_umount_chroot_api() {
+    local dir="${1%/}" include_self="${2:-0}"
+    [[ -n "$dir" && "$dir" != "/" ]] || return 0
+    local submounts=() _id _pid _maj _rt _mp _rest
+    while read -r _id _pid _maj _rt _mp _rest; do
+        [[ -n "$_mp" ]] || continue
+        _mp="${_mp//\\040/ }"; _mp="${_mp//\\011/$'\t'}"; _mp="${_mp//\\134/\\}"
+        if [[ "$_mp" == "${dir}/"* ]] || { (( include_self == 1 )) && [[ "$_mp" == "$dir" ]]; }; then
+            submounts+=("$_mp")
+        fi
+    done < /proc/self/mountinfo
+    if (( ${#submounts[@]} > 0 )); then
+        local rev=() m
+        mapfile -t rev < <(printf '%s\n' "${submounts[@]}" | tac)
+        for m in "${rev[@]}"; do
+            umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
+        done
+    fi
+}
+
+_safe_rm_chroot_dir() {
+    local dir="${1%/}"
+    [[ -n "$dir" && "$dir" != "/" && -e "$dir" ]] || return 0
+    _umount_chroot_api "$dir" 0
+    local _id _pid _maj _rt _mp _rest
+    while read -r _id _pid _maj _rt _mp _rest; do
+        [[ -n "$_mp" ]] || continue
+        _mp="${_mp//\\040/ }"; _mp="${_mp//\\011/$'\t'}"; _mp="${_mp//\\134/\\}"
+        if [[ "$_mp" == "${dir}/"* || "$_mp" == "$dir" ]]; then
+            msg_err "Refusing to remove ${dir}: active mount remains at ${_mp}." >&2
+            return 1
+        fi
+    done < /proc/self/mountinfo
+    rm -rf --one-file-system "$dir"
+}
+
+_cleanup_arch_bootstrap() {
+    if [[ -n "${ARCH_BOOTSTRAP_DIR:-}" ]]; then
+        _umount_chroot_api "$ARCH_BOOTSTRAP_DIR" 1
+    fi
+}
+
+_ensure_arch_builder() {
+    if command -v pacman >/dev/null 2>&1 && command -v pacstrap >/dev/null 2>&1; then
+        ARCH_BOOTSTRAP_DIR=""
+        return 0
+    fi
+
+    local dl_tool=""
+    if command -v curl >/dev/null 2>&1; then
+        dl_tool="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        dl_tool="wget"
+    else
+        msg_err "Non-Arch host detected: curl or wget required to download Arch bootstrap."
+        exit 1
+    fi
+    local req_b
+    for req_b in tar zstd chroot mount; do
+        command -v "$req_b" >/dev/null 2>&1 || { msg_err "MISSING: '${req_b}' required for Arch bootstrap on non-Arch host."; exit 1; }
+    done
+
+    if [[ -z "$ARCH_BOOTSTRAP_CACHE" ]]; then
+        local bs_base
+        bs_base="$(_pick_exec_work_base 1073741824)" || exit 1
+        ARCH_BOOTSTRAP_CACHE="${bs_base}/ncui-arch-bootstrap"
+    fi
+    ARCH_BOOTSTRAP_DIR="${ARCH_BOOTSTRAP_CACHE}/root.x86_64"
+    mkdir -p "$ARCH_BOOTSTRAP_CACHE"
+
+    if [[ ! -f "${ARCH_BOOTSTRAP_DIR}/.ncui-bootstrapped" ]]; then
+        local tb_path="${NC_ARCH_BOOTSTRAP_TARBALL:-}"
+        if [[ -z "$tb_path" || ! -f "$tb_path" ]]; then
+            tb_path="${ARCH_BOOTSTRAP_CACHE}/archlinux-bootstrap-x86_64.tar.zst"
+            local sha_path="${ARCH_BOOTSTRAP_CACHE}/sha256sums.txt"
+            msg_step "Non-Arch host detected: fetching official Arch Linux bootstrap tarball..."
+            if [[ "$dl_tool" == "curl" ]]; then
+                curl -fL --retry 3 -o "$tb_path" "$ARCH_BOOTSTRAP_URL"
+                curl -fL --retry 3 -o "$sha_path" "$ARCH_BOOTSTRAP_SHA_URL" 2>/dev/null || true
+            else
+                wget -O "$tb_path" "$ARCH_BOOTSTRAP_URL"
+                wget -O "$sha_path" "$ARCH_BOOTSTRAP_SHA_URL" 2>/dev/null || true
+            fi
+            if [[ -s "$sha_path" ]] && command -v sha256sum >/dev/null 2>&1; then
+                local exp_sha got_sha
+                exp_sha="$(awk '/archlinux-bootstrap-x86_64\.tar\.zst$/ {print $1; exit}' "$sha_path" || true)"
+                if [[ -n "$exp_sha" ]]; then
+                    got_sha="$(sha256sum "$tb_path" | awk '{print $1}')"
+                    if [[ "$exp_sha" != "$got_sha" ]]; then
+                        rm -f "$tb_path"
+                        msg_err "Arch bootstrap SHA-256 verification failed!"
+                        exit 1
+                    fi
+                fi
+            fi
+        fi
+
+        rm -rf "$ARCH_BOOTSTRAP_DIR"
+        msg_step "Extracting Arch bootstrap into ${ARCH_BOOTSTRAP_CACHE}..."
+        tar --zstd -xf "$tb_path" -C "$ARCH_BOOTSTRAP_CACHE"
+        [[ -d "$ARCH_BOOTSTRAP_DIR" ]] || { msg_err "Bootstrap directory ${ARCH_BOOTSTRAP_DIR} missing after extraction."; exit 1; }
+
+        printf 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch\n' > "${ARCH_BOOTSTRAP_DIR}/etc/pacman.d/mirrorlist"
+        if [[ -n "${NC_ARCH_NCUI_REPO_URL:-}" ]] && ! grep -q '^\[ncui\]' "${ARCH_BOOTSTRAP_DIR}/etc/pacman.conf" 2>/dev/null; then
+            cat >> "${ARCH_BOOTSTRAP_DIR}/etc/pacman.conf" <<EOF_REPO
+
+[ncui]
+SigLevel = Optional TrustAll
+Server = ${NC_ARCH_NCUI_REPO_URL}
+EOF_REPO
+        fi
+
+        mountpoint -q "$ARCH_BOOTSTRAP_DIR" 2>/dev/null || mount --bind "$ARCH_BOOTSTRAP_DIR" "$ARCH_BOOTSTRAP_DIR"
+        _mount_chroot_api "$ARCH_BOOTSTRAP_DIR"
+        msg_step "Initializing Arch pacman keyring & arch-install-scripts inside bootstrap..."
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman-key --init
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman-key --populate archlinux
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman -Sy --noconfirm
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman -S --noconfirm --needed arch-install-scripts
+        touch "${ARCH_BOOTSTRAP_DIR}/.ncui-bootstrapped"
+    else
+        mountpoint -q "$ARCH_BOOTSTRAP_DIR" 2>/dev/null || mount --bind "$ARCH_BOOTSTRAP_DIR" "$ARCH_BOOTSTRAP_DIR"
+        _mount_chroot_api "$ARCH_BOOTSTRAP_DIR"
+        msg_step "Syncing Arch bootstrap pacman databases..."
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman -Sy --noconfirm
+    fi
+}
+
+_arch_pacman() {
+    if [[ -z "${ARCH_BOOTSTRAP_DIR:-}" ]]; then
+        pacman "$@"
+    else
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman "$@"
+    fi
+}
+
+_arch_pacman_si() {
+    _arch_pacman -Si "$1" >/dev/null 2>&1
+}
+
+_arch_host_pacman_q() {
+    [[ -z "${ARCH_BOOTSTRAP_DIR:-}" ]] && command -v pacman >/dev/null 2>&1 && pacman -Q "$1" >/dev/null 2>&1
+}
+
+_arch_pacstrap() {
+    local target_dir="$1"
+    shift
+    mkdir -p "${target_dir}/etc/pacman.d/hooks"
+    if [[ -z "${ARCH_BOOTSTRAP_DIR:-}" ]]; then
+        local tmp_conf rc=0
+        tmp_conf="$(mktemp /tmp/ncui-pacstrap.conf.XXXXXX)"
+        awk -v hd="${target_dir}/etc/pacman.d/hooks/" '
+            /^\[options\][[:space:]]*$/ { print; print "HookDir = " hd; next }
+            /^[[:space:]]*HookDir[[:space:]]*=/ { next }
+            { print }
+        ' /etc/pacman.conf > "$tmp_conf"
+        pacstrap -C "$tmp_conf" -c "$target_dir" "$@" || rc=$?
+        rm -f "$tmp_conf"
+        return "$rc"
+    else
+        local bs_tgt="${ARCH_BOOTSTRAP_DIR}/mnt/target"
+        mkdir -p "$bs_tgt"
+        mountpoint -q "$bs_tgt" 2>/dev/null || mount --bind "$target_dir" "$bs_tgt"
+        local rc=0
+        chroot "$ARCH_BOOTSTRAP_DIR" pacstrap -c -G -M /mnt/target "$@" || rc=$?
+        umount "$bs_tgt" 2>/dev/null || umount -l "$bs_tgt" 2>/dev/null || true
+        return "$rc"
+    fi
+}
+
+_arch_pacman_root_S() {
+    local target_dir="$1"
+    shift
+    mkdir -p "${target_dir}/etc/pacman.d/hooks"
+    if [[ -z "${ARCH_BOOTSTRAP_DIR:-}" ]]; then
+        pacman --noconfirm --needed -S --root "$target_dir" --hookdir "${target_dir}/etc/pacman.d/hooks/" --cachedir /var/cache/pacman/pkg "$@"
+    else
+        local bs_tgt="${ARCH_BOOTSTRAP_DIR}/mnt/target"
+        mkdir -p "$bs_tgt"
+        mountpoint -q "$bs_tgt" 2>/dev/null || mount --bind "$target_dir" "$bs_tgt"
+        local rc=0
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman --noconfirm --needed -S --root /mnt/target --hookdir /mnt/target/etc/pacman.d/hooks/ "$@" || rc=$?
+        umount "$bs_tgt" 2>/dev/null || umount -l "$bs_tgt" 2>/dev/null || true
+        return "$rc"
+    fi
+}
+
+_arch_pacman_root_U() {
+    local target_dir="$1"
+    shift
+    mkdir -p "${target_dir}/etc/pacman.d/hooks"
+    if [[ -z "${ARCH_BOOTSTRAP_DIR:-}" ]]; then
+        pacman --noconfirm --root "$target_dir" --hookdir "${target_dir}/etc/pacman.d/hooks/" -U "$@"
+    else
+        local bs_tgt="${ARCH_BOOTSTRAP_DIR}/mnt/target"
+        local bs_pkgs="${ARCH_BOOTSTRAP_DIR}/mnt/pkgs"
+        mkdir -p "$bs_tgt" "$bs_pkgs"
+        rm -f "$bs_pkgs"/* 2>/dev/null || true
+        local -a chroot_files=()
+        local pf
+        for pf in "$@"; do
+            cp -f "$pf" "$bs_pkgs/"
+            chroot_files+=("/mnt/pkgs/$(basename "$pf")")
+        done
+        mountpoint -q "$bs_tgt" 2>/dev/null || mount --bind "$target_dir" "$bs_tgt"
+        local rc=0
+        chroot "$ARCH_BOOTSTRAP_DIR" pacman --noconfirm --root /mnt/target --hookdir /mnt/target/etc/pacman.d/hooks/ -U "${chroot_files[@]}" || rc=$?
+        umount "$bs_tgt" 2>/dev/null || umount -l "$bs_tgt" 2>/dev/null || true
+        rm -rf "$bs_pkgs" 2>/dev/null || true
+        return "$rc"
+    fi
+}
 
 cleanup_rescue() {
     local exit_code=$?
     trap - EXIT INT TERM HUP
     set +e
+    _cleanup_arch_bootstrap
     if findmnt -n "$COMMIT_VIEW" &>/dev/null; then
         umount "$COMMIT_VIEW" 2>/dev/null || umount -l "$COMMIT_VIEW" 2>/dev/null
     fi
@@ -259,10 +540,16 @@ compute_uki_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
-write_recovery_hook_files() {
-    mkdir -p "$(dirname "$INITCPIO_HOOK_PATH")" "$(dirname "$INITCPIO_INST_PATH")" "$(dirname "$ROLLBACK_BIN")"
+write_recovery_hook_files_into() {
+    local prefix="${1:-}"
+    prefix="${prefix%/}"
+    local hook_dst="${prefix}${INITCPIO_HOOK_PATH}"
+    local inst_dst="${prefix}${INITCPIO_INST_PATH}"
+    local conf_dst="${prefix}${MKINIT_CONF}"
+    local rb_dst="${prefix}${ROLLBACK_BIN}"
+    mkdir -p "$(dirname "$hook_dst")" "$(dirname "$inst_dst")" "$(dirname "$conf_dst")" "$(dirname "$rb_dst")"
 
-    cat <<'EOF_HOOK' > "$INITCPIO_HOOK_PATH"
+    cat <<'EOF_HOOK' > "$hook_dst"
 #!/usr/bin/ash
 
 run_hook() {
@@ -408,9 +695,9 @@ recovery_mount_handler() {
     done
 }
 EOF_HOOK
-    chmod 0755 "$INITCPIO_HOOK_PATH"
+    chmod 0755 "$hook_dst"
 
-    cat <<'EOF_INST' > "$INITCPIO_INST_PATH"
+    cat <<'EOF_INST' > "$inst_dst"
 #!/bin/bash
 
 build() {
@@ -418,7 +705,7 @@ build() {
     for mod in vfat fat nls_cp437 nls_iso8859-1 loop squashfs overlay dm_mod dm_crypt ext4 btrfs; do
         add_module "$mod" 2>/dev/null || true
     done
-    for b in blkid losetup cryptsetup lvm btrfs dc-rollback; do
+    for b in blkid losetup cryptsetup lvm btrfs nc-rollback; do
         if command -v "$b" >/dev/null 2>&1; then
             add_binary "$(command -v "$b")"
         fi
@@ -428,26 +715,26 @@ build() {
 
 help() {
     cat <<HELPEOF
-NC-UI / Duskcity Live RAM SquashFS & Emergency Rescue hook.
+NC-UI Live RAM SquashFS & Emergency Rescue hook.
 HELPEOF
 }
 EOF_INST
-    chmod 0644 "$INITCPIO_INST_PATH"
+    chmod 0644 "$inst_dst"
 
-    if [[ ! -f "$MKINIT_CONF" ]]; then
-        cat <<'EOF_CONF' > "$MKINIT_CONF"
+    if [[ ! -f "$conf_dst" ]]; then
+        cat <<'EOF_CONF' > "$conf_dst"
 MODULES=(vfat squashfs overlay loop)
 BINARIES=()
 FILES=()
 HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block filesystems recovery-ram)
 COMPRESSION="zstd"
 EOF_CONF
-        chmod 0644 "$MKINIT_CONF"
+        chmod 0644 "$conf_dst"
     fi
 
-    cat <<EOF_RB > "$ROLLBACK_BIN"
+    cat <<EOF_RB > "$rb_dst"
 #!/bin/sh
-# NC-UI / Duskcity Emergency Rollback Utility (busybox ash compatible)
+# NC-UI Emergency Rollback Utility (busybox ash compatible)
 PROBE_DIR="/run/boot-esp"
 RAM_DIR="/run/recovery-ram"
 NEWROOT="/new_root"
@@ -496,11 +783,15 @@ sync
 umount "\$PROBE_DIR" 2>/dev/null || true
 printf "Rolled back .old recovery artifacts on %s.\n" "\${ESP_FOUND}"
 EOF_RB
-    chmod 0755 "$ROLLBACK_BIN"
+    chmod 0755 "$rb_dst"
     if [[ -n "$TARGET_MNT" && -d "$TARGET_MNT" ]]; then
-        cp -f "$ROLLBACK_BIN" "${TARGET_MNT}/dc-rollback.sh" 2>/dev/null || true
+        cp -f "$rb_dst" "${TARGET_MNT}/nc-rollback.sh" 2>/dev/null || true
     fi
     return 0
+}
+
+write_recovery_hook_files() {
+    write_recovery_hook_files_into ""
 }
 
 parse_limine_meta() {
@@ -546,8 +837,8 @@ collect_and_write_status() {
         uki_dir="${TARGET_MNT}/EFI/Linux"
         if [[ ! -f "${uki_dir}/${uki_name}" ]]; then
             local alt
-            for alt in "nightcity-recovery.efi" "nc-rescue.efi" "duskcity.efi"; do
-                if [[ -f "${uki_dir}/${alt}" ]]; then
+            for alt in "$CFG_UKI_NAME" "nc-rescue.efi"; do
+                if [[ -n "$alt" && -f "${uki_dir}/${alt}" ]]; then
                     uki_name="$alt"
                     break
                 fi
@@ -559,7 +850,7 @@ collect_and_write_status() {
     local uki_old="${uki_dir}/${uki_name}.old"
     local sq_path="${TARGET_MNT}/recovery.squashfs"
     local sq_old="${TARGET_MNT}/recovery.squashfs.old"
-    local rb_esp="${TARGET_MNT}/dc-rollback.sh"
+    local rb_esp="${TARGET_MNT}/nc-rollback.sh"
 
     local uki_present=0 uki_size="-" uki_mtime="-" uki_signed="na"
     local uki_old_present=0 uki_old_size="-"
@@ -767,7 +1058,7 @@ ensure_limine_recovery_entry() {
         cat >> "$tmp_l" <<EOF
 
   //NC-UI - RAM Recovery
-    comment: NC-UI / Duskcity Rescue UKI
+    comment: NC-UI Rescue UKI
     protocol: efi
     path: boot():/EFI/Linux/${CFG_UKI_NAME}
 EOF
@@ -776,7 +1067,7 @@ EOF
 
 /Disaster Recovery
   //NC-UI - RAM Recovery
-    comment: NC-UI / Duskcity Rescue UKI
+    comment: NC-UI Rescue UKI
     protocol: efi
     path: boot():/EFI/Linux/${CFG_UKI_NAME}
 EOF
@@ -786,9 +1077,123 @@ EOF
     mv -f "$tmp_l" "$lconf"
 }
 
+ensure_sdboot_recovery_entry() {
+    [[ -f "${TARGET_MNT}/loader/loader.conf" ]] || return 0
+    local entry_dir="${TARGET_MNT}/loader/entries"
+    local entry_file="${entry_dir}/nc-rescue.conf"
+    mkdir -p "$entry_dir"
+    cat > "${entry_file}.tmp.$$" <<EOF
+title NC-UI RAM Recovery
+efi /EFI/Linux/${CFG_UKI_NAME}
+EOF
+    chmod 0644 "${entry_file}.tmp.$$" 2>/dev/null || true
+    mv -f "${entry_file}.tmp.$$" "$entry_file"
+}
+
+_generate_uki_image() {
+    local conf_file="$1" cmd_file="$2" out_uki="$3"
+    if command -v mkinitcpio >/dev/null 2>&1; then
+        mkinitcpio -c "$conf_file" -k "$KERNEL_IMG" --cmdline "$cmd_file" --uki "$out_uki"
+    elif command -v dracut >/dev/null 2>&1; then
+        local cmd_str=""
+        [[ -r "$cmd_file" ]] && cmd_str="$(tr '\n' ' ' < "$cmd_file")"
+        dracut --force --uefi --kver "$INSTALLED_KVER" --kernel-cmdline "$cmd_str" "$out_uki"
+    else
+        msg_err "MISSING: mkinitcpio or dracut required to build Recovery UKI."
+        exit 1
+    fi
+}
+
+build_uki_from_rootfs() {
+    local root_dir="$1"
+    [[ -n "$root_dir" && -d "$root_dir" ]] || { msg_err "Invalid rootfs for UKI build: ${root_dir}"; exit 1; }
+    load_rescue_config
+    resolve_esp_mnt 1 || { msg_err "Unable to mount ESP partition read-write."; exit 1; }
+
+    local r_kver="" mod_dir base_mod
+    while IFS= read -r mod_dir; do
+        [[ -d "$mod_dir" && -f "${mod_dir}/vmlinuz" ]] || continue
+        base_mod="${mod_dir##*/}"
+        [[ "$base_mod" == extramodules* ]] && continue
+        r_kver="$base_mod"
+    done < <(printf '%s\n' "${root_dir}/usr/lib/modules/"* | sort -V)
+    [[ -n "$r_kver" ]] || { msg_err "No kernel vmlinuz found inside ${root_dir}/usr/lib/modules."; exit 1; }
+
+    write_recovery_hook_files_into "$root_dir"
+
+    local uki_dir="${TARGET_MNT}/EFI/Linux"
+    local cur_uki="${uki_dir}/${CFG_UKI_NAME}"
+    local bak_uki="${uki_dir}/${CFG_UKI_NAME}.old"
+    NEW_UKI="${uki_dir}/${CFG_UKI_NAME}.new"
+    mkdir -p "$uki_dir" "${root_dir}/tmp"
+
+    local r_conf="/tmp/nc-mkinitcpio-recovery.$$.conf"
+    local r_cmd="/tmp/nc-uki-cmdline.$$.txt"
+    local r_uki="/tmp/nc-rescue.$$.efi.new"
+    cp -f "${root_dir}${MKINIT_CONF}" "${root_dir}${r_conf}"
+    if [[ -x "${root_dir}${ROLLBACK_BIN}" ]]; then
+        printf '\nBINARIES+=(%s)\n' "$ROLLBACK_BIN" >> "${root_dir}${r_conf}"
+    fi
+    if [[ -f "${root_dir}/etc/kernel/cmdline-recovery" ]]; then
+        cp -f "${root_dir}/etc/kernel/cmdline-recovery" "${root_dir}${r_cmd}"
+    elif [[ -f /etc/kernel/cmdline-recovery ]]; then
+        cp -f /etc/kernel/cmdline-recovery "${root_dir}${r_cmd}"
+    else
+        printf 'rw loglevel=4\n' > "${root_dir}${r_cmd}"
+    fi
+
+    msg_step "Building Recovery UKI (${cur_uki}) from recovery rootfs (kernel ${r_kver})..."
+    _mount_chroot_api "$root_dir"
+    local rc=0
+    chroot "$root_dir" mkinitcpio -c "$r_conf" -k "/usr/lib/modules/${r_kver}/vmlinuz" --cmdline "$r_cmd" --uki "$r_uki" || rc=$?
+    _umount_chroot_api "$root_dir" 0
+    if (( rc != 0 )) || [[ ! -s "${root_dir}${r_uki}" ]]; then
+        rm -f "${root_dir}${r_conf}" "${root_dir}${r_cmd}" "${root_dir}${r_uki}" 2>/dev/null || true
+        msg_err "In-chroot mkinitcpio failed to build Recovery UKI."
+        exit 1
+    fi
+
+    mv -f "${root_dir}${r_uki}" "$NEW_UKI"
+    rm -f "${root_dir}${r_conf}" "${root_dir}${r_cmd}" 2>/dev/null || true
+
+    if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        msg_step "Signing Recovery UKI with sbctl..."
+        sbctl sign -s "$NEW_UKI" >/dev/null 2>&1 || sbctl sign "$NEW_UKI" || msg_warn "sbctl sign returned warning; continuing."
+    fi
+
+    IN_FINAL_SWAP=1
+    swap_pair_safe "$NEW_UKI" "$cur_uki" "$bak_uki" 1
+    if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
+        sbctl sign -s "$cur_uki" >/dev/null 2>&1 || true
+    fi
+    ensure_limine_recovery_entry
+    ensure_sdboot_recovery_entry
+    sync
+    COMMIT_COMPLETED=1
+    msg_ok "Recovery UKI ready: ${cur_uki}"
+    collect_and_write_status >/dev/null
+    return 0
+}
+
 build_uki_standalone() {
     load_rescue_config
     resolve_esp_mnt 1 || { msg_err "Unable to mount ESP partition read-write."; exit 1; }
+    if ! command -v mkinitcpio >/dev/null 2>&1 && ! command -v dracut >/dev/null 2>&1; then
+        local cur_sq="${TARGET_MNT}/recovery.squashfs"
+        if [[ -s "$cur_sq" ]] && command -v unsquashfs >/dev/null 2>&1; then
+            local uki_work_base
+            uki_work_base="$(_pick_exec_work_base 2147483648)" || exit 1
+            local tmp_uki_root="${uki_work_base}/ncui-uki-root.$$"
+            trap '_safe_rm_chroot_dir "'"$tmp_uki_root"'" || true; cleanup_rescue' EXIT INT TERM HUP
+            _safe_rm_chroot_dir "$tmp_uki_root" || exit 1
+            msg_step "Unpacking ${cur_sq} to build UKI using recovery Arch kernel..."
+            unsquashfs -d "$tmp_uki_root" "$cur_sq"
+            build_uki_from_rootfs "$tmp_uki_root"
+            _safe_rm_chroot_dir "$tmp_uki_root"
+            trap cleanup_rescue EXIT INT TERM HUP
+            return 0
+        fi
+    fi
     detect_kernel || { msg_err "No installed kernel modules/vmlinuz found in /usr/lib/modules."; exit 1; }
     write_recovery_hook_files
 
@@ -814,8 +1219,8 @@ build_uki_standalone() {
     fi
 
     msg_step "Building Recovery UKI (${cur_uki}) for kernel ${INSTALLED_KVER}..."
-    mkinitcpio -c "$tmp_conf" -k "$KERNEL_IMG" --cmdline "$tmp_cmd" --uki "$NEW_UKI"
-    [[ -s "$NEW_UKI" ]] || { msg_err "mkinitcpio did not produce ${NEW_UKI}."; exit 1; }
+    _generate_uki_image "$tmp_conf" "$tmp_cmd" "$NEW_UKI"
+    [[ -s "$NEW_UKI" ]] || { msg_err "UKI builder did not produce ${NEW_UKI}."; exit 1; }
 
     if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
         msg_step "Signing Recovery UKI with sbctl..."
@@ -828,6 +1233,7 @@ build_uki_standalone() {
         sbctl sign -s "$cur_uki" >/dev/null 2>&1 || true
     fi
     ensure_limine_recovery_entry
+    ensure_sdboot_recovery_entry
     sync
     mkdir -p "$(dirname "$UKI_STATE_FILE")"
     compute_uki_fingerprint > "$UKI_STATE_FILE"
@@ -901,7 +1307,7 @@ do_live_commit() {
             sed -E 's/(^|[[:space:]])(BOOT_IMAGE=[^[:space:]]+|initrd=[^[:space:]]+|recovery\.menu([^[:space:]]*)?)//g; s/^[[:space:]]+//; s/[[:space:]]+$//' /proc/cmdline > "$tmp_cmd"
         fi
         msg_step "Rebuilding Recovery UKI (${NEW_UKI})..."
-        mkinitcpio -c "$tmp_conf" -k "$KERNEL_IMG" --cmdline "$tmp_cmd" --uki "$NEW_UKI"
+        _generate_uki_image "$tmp_conf" "$tmp_cmd" "$NEW_UKI"
         [[ -s "$NEW_UKI" ]] || { msg_err "UKI build failed."; exit 1; }
         if [[ "$CFG_SIGN_SBCTL" == "true" ]] && command -v sbctl >/dev/null 2>&1 && [[ -d /var/lib/sbctl/keys || -d /usr/share/secureboot/keys ]]; then
             sbctl sign "$NEW_UKI" || msg_warn "sbctl sign warning."
@@ -1131,7 +1537,7 @@ _resolve_ncui_source_dir() {
     if [[ -n "$self_repo" ]]; then
         self_repo="${self_repo%/*/*/*/*/*}"
     fi
-    for cand in "${NCUI_SRC_DIR:-}" "$self_repo" "/opt/ncui" /home/*/Projects/ncui; do
+    for cand in "${NCUI_SRC_DIR:-}" "$self_repo" "/opt/ncui"; do
         [[ -n "$cand" ]] || continue
         if [[ -f "${cand}/packages/nc-ui-control-center/panels/control_center.py" && -d "${cand}/packages/nc-ui-core/ui" ]]; then
             printf '%s' "$cand"
@@ -1217,7 +1623,7 @@ EOF
 _inject_ncui_into_rootfs() {
     local root_dir="$1" src_dir="$2"
     msg_step "Installing NC-UI & bundled resilience helpers into ${root_dir}/opt/ncui..."
-    mkdir -p "${root_dir}/opt/ncui" "${root_dir}/usr/local/bin" "${root_dir}/usr/local/lib/nc-ui/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
+    mkdir -p "${root_dir}/opt/ncui" "${root_dir}/usr/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
     rsync -a --delete \
         --exclude='.git' --exclude='.gnome-panels' --exclude='.media' \
         --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pkg.tar*' \
@@ -1232,11 +1638,10 @@ _inject_ncui_into_rootfs() {
     done
     for cli in nc-chroot nc-rescue nc-golden nc-hanoi nc-vault nc-snap; do
         if [[ -f "${root_dir}/usr/lib/ncui/sbin/${cli}" ]]; then
-            ln -sfn "/usr/lib/ncui/sbin/${cli}" "${root_dir}/usr/local/bin/${cli}"
+            ln -sfn "/usr/lib/ncui/sbin/${cli}" "${root_dir}/usr/bin/${cli}"
         fi
     done
     local -A _wb_bins=(
-        [nc-ctl]="/opt/ncui/packages/nc-ui-core/bin/nc-ctl"
         [nc-bar-agent]="/opt/ncui/packages/nc-ui-waybar/bin/nc-bar-agent"
         [nc-telegram-status]="/opt/ncui/packages/nc-ui-waybar/bin/nc-telegram-status"
         [nc-record-notification]="/opt/ncui/packages/nc-ui-notification/bin/nc-record-notification"
@@ -1245,28 +1650,28 @@ _inject_ncui_into_rootfs() {
     for wb_name in "${!_wb_bins[@]}"; do
         wb_tgt="${_wb_bins[$wb_name]}"
         if [[ -f "${root_dir}${wb_tgt}" ]]; then
-            ln -sfn "$wb_tgt" "${root_dir}/usr/local/lib/nc-ui/bin/${wb_name}"
+            ln -sfn "$wb_tgt" "${root_dir}/usr/bin/${wb_name}"
         fi
     done
     if [[ -f "$CONF_FILE" ]]; then
         install -m 0644 "$CONF_FILE" "${root_dir}/etc/ncui/resilience.toml"
     fi
     _write_recovery_origin_manifest "$root_dir"
-    cat <<'EOF_CTL' > "${root_dir}/usr/local/bin/nc-ctl"
+    cat <<'EOF_CTL' > "${root_dir}/usr/bin/nc-ctl"
 #!/usr/bin/env bash
 if [[ -x /opt/ncui/packages/nc-ui-core/bin/nc-ctl ]]; then
     exec python3 /opt/ncui/packages/nc-ui-core/bin/nc-ctl "$@"
 fi
 exec python3 /opt/ncui/bin/nc-ctl "$@"
 EOF_CTL
-    cat <<'EOF_BIN' > "${root_dir}/usr/local/bin/ncui"
+    cat <<'EOF_BIN' > "${root_dir}/usr/bin/ncui"
 #!/usr/bin/env bash
 if [[ $# -eq 0 ]]; then
-    exec /usr/local/bin/nc-ctl settings
+    exec /usr/bin/nc-ctl settings
 fi
-exec /usr/local/bin/nc-ctl "$@"
+exec /usr/bin/nc-ctl "$@"
 EOF_BIN
-    chmod 0755 "${root_dir}/usr/local/bin/ncui" "${root_dir}/usr/local/bin/nc-ctl"
+    chmod 0755 "${root_dir}/usr/bin/ncui" "${root_dir}/usr/bin/nc-ctl"
     if [[ ! -f "${root_dir}/etc/sudoers.d/ncui-recovery" ]]; then
         mkdir -p -m 0750 "${root_dir}/etc/sudoers.d"
         cat <<'EOF_SUD' > "${root_dir}/etc/sudoers.d/ncui-recovery"
@@ -1275,12 +1680,20 @@ EOF_SUD
         chmod 0440 "${root_dir}/etc/sudoers.d/ncui-recovery"
     fi
     if [[ ! -f "${root_dir}/etc/profile.d/editor.sh" ]]; then
-        mkdir -p "${root_dir}/etc/profile.d"
-        cat <<'EOF_ED' > "${root_dir}/etc/profile.d/editor.sh"
-export EDITOR="nvim"
-export VISUAL="nvim"
-EOF_ED
-        chmod 0644 "${root_dir}/etc/profile.d/editor.sh"
+        local host_ed="${VISUAL:-${EDITOR:-}}" c_ed
+        if [[ -z "$host_ed" ]]; then
+            for c_ed in nvim vim vi; do
+                if [[ -x "${root_dir}/usr/bin/${c_ed}" ]] || command -v "$c_ed" >/dev/null 2>&1; then
+                    host_ed="$c_ed"
+                    break
+                fi
+            done
+        fi
+        if [[ -n "$host_ed" ]]; then
+            mkdir -p "${root_dir}/etc/profile.d"
+            printf 'export EDITOR=%q\nexport VISUAL=%q\n' "$host_ed" "$host_ed" > "${root_dir}/etc/profile.d/editor.sh"
+            chmod 0644 "${root_dir}/etc/profile.d/editor.sh"
+        fi
     fi
     cat <<'EOF_DESK' > "${root_dir}/usr/share/applications/ncui.desktop"
 [Desktop Entry]
@@ -1293,11 +1706,531 @@ EOF_DESK
     return 0
 }
 
+_ncui_pkg_list() {
+    local profile="$1"
+    case "$profile" in
+        console)
+            printf '%s\n' nc-ui-core nc-resilience nc-bootloader
+            ;;
+        minimal_gui)
+            printf '%s\n' nc-ui-core nc-ui-control-center nc-ui-waybar nc-ui-notification nc-resilience nc-bootloader nc-nftables
+            ;;
+        full)
+            printf '%s\n' nc-ui-core nc-ui-control-center nc-ui-waybar nc-ui-notification nc-ui-input-daemons \
+                nc-resilience nc-bootloader nc-calendar nc-nftables nc-nut nc-print nc-asciifier nc-video-wallpaper
+            if _arch_pacman_si nc-matrix || _arch_host_pacman_q nc-matrix || [[ -n "$(_find_local_ncui_pkg nc-matrix)" ]]; then
+                printf '%s\n' nc-matrix
+            fi
+            ;;
+    esac
+}
+
+_find_local_ncui_pkg() {
+    local pkg_name="$1" src_dir="${2:-}" d cand best=""
+    for d in "${NCUI_PKG_DIR:-}" "/var/cache/pacman/pkg" "$src_dir"; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        for cand in "$d/${pkg_name}-"[0-9]*.pkg.tar*; do
+            [[ -f "$cand" ]] || continue
+            [[ "$cand" == *.sig ]] && continue
+            best="$cand"
+        done
+        if [[ -n "$best" ]]; then
+            printf '%s' "$best"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_detect_ncui_pkg_tier() {
+    local src_dir="${1:-}"
+    if _arch_pacman_si nc-ui-core; then
+        printf 'repo'
+    elif [[ -n "$(_find_local_ncui_pkg nc-ui-core "$src_dir")" ]]; then
+        printf 'local'
+    elif _arch_host_pacman_q nc-ui-core; then
+        printf 'host'
+    elif [[ -n "$src_dir" ]]; then
+        printf 'source'
+    else
+        printf 'none'
+    fi
+}
+
+_resolve_ncui_pkg_tier_interactive() {
+    local src_dir="${1:-}"
+    RESOLVED_NCUI_PKG_TIER="$(_detect_ncui_pkg_tier "$src_dir")"
+    case "$RESOLVED_NCUI_PKG_TIER" in
+        repo|local|host) return 0 ;;
+    esac
+
+    msg_warn "No NC-UI Arch packages found in configured pacman repos, /var/cache/pacman/pkg, or installed host packages."
+    if [[ ! -r /dev/tty ]]; then
+        if [[ "$RESOLVED_NCUI_PKG_TIER" == "source" ]]; then
+            msg_warn "Using last-resort source fallback (${src_dir} -> /opt/ncui)."
+            return 0
+        fi
+        msg_err "Provide a package directory via NCUI_PKG_DIR or configure an NC-UI pacman repository."
+        return 1
+    fi
+
+    while true; do
+        printf "\n  %sNC-UI package source fallback:%s\n" "$CLR_BOLD" "$CLR_RESET"
+        printf "    [1] Specify a directory containing nc-*.pkg.tar* packages\n"
+        if [[ -n "$src_dir" ]]; then
+            printf "    [2] Last-resort source fallback (rsync %s -> /opt/ncui)\n" "$src_dir"
+        fi
+        printf "    [0] Cancel\n"
+        local sel="" pkg_dir=""
+        read -r -e -p "Select option: " sel </dev/tty || sel="0"
+        case "$sel" in
+            1)
+                read -r -e -p "Directory with nc-*.pkg.tar* packages: " pkg_dir </dev/tty || pkg_dir=""
+                pkg_dir="${pkg_dir/#\~/$HOME}"
+                if [[ -n "$pkg_dir" && -d "$pkg_dir" && -n "$(_find_local_ncui_pkg nc-ui-core "$pkg_dir")" ]]; then
+                    export NCUI_PKG_DIR="$pkg_dir"
+                    RESOLVED_NCUI_PKG_TIER="local"
+                    return 0
+                fi
+                msg_warn "No nc-ui-core-*.pkg.tar* package found in '${pkg_dir:-<empty>}'."
+                ;;
+            2)
+                if [[ -n "$src_dir" ]]; then
+                    msg_warn "Proceeding with last-resort source fallback (${src_dir} -> /opt/ncui)."
+                    RESOLVED_NCUI_PKG_TIER="source"
+                    return 0
+                fi
+                ;;
+            0|"")
+                msg_info "Cancelled by user."
+                return 1
+                ;;
+            *)
+                msg_warn "Invalid choice: ${sel}"
+                ;;
+        esac
+    done
+}
+
+_post_install_ncui_glue() {
+    local root_dir="$1"
+    mkdir -p "${root_dir}/usr/bin" "${root_dir}/usr/lib/ncui/sbin" "${root_dir}/etc/ncui" "${root_dir}/usr/share/applications"
+    if [[ -f "${root_dir}/usr/lib/ncui/sbin/nc-chroot" && ! -e "${root_dir}/usr/bin/nc-chroot" ]]; then
+        ln -sfn "/usr/lib/ncui/sbin/nc-chroot" "${root_dir}/usr/bin/nc-chroot"
+    fi
+    if [[ -d "${root_dir}/usr/bin" && ! -e "${root_dir}/usr/local/lib/nc-ui/bin" ]]; then
+        mkdir -p "${root_dir}/usr/local/lib/nc-ui"
+        ln -sfn "/usr/bin" "${root_dir}/usr/local/lib/nc-ui/bin"
+    fi
+    if [[ -f "$CONF_FILE" ]]; then
+        install -m 0644 "$CONF_FILE" "${root_dir}/etc/ncui/resilience.toml"
+    fi
+    _write_recovery_origin_manifest "$root_dir"
+    if [[ ! -e "${root_dir}/usr/bin/ncui" ]]; then
+        cat <<'EOF_BIN' > "${root_dir}/usr/bin/ncui"
+#!/usr/bin/env bash
+if [[ $# -eq 0 ]]; then
+    exec /usr/bin/nc-ctl settings
+fi
+exec /usr/bin/nc-ctl "$@"
+EOF_BIN
+        chmod 0755 "${root_dir}/usr/bin/ncui"
+    fi
+    if [[ ! -f "${root_dir}/etc/profile.d/editor.sh" ]]; then
+        local host_ed="${VISUAL:-${EDITOR:-}}" c_ed
+        if [[ -z "$host_ed" ]]; then
+            for c_ed in nvim vim vi; do
+                if [[ -x "${root_dir}/usr/bin/${c_ed}" ]] || command -v "$c_ed" >/dev/null 2>&1; then
+                    host_ed="$c_ed"
+                    break
+                fi
+            done
+        fi
+        if [[ -n "$host_ed" ]]; then
+            mkdir -p "${root_dir}/etc/profile.d"
+            printf 'export EDITOR=%q\nexport VISUAL=%q\n' "$host_ed" "$host_ed" > "${root_dir}/etc/profile.d/editor.sh"
+            chmod 0644 "${root_dir}/etc/profile.d/editor.sh"
+        fi
+    fi
+    cat <<'EOF_DESK' > "${root_dir}/usr/share/applications/ncui.desktop"
+[Desktop Entry]
+Type=Application
+Name=NC-UI Control Center
+Exec=nc-ctl settings
+Terminal=false
+Categories=System;Settings;
+EOF_DESK
+}
+
+_install_ncui_into_rootfs() {
+    local root_dir="$1" profile="${2:-minimal_gui}" src_dir="${3:-}"
+    if [[ "$profile" == "auto" ]]; then
+        if chroot "$root_dir" pacman -Q nc-print >/dev/null 2>&1 || chroot "$root_dir" pacman -Q nc-ui-input-daemons >/dev/null 2>&1; then
+            profile="full"
+        elif chroot "$root_dir" pacman -Q nc-ui-control-center >/dev/null 2>&1; then
+            profile="minimal_gui"
+        elif chroot "$root_dir" pacman -Q nc-ui-core >/dev/null 2>&1; then
+            profile="console"
+        else
+            profile="minimal_gui"
+        fi
+    fi
+
+    local -a target_pkgs=()
+    mapfile -t target_pkgs < <(_ncui_pkg_list "$profile")
+    local tier
+    tier="$(_detect_ncui_pkg_tier "$src_dir")"
+
+    if [[ "$tier" == "repo" ]]; then
+        local -a repo_pkgs=()
+        mapfile -t repo_pkgs < <(_filter_repo_pkgs "${target_pkgs[@]}")
+        if (( ${#repo_pkgs[@]} > 0 )); then
+            msg_step "Installing NC-UI packages from pacman repo (${profile}: ${#repo_pkgs[@]} pkgs)..."
+            _arch_pacman_root_S "$root_dir" "${repo_pkgs[@]}"
+            _post_install_ncui_glue "$root_dir"
+            return 0
+        fi
+    fi
+
+    if [[ "$tier" == "local" ]]; then
+        local -a local_files=()
+        local p f
+        for p in "${target_pkgs[@]}"; do
+            f="$(_find_local_ncui_pkg "$p" "$src_dir" || true)"
+            [[ -n "$f" ]] && local_files+=("$f")
+        done
+        if (( ${#local_files[@]} > 0 )); then
+            msg_step "Installing local NC-UI packages (${profile}: ${#local_files[@]} .pkg.tar* files)..."
+            _arch_pacman_root_U "$root_dir" "${local_files[@]}"
+            _post_install_ncui_glue "$root_dir"
+            return 0
+        fi
+    fi
+
+    if [[ "$tier" == "host" ]]; then
+        local -a host_pkgs=()
+        local p
+        for p in "${target_pkgs[@]}"; do
+            pacman -Q "$p" >/dev/null 2>&1 && host_pkgs+=("$p")
+        done
+        if (( ${#host_pkgs[@]} > 0 )); then
+            if command -v bacman >/dev/null 2>&1; then
+                local bdir="/var/tmp/ncui-bacman.$$"
+                mkdir -p "$bdir"
+                msg_step "Packaging host NC-UI modules via bacman (${#host_pkgs[@]} pkgs)..."
+                local -a built_files=()
+                for p in "${host_pkgs[@]}"; do
+                    if PKGDEST="$bdir" bacman "$p" >/dev/null 2>&1; then
+                        local bf
+                        bf="$(_find_local_ncui_pkg "$p" "$bdir" || true)"
+                        [[ -n "$bf" ]] && built_files+=("$bf")
+                    fi
+                done
+                if (( ${#built_files[@]} > 0 )); then
+                    pacman --noconfirm --root "$root_dir" -U "${built_files[@]}"
+                    rm -rf "$bdir"
+                    _post_install_ncui_glue "$root_dir"
+                    return 0
+                fi
+                rm -rf "$bdir"
+            fi
+
+            msg_step "Cloning installed NC-UI packages from host (${profile}: ${#host_pkgs[@]} pkgs)..."
+            mkdir -p "${root_dir}/var/lib/pacman/local"
+            local flist="/var/tmp/ncui-pkg-files.$$"
+            : > "$flist"
+            for p in "${host_pkgs[@]}"; do
+                local ver entry db_dir
+                ver="$(pacman -Q "$p" 2>/dev/null | awk '{print $2}' || true)"
+                while IFS= read -r entry; do
+                    [[ "$entry" == */ ]] && continue
+                    if [[ -e "$entry" || -L "$entry" ]]; then
+                        printf '%s\0' "${entry#/}" >> "$flist"
+                    fi
+                done < <(pacman -Qlq "$p" 2>/dev/null || true)
+                db_dir="/var/lib/pacman/local/${p}-${ver}"
+                if [[ -n "$ver" && -d "$db_dir" ]]; then
+                    rm -rf "${root_dir}/var/lib/pacman/local/${p}-${ver}"
+                    cp -a "$db_dir" "${root_dir}/var/lib/pacman/local/"
+                fi
+            done
+            if [[ -s "$flist" ]]; then
+                tar -C / --no-recursion --null -T "$flist" -cf - | tar -C "$root_dir" --no-overwrite-dir -xf -
+            fi
+            rm -f "$flist"
+            _post_install_ncui_glue "$root_dir"
+            return 0
+        fi
+    fi
+
+    if [[ -n "$src_dir" ]]; then
+        msg_warn "Last-resort fallback: installing NC-UI from source directory (${src_dir} -> /opt/ncui)."
+        _inject_ncui_into_rootfs "$root_dir" "$src_dir"
+        return 0
+    fi
+    msg_err "No NC-UI packages or source repository found for installation."
+    return 1
+}
+
+_detect_host_hw_pkgs() {
+    local hw_mode="${1:-host}" kern_pkg="${2:-}" want_desktop="${3:-1}"
+    DETECTED_UCODE_PKGS=()
+    DETECTED_FW_PKGS=()
+    DETECTED_GPU_PKGS=()
+
+    local cpu_info pci_info usb_info all_hw
+    cpu_info="$(lscpu 2>/dev/null || true)"
+    pci_info="$(lspci -nn 2>/dev/null || true)"
+    usb_info="$(lsusb 2>/dev/null || true)"
+    all_hw="${pci_info}"$'\n'"${usb_info}"
+
+    if grep -qiE 'AuthenticAMD|AMD' <<< "$cpu_info"; then
+        _arch_pacman_si amd-ucode && DETECTED_UCODE_PKGS+=(amd-ucode)
+    elif grep -qiE 'GenuineIntel|Intel' <<< "$cpu_info"; then
+        _arch_pacman_si intel-ucode && DETECTED_UCODE_PKGS+=(intel-ucode)
+    fi
+
+    if [[ "$hw_mode" == "generic" ]] || ! _arch_pacman_si linux-firmware-whence; then
+        _arch_pacman_si linux-firmware && DETECTED_FW_PKGS+=(linux-firmware)
+    else
+        local -a fw_cands=(linux-firmware-whence linux-firmware-other)
+        if grep -qiE 'AuthenticAMD|AMD' <<< "$cpu_info" || grep -qi '1022:' <<< "$pci_info"; then
+            fw_cands+=(linux-firmware-amd)
+        fi
+        if grep -qiE 'VGA|3D|Display' <<< "$pci_info" && grep -qi '1002:' <<< "$pci_info"; then
+            fw_cands+=(linux-firmware-amdgpu)
+            lsmod 2>/dev/null | grep -q '^radeon\b' && fw_cands+=(linux-firmware-radeon)
+        fi
+        if grep -qiE 'VGA|3D|Display' <<< "$pci_info" && grep -qi '10de:' <<< "$pci_info"; then
+            fw_cands+=(linux-firmware-nvidia)
+        fi
+        if grep -qiE '8086:|8087:' <<< "$all_hw"; then
+            fw_cands+=(linux-firmware-intel)
+        fi
+        if grep -qiE '10ec:|0bda:' <<< "$all_hw"; then
+            fw_cands+=(linux-firmware-realtek)
+        fi
+        if grep -qiE '168c:|17cb:|0cf3:' <<< "$all_hw"; then
+            fw_cands+=(linux-firmware-atheros)
+        fi
+        if grep -qiE '14c3:|1814:|0e8d:' <<< "$all_hw"; then
+            fw_cands+=(linux-firmware-mediatek)
+        fi
+        if grep -qiE '14e4:|0a5c:' <<< "$all_hw"; then
+            fw_cands+=(linux-firmware-broadcom)
+        fi
+        mapfile -t DETECTED_FW_PKGS < <(_filter_repo_pkgs "${fw_cands[@]}")
+    fi
+
+    if (( want_desktop == 1 )); then
+        local -a gpu_cands=(mesa)
+        if grep -qiE 'VGA|3D|Display' <<< "$pci_info" && grep -qi '10de:' <<< "$pci_info"; then
+            if lsmod 2>/dev/null | grep -q '^nvidia' || _arch_host_pacman_q nvidia-utils; then
+                local nv_kmod=""
+                for nv_kmod in "${kern_pkg}-nvidia-open" "nvidia-open"; do
+                    if [[ -n "$nv_kmod" ]] && _arch_pacman_si "$nv_kmod"; then
+                        gpu_cands+=("$nv_kmod")
+                        break
+                    fi
+                done
+                gpu_cands+=(nvidia-utils)
+            fi
+        fi
+        mapfile -t DETECTED_GPU_PKGS < <(_filter_repo_pkgs "${gpu_cands[@]}")
+    fi
+}
+
+_configure_recovery_accounts() {
+    local root_dir="$1" pass_str="$2" want_desktop="${3:-1}"
+    msg_step "Configuring rescue & root accounts, sudo/wheel groups and console locale..."
+    chroot "$root_dir" groupadd -f sudo
+    chroot "$root_dir" groupadd -f wheel
+
+    local sh_bin="/bin/bash"
+    [[ -x "${root_dir}/bin/zsh" || -x "${root_dir}/usr/bin/zsh" ]] && sh_bin="/bin/zsh"
+
+    local extra_grps="" g
+    for g in video input audio storage network render; do
+        grep -q "^${g}:" "${root_dir}/etc/group" && extra_grps+=",${g}"
+    done
+
+    if chroot "$root_dir" id -u rescue >/dev/null 2>&1; then
+        chroot "$root_dir" usermod -s "$sh_bin" -G "wheel,sudo${extra_grps}" rescue
+    else
+        chroot "$root_dir" useradd -m -s "$sh_bin" -G "wheel,sudo${extra_grps}" rescue
+    fi
+
+    printf 'root:%s\nrescue:%s\n' "$pass_str" "$pass_str" | chroot "$root_dir" chpasswd
+
+    mkdir -p -m 0750 "${root_dir}/etc/sudoers.d"
+    cat <<'EOF_SUDO_GRP' > "${root_dir}/etc/sudoers.d/10-sudo-group"
+%sudo ALL=(ALL:ALL) ALL
+EOF_SUDO_GRP
+    chmod 0440 "${root_dir}/etc/sudoers.d/10-sudo-group"
+    chown root:root "${root_dir}/etc/sudoers.d/10-sudo-group"
+
+    cat <<'EOF_SUD' > "${root_dir}/etc/sudoers.d/ncui-recovery"
+%sudo ALL=(ALL:ALL) NOPASSWD: /usr/lib/ncui/sbin/nc-rescue, /usr/lib/ncui/sbin/nc-chroot, /usr/lib/ncui/sbin/nc-golden, /usr/lib/ncui/sbin/nc-snap, /usr/lib/ncui/sbin/nc-vault, /usr/lib/ncui/sbin/nc-hanoi, /usr/lib/ncui/sbin/nc-disks
+%wheel ALL=(ALL:ALL) NOPASSWD: /usr/lib/ncui/sbin/nc-rescue, /usr/lib/ncui/sbin/nc-chroot, /usr/lib/ncui/sbin/nc-golden, /usr/lib/ncui/sbin/nc-snap, /usr/lib/ncui/sbin/nc-vault, /usr/lib/ncui/sbin/nc-hanoi, /usr/lib/ncui/sbin/nc-disks
+EOF_SUD
+    chmod 0440 "${root_dir}/etc/sudoers.d/ncui-recovery"
+    chown root:root "${root_dir}/etc/sudoers.d/ncui-recovery"
+
+    if command -v visudo >/dev/null 2>&1; then
+        visudo -cf "${root_dir}/etc/sudoers.d/10-sudo-group" >/dev/null
+        visudo -cf "${root_dir}/etc/sudoers.d/ncui-recovery" >/dev/null
+    elif [[ -x "${root_dir}/usr/bin/visudo" || -x "${root_dir}/usr/sbin/visudo" ]]; then
+        chroot "$root_dir" visudo -cf /etc/sudoers.d/10-sudo-group >/dev/null
+        chroot "$root_dir" visudo -cf /etc/sudoers.d/ncui-recovery >/dev/null
+    fi
+
+    [[ -f /etc/vconsole.conf ]] && install -m 0644 /etc/vconsole.conf "${root_dir}/etc/vconsole.conf"
+    [[ -f /etc/locale.conf ]] && install -m 0644 /etc/locale.conf "${root_dir}/etc/locale.conf"
+    if [[ -f "${root_dir}/etc/locale.gen" ]]; then
+        local host_lang=""
+        [[ -r /etc/locale.conf ]] && host_lang="$(awk -F'=' '/^LANG=/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' /etc/locale.conf 2>/dev/null || true)"
+        sed -i 's/^#en_US\.UTF-8/en_US.UTF-8/' "${root_dir}/etc/locale.gen"
+        if [[ -n "$host_lang" ]]; then
+            sed -i "s/^#${host_lang//./\\.}/${host_lang}/" "${root_dir}/etc/locale.gen" || true
+        fi
+        chroot "$root_dir" locale-gen >/dev/null 2>&1 || true
+    fi
+
+    if (( want_desktop == 1 )); then
+        local login_hook='[[ -z "${WAYLAND_DISPLAY:-}" && "${XDG_VTNR:-}" == "1" ]] && command -v niri-session >/dev/null 2>&1 && exec niri-session'
+        printf '%s\n' "$login_hook" > "${root_dir}/home/rescue/.zprofile"
+        printf '%s\n' "$login_hook" > "${root_dir}/home/rescue/.bash_profile"
+        chmod 0644 "${root_dir}/home/rescue/.zprofile" "${root_dir}/home/rescue/.bash_profile"
+        chroot "$root_dir" chown rescue:rescue /home/rescue/.zprofile /home/rescue/.bash_profile
+    fi
+}
+
+_resolve_host_desktop_user() {
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        printf '%s' "$SUDO_USER"
+        return 0
+    fi
+    local u uid h
+    while IFS=: read -r u _ uid _ _ h _; do
+        if [[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= 1000 && uid < 65000 )) && [[ -d "${h}/.config/ncui" ]]; then
+            printf '%s' "$u"
+            return 0
+        fi
+    done < /etc/passwd
+    return 1
+}
+
+_import_host_settings_into_rootfs() {
+    local root_dir="$1" host_user="${2:-}" import_ui="${3:-1}" import_nm="${4:-0}" want_desktop="${5:-1}"
+    local host_home=""
+    if [[ -n "$host_user" ]]; then
+        host_home="$(getent passwd "$host_user" 2>/dev/null | cut -d: -f6 || true)"
+    fi
+
+    local r_cfg="${root_dir}/home/rescue/.config"
+    mkdir -p "${r_cfg}/ncui" "${r_cfg}/waybar" "${r_cfg}/niri"
+
+    if (( import_ui == 1 )) && [[ -n "$host_home" && -d "$host_home" ]]; then
+        msg_step "Importing NC-UI, Waybar & Niri settings from ${host_user}..."
+        local f
+        for f in config.toml theme.toml firewall_rules.json notifications_rules.json shortcuts_store.json; do
+            [[ -f "${host_home}/.config/ncui/${f}" ]] && install -m 0644 "${host_home}/.config/ncui/${f}" "${r_cfg}/ncui/${f}"
+        done
+        for f in config.jsonc style.css; do
+            [[ -f "${host_home}/.config/waybar/${f}" ]] && install -m 0644 "${host_home}/.config/waybar/${f}" "${r_cfg}/waybar/${f}"
+        done
+        if [[ -f "${host_home}/.config/niri/config.kdl" ]]; then
+            python3 - "$host_home" "${host_home}/.config/niri/config.kdl" "${r_cfg}/niri/config.kdl" "$root_dir" <<'PY_NIRI'
+import os, re, shlex, sys
+h_home, src, dst, rdir = sys.argv[1:5]
+with open(src, "r", encoding="utf-8", errors="replace") as f:
+    lines = f.readlines()
+
+def bin_exists(cmd):
+    if cmd.startswith("/"):
+        return os.path.exists(rdir + cmd)
+    for d in ("/usr/bin", "/bin", "/usr/local/bin", "/usr/lib/ncui/sbin"):
+        if os.path.exists(os.path.join(rdir, d.lstrip("/"), cmd)):
+            return True
+    return False
+
+out = []
+for ln in lines:
+    s = ln.strip()
+    if s.startswith("spawn-at-startup"):
+        try:
+            toks = shlex.split(s)
+            if len(toks) >= 2 and not bin_exists(toks[1]):
+                out.append(f"// [recovery-skipped] {ln}")
+                continue
+        except Exception:
+            pass
+    out.append(ln.replace(h_home, "/home/rescue"))
+with open(dst, "w", encoding="utf-8") as f:
+    f.writelines(out)
+PY_NIRI
+            chmod 0644 "${r_cfg}/niri/config.kdl"
+        fi
+    fi
+
+    local seed_ncui="" seed_wb=""
+    for seed_ncui in "${root_dir}/usr/share/ncui/config/ncui" "${root_dir}/opt/ncui/packages/nc-ui-core/config/ncui"; do
+        [[ -d "$seed_ncui" ]] && break
+        seed_ncui=""
+    done
+    if [[ -n "$seed_ncui" ]]; then
+        local f
+        for f in config.toml theme.toml firewall_rules.json notifications_rules.json shortcuts_store.json; do
+            [[ -f "${r_cfg}/ncui/${f}" || ! -f "${seed_ncui}/${f}" ]] || install -m 0644 "${seed_ncui}/${f}" "${r_cfg}/ncui/${f}"
+        done
+    fi
+
+    for seed_wb in "${root_dir}/usr/share/ncui/config/waybar" "${root_dir}/opt/ncui/packages/nc-ui-waybar/config/waybar"; do
+        [[ -d "$seed_wb" ]] && break
+        seed_wb=""
+    done
+    if [[ -n "$seed_wb" ]]; then
+        local f
+        for f in config.jsonc style.css; do
+            [[ -f "${r_cfg}/waybar/${f}" || ! -f "${seed_wb}/${f}" ]] || install -m 0644 "${seed_wb}/${f}" "${r_cfg}/waybar/${f}"
+        done
+    fi
+
+    if (( want_desktop == 1 )) && [[ ! -f "${r_cfg}/niri/config.kdl" ]]; then
+        cat <<'EOF_NIRI' > "${r_cfg}/niri/config.kdl"
+spawn-at-startup "waybar"
+binds {
+    Mod+Return { spawn "ghostty"; }
+    Mod+S { spawn "nc-ctl" "settings"; }
+    Mod+Q { close-window; }
+    Mod+Shift+E { quit; }
+}
+EOF_NIRI
+        chmod 0644 "${r_cfg}/niri/config.kdl"
+    fi
+
+    chroot "$root_dir" chown -R rescue:rescue /home/rescue/.config 2>/dev/null || true
+
+    if (( import_nm == 1 )) && [[ -d /etc/NetworkManager/system-connections ]]; then
+        msg_step "Importing NetworkManager profiles (0600 root:root)..."
+        mkdir -p "${root_dir}/etc/NetworkManager/system-connections"
+        local nm_f
+        for nm_f in /etc/NetworkManager/system-connections/*; do
+            [[ -f "$nm_f" ]] || continue
+            install -m 0600 -o root -g root "$nm_f" "${root_dir}/etc/NetworkManager/system-connections/$(basename "$nm_f")"
+        done
+    fi
+}
+
 do_sync_ncui_squashfs() {
     load_rescue_config
     resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
-    local src_dir
-    src_dir="$(_resolve_ncui_source_dir)" || { msg_err "NC-UI repository not found."; exit 1; }
+    _ensure_arch_builder
+    local src_dir=""
+    src_dir="$(_resolve_ncui_source_dir 2>/dev/null || true)"
+    local tier=""
+    _resolve_ncui_pkg_tier_interactive "$src_dir" || return 1
+    tier="$RESOLVED_NCUI_PKG_TIER"
     local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     [[ -s "$cur_sq" ]] || { msg_err "No existing ${cur_sq} on ESP. Run --build-recovery first."; exit 1; }
 
@@ -1313,17 +2246,20 @@ do_sync_ncui_squashfs() {
         exit 1
     fi
 
-    local work_dir="/var/tmp/ncui-sqfs-sync.$$"
-    trap 'rm -rf "'"$work_dir"'" 2>/dev/null || true; cleanup_rescue' EXIT INT TERM HUP
+    local sync_work_base
+    sync_work_base="$(_pick_exec_work_base 3221225472)" || exit 1
+    local work_dir="${sync_work_base}/ncui-sqfs-sync.$$"
+    trap '_safe_rm_chroot_dir "'"$work_dir"'" || true; cleanup_rescue' EXIT INT TERM HUP
     msg_step "Unpacking ${cur_sq} into ${work_dir}..."
-    rm -rf "$work_dir"
+    _safe_rm_chroot_dir "$work_dir" || exit 1
     unsquashfs -d "$work_dir" "$cur_sq"
 
     if ! chroot "$work_dir" python3 -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('GtkLayerShell','0.1'); import ctypes; ctypes.CDLL('libvterm.so.0')" >/dev/null 2>&1; then
         msg_step "Installing missing NC-UI GTK3/LayerShell/libvterm dependencies inside recovery rootfs..."
-        pacman --noconfirm --needed -S --root "$work_dir" --cachedir /var/cache/pacman/pkg python python-gobject gtk3 gtk-layer-shell cairo pango gdk-pixbuf2 libvterm rsync || true
+        _arch_pacman_root_S "$work_dir" python python-gobject gtk3 gtk-layer-shell cairo pango gdk-pixbuf2 libvterm rsync || true
     fi
-    _inject_ncui_into_rootfs "$work_dir" "$src_dir"
+    _install_ncui_into_rootfs "$work_dir" "auto" "$src_dir"
+    write_recovery_hook_files_into "$work_dir"
 
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
     msg_step "Packing updated ${NEW_SQUASHFS} (zstd -19)..."
@@ -1337,8 +2273,8 @@ do_sync_ncui_squashfs() {
     swap_pair_safe "$NEW_SQUASHFS" "$cur_sq" "$bak_sq" 1
     sync
     COMMIT_COMPLETED=1
-    rm -rf "$work_dir"
-    build_uki_standalone
+    build_uki_from_rootfs "$work_dir"
+    _safe_rm_chroot_dir "$work_dir"
     msg_ok "Synced NC-UI into ${cur_sq} and rebuilt signed UKI."
     return 0
 }
@@ -1347,19 +2283,105 @@ _filter_repo_pkgs() {
     local p
     for p in "$@"; do
         [[ -n "$p" ]] || continue
-        if pacman -Si "$p" >/dev/null 2>&1; then
+        if _arch_pacman_si "$p"; then
             printf '%s\n' "$p"
         fi
     done
 }
 
+_parse_srcinfo_aur_deps() {
+    local srcinfo="$1"
+    [[ -f "$srcinfo" ]] || return 0
+    awk -F' = ' '/^[[:space:]]*(depends|depends_x86_64|makedepends|makedepends_x86_64)[[:space:]]*=/{
+        dep=$2
+        sub(/[<>=:].*/, "", dep)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", dep)
+        if (dep != "" && !seen[dep]++) print dep
+    }' "$srcinfo"
+}
+
+_install_aur_helper_into_rootfs() {
+    local root_dir="$1" helper_name="$2"
+    local aur_pkg=""
+    case "$helper_name" in
+        paru)   aur_pkg="paru-bin" ;;
+        yay)    aur_pkg="yay-bin" ;;
+        pikaur) aur_pkg="pikaur" ;;
+        trizen) aur_pkg="trizen" ;;
+        *) return 0 ;;
+    esac
+
+    msg_step "Building AUR helper '${helper_name}' from AUR (${aur_pkg}) inside recovery rootfs..."
+    local work_dir="${root_dir}/tmp/ncui-aur-build"
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir"
+    chroot "$root_dir" chown rescue:rescue /tmp/ncui-aur-build
+
+    local rc=0
+    _mount_chroot_api "$root_dir"
+    if ! chroot "$root_dir" su -s /bin/bash rescue -c "git clone --depth 1 'https://aur.archlinux.org/${aur_pkg}.git' /tmp/ncui-aur-build/src"; then
+        rc=1
+    fi
+    _umount_chroot_api "$root_dir" 0
+
+    if (( rc != 0 )) || [[ ! -f "${work_dir}/src/PKGBUILD" ]]; then
+        rm -rf "$work_dir"
+        msg_warn "Failed to fetch '${aur_pkg}' from AUR (offline or unreachable); continuing without ${helper_name}."
+        return 0
+    fi
+
+    local -a raw_deps=() repo_deps=()
+    mapfile -t raw_deps < <(_parse_srcinfo_aur_deps "${work_dir}/src/.SRCINFO")
+    if (( ${#raw_deps[@]} > 0 )); then
+        mapfile -t repo_deps < <(_filter_repo_pkgs "${raw_deps[@]}")
+        if (( ${#repo_deps[@]} > 0 )); then
+            _arch_pacman_root_S "$root_dir" "${repo_deps[@]}" || rc=$?
+        fi
+    fi
+
+    if (( rc == 0 )); then
+        _mount_chroot_api "$root_dir"
+        if ! chroot "$root_dir" su -s /bin/bash rescue -c "cd /tmp/ncui-aur-build/src && makepkg --noconfirm --nocheck"; then
+            rc=1
+        fi
+        _umount_chroot_api "$root_dir" 0
+    fi
+
+    local -a built_pkgs=()
+    local pf
+    if (( rc == 0 )); then
+        for pf in "${work_dir}"/src/*.pkg.tar*; do
+            [[ -f "$pf" ]] || continue
+            [[ "$(basename "$pf")" == *-debug-*.pkg.tar* ]] && continue
+            built_pkgs+=("$pf")
+        done
+        if (( ${#built_pkgs[@]} == 0 )); then
+            rc=1
+        else
+            _arch_pacman_root_U "$root_dir" "${built_pkgs[@]}" || rc=$?
+        fi
+    fi
+
+    rm -rf "$work_dir"
+    if (( rc != 0 )); then
+        msg_warn "AUR build/install for '${aur_pkg}' failed; continuing without ${helper_name}."
+        return 0
+    fi
+    msg_ok "Installed AUR helper '${helper_name}' (${aur_pkg}) into recovery rootfs."
+    return 0
+}
+
 do_build_recovery_squashfs() {
     load_rescue_config
     resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
-    local src_dir
-    src_dir="$(_resolve_ncui_source_dir)" || { msg_err "NC-UI repository not found."; exit 1; }
-    command -v pacstrap >/dev/null 2>&1 || { msg_err "pacstrap not found (install arch-install-scripts)."; exit 1; }
     command -v mksquashfs >/dev/null 2>&1 || { msg_err "mksquashfs not found (install squashfs-tools)."; exit 1; }
+    command -v unsquashfs >/dev/null 2>&1 || { msg_err "unsquashfs not found (install squashfs-tools)."; exit 1; }
+    _ensure_arch_builder
+    local src_dir=""
+    src_dir="$(_resolve_ncui_source_dir 2>/dev/null || true)"
+    local pkg_tier=""
+    _resolve_ncui_pkg_tier_interactive "$src_dir" || return 1
+    pkg_tier="$RESOLVED_NCUI_PKG_TIER"
 
     local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     local esp_free_b esp_free_h
@@ -1369,7 +2391,12 @@ do_build_recovery_squashfs() {
     printf "\n%s=== NC-UI LIVE RECOVERY SQUASHFS + SIGNED UKI BUILDER ===%s\n" "$CLR_BOLD" "$CLR_RESET"
     printf "  Target ESP   : %s (%s) — Free: %s\n" "$TARGET_MNT" "${ESP_DEV:-unknown}" "$esp_free_h"
     printf "  Target UKI   : %s/EFI/Linux/%s (sbctl=%s)\n" "$TARGET_MNT" "$CFG_UKI_NAME" "$CFG_SIGN_SBCTL"
-    printf "  NC-UI Source : %s\n\n" "$src_dir"
+    if [[ -n "$ARCH_BOOTSTRAP_DIR" ]]; then
+        printf "  Build Engine : Arch Bootstrap (%s)\n" "$ARCH_BOOTSTRAP_DIR"
+    else
+        printf "  Build Engine : Native Arch pacman/pacstrap\n"
+    fi
+    printf "  NC-UI Source : %s (%s)\n\n" "$pkg_tier" "${src_dir:-system packages}"
 
     if [[ -f "$cur_sq" ]]; then
         local cur_sz cur_h cur_mt bak_info="none"
@@ -1399,26 +2426,37 @@ do_build_recovery_squashfs() {
         echo ""
     fi
 
-    local mode_sel="1"
-    printf "  [1] Wayland Desktop (niri + waybar + ghostty) + NC-UI + Troubleshooting & Browser\n"
-    printf "  [2] Minimal Rescue Console + NC-UI + Troubleshooting\n"
-    read -r -e -p "Select profile [1/2] (Enter=1, Ctrl+C to cancel): " mode_sel </dev/tty || mode_sel="1"
-    mode_sel="${mode_sel:-1}"
+    local profile_sel="1" ncui_profile="minimal_gui" want_desktop=1
+    printf "  %sSelect recovery profile:%s\n" "$CLR_BOLD" "$CLR_RESET"
+    printf "    [1] Minimal Wayland Desktop (niri + waybar + ghostty + core NC-UI)\n"
+    printf "        Est. SquashFS: ~1.1–1.5 GiB | ESP needed: ~1.9 GiB | work dir: ~4 GiB\n"
+    printf "    [2] Full Wayland Desktop (all NC-UI packages + all optional deps + desktop)\n"
+    printf "        Est. SquashFS: ~1.7–2.2 GiB | ESP needed: ~2.6 GiB | work dir: ~6 GiB\n"
+    printf "    [3] Minimal Rescue Console (TTY only + core NC-UI CLI & resilience tools)\n"
+    printf "        Est. SquashFS: ~0.6–0.9 GiB | ESP needed: ~1.2 GiB | work dir: ~3 GiB\n"
+    read -r -e -p "Select profile [1-3] (Enter=1, Ctrl+C to cancel): " profile_sel </dev/tty || profile_sel="1"
+    profile_sel="${profile_sel:-1}"
+    case "$profile_sel" in
+        1) ncui_profile="minimal_gui"; want_desktop=1 ;;
+        2) ncui_profile="full"; want_desktop=1 ;;
+        3) ncui_profile="console"; want_desktop=0 ;;
+        *) msg_err "Invalid profile: ${profile_sel}"; exit 1 ;;
+    esac
 
     local browser_pkg=""
-    if [[ "$mode_sel" == "1" ]]; then
+    if (( want_desktop == 1 )); then
         local brave_cand="" has_ff=0 has_chr=0 def_br="2" br_ans=""
-        if pacman -Si brave-bin >/dev/null 2>&1; then
+        if _arch_pacman_si brave-bin; then
             brave_cand="brave-bin"
-        elif pacman -Si brave >/dev/null 2>&1; then
+        elif _arch_pacman_si brave; then
             brave_cand="brave"
         fi
-        pacman -Si firefox >/dev/null 2>&1 && has_ff=1
-        pacman -Si chromium >/dev/null 2>&1 && has_chr=1
+        _arch_pacman_si firefox && has_ff=1
+        _arch_pacman_si chromium && has_chr=1
         [[ -n "$brave_cand" ]] && def_br="1"
 
         echo ""
-        printf "  %sBrowser selection (for internet troubleshooting / docs):%s\n" "$CLR_BOLD" "$CLR_RESET"
+        printf "  %sBrowser selection (+~350 MiB ESP if selected):%s\n" "$CLR_BOLD" "$CLR_RESET"
         if [[ -n "$brave_cand" ]]; then
             printf "    [1] Brave (%s)\n" "$brave_cand"
         else
@@ -1442,7 +2480,7 @@ do_build_recovery_squashfs() {
             3) browser_pkg="chromium" ;;
             4|none|no) browser_pkg="" ;;
             *)
-                if pacman -Si "$br_ans" >/dev/null 2>&1; then
+                if _arch_pacman_si "$br_ans"; then
                     browser_pkg="$br_ans"
                 else
                     msg_err "Browser package '${br_ans}' not found in configured pacman repos."
@@ -1452,50 +2490,152 @@ do_build_recovery_squashfs() {
         esac
     fi
 
-    # Pre-flight ESP and /var/tmp space check (recovery.squashfs.new coexists with existing until swap)
-    local req_esp_b=1677721600 # ~1.56 GiB console
-    if [[ "$mode_sel" == "1" ]]; then
-        if [[ -n "$browser_pkg" ]]; then
-            req_esp_b=2936012800 # ~2.73 GiB desktop + browser + UKI headroom
-        else
-            req_esp_b=2411724800 # ~2.25 GiB desktop + UKI headroom
+    local aur_helper="" aur_in_repo=0 def_aur="5" aur_ans=""
+    local has_paru=0 has_yay=0 has_pikaur=0 has_trizen=0
+    _arch_pacman_si paru && has_paru=1
+    _arch_pacman_si yay && has_yay=1
+    _arch_pacman_si pikaur && has_pikaur=1
+    _arch_pacman_si trizen && has_trizen=1
+    if (( has_paru )) || command -v paru >/dev/null 2>&1; then
+        def_aur="1"
+    elif (( has_yay )) || command -v yay >/dev/null 2>&1; then
+        def_aur="2"
+    elif command -v pikaur >/dev/null 2>&1; then
+        def_aur="3"
+    elif command -v trizen >/dev/null 2>&1; then
+        def_aur="4"
+    fi
+
+    echo ""
+    printf "  %sAUR helper selection (+base-devel if selected):%s\n" "$CLR_BOLD" "$CLR_RESET"
+    printf "    [1] paru   (%s)\n" "$( (( has_paru )) && printf 'in repo' || printf 'AUR: paru-bin' )"
+    printf "    [2] yay    (%s)\n" "$( (( has_yay )) && printf 'in repo' || printf 'AUR: yay-bin' )"
+    printf "    [3] pikaur (%s)\n" "$( (( has_pikaur )) && printf 'in repo' || printf 'AUR: pikaur' )"
+    printf "    [4] trizen (%s)\n" "$( (( has_trizen )) && printf 'in repo' || printf 'AUR: trizen' )"
+    printf "    [5] None (do not install an AUR helper)\n"
+    read -r -e -p "Select AUR helper [1-5] (Enter=${def_aur}): " aur_ans </dev/tty || aur_ans=""
+    aur_ans="${aur_ans:-$def_aur}"
+    case "${aur_ans,,}" in
+        1|paru)   aur_helper="paru";   aur_in_repo="$has_paru" ;;
+        2|yay)    aur_helper="yay";    aur_in_repo="$has_yay" ;;
+        3|pikaur) aur_helper="pikaur"; aur_in_repo="$has_pikaur" ;;
+        4|trizen) aur_helper="trizen"; aur_in_repo="$has_trizen" ;;
+        5|none|no) aur_helper=""; aur_in_repo=0 ;;
+        *) msg_err "Invalid AUR helper selection: ${aur_ans}"; exit 1 ;;
+    esac
+
+    local kern_pkg="" k_cand
+    if [[ -z "$ARCH_BOOTSTRAP_DIR" ]]; then
+        for k_cand in \
+            linux-cachyos-hardened linux-hardened linux-cachyos linux linux-lts linux-zen \
+            $(pacman -Qoq "/usr/lib/modules/$(uname -r)/vmlinuz" /usr/lib/modules/*/vmlinuz 2>/dev/null || true); do
+            if _arch_host_pacman_q "$k_cand" && _arch_pacman_si "$k_cand"; then
+                kern_pkg="$k_cand"
+                break
+            fi
+        done
+    fi
+    if [[ -z "$kern_pkg" ]]; then
+        for k_cand in linux linux-lts linux-zen linux-hardened linux-cachyos; do
+            _arch_pacman_si "$k_cand" && { kern_pkg="$k_cand"; break; }
+        done
+    fi
+    [[ -n "$kern_pkg" ]] || { msg_err "No installable kernel package found in pacman repos."; exit 1; }
+
+    _detect_host_hw_pkgs "host" "$kern_pkg" "$want_desktop"
+    local -a host_preview=("${DETECTED_UCODE_PKGS[@]}" "${DETECTED_FW_PKGS[@]}" "${DETECTED_GPU_PKGS[@]}")
+    echo ""
+    printf "  %sHardware firmware & drivers selection:%s\n" "$CLR_BOLD" "$CLR_RESET"
+    printf "    [1] Current host hardware only (%s)\n" "${host_preview[*]:-none}"
+    printf "    [2] Generic hardware (full linux-firmware, portable — +~400 MiB)\n"
+    local hw_sel="" hw_mode="host"
+    read -r -e -p "Select hardware target [1/2] (Enter=1): " hw_sel </dev/tty || hw_sel="1"
+    if [[ "${hw_sel:-1}" == "2" ]]; then
+        hw_mode="generic"
+        _detect_host_hw_pkgs "generic" "$kern_pkg" "$want_desktop"
+    fi
+
+    local host_user="" import_ui=0 import_nm=0 imp_ans="" nm_ans=""
+    host_user="$(_resolve_host_desktop_user 2>/dev/null || true)"
+    if [[ -n "$host_user" ]]; then
+        echo ""
+        read -r -e -p "Import current NC-UI, Waybar & Niri settings from '${host_user}' into recovery? [Y/n]: " imp_ans </dev/tty || imp_ans="y"
+        case "${imp_ans,,}" in
+            ""|y|yes|s|si) import_ui=1 ;;
+            *) import_ui=0 ;;
+        esac
+        if [[ -d /etc/NetworkManager/system-connections ]]; then
+            read -r -e -p "Also import NetworkManager profiles? WARNING: recovery.squashfs on ESP is UNENCRYPTED [y/N]: " nm_ans </dev/tty || nm_ans="n"
+            case "${nm_ans,,}" in
+                y|yes|s|si) import_nm=1 ;;
+                *) import_nm=0 ;;
+            esac
         fi
     fi
+
+    echo ""
+    printf "  %sRecovery account setup (rescue [wheel,sudo] & root):%s\n" "$CLR_BOLD" "$CLR_RESET"
+    local pw1="" pw2=""
+    while true; do
+        read -r -s -p "  Password for 'rescue' and 'root': " pw1 </dev/tty
+        echo "" >/dev/tty
+        if [[ -z "$pw1" ]]; then
+            msg_warn "Password cannot be empty."
+            continue
+        fi
+        read -r -s -p "  Confirm password: " pw2 </dev/tty
+        echo "" >/dev/tty
+        if [[ "$pw1" == "$pw2" ]]; then
+            unset pw2
+            break
+        fi
+        msg_warn "Passwords do not match. Try again."
+    done
+
+    # Pre-flight ESP and exec-capable work dir space check (recovery.squashfs.new coexists with existing until swap)
+    local req_esp_b=1288490188 req_tmp_b=3221225472 rec_tmp_b=4294967296
+    case "$ncui_profile" in
+        minimal_gui) req_esp_b=2040109465; req_tmp_b=3221225472; rec_tmp_b=4294967296 ;;
+        full)        req_esp_b=2791728742; req_tmp_b=4294967296; rec_tmp_b=6442450944 ;;
+        console)     req_esp_b=1288490188; req_tmp_b=2147483648; rec_tmp_b=3221225472 ;;
+    esac
+    [[ -n "$browser_pkg" ]] && req_esp_b=$(( req_esp_b + 367001600 ))
+    [[ -n "$aur_helper" ]] && req_esp_b=$(( req_esp_b + 83886080 ))
+    [[ "$hw_mode" == "generic" ]] && req_esp_b=$(( req_esp_b + 419430400 ))
+
     local req_esp_h
     req_esp_h="$(numfmt --to=iec-i --suffix=B "$req_esp_b" 2>/dev/null || echo "${req_esp_b}B")"
     msg_info "ESP space check: free=${esp_free_h} | estimated needed=${req_esp_h}"
     if (( esp_free_b < req_esp_b )); then
+        unset pw1
         msg_err "Insufficient free space on ESP (${TARGET_MNT}). Free: ${esp_free_h}, estimated needed: ${req_esp_h}."
-        msg_err "Free up ESP space or choose Minimal Console / None browser profile."
+        msg_err "Free up ESP space or choose Minimal Console / None browser / host-only firmware."
         exit 1
     fi
 
-    local tmp_free_b tmp_free_h
-    tmp_free_b="$(df -PB1 /var/tmp 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
+    local work_base tmp_free_b tmp_free_h req_tmp_h rec_tmp_h
+    work_base="$(_pick_exec_work_base "$rec_tmp_b")" || { unset pw1; exit 1; }
+    tmp_free_b="$(df -PB1 "$work_base" 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)"
     tmp_free_h="$(numfmt --to=iec-i --suffix=B "$tmp_free_b" 2>/dev/null || echo "${tmp_free_b}B")"
-    if (( tmp_free_b < 3221225472 )); then
-        msg_err "Insufficient free space in /var/tmp for rootfs build (${tmp_free_h}; at least 3 GiB required)."
+    req_tmp_h="$(numfmt --to=iec-i --suffix=B "$req_tmp_b" 2>/dev/null || echo "${req_tmp_b}B")"
+    rec_tmp_h="$(numfmt --to=iec-i --suffix=B "$rec_tmp_b" 2>/dev/null || echo "${rec_tmp_b}B")"
+    msg_info "Build work dir: ${work_base} (free=${tmp_free_h})"
+    if (( tmp_free_b < req_tmp_b )); then
+        unset pw1
+        msg_err "Insufficient free space in ${work_base} for rootfs build (${tmp_free_h}; at least ${req_tmp_h} required)."
         exit 1
-    elif (( tmp_free_b < 6442450944 )); then
-        msg_warn "Low free space in /var/tmp (${tmp_free_h}; >= 6 GiB recommended)."
+    elif (( tmp_free_b < rec_tmp_b )); then
+        msg_warn "Low free space in ${work_base} (${tmp_free_h}; >= ${rec_tmp_h} recommended)."
         local tmp_ans=""
         read -r -e -p "Continue anyway? [y/N]: " tmp_ans </dev/tty || tmp_ans="n"
         case "${tmp_ans,,}" in
             y|yes|s|si) ;;
-            *) msg_info "Build cancelled."; return 0 ;;
+            *) unset pw1; msg_info "Build cancelled."; return 0 ;;
         esac
     fi
 
-    local kern_pkg="linux-cachyos" ucode_pkg=""
-    if pacman -Q linux-cachyos-hardened >/dev/null 2>&1; then
-        kern_pkg="linux-cachyos-hardened"
-    elif pacman -Q linux >/dev/null 2>&1; then
-        kern_pkg="linux"
-    fi
-    if lscpu 2>/dev/null | grep -qi "Intel"; then ucode_pkg="intel-ucode"; elif lscpu 2>/dev/null | grep -qi "AMD"; then ucode_pkg="amd-ucode"; fi
-
     local pkgs=(
-        base "$kern_pkg" $ucode_pkg linux-firmware mkinitcpio
+        base "$kern_pkg" "${DETECTED_UCODE_PKGS[@]}" "${DETECTED_FW_PKGS[@]}" mkinitcpio
         cryptsetup lvm2 btrfs-progs dosfstools e2fsprogs gptfdisk parted efibootmgr sbctl
         arch-install-scripts squashfs-tools pv zstd rsync cifs-utils nfs-utils openssh
         smartmontools nvme-cli networkmanager sudo polkit zsh btop neovim
@@ -1509,29 +2649,55 @@ do_build_recovery_squashfs() {
     )
     (( ${#opt_pkgs[@]} > 0 )) && pkgs+=("${opt_pkgs[@]}")
 
-    if [[ "$mode_sel" == "1" ]]; then
+    if [[ "$ncui_profile" == "full" ]]; then
+        local -a full_opt_pkgs=()
+        mapfile -t full_opt_pkgs < <(_filter_repo_pkgs \
+            ffmpeg python-pillow libnotify satty playerctl wireguard-tools lm_sensors \
+            bluez-utils cups cups-filters nut evtest brightnessctl usbguard \
+            pacman-contrib flatpak awww yt-dlp \
+        )
+        (( ${#full_opt_pkgs[@]} > 0 )) && pkgs+=("${full_opt_pkgs[@]}")
+    fi
+
+    if (( want_desktop == 1 )); then
         local -a desk_pkgs=()
         mapfile -t desk_pkgs < <(_filter_repo_pkgs \
             niri waybar ghostty fuzzel polkit-gnome ttf-jetbrains-mono-nerd noto-fonts xdg-utils \
+            "${DETECTED_GPU_PKGS[@]}" \
         )
         (( ${#desk_pkgs[@]} > 0 )) && pkgs+=("${desk_pkgs[@]}")
         [[ -n "$browser_pkg" ]] && pkgs+=("$browser_pkg")
     fi
 
-    local build_dir="/var/tmp/ncui-sqfs-build.$$"
-    trap 'rm -rf "'"$build_dir"'" 2>/dev/null || true; cleanup_rescue' EXIT INT TERM HUP
-    rm -rf "$build_dir"
+    if [[ -n "$aur_helper" ]]; then
+        local -a aur_base_pkgs=()
+        mapfile -t aur_base_pkgs < <(_filter_repo_pkgs base-devel git)
+        (( ${#aur_base_pkgs[@]} > 0 )) && pkgs+=("${aur_base_pkgs[@]}")
+        (( aur_in_repo == 1 )) && pkgs+=("$aur_helper")
+    fi
+
+    local build_dir="${work_base}/ncui-sqfs-build.$$"
+    trap '_safe_rm_chroot_dir "'"$build_dir"'" || true; cleanup_rescue' EXIT INT TERM HUP
+    _safe_rm_chroot_dir "$build_dir" || exit 1
     mkdir -p "$build_dir"
 
-    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (${kern_pkg}${browser_pkg:+, browser=${browser_pkg}})..."
-    pacstrap -c "$build_dir" "${pkgs[@]}"
+    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (profile=${ncui_profile}, kernel=${kern_pkg}${browser_pkg:+, browser=${browser_pkg}}${aur_helper:+, aur=${aur_helper}})..."
+    _arch_pacstrap "$build_dir" "${pkgs[@]}"
 
-    printf '%s-recovery\n' "${CFG_HOSTNAME:-nightcity}" > "${build_dir}/etc/hostname"
-    write_recovery_hook_files
-    cp -f "$INITCPIO_HOOK_PATH" "${build_dir}/etc/initcpio/hooks/recovery-ram" 2>/dev/null || true
-    cp -f "$INITCPIO_INST_PATH" "${build_dir}/etc/initcpio/install/recovery-ram" 2>/dev/null || true
-    systemctl --root="$build_dir" enable NetworkManager.service >/dev/null 2>&1 || true
-    _inject_ncui_into_rootfs "$build_dir" "$src_dir"
+    printf '%s-recovery\n' "${CFG_HOSTNAME:-linux}" > "${build_dir}/etc/hostname"
+    write_recovery_hook_files_into "$build_dir"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --root="$build_dir" enable NetworkManager.service >/dev/null 2>&1 || true
+    else
+        chroot "$build_dir" systemctl enable NetworkManager.service >/dev/null 2>&1 || true
+    fi
+    _install_ncui_into_rootfs "$build_dir" "$ncui_profile" "$src_dir"
+    _configure_recovery_accounts "$build_dir" "$pw1" "$want_desktop"
+    unset pw1
+    if [[ -n "$aur_helper" ]] && (( aur_in_repo == 0 )); then
+        _install_aur_helper_into_rootfs "$build_dir" "$aur_helper"
+    fi
+    _import_host_settings_into_rootfs "$build_dir" "$host_user" "$import_ui" "$import_nm" "$want_desktop"
     rm -rf "${build_dir}/var/cache/pacman/pkg"/* "${build_dir}/var/log/journal"/* 2>/dev/null || true
 
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
@@ -1546,8 +2712,8 @@ do_build_recovery_squashfs() {
     swap_pair_safe "$NEW_SQUASHFS" "$cur_sq" "$bak_sq" 1
     sync
     COMMIT_COMPLETED=1
-    rm -rf "$build_dir"
-    build_uki_standalone
+    build_uki_from_rootfs "$build_dir"
+    _safe_rm_chroot_dir "$build_dir"
     msg_ok "Live Recovery SquashFS + Signed UKI built successfully on ESP!"
     return 0
 }
@@ -1585,10 +2751,11 @@ do_edit_recovery_squashfs() {
     resolve_esp_mnt 1 || { msg_err "Unable to mount ESP read-write."; exit 1; }
     local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     [[ -s "$cur_sq" ]] || { msg_err "No recovery image found at ${cur_sq}. Run 'nc-rescue --build-recovery' first."; exit 1; }
-    command -v arch-chroot >/dev/null 2>&1 || { msg_err "arch-chroot not found (install arch-install-scripts)."; exit 1; }
     command -v mksquashfs >/dev/null 2>&1 || { msg_err "mksquashfs not found (install squashfs-tools)."; exit 1; }
 
-    local work_dir="/var/tmp/ncui-sqfs-edit.$$"
+    local edit_work_base
+    edit_work_base="$(_pick_exec_work_base 1073741824)" || exit 1
+    local work_dir="${edit_work_base}/ncui-sqfs-edit.$$"
     mkdir -p "${work_dir}/lower" "${work_dir}/upper" "${work_dir}/work" "${work_dir}/merged"
     _edit_cleanup() {
         _umount_edit_tree "$work_dir"
@@ -1606,7 +2773,18 @@ do_edit_recovery_squashfs() {
     printf "  Target : %s\n" "$cur_sq"
     printf "  Exit the shell ('exit' / Ctrl+D) when done to commit or discard changes.\n\n"
     local chroot_rc=0
-    arch-chroot "${work_dir}/merged" "$shell_bin" </dev/tty >/dev/tty 2>/dev/tty || chroot_rc=$?
+    if command -v arch-chroot >/dev/null 2>&1; then
+        arch-chroot "${work_dir}/merged" "$shell_bin" </dev/tty >/dev/tty 2>/dev/tty || chroot_rc=$?
+    else
+        local merged="${work_dir}/merged"
+        mount -t proc proc "${merged}/proc"
+        mount -t sysfs sysfs "${merged}/sys"
+        mount --rbind /dev "${merged}/dev"
+        mount --make-rslave "${merged}/dev" 2>/dev/null || true
+        mount --bind /run "${merged}/run"
+        [[ -f /etc/resolv.conf ]] && cp -L /etc/resolv.conf "${merged}/etc/resolv.conf" 2>/dev/null || true
+        chroot "$merged" "$shell_bin" </dev/tty >/dev/tty 2>/dev/tty || chroot_rc=$?
+    fi
     (( chroot_rc != 0 )) && msg_warn "Chroot shell exited with status ${chroot_rc}."
 
     local has_changes=""
@@ -1664,7 +2842,7 @@ do_edit_recovery_squashfs() {
     trap cleanup_rescue EXIT INT TERM HUP
 
     local uki_path="" alt
-    for alt in "$CFG_UKI_NAME" "nightcity-recovery.efi" "nc-rescue.efi"; do
+    for alt in "$CFG_UKI_NAME" "nc-rescue.efi"; do
         [[ -n "$alt" && -f "${TARGET_MNT}/EFI/Linux/${alt}" ]] && { uki_path="${TARGET_MNT}/EFI/Linux/${alt}"; break; }
     done
     if (( kern_touched == 1 )) || [[ -z "$uki_path" ]]; then
@@ -1682,8 +2860,8 @@ do_delete_recovery_artifacts() {
 
     local cur_sq="${TARGET_MNT}/recovery.squashfs" bak_sq="${TARGET_MNT}/recovery.squashfs.old"
     local cur_uki="${TARGET_MNT}/EFI/Linux/${CFG_UKI_NAME}"
-    if [[ ! -f "$cur_uki" && -f "${TARGET_MNT}/EFI/Linux/nightcity-recovery.efi" ]]; then
-        cur_uki="${TARGET_MNT}/EFI/Linux/nightcity-recovery.efi"
+    if [[ ! -f "$cur_uki" && -f "${TARGET_MNT}/EFI/Linux/nc-rescue.efi" ]]; then
+        cur_uki="${TARGET_MNT}/EFI/Linux/nc-rescue.efi"
     fi
     local bak_uki="${cur_uki}.old"
 
@@ -1751,7 +2929,7 @@ do_manage_recovery() {
             esp_free="$(df -h "$TARGET_MNT" 2>/dev/null | awk 'NR==2 {print $4}' || echo '-')"
             [[ -f "${TARGET_MNT}/recovery.squashfs" ]] && sq_st="$(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/recovery.squashfs" 2>/dev/null || echo 0)")"
             [[ -f "${TARGET_MNT}/recovery.squashfs.old" ]] && old_st="$(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/recovery.squashfs.old" 2>/dev/null || echo 0)")"
-            for alt in "$CFG_UKI_NAME" "nightcity-recovery.efi" "nc-rescue.efi"; do
+            for alt in "$CFG_UKI_NAME" "nc-rescue.efi"; do
                 if [[ -n "$alt" && -f "${TARGET_MNT}/EFI/Linux/${alt}" ]]; then
                     uki_st="${alt} ($(numfmt --to=iec-i --suffix=B "$(stat -c%s "${TARGET_MNT}/EFI/Linux/${alt}" 2>/dev/null || echo 0)"))"
                     break

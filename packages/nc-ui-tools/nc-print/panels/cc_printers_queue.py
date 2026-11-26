@@ -36,7 +36,7 @@ def _prio_bucket(prio_val: int) -> str:
     return "95"
 
 
-def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     cards = feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
     daemon = get_cups_daemon_state()
 
@@ -96,7 +96,7 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
         f"{SelectPill(t('cc_printers.q_active'), 'cc_prn:q_mode:not-completed', selected=(q_mode == 'not-completed'))} "
         f"{SelectPill(t('cc_printers.q_completed'), 'cc_prn:q_mode:completed', selected=(q_mode == 'completed'))}"
     )
-    cyc_lbl = q_prn if q_prn else "ALL"
+    cyc_lbl = q_prn if q_prn else t("cc_printers.q_all")
     prn_cyc = CyclePill(cyc_lbl, "cc_prn:q_cycle_prn", active=bool(q_prn))
     q_box.add_kv(t("cc_printers.kv_queue_view"), f"{mode_pills}   {prn_cyc}")
 
@@ -190,8 +190,6 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
             or "authentication" in sel_job["reasons"].lower()
         )
         jb_acts = []
-        if auth_needed:
-            jb_acts.append(ActionBtn(t("cc_printers.auth_job_btn"), f"cc_prn:job_auth:{jid}", tone="apply"))
         if is_active_job:
             jb_acts.append(ActionBtn(t("common.cancel"), f"cc_prn:job_cancel:{jid}", tone="danger_soft"))
         else:
@@ -243,7 +241,3 @@ def _build_queue_standard(cc_panel, canvas: Canvas) -> list:
         cards.append(jb_box)
 
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_queue_standard(cc_panel, canvas)

@@ -98,10 +98,10 @@ def _build_time_standard(cc_panel, canvas: Canvas) -> list:
     lctime_match = ("it_IT" in d["lc_time"]) or d["lc_time"].startswith("C")
     b_reg.add_kv(t("cc_datetime.lc_time_24h_12h"), lctime_pills if lctime_match else f"{Txt(d['lc_time'], role='val')}  {lctime_pills}", requires=["localectl"])
 
-    fmt_match = any(d["bar_fmt"] == fmt for _lbl, fmt in _CLOCK_FMTS)
+    fmt_match = any(d["bar_fmt"] == fmt for _lbl_key, fmt in _CLOCK_FMTS)
     if not fmt_match:
         b_reg.add_kv(t("cc_datetime.waybar_clock_format"), Txt(d["bar_fmt"], role="val"))
-    fmt_pills = " ".join(SelectPill(lbl, f"cc_dt:barfmt:{i}", selected=(d["bar_fmt"] == fmt)) for i, (lbl, fmt) in enumerate(_CLOCK_FMTS))
+    fmt_pills = " ".join(SelectPill(t(lbl_key), f"cc_dt:barfmt:{i}", selected=(d["bar_fmt"] == fmt)) for i, (lbl_key, fmt) in enumerate(_CLOCK_FMTS))
     b_reg.add_kv(t("cc_datetime.bar_format_presets") if fmt_match else t("cc_datetime.waybar_clock_format"), fmt_pills)
     b_reg.add_row(" ")
     cards.append(b_reg)

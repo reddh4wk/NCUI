@@ -26,7 +26,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     q_low = q_txt.strip().lower()
 
     pol_acts = [StateBadge(d["active"], t("cc_auth.running"), t("cc_auth.inactive"), on_tone="ok")]
-    if not d["priv_ok"]:
+    if d["installed"] and not d["priv_ok"]:
         pol_acts.append(ActionBtn(t("cc_auth.authorize"), "cc_auth:usb_auth", tone="apply"))
     pol_acts.append(ActionBtn(t("cc_auth.usb_refresh"), "cc_auth:usb_refresh", tone="neutral"))
 

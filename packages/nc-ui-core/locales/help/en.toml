@@ -6,7 +6,7 @@
 # ==============================================================================
 ["cc:section:sysinfo"]
 title = "System Overview"
-short = "Opens the Nightcity workstation overview with OS, kernel, hardware inventory, and power-tool shortcuts."
+short = "Opens the system overview with OS, kernel, hardware inventory, and power-tool shortcuts."
 verbose = "Displays live host identity, active kernel (`linux-cachyos` / `linux-cachyos-hardened`), dual-kernel readiness, Limine/Wayland stack summary, CPU/RAM/GPU thermals, and direct launchers for helper scripts in `/usr/lib/ncui/sbin/`."
 
 ["cc:section:display"]
@@ -77,7 +77,7 @@ verbose = "Manages Secure Boot (`sbctl`), TPM2 PCR auto-unlock bindings, keyring
 ["cc:section:telemetry"]
 title = "Telemetry, Boot & Recovery"
 short = "Opens live system monitors, Limine bootloader editor, Golden Image recovery, LVM snapshots, Vault backups, and disk inspector."
-verbose = "Centralizes Nightcity's engineering stack: `btop`/`nvtop` monitoring, `limine.conf` UKI management, `nc-rescue`/`nc-golden`, `nc-snap`, `nc-hanoi`, and `nc-disks`."
+verbose = "Centralizes the NC-UI engineering stack: `btop`/`nvtop` monitoring, `limine.conf` UKI management, `nc-rescue`/`nc-golden`, `nc-snap`, `nc-hanoi`, and `nc-disks`."
 
 ["cc:section:settings"]
 title = "Interface & Notification Settings"
@@ -95,12 +95,12 @@ short = "Switches between sub-pages inside the active Control Center section."
 ["cc:lang:en"]
 title = "Switch Language (English)"
 short = "Switches all NC-UI labels, status messages, and hover descriptions to English immediately."
-verbose = "Persists `language = \"en\"` in `~/.config/nc-ui/config.toml` and reloads localized dictionaries from `locales/en.toml`, `locales/help/en.toml`, and `locales/help/en/*.toml` without restarting."
+verbose = "Persists `language = \"en\"` in `~/.config/ncui/config.toml` and reloads localized dictionaries from `locales/en.toml`, `locales/help/en.toml`, and `locales/help/en/*.toml` without restarting."
 
 ["cc:lang:it"]
 title = "Switch Language (Italiano)"
 short = "Switches all NC-UI labels, status messages, and hover descriptions to Italian immediately."
-verbose = "Persists `language = \"it\"` in `~/.config/nc-ui/config.toml` and reloads localized dictionaries from `locales/it.toml`, `locales/help/it.toml`, and `locales/help/it/*.toml` without restarting."
+verbose = "Persists `language = \"it\"` in `~/.config/ncui/config.toml` and reloads localized dictionaries from `locales/it.toml`, `locales/help/it.toml`, and `locales/help/it/*.toml` without restarting."
 
 ["cc:global_search_open"]
 title = "Global Search (Ctrl+F)"
@@ -453,6 +453,66 @@ short = "Opens inline editing for the short node alias (e.g., `nc`, `dc`, `wsl`)
 ["cc_sys:vault_folder_open"]
 title = "Edit Host Vault Folder.."
 short = "Opens inline editing for this machine's dedicated folder name inside the Vault backup root."
+
+["cc_sys:vault_port_open"]
+title = "Edit Custom Port.."
+short = "Sets an optional custom TCP port for SMB (445), NFS (2049), or SSH (22); leave blank for protocol default."
+
+["cc_sys:vault_cfg:mount_visibility:*"]
+title = "Select Mount Visibility Mode"
+short = "Chooses whether mounts create `~/NAS` symlinks, register `x-gvfs-show` entries for Thunar/Nautilus/Dolphin, both, or system mount only."
+
+["cc_sys:vault_symdir_open"]
+title = "Edit User Symlink Directory.."
+short = "Sets the folder where user-space share symlinks are created (supports `~/` and `$USER`, default `~/NAS`)."
+
+["cc_sys:vault_cfg:smb_version:*"]
+title = "Select SMB Protocol Version"
+short = "Pins an explicit CIFS dialect (`3.1.1`, `3.0`, `2.1`) or uses `AUTO` kernel negotiation."
+
+["cc_sys:vault_mopts_open"]
+title = "Edit Extra Mount Options.."
+short = "Appends custom comma-separated kernel/FUSE mount flags (e.g., `noperm`, `sec=ntlmssp`) for the active protocol."
+
+["cc_sys:vault_share_add"]
+title = "Add Share / Custom Mount.."
+short = "Prompts for a new share name or `<share>:</custom/mountpoint>` mapping (supports `$USER`) and saves it to `resilience.toml`."
+
+["cc_sys:vault_share_sel:*"]
+title = "Inspect Share Mountpoint"
+short = "Selects this share in the Inspector below to view its remote source, filesystem usage, or override its local mountpoint."
+
+["cc_sys:vault_share_edit_mp:*"]
+title = "Override Share Mountpoint.."
+short = "Sets a custom local mount directory for this specific share (clear or match default to revert)."
+
+["cc_sys:vault_share_reset_mp:*"]
+title = "Reset Share Mountpoint"
+short = "Restores this share to mount automatically under `<base_mountpoint>/<share>`."
+
+["cc_sys:vault_share_rm_*"]
+title = "Remove Share from Vault"
+short = "Two-step confirmation to remove this share entry from `[vault].shares` in `resilience.toml`."
+
+["cc_sys:vault_open_*"]
+title = "Open Mounted Directory"
+short = "Opens the active mounted NAS directory in your desktop file manager via `xdg-open`."
+
+["cc_sys:vault_creds_mode:*"]
+title = "Toggle SMB Auth Mode"
+short = "Switches between saved root credentials (`/etc/samba/nas-cred`) and anonymous `guest` mounts."
+
+["cc_sys:vault_creds_auth"]
+title = "Authorize SMB Credentials.."
+short = "Prompts for SMB username and password, verifies login against the NAS, saves credentials securely (`0600 root:root`), and mounts."
+
+["cc_sys:vault_ssh_push"]
+title = "Push SSH Vault Staging"
+short = "Syncs staged local SSH Vault changes back to the remote host immediately."
+
+["cc_sys:vault_goto_tab"]
+title = "Open NAS & Vault Tab"
+short = "Jumps directly to the dedicated `NAS & Vault` tab to manage mountpoints, shares, protocols, and file manager integration."
 
 ["cc_sys:hanoi_check"]
 title = "Scan Drift (Sync Check)"

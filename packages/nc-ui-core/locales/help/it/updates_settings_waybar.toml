@@ -110,7 +110,7 @@ short = "Espande la tabella oltre il limite visibile della finestra o la riduce 
 # ==============================================================================
 ["cc_notif:test"]
 title = "Invia Notifica di Test"
-short = "Invia una notifica desktop di prova tramite `nc-util-notify.sh` (o `notify-send`) per verificare il flusso."
+short = "Invia una notifica desktop di prova tramite `nc-notify` (o `notify-send`) per verificare il flusso."
 
 ["cc_notif:clear"]
 title = "Svuota Archivio Notifiche"
@@ -264,6 +264,18 @@ short = "Attiva questo plugin dal catalogo aggiungendolo a `modules-right` in `c
 ["cc_wb:remove:*"]
 title = "Rimuovi Modulo da Waybar"
 short = "Rimuove questo modulo dalle sezioni attive riportandolo tra i plugin disattivati (ricorda Applica)."
+
+["cc_wb:prompt_link_plugin"]
+title = "Collega Plugin Esterno (.py)"
+short = "Sceglie un file plugin Python (`wp_*.py`), valida `PLUGIN_META` via AST e crea un symlink in `~/.local/share/ncui/plugins/`."
+
+["cc_wb:unlink:*"]
+title = "Scollega Symlink Plugin Esterno"
+short = "Rimuove il symlink da `~/.local/share/ncui/plugins/` e pulisce la voce in `config.jsonc` senza toccare il file sorgente."
+
+["cc_wb:guide_scroll*"]
+title = "Scorri Guida Sviluppo Plugin"
+short = "Scorre la documentazione su architettura, contratto `PLUGIN_META`, template minimo e linee guida UI per i plugin esterni."
 
 ["cc_wb:prompt_lock_cmd"]
 title = "Imposta Comando Blocco Schermo"

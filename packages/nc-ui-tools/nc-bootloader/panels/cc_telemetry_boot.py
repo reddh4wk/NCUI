@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import math
 import os
 
 import cairo
@@ -13,7 +12,6 @@ from gi.repository import Gdk, GdkPixbuf, Gtk, Pango, PangoCairo  # noqa: E402
 from core.config import THEME  # noqa: E402
 from core.i18n import t  # noqa: E402
 from core.privileges import build_privilege_modal_card  # noqa: E402
-from core.state import STATE  # noqa: E402
 from ui.canvas import Canvas  # noqa: E402
 from ui.kit import (  # noqa: E402
     ActionBtn,
@@ -24,38 +22,24 @@ from ui.kit import (  # noqa: E402
     InspectorCell,
     SelectPill,
     Slider,
+    StateBadge,
     SwatchTxt,
     Txt,
+    feedback_cards,
     get_semantic_palette,
+    hex_to_rgba_f,
+    rounded_rect_path,
 )
 from ui.widgets import AsciiCard  # noqa: E402
 from panels.cc_engine_boot import (  # noqa: E402
     _LIMINE_THEME_PRESETS,
-    _feedback_cards,
     _load_limine_studio_data,
+    detect_bootloader,
 )
 
 
 def _hex_to_rgb(hx: str, default: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> tuple[float, float, float]:
-    s = str(hx or "").strip().lstrip("#")
-    if len(s) == 8:
-        s = s[2:]
-    if len(s) == 6:
-        try:
-            return (int(s[0:2], 16) / 255.0, int(s[2:4], 16) / 255.0, int(s[4:6], 16) / 255.0)
-        except ValueError:
-            pass
-    return default
-
-
-def _rounded_rect(cr: cairo.Context, x: float, y: float, w: float, h: float, r: float) -> None:
-    r = min(r, w / 2.0, h / 2.0)
-    cr.new_sub_path()
-    cr.arc(x + w - r, y + r, r, -math.pi / 2.0, 0.0)
-    cr.arc(x + w - r, y + h - r, r, 0.0, math.pi / 2.0)
-    cr.arc(x + r, y + h - r, r, math.pi / 2.0, math.pi)
-    cr.arc(x + r, y + r, r, math.pi, 3.0 * math.pi / 2.0)
-    cr.close_path()
+    return hex_to_rgba_f(hx, 1.0, fallback=default)[:3]
 
 
 def _parse_res_aspect(res_str: str) -> tuple[int, int]:
@@ -254,7 +238,7 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
         # Outer recessed container tray matching Display & Wallpaper previews
         bx = self._inset_x
         bw = max(80.0, w - bx * 2.0)
-        _rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
+        rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
         s_bg = _hex_to_rgb(pal["structure_bg"], (0.10, 0.11, 0.14))
         s_br = _hex_to_rgb(pal["structure"], (0.26, 0.29, 0.36))
         cr.set_source_rgba(s_bg[0], s_bg[1], s_bg[2], 0.65)
@@ -283,7 +267,7 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
 
         # Outer monitor chassis & bezel
         bezel_pad = 3.0
-        _rounded_rect(cr, mon_x, mon_y, mon_w, mon_h, 5.0)
+        rounded_rect_path(cr, mon_x, mon_y, mon_w, mon_h, 5.0)
         cr.set_source_rgba(0.03, 0.04, 0.05, 0.96)
         cr.fill_preserve()
         cr.set_source_rgba(accent[0], accent[1], accent[2], 0.95)
@@ -297,7 +281,7 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
 
         # Clip screen surface
         cr.save()
-        _rounded_rect(cr, sx, sy, sw, sh, 3.0)
+        rounded_rect_path(cr, sx, sy, sw, sh, 3.0)
         cr.clip()
 
         backdrop_rgb = _hex_to_rgb(m.get("backdrop", "#000000"))
@@ -322,7 +306,7 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
         fgb_rgb = _hex_to_rgb(m.get("term_foreground_bright", "#ffffff"), (1.0, 1.0, 1.0))
         brand_rgb = _hex_to_rgb(m.get("interface_branding_color", ""), fgb_rgb)
 
-        _rounded_rect(cr, mx, my, mw, mh, 3.0)
+        rounded_rect_path(cr, mx, my, mw, mh, 3.0)
         cr.set_source_rgba(tbg_rgb[0], tbg_rgb[1], tbg_rgb[2], alpha_f)
         cr.fill_preserve()
         cr.set_source_rgba(fg_rgb[0], fg_rgb[1], fg_rgb[2], 0.22)
@@ -389,13 +373,13 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
             row_label = f"{prefix}{nd.get('title', 'Entry')}{def_tag}"
 
             if is_sel:
-                _rounded_rect(cr, rx - 3.0, cur_y - 1.0, rw + 4.0, row_h - 1.0, 2.0)
+                rounded_rect_path(cr, rx - 3.0, cur_y - 1.0, rw + 4.0, row_h - 1.0, 2.0)
                 cr.set_source_rgba(fg_rgb[0], fg_rgb[1], fg_rgb[2], 0.92)
                 cr.fill()
                 txt_c = tbg_rgb
                 bold_r = True
             elif is_hov:
-                _rounded_rect(cr, rx - 3.0, cur_y - 1.0, rw + 4.0, row_h - 1.0, 2.0)
+                rounded_rect_path(cr, rx - 3.0, cur_y - 1.0, rw + 4.0, row_h - 1.0, 2.0)
                 cr.set_source_rgba(fgb_rgb[0], fgb_rgb[1], fgb_rgb[2], 0.16)
                 cr.fill()
                 txt_c = fgb_rgb
@@ -450,7 +434,7 @@ class LimineDisplayPreviewWidget(Gtk.EventBox):
         b_w = max(44.0, float(len(badge_lbl)) * 7.5 + 10.0)
         b_x = sx + sw - b_w - 6.0
         b_y = sy + 5.0
-        _rounded_rect(cr, b_x, b_y, b_w, 16.0, 2.5)
+        rounded_rect_path(cr, b_x, b_y, b_w, 16.0, 2.5)
         cr.set_source_rgba(0.03, 0.04, 0.05, 0.80)
         cr.fill_preserve()
         cr.set_source_rgba(badge_rgb[0], badge_rgb[1], badge_rgb[2], 0.85)
@@ -485,11 +469,80 @@ def _match_preset(m: dict) -> str:
     return ""
 
 
+def _build_generic_boot_cards(bl: dict, canvas: Canvas) -> list:
+    kind = bl["kind"]
+    esps = ", ".join(bl.get("esp_mounts") or []) or "-"
+    lcfg = bl.get("loader_cfg") or {}
+    entries = bl.get("entries") or []
+
+    if kind == "none":
+        box = Box(
+            t("cc_system.boot_none_title"),
+            icon="\uf120",
+            actions=[StateBadge(False, "", t("cc_system.boot_not_detected"))],
+            highlighted=False,
+        )
+        box.add_row(" ")
+        box.add_kv(t("cc_system.boot_detected_type"), Txt(t("cc_system.boot_not_detected"), role="inactive"))
+        box.add_kv(t("cc_system.boot_esp_mounts"), Txt(esps, role="val" if esps != "-" else "inactive"))
+        box.add_row(f"  {Txt(t('cc_system.boot_no_entries'), role='schema')}")
+        box.add_row(" ")
+        return [box]
+
+    title_key = "cc_system.boot_sdboot_title" if kind == "systemd-boot" else "cc_system.boot_grub_title"
+    acts = [StateBadge(True, t("cc_system.boot_live_badge"))]
+    if kind == "systemd-boot" and bl.get("has_bootctl"):
+        acts.append(ActionBtn(t("cc_system.boot_status_btn"), "cc_boot:bootctl_status", tone="neutral"))
+    if bl.get("conf_path"):
+        acts.append(ActionBtn(t("cc_system.open_in_editor"), "cc_boot:open_editor", tone="neutral"))
+
+    box1 = Box(t(title_key), icon="\uf120", actions=acts, highlighted=False)
+    box1.add_row(" ")
+    box1.add_kv(t("cc_system.boot_loader_conf"), Txt(bl.get("conf_path") or "-", role="val"))
+    box1.add_kv(t("cc_system.boot_esp_mounts"), Txt(esps, role="val" if esps != "-" else "inactive"))
+    if kind == "systemd-boot":
+        box1.add_kv(t("cc_settings.boot_timeout"), Txt(lcfg.get("timeout", "-"), role="val"))
+        box1.add_kv(t("cc_system.boot_default_target"), Txt(lcfg.get("default", "-"), role="val"))
+        box1.add_kv(t("cc_system.boot_editor_flag"), Txt(lcfg.get("editor", "-"), role="val"))
+    else:
+        box1.add_kv(t("cc_settings.boot_timeout"), Txt(lcfg.get("GRUB_TIMEOUT", "-"), role="val"))
+        box1.add_kv(t("cc_system.boot_default_target"), Txt(lcfg.get("GRUB_DEFAULT", "-"), role="val"))
+        if lcfg.get("GRUB_CMDLINE_LINUX_DEFAULT"):
+            box1.add_kv(t("cc_system.boot_fld_cmdline"), Txt(canvas.truncate_plain(lcfg["GRUB_CMDLINE_LINUX_DEFAULT"], 54), role="val"))
+    box1.add_row(" ")
+
+    box2 = Box(t("cc_system.boot_entries_box", p0=len(entries)), icon="\uf03a", highlighted=False)
+    box2.add_row(" ")
+    if entries:
+        rows = [
+            [
+                Txt(canvas.truncate_plain(e.get("title") or e.get("id", "-"), 34), role="focus"),
+                Txt(e.get("version") or "-", role="val"),
+                Txt(canvas.truncate_plain(e.get("target") or "-", 36), role="val"),
+            ]
+            for e in entries
+        ]
+        box2.add_table(
+            headers=[t("cc_system.boot_col_id"), t("cc_system.boot_col_ver"), t("cc_system.boot_col_target")],
+            widths=[34, 14, "flex"],
+            rows=rows,
+            aligns=["left", "left", "left"],
+        )
+    else:
+        box2.add_row(f"  {Txt(t('cc_system.boot_no_entries'), role='inactive')}")
+    box2.add_row(" ")
+    return [box1, box2]
+
+
 def build_cards(cc_panel, canvas: Canvas) -> list:
+    cards = feedback_cards("system", "cc_system.system_control_status") + build_privilege_modal_card(cc_panel, canvas)
+    bl = detect_bootloader()
+    if bl["kind"] != "limine":
+        return cards + _build_generic_boot_cards(bl, canvas)
+
     st = _load_limine_studio_data()
     m = st["model"]
     is_dirty = st["is_dirty"]
-    cards = _feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
 
     # ── Card 1: Preview & Global Limine Behavior ──────────────────────────────
     acts_1 = []
@@ -544,7 +597,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         SelectPill(lbl, f"cc_boot:preset:{pid}", selected=(active_pres == pid))
         for pid, lbl in (
             ("fallout", "Fallout"),
-            ("nightcity", "Nightcity"),
+            ("cyber", t("cc_system.boot_preset_cyber")),
             ("amber", "Amber CRT"),
             ("arch", "Arch Blue"),
         )
@@ -553,11 +606,12 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
 
     cur_wp = str(m.get("wallpaper") or "")
     wp_disp = os.path.basename(cur_wp.split("#", 1)[0].replace("boot():/", "")) if cur_wp else t("cc_system.boot_wp_none")
+    wp_style = str(m.get("wallpaper_style", "stretched"))
     wp_btns = [
         Txt(wp_disp, role="val" if cur_wp else "inactive"),
         ActionBtn(t("cc_system.boot_wp_import"), "cc_boot:wp_import", tone="neutral"),
         ActionBtn(t("cc_system.boot_wp_clear"), "cc_boot:wp_clear", tone="danger_soft" if cur_wp else "muted"),
-        CyclePill(str(m.get("wallpaper_style", "stretched")), "cc_boot:wp_cycle_style", active=bool(cur_wp)),
+        CyclePill(wp_style, "cc_boot:wp_cycle_style", active=bool(cur_wp) and wp_style != "stretched"),
     ]
     box2.add_kv(t("cc_system.boot_wallpaper"), " ".join(wp_btns))
 

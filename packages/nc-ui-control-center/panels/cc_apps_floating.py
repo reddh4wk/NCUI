@@ -12,9 +12,9 @@ from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, Divider, SelectPill, StateBadge, Txt, get_active_inline_entry
 from panels.cc_engine_apps import (
     _feedback_cards,
+    get_niri_config_file,
     get_niri_floating_rules,
     get_niri_active_windows,
-    NIRI_CONFIG_FILE,
 )
 
 
@@ -29,7 +29,7 @@ def _build_floating_standard(cc_panel, canvas: Canvas) -> list:
         highlighted=False,
     )
     hdr.add_row(" ")
-    hdr.add_kv(t("cc_apps.config_file"), Txt(NIRI_CONFIG_FILE, role="val"), right_markup=Txt(t("cc_apps.rules", p0=len(floating_ids)), role="schema"))
+    hdr.add_kv(t("cc_apps.config_file"), Txt(get_niri_config_file(), role="val"), right_markup=Txt(t("cc_apps.rules", p0=len(floating_ids)), role="schema"))
     hdr.add_row(" ")
     cards.append(hdr)
 

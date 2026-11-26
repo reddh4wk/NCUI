@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-import math
 import os
 import re
 import shlex
-from core.config import THEME, _parse_rgba_components
+from core.config import THEME
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
@@ -17,39 +16,24 @@ from ui.kit import (
     InspectorCell,
     SelectPill,
     Txt,
+    feedback_cards,
     get_semantic_palette,
+    hex_to_rgba_f,
+    rounded_rect_path,
 )
 from ui.widgets import AsciiCard
 from panels.cc_engine_input import (
     DEFAULT_NIRI_SHORTCUTS,
     _build_niri_action_from_draft,
     _collect_keyboard_state,
-    _feedback_box,
     _get_bind_draft,
     _load_shortcuts_store,
+    _niri_config_file,
     _norm_action_str,
 )
 
 _MOD_TOKENS = {"Mod", "Super", "Ctrl", "Control", "Alt", "Shift", "Meta"}
 _PAGE_SIZE = 8
-
-
-def _hex_rgba(hex_str: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    r, g, b, _ = _parse_rgba_components(hex_str)
-    return (r / 255.0, g / 255.0, b / 255.0, alpha)
-
-
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(float(r), float(w) * 0.5, float(h) * 0.5))
-    if rad <= 0.0:
-        cr.rectangle(x, y, w, h)
-        return
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0.0, math.pi * 0.5)
-    cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, math.pi * 1.5)
-    cr.close_path()
 
 
 def _nc_targets_spec() -> list[tuple[str, str]]:
@@ -201,24 +185,24 @@ class _ShortcutChordMixin:
         kw = max(36.0, float(ext.width) + pad_x * 2.0)
 
         cr.save()
-        _rounded_rect(cr, x + 0.5, y + 0.5, kw - 1.0, h - 1.0, 5.5)
-        cr.set_source_rgba(*_hex_rgba(fill_col, fill_alpha))
+        rounded_rect_path(cr, x + 0.5, y + 0.5, kw - 1.0, h - 1.0, 5.5)
+        cr.set_source_rgba(*hex_to_rgba_f(fill_col, fill_alpha))
         cr.fill_preserve()
         if dashed:
             cr.set_dash([4.0, 3.0])
-        cr.set_source_rgba(*_hex_rgba(border_col, 0.95))
+        cr.set_source_rgba(*hex_to_rgba_f(border_col, 0.95))
         cr.set_line_width(line_w)
         cr.stroke()
 
         # Subtle tactile 3D bottom keycap skirt bevel inside rounded border
         if not dashed:
-            _rounded_rect(cr, x + 1.0, y + 1.0, kw - 2.0, h - 2.0, 5.0)
+            rounded_rect_path(cr, x + 1.0, y + 1.0, kw - 2.0, h - 2.0, 5.0)
             cr.clip()
-            cr.set_source_rgba(*_hex_rgba(skirt_col, 0.55))
+            cr.set_source_rgba(*hex_to_rgba_f(skirt_col, 0.55))
             cr.rectangle(x + 1.0, y + h - 4.0, kw - 2.0, 3.0)
             cr.fill()
 
-        cr.set_source_rgba(*_hex_rgba(text_col, 1.0))
+        cr.set_source_rgba(*hex_to_rgba_f(text_col, 1.0))
         tx = x + (kw - ext.width) * 0.5
         ty = y + max(2.0, (h - 3.0 - ext.height) * 0.5)
         cr.move_to(tx, ty)
@@ -242,8 +226,8 @@ class _ShortcutChordMixin:
         font_family = str((THEME.get("typography") or {}).get("font_family", "monospace") or "monospace")
 
         # 1. Outer recessed Tactical Blueprint container
-        _rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
-        cr.set_source_rgba(*_hex_rgba(pal["structure_bg"], 0.62))
+        rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.62))
         cr.fill_preserve()
         if self.is_cap:
             brd_col, brd_w = pal["attention"], 1.4
@@ -251,12 +235,12 @@ class _ShortcutChordMixin:
             brd_col, brd_w = pal["focus"], 1.15
         else:
             brd_col, brd_w = pal["structure"], 1.0
-        cr.set_source_rgba(*_hex_rgba(brd_col, 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(brd_col, 0.92))
         cr.set_line_width(brd_w)
         cr.stroke()
 
         cr.save()
-        _rounded_rect(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
+        rounded_rect_path(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
         cr.clip()
 
         base_pt = float((THEME.get("typography") or {}).get("font_size", 11) or 11)
@@ -303,13 +287,13 @@ class _ShortcutChordMixin:
             ph = max(22.0, be.height + 8.0)
             px = right_limit - pw
             py = (stage_h - ph) * 0.5
-            _rounded_rect(cr, px, py, pw, ph, 4.0)
-            cr.set_source_rgba(*_hex_rgba(badge_bg, 0.94))
+            rounded_rect_path(cr, px, py, pw, ph, 4.0)
+            cr.set_source_rgba(*hex_to_rgba_f(badge_bg, 0.94))
             cr.fill_preserve()
-            cr.set_source_rgba(*_hex_rgba(badge_fg, 0.55))
+            cr.set_source_rgba(*hex_to_rgba_f(badge_fg, 0.55))
             cr.set_line_width(1.0)
             cr.stroke()
-            cr.set_source_rgba(*_hex_rgba(badge_fg, 1.0))
+            cr.set_source_rgba(*hex_to_rgba_f(badge_fg, 1.0))
             cr.move_to(px + 8.0, py + (ph - be.height) * 0.5)
             PangoCairo.show_layout(cr, bl)
             right_limit = px - 14.0
@@ -324,7 +308,7 @@ class _ShortcutChordMixin:
             pl.set_font_description(f_key)
             pl.set_text("+", -1)
             _, pe = pl.get_pixel_extents()
-            cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.80))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.80))
             cr.move_to(cx + 5.0, cap_y + (cap_h - pe.height) * 0.5)
             PangoCairo.show_layout(cr, pl)
             return cx + pe.width + 10.0
@@ -390,7 +374,7 @@ class _ShortcutChordMixin:
             al.set_text("\u2192", -1)
             _, ae = al.get_pixel_extents()
             cur_x += 12.0
-            cr.set_source_rgba(*_hex_rgba(pal["intent"] if self.combo else pal["schema"], 0.85))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["intent"] if self.combo else pal["schema"], 0.85))
             cr.move_to(cur_x, cap_y + (cap_h - ae.height) * 0.5)
             PangoCairo.show_layout(cr, al)
             cur_x += ae.width + 12.0
@@ -402,16 +386,16 @@ class _ShortcutChordMixin:
             tl.set_width(int(avail_act * Pango.SCALE))
             tl.set_text(self.target_label, -1)
             _, te = tl.get_pixel_extents()
-            cr.set_source_rgba(*_hex_rgba(pal["focus_val"] if self.combo else pal["schema"], 0.95))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["focus_val"] if self.combo else pal["schema"], 0.95))
             cr.move_to(cur_x, (stage_h - te.height) * 0.5)
             PangoCairo.show_layout(cr, tl)
 
         # 4. Integrated Telemetry Footer Strip
         fy = stage_h
-        cr.set_source_rgba(*_hex_rgba(surf_hex, 0.78))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.78))
         cr.rectangle(bx + 1.0, fy, bw - 2.0, footer_h)
         cr.fill()
-        cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.72))
         cr.set_line_width(1.0)
         cr.move_to(bx + 1.0, fy + 0.5)
         cr.line_to(bx + bw - 1.0, fy + 0.5)
@@ -428,7 +412,9 @@ class _ShortcutChordMixin:
         else:
             foot_l, foot_col = t("cc_keyboard.sc_stage_click_hint"), pal["schema"]
 
-        foot_r = "~/.config/niri/config.kdl"
+        cfg_p = _niri_config_file()
+        home_p = os.path.expanduser("~")
+        foot_r = "~" + cfg_p[len(home_p):] if cfg_p.startswith(home_p + "/") else cfg_p
         fr_lay = PangoCairo.create_layout(cr)
         fr_lay.set_font_description(f_micro)
         fr_lay.set_text(foot_r, -1)
@@ -443,11 +429,11 @@ class _ShortcutChordMixin:
         _, fle = fl_lay.get_pixel_extents()
 
         fty = fy + max(2.0, (footer_h - max(fle.height, fre.height)) * 0.5)
-        cr.set_source_rgba(*_hex_rgba(foot_col, 0.92))
+        cr.set_source_rgba(*hex_to_rgba_f(foot_col, 0.92))
         cr.move_to(bx + fpad, fty)
         PangoCairo.show_layout(cr, fl_lay)
 
-        cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.78))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.78))
         cr.move_to(bx + bw - fpad - fre.width, fty)
         PangoCairo.show_layout(cr, fr_lay)
 
@@ -474,7 +460,7 @@ def ShortcutChordWidget(*args, **kwargs):
 
 
 def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
-    cards = _feedback_box()
+    cards = feedback_cards("keyboard", "cc_keyboard.keyboard_configuration_status")
     binds = st["binds"]
     cap_mode = str(STATE.get("keyboard", "capture_mode", "") or "")
     cap_prev = str(STATE.get("keyboard", "capture_preview", "") or "")
@@ -503,6 +489,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
             ],
             highlighted=False,
         )
+        cw_box.add_row(" ")
         if w_mode == "guided" and 0 <= w_step < len(confs):
             cur_c = confs[w_step]
             cw_box.add_row(f"  {Badge(t('cc_keyboard.guided_step_press_new_shortcut_key', p0=w_step + 1, p1=len(confs)), style='warn')}  {Txt(cap_prev, role='focus')}")
@@ -525,6 +512,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
                     for c in confs[:8]
                 ],
             )
+        cw_box.add_row(" ")
         cards.append(cw_box)
 
     bd = _get_bind_draft()
@@ -564,6 +552,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         ],
         highlighted=False,
     )
+    b_box.add_row(" ")
     flt_pills = " ".join(
         SelectPill(
             t("cc_keyboard.flt_orphans", count=tot_orphans) if cid == "orphans" else t(f"cc_keyboard.flt_{cid}"),
@@ -669,6 +658,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
                 rows=rows,
                 aligns=["left", "left", "left", "right"],
             )
+    b_box.add_row(" ")
     cards.append(b_box)
 
     # =====================================================================
@@ -702,6 +692,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         actions=[cap_btn, manual_fld, clear_btn],
         highlighted=False,
     )
+    sb_box.add_row(" ")
 
     mode_pills = " ".join([
         SelectPill(t("cc_keyboard.standard_action"), "cc_kbd:bind_mode:standard", selected=(bd["mode"] == "standard")),
@@ -830,6 +821,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         actions=[FoldIconBtn(nav_open, nav_uri)],
         highlighted=False,
     )
+    nav_box.add_row(" ")
     if nav_open:
         nav_box.add_table(
             headers=[t("cc_keyboard.keys"), t("cc_keyboard.nc_ui_navigation_action")],
@@ -843,6 +835,7 @@ def _build_shortcuts_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         )
     else:
         nav_box.add_row(f"  {Txt(t('cc_keyboard.sc_nav_summary'), role='schema')}")
+    nav_box.add_row(" ")
     cards.append(nav_box)
     return cards
 

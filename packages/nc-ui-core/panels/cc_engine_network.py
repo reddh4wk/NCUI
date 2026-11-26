@@ -4,52 +4,50 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import threading
 import time
 import urllib.request
 
-from core.config import CONFIG, CONFIG_DIR, THEME, get_network_show_bar_speed
+from core.config import CONFIG, THEME, get_cache_dir, get_config_dir, get_network_show_bar_speed
 from core.state import STATE
-from core.i18n import get_active_language, t
+from core.i18n import t
 from core import probe, log
 from ui.canvas import Canvas
 from ui.kit import (
-    PALETTE,
-    Box,
-    Btn,
-    Badge,
-    StatusDot,
-    ToggleExpandBtn,
-    Divider,
-    Txt,
-    SelectPill,
     ActionBtn,
-    StateBadge,
-    FeedbackBox,
+    Badge,
+    Box,
     FoldToggle,
-    InspectorCell,
-    ui_pill,
-    ui_act_btn,
-    ui_status_badge,
-    ui_fold_toggle,
+    SelectPill,
+    StateBadge,
+    Txt,
+    make_feedback_cards,
+    set_feedback,
     start_inline_input,
 )
 from ui.markup import format_speed
 from panels.base import BasePanel
 
-BAR_SAMPLE_FILE = "/tmp/nc_net_bar_sample.json"
-FAST_NET_CACHE_FILE = "/tmp/nc_net_fast_cache.json"
-WAN_CACHE_FILE = os.path.expanduser("~/.cache/nc-ui/wan_cache.json")
-PING_CACHE_FILE = "/tmp/nc_net_ping_cache.json"
-WIFI_CACHE_FILE = "/tmp/nc_net_wifi_cache.json"
-PROXY_ENV_FILE = os.path.join(CONFIG_DIR, "proxy.env")
+PROXY_ENV_FILE = os.path.join(get_config_dir(), "proxy.env")
 
 SIGNAL_BARS = ["\u2581___", "\u2581\u2583__", "\u2581\u2583\u2585_", "\u2581\u2583\u2585\u2587"]
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 
 _NET_LOCK = threading.Lock()
 _BG_WORKER_RUNNING = False
-_APPLY_FEEDBACK = {}
+
+
+def _cache_path(name: str, ensure_dir: bool = False) -> str:
+    d = get_cache_dir()
+    if ensure_dir:
+        os.makedirs(d, exist_ok=True)
+    return os.path.join(d, name)
+
+
+def get_proxy_env_path() -> str:
+    return os.path.join(get_config_dir(), "proxy.env")
+
 
 _NET_STATE = {
     "initialized": False,
@@ -59,11 +57,20 @@ _NET_STATE = {
     "gw_map": {},
     "routes": [],
     "nm_profiles": {},
-    "wifi": {"available": True, "enabled": False, "powersave": "default", "networks": [], "saved": []},
-    "bt": {"available": True, "powered": False, "scanning": False, "paired": [], "discovered": []},
+    "wifi": {
+        "available": True,
+        "has_hw": True,
+        "enabled": False,
+        "powersave": "default",
+        "active_band": "auto",
+        "active_mac_priv": "",
+        "networks": [],
+        "saved": [],
+    },
+    "bt": {"available": True, "has_controller": False, "powered": False, "scanning": False, "paired": [], "discovered": []},
     "vpns": [],
     "proxy": {"mode": "none", "http_host": "", "http_port": 8080, "socks_host": "", "socks_port": 1080, "autoconfig_url": ""},
-    "wan": {"ip": "Rilevamento...", "badge": "", "badge_style": "info"},
+    "wan": {"ip": t("network.detecting"), "badge": "", "badge_style": "info"},
     "pings": {},
     "saved_wifi_ssids": set(),
     "ts": {
@@ -76,6 +83,14 @@ _NET_STATE = {
         "ping": 0.0,
     },
 }
+
+
+def is_resolved_wan_ip(ip_str: str) -> bool:
+    try:
+        ipaddress.ip_address(str(ip_str or "").strip())
+        return True
+    except ValueError:
+        return False
 
 
 def _spaced_rows(rows: list[list]) -> list[list]:
@@ -92,13 +107,6 @@ def _spaced_rows(rows: list[list]) -> list[list]:
     return out
 
 
-def is_sec_open(panel, sec_key: str, default: bool = False) -> bool:
-    cur_map = panel.get_state("open_sections", {})
-    if not isinstance(cur_map, dict):
-        return default
-    return bool(cur_map.get(sec_key, default))
-
-
 def validate_network_field(field: str, raw_val: str) -> tuple[bool, str, str]:
     s = str(raw_val or "").strip()
     if field == "ip_cidr":
@@ -109,10 +117,10 @@ def validate_network_field(field: str, raw_val: str) -> tuple[bool, str, str]:
         try:
             iface_ip = ipaddress.IPv4Interface(s)
             if iface_ip.ip.is_unspecified or iface_ip.ip.is_multicast:
-                return False, "", f"Indirizzo IPv4 '{s}' riservato o non valido."
+                return False, "", t("cc_network.err_ipv4_reserved", p0=s)
             return True, str(iface_ip), ""
         except ValueError:
-            return False, "", f"Formato IPv4/CIDR non valido: '{raw_val}' (usa es. 10.10.0.10/24)."
+            return False, "", t("cc_network.err_ipv4_fmt", p0=raw_val)
 
     if field == "gateway":
         if not s:
@@ -120,42 +128,29 @@ def validate_network_field(field: str, raw_val: str) -> tuple[bool, str, str]:
         try:
             gw_ip = ipaddress.IPv4Address(s)
             if gw_ip.is_unspecified or gw_ip.is_multicast:
-                return False, "", f"Gateway '{s}' non valido."
+                return False, "", t("cc_network.err_gw_invalid", p0=s)
             return True, str(gw_ip), ""
         except ValueError:
-            return False, "", f"Indirizzo Gateway IPv4 non valido: '{raw_val}'."
+            return False, "", t("cc_network.err_gw_fmt", p0=raw_val)
 
-    if field == "dns":
+    if field in ("dns", "ip6_dns"):
         if not s:
             return True, "", ""
-        tokens = [t.strip() for t in re.split(r"[,;\s]+", s) if t.strip()]
+        addr_cls = ipaddress.IPv4Address if field == "dns" else ipaddress.IPv6Address
+        err_key = "cc_network.err_dns4_fmt" if field == "dns" else "cc_network.err_dns6_fmt"
         clean_ips = []
-        for tk in tokens:
+        for tk in (tok.strip() for tok in re.split(r"[,;\s]+", s) if tok.strip()):
             try:
-                ip_obj = ipaddress.IPv4Address(tk)
-                clean_ips.append(str(ip_obj))
+                clean_ips.append(str(addr_cls(tk)))
             except ValueError:
-                return False, "", f"Server DNS IPv4 non valido: '{tk}'."
-        return True, ", ".join(clean_ips), ""
-
-    if field == "ip6_dns":
-        if not s:
-            return True, "", ""
-        tokens = [t.strip() for t in re.split(r"[,;\s]+", s) if t.strip()]
-        clean_ips = []
-        for tk in tokens:
-            try:
-                ip_obj = ipaddress.IPv6Address(tk)
-                clean_ips.append(str(ip_obj))
-            except ValueError:
-                return False, "", f"Server DNS IPv6 non valido: '{tk}'."
+                return False, "", t(err_key, p0=tk)
         return True, ", ".join(clean_ips), ""
 
     if field == "mtu":
         if not s or s.lower() == "auto":
             return True, "auto", ""
         if not s.isdigit() or not (68 <= int(s) <= 9216):
-            return False, "", f"MTU '{s}' fuori range (valori ammessi: 68 .. 9216 oppure 'auto')."
+            return False, "", t("cc_network.err_mtu_range", p0=s)
         return True, s, ""
 
     if field == "cloned_mac":
@@ -164,65 +159,27 @@ def validate_network_field(field: str, raw_val: str) -> tuple[bool, str, str]:
         if s.lower() in ("permanent", "preserve", "random", "stable"):
             return True, s.lower(), ""
         if not _MAC_RE.match(s):
-            return False, "", f"MAC Address '{s}' non valido (usa XX:XX:XX:XX:XX:XX, permanent, random o stable)."
+            return False, "", t("cc_network.err_mac_fmt", p0=s)
         return True, s.upper(), ""
 
     if field == "static_route":
         parts = s.split()
         if not parts:
-            return False, "", "Stringa rotta vuota."
+            return False, "", t("cc_network.err_route_empty")
         try:
             net_obj = ipaddress.IPv4Network(parts[0], strict=False)
             norm = [str(net_obj)]
             if len(parts) >= 2:
-                gw_obj = ipaddress.IPv4Address(parts[1])
-                norm.append(str(gw_obj))
+                norm.append(str(ipaddress.IPv4Address(parts[1])))
             if len(parts) >= 3:
                 if not parts[2].isdigit() or int(parts[2]) < 0:
-                    return False, "", f"Metrica rotta non valida: '{parts[2]}'."
+                    return False, "", t("cc_network.err_route_metric", p0=parts[2])
                 norm.append(parts[2])
             return True, " ".join(norm), ""
         except ValueError as e:
-            return False, "", f"Sintassi rotta statica non valida ('{s}'): {e}"
+            return False, "", t("cc_network.err_route_syntax", p0=s, p1=e)
 
     return True, s, ""
-
-
-def _set_feedback(target_key: str, state: str, msg: str = "", duration_ms: int = 1600, refresh_cb=None) -> None:
-    from gi.repository import GLib
-    with _NET_LOCK:
-        _APPLY_FEEDBACK[target_key] = {"state": state, "msg": msg, "ts": time.time()}
-    if refresh_cb:
-        GLib.idle_add(lambda: refresh_cb() or False)
-
-    if duration_ms > 0 and state in ("ok", "err"):
-        stamp = _APPLY_FEEDBACK[target_key]["ts"]
-
-        def _clear():
-            with _NET_LOCK:
-                cur = _APPLY_FEEDBACK.get(target_key)
-                if cur and cur.get("ts") == stamp:
-                    if state == "ok":
-                        _APPLY_FEEDBACK.pop(target_key, None)
-                    else:
-                        cur["state"] = "err_banner"
-            if refresh_cb:
-                refresh_cb()
-            return False
-
-        GLib.timeout_add(duration_ms, _clear)
-
-
-def _get_feedback(target_key: str) -> dict:
-    with _NET_LOCK:
-        return dict(_APPLY_FEEDBACK.get(target_key, {}))
-
-
-def get_net_tab_feedback_cards(tab_key: str) -> list:
-    fb = _get_feedback(tab_key)
-    if fb.get("state") in ("ok", "err", "err_banner") and fb.get("msg"):
-        return [FeedbackBox(t("cc_net_wired.networkmanager_operation_status"), fb["state"] == "ok", fb["msg"])]
-    return []
 
 
 def read_proc_net_dev() -> dict:
@@ -255,9 +212,13 @@ def _read_sysfs_str(path: str, default: str = "") -> str:
 def _load_fast_disk_cache() -> None:
     if _NET_STATE["initialized"]:
         return
-    if os.path.exists(FAST_NET_CACHE_FILE):
+    fast_f = _cache_path("net_fast_cache.json")
+    wan_f = _cache_path("wan_cache.json")
+    wifi_f = _cache_path("net_wifi_cache.json")
+    ping_f = _cache_path("net_ping_cache.json")
+    if os.path.exists(fast_f):
         try:
-            with open(FAST_NET_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(fast_f, "r", encoding="utf-8") as f:
                 data = json.load(f)
             with _NET_LOCK:
                 _NET_STATE["ip_map"] = data.get("ip_map", {})
@@ -267,27 +228,27 @@ def _load_fast_disk_cache() -> None:
                 _NET_STATE["initialized"] = True
         except Exception:
             pass
-    if os.path.exists(WAN_CACHE_FILE):
+    if os.path.exists(wan_f):
         try:
-            with open(WAN_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(wan_f, "r", encoding="utf-8") as f:
                 w = json.load(f)
                 if w.get("ip"):
                     _NET_STATE["wan"] = _compute_wan_badge(w["ip"])
                     _NET_STATE["ts"]["wan"] = float(w.get("ts", 0.0))
         except Exception:
             pass
-    if os.path.exists(WIFI_CACHE_FILE):
+    if os.path.exists(wifi_f):
         try:
-            with open(WIFI_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(wifi_f, "r", encoding="utf-8") as f:
                 nets = json.load(f)
                 if isinstance(nets, list):
                     _NET_STATE["wifi"]["networks"] = nets
                     _NET_STATE["wifi"]["enabled"] = True
         except Exception:
             pass
-    if os.path.exists(PING_CACHE_FILE):
+    if os.path.exists(ping_f):
         try:
-            with open(PING_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(ping_f, "r", encoding="utf-8") as f:
                 p = json.load(f)
                 _NET_STATE["pings"] = p.get("results", {})
                 _NET_STATE["ts"]["ping"] = float(p.get("ts", 0.0))
@@ -305,7 +266,7 @@ def _save_fast_disk_cache() -> None:
                 "gw_map": _NET_STATE["gw_map"],
                 "bt": _NET_STATE["bt"],
             }
-        with open(FAST_NET_CACHE_FILE, "w", encoding="utf-8") as f:
+        with open(_cache_path("net_fast_cache.json", ensure_dir=True), "w", encoding="utf-8") as f:
             json.dump(payload, f)
     except Exception:
         pass
@@ -388,6 +349,8 @@ def _is_nm_running() -> bool:
 
 def _collect_ip_and_routes() -> tuple[dict, dict, dict, list[str]]:
     ip_map, ip6_map, gw_map, routes = {}, {}, {}, []
+    if not probe.has_bin("ip"):
+        return ip_map, ip6_map, gw_map, routes
     ok, out = probe.run_cmd(["ip", "-j", "addr"], timeout=1.2)
     if ok and out:
         try:
@@ -642,7 +605,7 @@ def _collect_nm_profile_details(ifname: str) -> dict:
 
 def create_verified_nm_profile(ifname: str, con_name: str = None) -> tuple[bool, str, str]:
     if not _is_nm_running():
-        return False, "", "Servizio NetworkManager non attivo (systemctl start NetworkManager)."
+        return False, "", t("cc_network.err_nm_inactive_start")
 
     prof_name = (con_name or ifname).strip()
     is_wifi = ifname.startswith(("wl", "wlan")) or os.path.exists(f"/sys/class/net/{ifname}/wireless")
@@ -664,45 +627,45 @@ def create_verified_nm_profile(ifname: str, con_name: str = None) -> tuple[bool,
 
     ok, out, err = probe.run_cmd_full(cmd, timeout=5.0)
     if not ok:
-        return False, "", (err or out or f"Impossibile creare il profilo NM per {ifname}")
+        return False, "", (err or out or t("cc_network.err_nm_create", p0=ifname))
 
     ok_v, out_v, _ = probe.run_cmd_full(
         ["nmcli", "-g", "connection.uuid,connection.interface-name", "connection", "show", prof_name],
         timeout=2.0,
     )
     if not ok_v or not out_v.strip():
-        return False, "", "Creazione profilo non confermata da nmcli."
+        return False, "", t("cc_network.err_nm_create_unconfirmed")
 
     lines = [l.strip() for l in out_v.splitlines() if l.strip()]
     created_uuid = lines[0] if lines else ""
     if not created_uuid:
-        return False, "", "UUID profilo non restituito da NetworkManager."
+        return False, "", t("cc_network.err_nm_no_uuid")
 
     STATE.set("network", f"selected_prof_{ifname}", created_uuid)
-    return True, created_uuid, f"Profilo '{prof_name}' ({created_uuid[:8]}) creato e verificato."
+    return True, created_uuid, t("cc_network.fb_prof_created", p0=prof_name, p1=created_uuid[:8])
 
 
 def clone_verified_nm_profile(ifname: str, src_uuid: str, new_name: str = None) -> tuple[bool, str, str]:
     if not _is_nm_running():
-        return False, "", "Servizio NetworkManager non attivo."
+        return False, "", t("cc_network.err_nm_inactive")
     ok_n, out_n = probe.run_cmd(["nmcli", "-g", "connection.id", "connection", "show", src_uuid], timeout=1.5)
     base_name = out_n.strip() if (ok_n and out_n.strip()) else ifname
     target_name = (new_name or f"{base_name}-copy").strip()
 
     ok, out, err = probe.run_cmd_full(["nmcli", "connection", "clone", src_uuid, target_name], timeout=4.0)
     if not ok:
-        return False, "", (err or out or f"Impossibile clonare il profilo '{base_name}'.")
+        return False, "", (err or out or t("cc_network.err_nm_clone", p0=base_name))
 
     ok_v, out_v = probe.run_cmd(["nmcli", "-g", "connection.uuid", "connection", "show", target_name], timeout=1.5)
     cloned_uuid = out_v.splitlines()[0].strip() if (ok_v and out_v.strip()) else ""
     if cloned_uuid:
         STATE.set("network", f"selected_prof_{ifname}", cloned_uuid)
-    return True, cloned_uuid, f"Profilo clonato come '{target_name}'."
+    return True, cloned_uuid, t("cc_network.fb_prof_cloned", p0=target_name)
 
 
 def apply_and_verify_nm_profile(ifname: str, uuid: str, buf: dict, nm_cur: dict, iface_up: bool = True) -> tuple[bool, str]:
     if not _is_nm_running():
-        return False, "Servizio NetworkManager non attivo."
+        return False, t("cc_network.err_nm_inactive")
 
     method = buf.get("method", nm_cur.get("method", "auto"))
     ip_cidr = str(buf.get("ip_cidr", nm_cur.get("ip_cidr", "")) or "").strip()
@@ -732,7 +695,7 @@ def apply_and_verify_nm_profile(ifname: str, uuid: str, buf: dict, nm_cur: dict,
     if method == "manual":
         ok_ip, ip_cidr, err_ip = validate_network_field("ip_cidr", ip_cidr)
         if not ok_ip or not ip_cidr:
-            return False, (err_ip or "Metodo Manuale richiede un indirizzo IPv4/CIDR valido (es. 10.10.0.10/24).")
+            return False, (err_ip or t("cc_network.err_nm_manual_ip_req"))
         if gw:
             ok_gw, gw, err_gw = validate_network_field("gateway", gw)
             if not ok_gw:
@@ -780,31 +743,31 @@ def apply_and_verify_nm_profile(ifname: str, uuid: str, buf: dict, nm_cur: dict,
 
     ok_m, out_m, err_m = probe.run_cmd_full(cmd, timeout=6.0)
     if not ok_m:
-        return False, (err_m or out_m or "Errore nmcli durante la modifica del profilo.")
+        return False, (err_m or out_m or t("cc_network.err_nm_modify"))
 
     ok_chk, out_chk, _ = probe.run_cmd_full(
         ["nmcli", "-g", "ipv4.method,ipv4.addresses,connection.autoconnect", "connection", "show", uuid],
         timeout=2.0,
     )
     if not ok_chk:
-        return False, "Impossibile verificare il profilo dopo il salvataggio."
+        return False, t("cc_network.err_nm_verify_readback")
 
     chk_lines = [l.strip() for l in out_chk.splitlines()]
     saved_method = chk_lines[0] if len(chk_lines) > 0 else ""
     saved_ip = chk_lines[1].replace("\\,", ",") if len(chk_lines) > 1 else ""
     if saved_method != method:
-        return False, f"Verifica NM fallita: metodo salvato '{saved_method}' != richiesto '{method}'."
+        return False, t("cc_network.err_nm_verify_method", p0=saved_method, p1=method)
     if method == "manual" and ip_cidr.split("/")[0] not in saved_ip:
-        return False, f"Verifica NM fallita: IP '{ip_cidr}' non presente nel profilo salvato ('{saved_ip}')."
+        return False, t("cc_network.err_nm_verify_ip", p0=ip_cidr, p1=saved_ip)
 
     is_active_prof = any(p.get("uuid") == uuid and p.get("active") for p in nm_cur.get("available_profiles", []))
     if iface_up and (is_active_prof or not is_wifi):
         probe.run_cmd_full(["nmcli", "device", "set", ifname, "managed", "yes"], timeout=2.0)
         ok_u, out_u, err_u = probe.run_cmd_full(["nmcli", "connection", "up", uuid], timeout=10.0)
         if not ok_u:
-            return False, f"Profilo salvato, ma attivazione su {ifname} fallita: {err_u or out_u}"
+            return False, t("cc_network.err_nm_activate", p0=ifname, p1=(err_u or out_u))
 
-        if method == "manual":
+        if method == "manual" and probe.has_bin("ip"):
             expected_ip = ip_cidr.split("/")[0]
             kernel_ips = []
             for _ in range(6):
@@ -821,19 +784,38 @@ def apply_and_verify_nm_profile(ifname: str, uuid: str, buf: dict, nm_cur: dict,
                     break
                 time.sleep(0.15)
             if not any(k_ip.startswith(expected_ip + "/") for k_ip in kernel_ips):
-                return False, f"Profilo salvato, ma il kernel su {ifname} riporta ancora {kernel_ips or 'nessun IP'} anziché {ip_cidr}."
+                return False, t("cc_network.err_nm_kernel_ip", p0=ifname, p1=(kernel_ips or t("cc_network.no_ip")), p2=ip_cidr)
 
-    return True, f"Profilo '{con_name}' applicato e verificato su {ifname}."
+    return True, t("cc_network.fb_prof_applied", p0=con_name, p1=ifname)
 
 
 def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
-    res = {"available": probe.has_bin("nmcli"), "enabled": False, "powersave": "default", "networks": [], "saved": []}
+    wifi_devs = [i["name"] for i in get_interfaces_fast() if i["kind"] == "wifi"]
+    res = {
+        "available": probe.has_bin("nmcli"),
+        "has_hw": bool(wifi_devs),
+        "enabled": False,
+        "powersave": "default",
+        "active_band": "auto",
+        "active_mac_priv": "",
+        "networks": [],
+        "saved": [],
+    }
     saved_ssids = set()
-    if not res["available"]:
+    if not res["available"] or not res["has_hw"]:
         return res, saved_ssids
 
     ok_r, out_r = probe.run_cmd(["nmcli", "radio", "wifi"], timeout=1.0)
     res["enabled"] = (ok_r and "enabled" in out_r.lower())
+
+    if probe.has_bin("iw"):
+        ok_ps, out_ps = probe.run_cmd(["iw", "dev", wifi_devs[0], "get", "power_save"], timeout=1.0)
+        if ok_ps and out_ps:
+            low_ps = out_ps.lower()
+            if "power save: on" in low_ps:
+                res["powersave"] = "on"
+            elif "power save: off" in low_ps:
+                res["powersave"] = "off"
 
     ok_s, out_s = probe.run_cmd(
         ["nmcli", "-t", "-f", "UUID,NAME,TYPE,AUTOCONNECT,AUTOCONNECT-PRIORITY,DEVICE", "connection", "show"],
@@ -846,13 +828,29 @@ def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
             if len(parts) >= 6 and parts[2] in ("802-11-wireless", "wifi"):
                 nm = parts[1].replace("\\:", ":")
                 saved_ssids.add(nm)
+                is_act = bool(parts[5] and parts[5] != "--")
                 saved_list.append({
                     "uuid": parts[0],
                     "name": nm,
                     "autoconnect": parts[3],
                     "priority": parts[4],
-                    "active": bool(parts[5] and parts[5] != "--"),
+                    "active": is_act,
                 })
+                if is_act:
+                    ok_ab, out_ab = probe.run_cmd(
+                        ["nmcli", "-t", "-f", "802-11-wireless.band,802-11-wireless.cloned-mac-address", "connection", "show", parts[0]],
+                        timeout=1.0,
+                    )
+                    if ok_ab and out_ab:
+                        for ln in out_ab.splitlines():
+                            if ":" not in ln:
+                                continue
+                            k, v = ln.split(":", 1)
+                            v = v.replace("\\:", ":").strip()
+                            if k == "802-11-wireless.band":
+                                res["active_band"] = v if v not in ("", "--") else "auto"
+                            elif k == "802-11-wireless.cloned-mac-address":
+                                res["active_mac_priv"] = v if v not in ("", "--") else ""
         res["saved"] = saved_list
 
     if not res["enabled"]:
@@ -871,7 +869,9 @@ def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
             if len(parts) < 7:
                 continue
             in_use = (parts[0].strip() == "*")
-            ssid = parts[1].replace("\\:", ":").strip() or "<Hidden>"
+            raw_ssid = parts[1].replace("\\:", ":").strip()
+            is_hidden = not bool(raw_ssid)
+            ssid = raw_ssid or t("cc_network.hidden_ap")
             bssid = parts[2].replace("\\:", ":").strip()
             chan = parts[3].strip()
             rate = parts[4].strip()
@@ -887,6 +887,7 @@ def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
             nets.append({
                 "in_use": in_use,
                 "ssid": ssid,
+                "hidden": is_hidden,
                 "bssid": bssid,
                 "chan": chan,
                 "rate": rate,
@@ -896,7 +897,7 @@ def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
         nets.sort(key=lambda x: (not x["in_use"], -x["signal"]))
         res["networks"] = nets
         try:
-            with open(WIFI_CACHE_FILE, "w", encoding="utf-8") as f:
+            with open(_cache_path("net_wifi_cache.json", ensure_dir=True), "w", encoding="utf-8") as f:
                 json.dump(nets, f)
         except Exception:
             pass
@@ -906,6 +907,7 @@ def _collect_wifi_state(force_rescan: bool = False) -> tuple[dict, set]:
 def _collect_bluetooth_state() -> dict:
     bt = {
         "available": probe.has_bin("bluetoothctl"),
+        "has_controller": False,
         "powered": False,
         "scanning": False,
         "paired": [],
@@ -915,8 +917,9 @@ def _collect_bluetooth_state() -> dict:
         return bt
 
     ok_s, out_s = probe.run_cmd(["bluetoothctl", "show"], timeout=1.0)
-    if not ok_s:
+    if not ok_s or "Controller " not in out_s:
         return bt
+    bt["has_controller"] = True
     for line in out_s.splitlines():
         if "Powered: yes" in line:
             bt["powered"] = True
@@ -1021,7 +1024,7 @@ def _collect_proxy_state() -> dict:
     }
 
 
-def _write_proxy_env(pr: dict = None) -> None:
+def _write_proxy_env(pr: dict = None) -> tuple[bool, str]:
     if pr is None:
         pr = _collect_proxy_state()
     mode = pr.get("mode", "none")
@@ -1050,11 +1053,14 @@ def _write_proxy_env(pr: dict = None) -> None:
         lines.append("unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy PAC_AUTOCONFIG_URL")
 
     try:
-        os.makedirs(os.path.dirname(PROXY_ENV_FILE), exist_ok=True)
-        with open(PROXY_ENV_FILE, "w", encoding="utf-8") as f:
+        env_p = get_proxy_env_path()
+        os.makedirs(os.path.dirname(env_p), exist_ok=True)
+        with open(env_p, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+        return True, ""
     except Exception as e:
         log.error(f"_write_proxy_env error: {e}")
+        return False, str(e)
 
 
 def _compute_wan_badge(ip_str: str) -> dict:
@@ -1064,7 +1070,7 @@ def _compute_wan_badge(ip_str: str) -> dict:
     failover_lbl = wan_cfg.get("failover_label", "Failover WAN")
     badge_text = ""
     badge_style = "info"
-    if primary_ip and ip_str not in ("Rilevamento...", "N/D", ""):
+    if primary_ip and is_resolved_wan_ip(ip_str):
         if ip_str == primary_ip:
             badge_text = primary_lbl
             badge_style = "accent"
@@ -1080,13 +1086,15 @@ def _collect_wan_ip() -> dict:
         with urllib.request.urlopen(req, timeout=1.8) as resp:
             ip_val = resp.read().decode("utf-8").strip()
         if ip_val:
-            os.makedirs(os.path.dirname(WAN_CACHE_FILE), exist_ok=True)
-            with open(WAN_CACHE_FILE, "w", encoding="utf-8") as f:
+            with open(_cache_path("wan_cache.json", ensure_dir=True), "w", encoding="utf-8") as f:
                 json.dump({"ip": ip_val, "ts": time.time()}, f)
             return _compute_wan_badge(ip_val)
     except Exception as e:
         log.debug(f"WAN IP fetch error: {e}")
-    return _NET_STATE["wan"]
+    cur_wan = _NET_STATE["wan"]
+    if is_resolved_wan_ip(cur_wan.get("ip", "")):
+        return cur_wan
+    return {"ip": t("common.nd"), "badge": t("cc_network.offline"), "badge_style": "crit"}
 
 
 def get_watchdog_targets(ifaces: list[dict]) -> list[dict]:
@@ -1107,16 +1115,18 @@ def get_watchdog_targets(ifaces: list[dict]) -> list[dict]:
     targets = []
     for iface in ifaces:
         if iface["up"] and iface["gw"]:
-            targets.append({"name": f"Gateway ({iface['name']})", "host": iface["gw"]})
+            targets.append({"name": t("cc_network.watchdog_gateway", p0=iface["name"]), "host": iface["gw"]})
             break
-    targets.append({"name": "Cloudflare DNS", "host": "1.1.1.1"})
+    targets.append({"name": t("cc_network.watchdog_cloudflare_dns"), "host": "1.1.1.1"})
     return targets
 
 
 def _collect_pings(targets: list[dict]) -> dict:
+    if not probe.has_bin("ping"):
+        return {tgt["host"]: {"ok": False, "missing": True, "ms": None} for tgt in targets}
     new_res = {}
-    for t in targets:
-        host = t["host"]
+    for tgt in targets:
+        host = tgt["host"]
         ok, out = probe.run_cmd(["ping", "-c", "1", "-W", "1", host], timeout=1.2)
         if ok and out:
             m = re.search(r"time=([\d.]+)\s*ms", out)
@@ -1124,7 +1134,7 @@ def _collect_pings(targets: list[dict]) -> dict:
         else:
             new_res[host] = {"ok": False, "ms": None}
     try:
-        with open(PING_CACHE_FILE, "w", encoding="utf-8") as f:
+        with open(_cache_path("net_ping_cache.json", ensure_dir=True), "w", encoding="utf-8") as f:
             json.dump({"ts": time.time(), "results": new_res}, f)
     except Exception:
         pass
@@ -1133,18 +1143,102 @@ def _collect_pings(targets: list[dict]) -> dict:
 
 class Panel(BasePanel):
     id = "network"
-    title = "Network & Comms"
     icon = "\uf6ff"
     supports_expand = True
     hover_highlight = True
     default_tab = "ifaces"
 
     def __init__(self, shell=None):
+        self.title = t("network.title") if shell is not None else self.id
         super().__init__(shell)
         _load_fast_disk_cache()
         self._last_sample = read_proc_net_dev()
         self._last_time = time.time()
         self._speeds = {}
+
+    def _state_owner(self):
+        return self.shell.panel if (self.shell and getattr(self.shell, "panel", None) is not None) else self
+
+    def _fold(self, sec_key: str, default: bool = False, dirty: bool = False) -> tuple[bool, str]:
+        return FoldToggle(self._state_owner(), sec_key, default=default, dirty=dirty, uri_prefix="ui:state")
+
+    def _emit_fb(self, tab_key: str, ok: bool, msg: str) -> None:
+        set_feedback("network", ok, msg, key=f"fb_{tab_key}")
+        if self.shell:
+            self.shell.refresh_view()
+
+    def _resolve_mon_and_unit(self, ifaces: list[dict], prefer_ip: bool = False) -> tuple[str, str]:
+        unit_mode = self.get_state("speed_unit", CONFIG["network"].get("default_speed_unit", "bytes"))
+        mon_iface = self.get_state("monitored_iface", "auto")
+        valid_names = [i["name"] for i in ifaces]
+        if mon_iface not in valid_names and mon_iface != "ALL":
+            up_ifs = [i["name"] for i in ifaces if i["up"] and (not prefer_ip or i["ip"] != "N/D")]
+            mon_iface = up_ifs[0] if up_ifs else (valid_names[0] if valid_names else "N/D")
+        return mon_iface, unit_mode
+
+    def _run_nm_profile_action(self, iface: str, fn, ok_msg_fn=None, resync_ip: bool = False, clear_buf_on_ok: bool = False) -> None:
+        def _task():
+            res = fn()
+            ok = bool(res[0])
+            msg = res[1] if len(res) > 1 else ""
+            nm_prof = _collect_nm_profile_details(iface)
+            ip_res = _collect_ip_and_routes() if resync_ip else None
+            with _NET_LOCK:
+                _NET_STATE["nm_profiles"][iface] = nm_prof
+                _NET_STATE["ts"]["nm"] = time.time()
+                if ip_res is not None:
+                    _NET_STATE["ip_map"], _NET_STATE["ip6_map"], _NET_STATE["gw_map"], _NET_STATE["routes"] = ip_res
+                    _NET_STATE["ts"]["ip"] = time.time()
+            if ok and ok_msg_fn is not None:
+                msg = ok_msg_fn(msg)
+            elif not ok and not msg:
+                msg = t("cc_network.fb_action_failed", p0=iface)
+            return ok, msg
+
+        def _done(res):
+            ok, msg = res
+            if ok and clear_buf_on_ok:
+                cur_all = self.get_state("edit_buffer", {})
+                if isinstance(cur_all, dict) and iface in cur_all:
+                    del cur_all[iface]
+                    self.set_state("edit_buffer", cur_all)
+            self._emit_fb("interfaces", ok, msg)
+            return False
+
+        probe.run_async(_task, on_done=_done)
+
+    def _run_net_cmd(
+        self,
+        fb_tab: str,
+        cmd: list[str],
+        ok_msg: str,
+        tab_hint: str,
+        timeout: float = 5.0,
+        verify_fn=None,
+        clear_wifi_cache: bool = False,
+    ) -> None:
+        def _task():
+            ok, out, err = probe.run_cmd_full(cmd, timeout=timeout)
+            if ok and verify_fn is not None:
+                ok_v, err_v = verify_fn()
+                if not ok_v:
+                    ok, err = False, err_v
+            if clear_wifi_cache:
+                wc = _cache_path("net_wifi_cache.json")
+                if os.path.exists(wc):
+                    try:
+                        os.remove(wc)
+                    except Exception:
+                        pass
+            return ok, (ok_msg if ok else t("cc_network.fb_action_failed", p0=(err or out or cmd[0])))
+
+        def _done(res):
+            ok, msg = res
+            self._emit_fb(fb_tab, ok, msg)
+            self._trigger_full_resync(tab_hint)
+            return False
+
+        probe.run_async(_task, on_done=_done)
 
     def _update_live_speeds(self) -> None:
         now = time.time()
@@ -1286,16 +1380,17 @@ class Panel(BasePanel):
             now = time.time()
             curr_dev = read_proc_net_dev()
             prev_dev, prev_ts = curr_dev, now - 1.0
-            if os.path.exists(BAR_SAMPLE_FILE):
+            bar_f = _cache_path("bar_sample.json")
+            if os.path.exists(bar_f):
                 try:
-                    with open(BAR_SAMPLE_FILE, "r", encoding="utf-8") as f:
+                    with open(bar_f, "r", encoding="utf-8") as f:
                         s_data = json.load(f)
                         prev_ts = float(s_data.get("ts", now - 1.0))
                         prev_dev = s_data.get("devs", curr_dev)
                 except Exception:
                     pass
             try:
-                with open(BAR_SAMPLE_FILE, "w", encoding="utf-8") as f:
+                with open(_cache_path("bar_sample.json", ensure_dir=True), "w", encoding="utf-8") as f:
                     json.dump({"ts": now, "devs": curr_dev}, f)
             except Exception:
                 pass
@@ -1345,18 +1440,13 @@ class Panel(BasePanel):
         if vpn_ifaces:
             icons_part += f" {Txt('\uf132', role='focus')}"
 
-        mon_iface = self.get_state("monitored_iface", "auto")
-        unit_mode = self.get_state("speed_unit", CONFIG["network"].get("default_speed_unit", "bytes"))
-        valid_names = [i["name"] for i in ifaces]
+        mon_iface, unit_mode = self._resolve_mon_and_unit(ifaces, prefer_ip=True)
 
         if mon_iface == "ALL":
             rx_val = sum(s["rx"] for s in speeds.values())
             tx_val = sum(s["tx"] for s in speeds.values())
             disp_iface = "ALL"
         else:
-            if mon_iface not in valid_names:
-                up_ifs = [i["name"] for i in ifaces if i["up"] and i["ip"] != "N/D"]
-                mon_iface = up_ifs[0] if up_ifs else (valid_names[0] if valid_names else "N/D")
             sp = speeds.get(mon_iface, {"rx": 0.0, "tx": 0.0})
             rx_val, tx_val = sp["rx"], sp["tx"]
             disp_iface = mon_iface
@@ -1393,11 +1483,7 @@ class Panel(BasePanel):
         self._update_live_speeds()
         expanded = force_expanded or self.is_expanded
         ifaces = get_interfaces_fast(self._speeds)
-        unit_mode = self.get_state("speed_unit", CONFIG["network"].get("default_speed_unit", "bytes"))
-        mon_iface = self.get_state("monitored_iface", "auto")
-        if mon_iface not in [i["name"] for i in ifaces] and mon_iface != "ALL":
-            up_ifs = [i["name"] for i in ifaces if i["up"]]
-            mon_iface = up_ifs[0] if up_ifs else (ifaces[0]["name"] if ifaces else "N/D")
+        mon_iface, unit_mode = self._resolve_mon_and_unit(ifaces)
 
         if not expanded:
             self._schedule_bg_refresh(mode_hint="compact")
@@ -1417,7 +1503,7 @@ class Panel(BasePanel):
             actions=[
                 ActionBtn(unit_mode.upper(), "net:toggle_unit", tone="neutral"),
                 ActionBtn("\uf013", "ui:open_settings:network", tone="neutral"),
-                ToggleExpandBtn(False),
+                ActionBtn("+", "ui:toggle_expand", tone="neutral"),
             ],
             highlighted=False,
         )
@@ -1429,12 +1515,12 @@ class Panel(BasePanel):
                 wan_badge = f" {StateBadge(True, wan['badge'], on_tone='warn' if wan['badge_style'] == 'warn' else 'ok')}"
         else:
             wan_badge = ""
-        wan_copy_uri = "ui:copy:" + wan["ip"]
+        wan_copy_btn = ActionBtn(t("cc_network.copy"), "ui:copy:" + wan["ip"], tone="neutral") if is_resolved_wan_ip(wan["ip"]) else ""
         box.add_kv(
             t("cc_network.wan_ip"),
-            f"{Txt(wan['ip'], role='focus')}{wan_badge}",
+            f"{Txt(wan['ip'], role='focus' if is_resolved_wan_ip(wan['ip']) else 'inactive')}{wan_badge}",
             key_width=10,
-            right_markup=ActionBtn(t("cc_network.copy"), wan_copy_uri, tone="neutral"),
+            right_markup=wan_copy_btn,
             icon="\uf0ac",
         )
         active_gws = [i["gw"] for i in ifaces if i["up"] and i["gw"]]
@@ -1449,17 +1535,18 @@ class Panel(BasePanel):
             is_mon = (iface["name"] == mon_iface)
             mon_uri = "net:mon:" + iface["name"]
             dn_uri = "net:ifdown:" + iface["name"]
-            ip_copy_uri = "ui:copy:" + iface["ip"].split("/")[0]
+            has_ip = (iface["ip"] != "N/D")
+            ip_copy_btn = ActionBtn(t("cc_network.copy"), "ui:copy:" + iface["ip"].split("/")[0], tone="neutral") if has_ip else ""
             sec_acts = []
             if show_bar_spd:
                 sec_acts.append(SelectPill(t("cc_network.bar"), mon_uri, selected=is_mon))
             sec_acts.append(ActionBtn(t("cc_network.down"), dn_uri, tone="danger_soft"))
             box.add_section(f"{ic} {iface['name']} ({iface['link_speed']})", actions=sec_acts)
             box.add_kv(
-                "IPv4",
-                Txt(iface["ip"], role="focus"),
+                t("cc_network.ipv4"),
+                Txt(iface["ip"] if has_ip else t("common.nd"), role="focus" if has_ip else "inactive"),
                 key_width=10,
-                right_markup=ActionBtn(t("cc_network.copy"), ip_copy_uri, tone="neutral"),
+                right_markup=ip_copy_btn,
                 icon="\uf124",
             )
             rx_s = format_speed(iface["rx_rate"], unit_mode)
@@ -1471,7 +1558,7 @@ class Panel(BasePanel):
             for iface in down_ifaces:
                 ic = "\uf1eb" if iface["kind"] == "wifi" else ("\uf132" if iface["kind"] == "vpn" else "\uf6ff")
                 iname = f"{iface['name']:<10}"
-                left = f"  {ic} {Txt(iname, role='inactive')} {StateBadge(False, 'UP', 'DOWN')}"
+                left = f"  {ic} {Txt(iname, role='inactive')} {StateBadge(False, t('common.up'), t('common.down'))}"
                 mon_uri = "net:mon:" + iface["name"]
                 up_uri = "net:ifup:" + iface["name"]
                 up_b = ActionBtn(t("cc_network.up"), up_uri, tone="apply")
@@ -1480,15 +1567,24 @@ class Panel(BasePanel):
                 box.add_row(left, right_markup=right_m)
 
         bt_scanning = bool(bt.get("scanning", False))
-        bt_actions = [
-            ActionBtn(t("cc_network.scan"), "bt:scan", tone="warn" if bt_scanning else "neutral", modal_active=bt_scanning) if bt["powered"] else "",
-            ActionBtn(t("cc_network.off_2"), "bt:power:off", tone="danger_soft") if bt["powered"] else ActionBtn(t("cc_network.on_2"), "bt:power:on", tone="apply"),
-        ]
-        box.add_section(t("cc_network.bluetooth", p0='ON' if bt['powered'] else 'OFF'), actions=[a for a in bt_actions if a])
-        if not bt["powered"]:
-            box.add_row(f"  {Txt(t("cc_network.controller_is_off"), role='inactive')}")
+        bt_ready = bool(bt.get("available") and bt.get("has_controller"))
+        bt_actions = []
+        if bt_ready:
+            if bt["powered"]:
+                bt_actions.append(ActionBtn(t("cc_network.scan"), "bt:scan", tone="warn" if bt_scanning else "neutral", modal_active=bt_scanning))
+                bt_actions.append(ActionBtn(t("cc_network.off_2"), "bt:power:off", tone="danger_soft"))
+            else:
+                bt_actions.append(ActionBtn(t("cc_network.on_2"), "bt:power:on", tone="apply"))
+        bt_lbl = t("common.on") if bt["powered"] else t("common.off")
+        box.add_section(t("cc_network.bluetooth", p0=bt_lbl), actions=bt_actions)
+        if not bt.get("available"):
+            box.add_row(f"  {Txt(t('cc_network.bluetoothctl_service_not_found_on'), role='inactive')}")
+        elif not bt.get("has_controller"):
+            box.add_row(f"  {Txt(t('cc_network.bt_no_controller'), role='inactive')}")
+        elif not bt["powered"]:
+            box.add_row(f"  {Txt(t('cc_network.controller_is_off'), role='inactive')}")
         elif not bt["paired"]:
-            box.add_row(f"  {Txt(t("cc_network.no_paired_devices"), role='inactive')}")
+            box.add_row(f"  {Txt(t('cc_network.no_paired_devices'), role='inactive')}")
         else:
             for dev in bt["paired"][:4]:
                 bat_v = dev.get("battery")
@@ -1520,7 +1616,7 @@ class Panel(BasePanel):
                     ActionBtn(t("cc_network.unit", p0=unit_mode.upper()), "net:toggle_unit", tone="neutral"),
                     ActionBtn(t("cc_network.refresh"), "net:force_refresh", tone="neutral"),
                     ActionBtn(t("cc_network.cc"), "ui:open_settings:network", tone="neutral"),
-                    ToggleExpandBtn(True),
+                    ActionBtn("-", "ui:toggle_expand", tone="neutral"),
                 ],
                 highlighted=True,
             )
@@ -1564,11 +1660,15 @@ class Panel(BasePanel):
             icon="\uf294",
             highlighted=False,
         )
-        box.add_row(" ")
 
         if not bt["available"]:
-            box.add_row(f"  {Txt(t("cc_network.bluetoothctl_service_not_found_on"), role='inactive')}")
-            box.add_row(" ")
+            box.actions = [Badge(t("ui.missing", p0="bluetoothctl"), style="warn")]
+            box.add_row(f"  {Txt(t('cc_network.bluetoothctl_service_not_found_on'), role='inactive')}")
+            return [box]
+
+        if not bt.get("has_controller"):
+            box.actions = [StateBadge(False, "", t("cc_network.bt_not_detected"))]
+            box.add_row(f"  {Txt(t('cc_network.bt_no_controller'), role='inactive')}")
             return [box]
 
         pwr_btn = (
@@ -1581,13 +1681,13 @@ class Panel(BasePanel):
         box.actions = [a for a in [st_badge, scan_btn, pwr_btn] if a]
 
         if not bt["powered"]:
-            box.add_row(f"  {Txt(t("cc_network.turn_on_the_bluetooth_controller_t"), role='inactive')}")
-            box.add_row(" ")
+            box.add_row(f"  {Txt(t('cc_network.turn_on_the_bluetooth_controller_t'), role='inactive')}")
             return [box]
 
         if not bt["paired"]:
-            box.add_row(f"  {Txt(t("cc_network.no_paired_devices"), role='inactive')}")
+            box.add_row(f"  {Txt(t('cc_network.no_paired_devices'), role='inactive')}")
         else:
+            conn_mc = max(len(t("cc_network.disc")), len(t("cc_network.conn")))
             rows = []
             for d in bt["paired"]:
                 is_c = bool(d["connected"])
@@ -1603,9 +1703,9 @@ class Panel(BasePanel):
                 conn_uri = "bt:conn:" + d["mac"]
                 rem_uri = "bt:remove:" + d["mac"]
                 conn_b = (
-                    ActionBtn(t("cc_network.disc"), disc_uri, tone="danger_soft")
+                    ActionBtn(t("cc_network.disc"), disc_uri, tone="danger_soft", min_chars=conn_mc)
                     if is_c
-                    else ActionBtn(t("cc_network.conn"), conn_uri, tone="apply")
+                    else ActionBtn(t("cc_network.conn"), conn_uri, tone="apply", min_chars=conn_mc)
                 )
                 rem_b = ActionBtn("x", rem_uri, tone="danger_soft")
                 name_trunc = canvas.truncate_plain(d["name"], 21)
@@ -1631,25 +1731,23 @@ class Panel(BasePanel):
                 aligns=["left", "left", "left", "left", "right"],
             )
 
-        box.add_row(" ")
         cards = [box]
 
         disc_list = bt.get("discovered", [])
         if disc_list or bt["scanning"]:
-            opened, fold_btn = FoldToggle(self, "bt_disc", default=bool(bt["scanning"]))
+            opened, fold_btn = self._fold("bt_disc", default=bool(bt["scanning"]))
             disc_box = Box(
                 t("cc_network.nearby_discovered_devices", p0=len(disc_list)),
                 icon="\uf294",
                 actions=[fold_btn],
             )
-            disc_box.add_row(" ")
             if not opened:
                 disc_box.add_row(
-                    f"  {Txt(t("cc_network.click_expand_to_view_nearby_unpair"), role='schema')}"
+                    f"  {Txt(t('cc_network.click_expand_to_view_nearby_unpair'), role='schema')}"
                 )
             else:
                 if not disc_list:
-                    disc_box.add_row(f"  {Txt(t("cc_network.scanning_for_nearby_devices"), role='inactive')}")
+                    disc_box.add_row(f"  {Txt(t('cc_network.scanning_for_nearby_devices'), role='inactive')}")
                 else:
                     disc_rows = []
                     for d in disc_list[:8]:
@@ -1669,7 +1767,6 @@ class Panel(BasePanel):
                         rows=_spaced_rows(disc_rows),
                         aligns=["left", "left", "right"],
                     )
-            disc_box.add_row(" ")
             cards.append(disc_box)
 
         return cards
@@ -1693,32 +1790,88 @@ class Panel(BasePanel):
         sel = self.get_state("selected_iface", "")
         self._schedule_bg_refresh(mode_hint=hint, sel_iface=sel, force=True)
 
+    def _vpn_name(self, uuid: str) -> str:
+        with _NET_LOCK:
+            for v in _NET_STATE["vpns"]:
+                if v.get("uuid") == uuid:
+                    return str(v.get("name") or uuid[:8])
+        return uuid[:8]
+
+    def _jump_subtab(self, subtab: str, mode_hint: str) -> None:
+        cc_p = self.shell.panel if (self.shell and hasattr(getattr(self.shell, "panel", None), "set_subtab")) else None
+        if cc_p is not None and getattr(cc_p, "section", "") == "network":
+            cc_p.set_subtab(subtab)
+        else:
+            self.active_tab = mode_hint
+            STATE.set("control_center", "subtab_network", subtab)
+        self._trigger_full_resync(mode_hint)
+        if self.shell:
+            self.shell.refresh_view()
+
+    @staticmethod
+    def _split_proxy_endpoint(s: str) -> tuple[str, str, str]:
+        if s.startswith("["):
+            host_part, brk, rest = s.partition("]")
+            if not brk or not host_part[1:].strip() or (rest and not rest.startswith(":")):
+                return "", ":", ""
+            return host_part + "]", (":" if rest else ""), (rest[1:] if rest else "")
+        if ":" in s:
+            host, sep, port_s = s.rpartition(":")
+            if ":" in host:
+                return "", ":", ""
+            return host, sep, port_s
+        return s, "", ""
+
+    @classmethod
+    def _validate_proxy_endpoint(cls, raw: str) -> tuple[bool, str]:
+        s = str(raw or "").strip()
+        if not s:
+            return True, ""
+        if " " in s:
+            return False, t("cc_network.err_proxy_endpoint")
+        host, sep, port_s = cls._split_proxy_endpoint(s)
+        if not host.strip():
+            return False, t("cc_network.err_proxy_endpoint")
+        if sep and (not port_s.isdigit() or not (1 <= int(port_s) <= 65535)):
+            return False, t("cc_network.err_proxy_endpoint")
+        return True, ""
+
+    @staticmethod
+    def _validate_int_range(raw: str, lo: int, hi: int) -> tuple[bool, str]:
+        s = str(raw or "").strip()
+        try:
+            v = int(s)
+        except ValueError:
+            return False, t("cc_network.err_no_int", p0=s)
+        if not (lo <= v <= hi):
+            return False, t("cc_network.err_no_int", p0=s)
+        return True, ""
+
     def on_prompt_submit(self, action_id: str, text: str) -> None:
         val_raw = str(text or "").strip()
-        refresh_cb = (lambda: self.shell.refresh_view() if self.shell else None)
 
         if action_id == "net_virtual_br" and val_raw:
-            probe.run_async(
-                lambda: probe.run_cmd_full(["nmcli", "connection", "add", "type", "bridge", "ifname", val_raw, "con-name", val_raw]),
-                on_done=lambda _: self._trigger_full_resync("ifaces"),
+            self._run_net_cmd(
+                "interfaces",
+                ["nmcli", "connection", "add", "type", "bridge", "ifname", val_raw, "con-name", val_raw],
+                t("cc_network.fb_bridge_created", p0=val_raw),
+                "ifaces",
+                verify_fn=lambda: (lambda r: (r[0], r[2] or r[1]))(probe.run_cmd_full(["nmcli", "connection", "show", val_raw], timeout=2.0)),
             )
             return
         if action_id == "net_vlan_create" and val_raw:
             parts = [p.strip() for p in val_raw.split("|")]
-            if len(parts) < 2 or not parts[1].isdigit() or not (1 <= int(parts[1]) <= 4094):
-                _set_feedback(
-                    self.get_state("selected_iface", ""),
-                    "err",
-                    t("cc_network.invalid_vlan_syntax_use_iface_id_e"),
-                    duration_ms=3500,
-                    refresh_cb=refresh_cb,
-                )
+            if len(parts) < 2 or not parts[0] or not parts[1].isdigit() or not (1 <= int(parts[1]) <= 4094):
+                self._emit_fb("interfaces", False, t("cc_network.invalid_vlan_syntax_use_iface_id_e"))
                 return
             p_dev, v_id = parts[0], parts[1]
             v_name = f"{p_dev}.{v_id}"
-            probe.run_async(
-                lambda: probe.run_cmd_full(["nmcli", "connection", "add", "type", "vlan", "con-name", v_name, "ifname", v_name, "dev", p_dev, "id", v_id]),
-                on_done=lambda _: self._trigger_full_resync("ifaces"),
+            self._run_net_cmd(
+                "interfaces",
+                ["nmcli", "connection", "add", "type", "vlan", "con-name", v_name, "ifname", v_name, "dev", p_dev, "id", v_id],
+                t("cc_network.fb_vlan_created", p0=v_name),
+                "ifaces",
+                verify_fn=lambda: (lambda r: (r[0], r[2] or r[1]))(probe.run_cmd_full(["nmcli", "connection", "show", v_name], timeout=2.0)),
             )
             return
         if action_id == "wifi_hidden" and val_raw:
@@ -1726,60 +1879,71 @@ class Panel(BasePanel):
             ssid = parts[0]
             pwd = parts[1] if len(parts) > 1 else ""
             cmd = ["nmcli", "dev", "wifi", "connect", ssid, "hidden", "yes"] + (["password", pwd] if pwd else [])
-            probe.run_async(lambda: probe.run_cmd_full(cmd, timeout=15.0), on_done=lambda _: self._trigger_full_resync("wifi"))
+            self._run_net_cmd("wifi_bt", cmd, t("cc_network.fb_wifi_hidden_conn", p0=ssid), "wifi", timeout=15.0, clear_wifi_cache=True)
             return
         if action_id == "wifi_hotspot" and val_raw:
             parts = [p.strip() for p in val_raw.split("|", 1)]
             ssid = parts[0]
-            pwd = parts[1] if len(parts) > 1 else "ncuihotspot123"
-            cmd = ["nmcli", "dev", "wifi", "hotspot", "ssid", ssid, "password", pwd]
-            probe.run_async(lambda: probe.run_cmd_full(cmd, timeout=10.0), on_done=lambda _: self._trigger_full_resync("wifi"))
+            pwd = parts[1] if len(parts) > 1 else ""
+            if not ssid or len(pwd) < 8:
+                self._emit_fb("wifi_bt", False, t("cc_network.err_hotspot_pwd_len"))
+                return
+            self._run_net_cmd(
+                "wifi_bt",
+                ["nmcli", "dev", "wifi", "hotspot", "ssid", ssid, "password", pwd],
+                t("cc_network.fb_wifi_hotspot", p0=ssid),
+                "wifi",
+                timeout=10.0,
+                clear_wifi_cache=True,
+            )
             return
         if action_id.startswith("vpn_import|") and val_raw:
             v_type = action_id.split("|", 1)[1]
             fp = os.path.expanduser(val_raw)
-            probe.run_async(
-                lambda: probe.run_cmd_full(["nmcli", "connection", "import", "type", v_type, "file", fp], timeout=6.0),
-                on_done=lambda res: (
-                    _set_feedback("vpn_proxy", "ok" if res[0] else "err", t("cc_network.fb_proxy_saved") if res[0] else t("cc_network.fb_action_failed", p0=res[2] or res[1]), refresh_cb=refresh_cb),
-                    self._trigger_full_resync("vpn"),
-                ),
+            self._run_net_cmd(
+                "vpn_proxy",
+                ["nmcli", "connection", "import", "type", v_type, "file", fp],
+                t("cc_network.fb_vpn_imported"),
+                "vpn",
+                timeout=6.0,
             )
             return
         if action_id.startswith("vpn_dns|"):
             u_id = action_id.split("|", 1)[1]
-            ok_d, clean_d, _err_d = validate_network_field("dns", val_raw)
-            if ok_d:
-                probe.run_async(
-                    lambda: probe.run_cmd_full(["nmcli", "connection", "modify", u_id, "ipv4.dns", clean_d.replace(",", " ")]),
-                    on_done=lambda res: (
-                        _set_feedback("vpn_proxy", "ok" if res[0] else "err", t("cc_network.fb_vpn_state", p0=u_id, p1="DNS OK") if res[0] else t("cc_network.fb_action_failed", p0=res[2] or res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("vpn"),
-                    ),
-                )
+            ok_d, clean_d, err_d = validate_network_field("dns", val_raw)
+            if not ok_d:
+                self._emit_fb("vpn_proxy", False, err_d)
+                return
+            self._run_net_cmd(
+                "vpn_proxy",
+                ["nmcli", "connection", "modify", u_id, "ipv4.dns", clean_d.replace(",", " ")],
+                t("cc_network.fb_vpn_dns", p0=self._vpn_name(u_id)),
+                "vpn",
+            )
             return
-        if action_id == "net_proxy_http" and val_raw:
-            host, _, port_s = val_raw.partition(":")
-            port = int(port_s) if (port_s.isdigit() and 1 <= int(port_s) <= 65535) else 8080
-            STATE.set("network", "proxy_http_host", host.strip())
-            STATE.set("network", "proxy_http_port", port)
-            _write_proxy_env()
-            _set_feedback("vpn_proxy", "ok", t("cc_network.fb_proxy_saved"), refresh_cb=refresh_cb)
-            self._trigger_full_resync("vpn")
-            return
-        if action_id == "net_proxy_socks" and val_raw:
-            host, _, port_s = val_raw.partition(":")
-            port = int(port_s) if (port_s.isdigit() and 1 <= int(port_s) <= 65535) else 1080
-            STATE.set("network", "proxy_socks_host", host.strip())
-            STATE.set("network", "proxy_socks_port", port)
-            _write_proxy_env()
-            _set_feedback("vpn_proxy", "ok", t("cc_network.fb_proxy_saved"), refresh_cb=refresh_cb)
+        if action_id in ("net_proxy_http", "net_proxy_socks"):
+            kind_p = "http" if action_id == "net_proxy_http" else "socks"
+            def_port = 8080 if kind_p == "http" else 1080
+            ok_ep, err_ep = self._validate_proxy_endpoint(val_raw)
+            if not ok_ep:
+                self._emit_fb("vpn_proxy", False, err_ep)
+                return
+            if not val_raw:
+                STATE.set("network", f"proxy_{kind_p}_host", "")
+                STATE.set("network", f"proxy_{kind_p}_port", def_port)
+            else:
+                host, _, port_s = self._split_proxy_endpoint(val_raw)
+                port = int(port_s) if (port_s.isdigit() and 1 <= int(port_s) <= 65535) else def_port
+                STATE.set("network", f"proxy_{kind_p}_host", host.strip())
+                STATE.set("network", f"proxy_{kind_p}_port", port)
+            ok_w, err_w = _write_proxy_env()
+            self._emit_fb("vpn_proxy", ok_w, t("cc_network.fb_proxy_saved") if ok_w else t("cc_network.fb_action_failed", p0=err_w))
             self._trigger_full_resync("vpn")
             return
         if action_id == "net_proxy_pac":
             STATE.set("network", "proxy_pac_url", val_raw)
-            _write_proxy_env()
-            _set_feedback("vpn_proxy", "ok", t("cc_network.fb_proxy_saved"), refresh_cb=refresh_cb)
+            ok_w, err_w = _write_proxy_env()
+            self._emit_fb("vpn_proxy", ok_w, t("cc_network.fb_proxy_saved") if ok_w else t("cc_network.fb_action_failed", p0=err_w))
             self._trigger_full_resync("vpn")
             return
         if action_id == "net_add_ping" and val_raw:
@@ -1789,7 +1953,7 @@ class Panel(BasePanel):
             cur_list = list(get_watchdog_targets(get_interfaces_fast()))
             cur_list.append({"name": name, "host": host})
             STATE.set("network", "custom_watchdog", cur_list)
-            _set_feedback("wan_routing", "ok", t("cc_network.fb_ping_added", p0=host), refresh_cb=refresh_cb)
+            self._emit_fb("wan_routing", True, t("cc_network.fb_ping_added", p0=host))
             self._trigger_full_resync("vpn")
             return
 
@@ -1800,19 +1964,16 @@ class Panel(BasePanel):
         if kind == "net_rename_prof" and "|" in target and val_raw:
             iface, uuid = target.split("|", 1)
 
-            def _do_ren():
+            def _ren():
                 ok, out, err = probe.run_cmd_full(["nmcli", "connection", "modify", uuid, "connection.id", val_raw], timeout=3.0)
-                nm_prof = _collect_nm_profile_details(iface)
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ts"]["nm"] = time.time()
-                return ok, (f"Profilo rinominato in '{val_raw}'." if ok else (err or out))
+                if not ok:
+                    return False, (err or out)
+                ok_v, out_v, _ = probe.run_cmd_full(["nmcli", "-g", "connection.id", "connection", "show", uuid], timeout=1.5)
+                if not ok_v or out_v.strip() != val_raw:
+                    return False, t("cc_network.err_nm_verify_readback")
+                return True, t("cc_network.fb_prof_renamed", p0=val_raw)
 
-            def _done_ren(res):
-                ok, msg = res
-                _set_feedback(iface, "ok" if ok else "err", msg, duration_ms=1600 if ok else 3200, refresh_cb=refresh_cb)
-
-            probe.run_async(_do_ren, on_done=_done_ren)
+            self._run_nm_profile_action(iface, _ren)
             return
 
         if kind in ("net_ip", "net_gw", "net_dns", "net_ip6_dns", "net_mtu", "net_cmac"):
@@ -1827,7 +1988,7 @@ class Panel(BasePanel):
             f_name = field_map[kind]
             ok_v, norm_v, err_v = validate_network_field(f_name, val_raw)
             if not ok_v:
-                _set_feedback(target, "err", err_v, duration_ms=3500, refresh_cb=refresh_cb)
+                self._emit_fb("interfaces", False, err_v)
                 return
             self._set_edit_field(target, f_name, norm_v)
             return
@@ -1835,7 +1996,7 @@ class Panel(BasePanel):
         if kind == "net_add_route" and val_raw:
             ok_r, norm_r, err_r = validate_network_field("static_route", val_raw)
             if not ok_r:
-                _set_feedback(target, "err", err_r, duration_ms=3500, refresh_cb=refresh_cb)
+                self._emit_fb("interfaces", False, err_r)
                 return
             with _NET_LOCK:
                 nm_c = copy.deepcopy(_NET_STATE["nm_profiles"].get(target, {}))
@@ -1851,47 +2012,37 @@ class Panel(BasePanel):
         elif kind == "net_cname" and val_raw:
             self._set_edit_field(target, "con_name", val_raw)
         elif kind == "net_prio":
-            try:
+            ok_i, err_i = self._validate_int_range(val_raw, -999, 999)
+            if ok_i:
                 self._set_edit_field(target, "autoconnect_priority", int(val_raw))
-            except ValueError:
-                pass
+            else:
+                self._emit_fb("interfaces", False, err_i)
         elif kind == "net_search":
             self._set_edit_field(target, "dns_search", val_raw)
         elif kind == "net_metric":
-            try:
+            ok_i, err_i = self._validate_int_range(val_raw, -1, 99999)
+            if ok_i:
                 self._set_edit_field(target, "route_metric", int(val_raw))
-            except ValueError:
-                pass
+            else:
+                self._emit_fb("interfaces", False, err_i)
         elif kind == "wifi_pass" and val_raw:
-            def _do_wifi_conn():
-                ok, out, err = probe.run_cmd_full(["nmcli", "dev", "wifi", "connect", target, "password", val_raw], timeout=15.0)
-                if not ok:
-                    log.error(f"Connessione Wi-Fi a '{target}' fallita: {err or out}")
-                if os.path.exists(WIFI_CACHE_FILE):
-                    os.remove(WIFI_CACHE_FILE)
-
-            probe.run_async(_do_wifi_conn, on_done=lambda _: self._trigger_full_resync("wifi"))
+            self._run_net_cmd(
+                "wifi_bt",
+                ["nmcli", "dev", "wifi", "connect", target, "password", val_raw],
+                t("cc_network.fb_wifi_conn", p0=target),
+                "wifi",
+                timeout=15.0,
+                clear_wifi_cache=True,
+            )
 
     def _execute_verified_create(self, iface: str, prof_name: str = None) -> None:
-        refresh_cb = (lambda: self.shell.refresh_view() if self.shell else None)
-
-        def _task():
-            ok, _uuid, msg = create_verified_nm_profile(iface, prof_name or iface)
-            nm_prof = _collect_nm_profile_details(iface)
-            with _NET_LOCK:
-                _NET_STATE["nm_profiles"][iface] = nm_prof
-                _NET_STATE["ts"]["nm"] = time.time()
-            return ok, msg
-
-        def _done(res):
-            ok, msg = res
-            _set_feedback(iface, "ok" if ok else "err", msg, duration_ms=1800 if ok else 3500, refresh_cb=refresh_cb)
-
-        probe.run_async(_task, on_done=_done)
+        self._run_nm_profile_action(
+            iface,
+            lambda: (lambda res: (res[0], res[2]))(create_verified_nm_profile(iface, prof_name or iface)),
+        )
 
     def on_link(self, uri: str) -> None:
         log.debug(f"NetworkPanel.on_link: {uri}")
-        refresh_cb = (lambda: self.shell.refresh_view() if self.shell else None)
 
         if uri == "net:toggle_unit":
             self.on_bar_action("toggle-unit")
@@ -1918,25 +2069,27 @@ class Panel(BasePanel):
                 on_commit=lambda s: self.on_prompt_submit("net_virtual_br", s),
             )
         elif uri == "net:inline_vlan":
-            sel = self.get_state("selected_iface", "enp5s0")
+            ifaces = get_interfaces_fast()
+            fallback_if = ifaces[0]["name"] if ifaces else ""
+            sel = self.get_state("selected_iface", fallback_if)
             start_inline_input(
                 "net_vlan_create",
                 shell=self.shell,
                 trigger_uri=uri,
-                initial_text=f"{sel}|10",
+                initial_text=f"{sel}|10" if sel else "",
                 max_len=28,
-                validator=lambda s: "|" in s and s.split("|", 1)[1].strip().isdigit() and 1 <= int(s.split("|", 1)[1].strip()) <= 4094,
+                validator=lambda s: "|" in s and bool(s.split("|", 1)[0].strip()) and s.split("|", 1)[1].strip().isdigit() and 1 <= int(s.split("|", 1)[1].strip()) <= 4094,
                 on_commit=lambda s: self.on_prompt_submit("net_vlan_create", s),
             )
         elif uri.startswith("net:inline_field:"):
             _, _, kind, iface = uri.split(":", 3)
             meta_m = {
-                "net_prio": ("autoconnect_priority", 6, ""),
+                "net_prio": ("autoconnect_priority", 6, "int_prio"),
                 "net_ip": ("ip_cidr", 24, "ip_cidr"),
                 "net_gw": ("gateway", 20, "gateway"),
                 "net_dns": ("dns", 40, "dns"),
                 "net_search": ("dns_search", 40, ""),
-                "net_metric": ("route_metric", 6, ""),
+                "net_metric": ("route_metric", 6, "int_metric"),
                 "net_ip6_dns": ("ip6_dns", 48, "ip6_dns"),
                 "net_mtu": ("mtu", 8, "mtu"),
                 "net_cmac": ("cloned_mac", 20, "cloned_mac"),
@@ -1946,8 +2099,16 @@ class Panel(BasePanel):
                 with _NET_LOCK:
                     nm_c = copy.deepcopy(_NET_STATE["nm_profiles"].get(iface, {}))
                 buf_c = (self.get_state("edit_buffer", {}) or {}).get(iface, {})
-                cur_val = str(buf_c.get(fld, nm_c.get(fld, "")) or "")
-                vfn = (lambda s, vf=val_fld: (lambda res: (res[0], res[2]))(validate_network_field(vf, s))) if val_fld else None
+                raw_v = buf_c.get(fld, nm_c.get(fld, ""))
+                cur_val = "" if raw_v is None else str(raw_v)
+                if val_fld == "int_prio":
+                    vfn = lambda s: self._validate_int_range(s, -999, 999)
+                elif val_fld == "int_metric":
+                    vfn = lambda s: self._validate_int_range(s, -1, 99999)
+                elif val_fld:
+                    vfn = lambda s, vf=val_fld: (lambda res: (res[0], res[2]))(validate_network_field(vf, s))
+                else:
+                    vfn = None
                 start_inline_input(
                     entry_id=f"{kind}_{iface}",
                     shell=self.shell,
@@ -1962,56 +2123,62 @@ class Panel(BasePanel):
             self.request_prompt(f"net_add_route|{iface}", t("cc_net_wired.route_prompt_ph"), "", title=t("cc_net_wired.add_route"), required=True)
         elif uri == "net:flush_dns":
             def _flush_d():
-                ok_f = True
+                did_any = False
+                errs = []
                 if probe.has_bin("resolvectl"):
-                    ok_f, _ = probe.run_cmd(["resolvectl", "flush-caches"], timeout=2.0)
-                probe.run_cmd(["pkill", "-HUP", "dnsmasq"], timeout=1.0)
-                return ok_f
+                    ok_r, out_r, err_r = probe.run_cmd_full(["resolvectl", "flush-caches"], timeout=2.0)
+                    if ok_r:
+                        did_any = True
+                    else:
+                        errs.append(err_r or out_r or "resolvectl")
+                if probe.has_bin("pkill"):
+                    ok_p, _, _ = probe.run_cmd_full(["pkill", "-HUP", "-x", "dnsmasq"], timeout=1.0)
+                    if ok_p:
+                        did_any = True
+                if did_any:
+                    return True, t("cc_network.fb_dns_flushed")
+                return False, t("cc_network.fb_action_failed", p0=(errs[0] if errs else t("cc_network.err_no_dns_cache_service")))
 
-            probe.run_async(
-                _flush_d,
-                on_done=lambda ok_f: (
-                    _set_feedback("wan_routing", "ok" if ok_f else "err", t("cc_network.fb_dns_flushed") if ok_f else t("cc_network.fb_action_failed", p0="resolvectl"), refresh_cb=refresh_cb),
-                    self._trigger_full_resync("vpn"),
-                ),
-            )
+            def _done_flush_d(res):
+                self._emit_fb("wan_routing", res[0], res[1])
+                self._trigger_full_resync("vpn")
+                return False
+
+            probe.run_async(_flush_d, on_done=_done_flush_d)
         elif uri == "net:flush_arp":
-            probe.run_async(
-                lambda: probe.run_cmd(["ip", "neigh", "flush", "nud", "stale"], timeout=2.0),
-                on_done=lambda res: _set_feedback("wan_routing", "ok" if res[0] else "err", t("cc_network.fb_arp_flushed") if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
+            if not probe.has_bin("ip"):
+                self._emit_fb("wan_routing", False, t("cc_network.fb_action_failed", p0="ip"))
+                return
+            self._run_net_cmd(
+                "wan_routing",
+                ["ip", "neigh", "flush", "nud", "stale"],
+                t("cc_network.fb_arp_flushed"),
+                "vpn",
+                timeout=2.0,
             )
         elif uri.startswith("net:del_ping:"):
             host_to_rm = uri.split(":", 2)[2]
             cur_list = [t_item for t_item in get_watchdog_targets(get_interfaces_fast()) if t_item.get("host") != host_to_rm]
             STATE.set("network", "custom_watchdog", cur_list)
-            _set_feedback("wan_routing", "ok", t("cc_network.fb_ping_del", p0=host_to_rm), refresh_cb=refresh_cb)
+            self._emit_fb("wan_routing", True, t("cc_network.fb_ping_del", p0=host_to_rm))
             self._trigger_full_resync("vpn")
         elif uri.startswith("net:if_filter:"):
             flt = uri.split(":", 2)[2]
             self.set_state("iface_filter", flt)
             self.request_throttled_refresh()
         elif uri == "net:jump_wifi_tab":
-            self.active_tab = "wifi"
-            STATE.set("control_center", "subtab_network", "wifi_bt")
-            self._trigger_full_resync("wifi")
-            self.request_throttled_refresh()
+            self._jump_subtab("wifi_bt", "wifi")
         elif uri.startswith("net:jump_iface:"):
             iface = uri.split(":", 2)[2]
             self.set_state("selected_iface", iface)
             self.set_state("iface_filter", "all")
-            self.active_tab = "ifaces"
-            STATE.set("control_center", "subtab_network", "interfaces")
-            self._trigger_full_resync("ifaces")
-            self.request_throttled_refresh()
+            self._jump_subtab("interfaces", "ifaces")
         elif uri.startswith("net:jump_wifi_prof:"):
             _, _, iface, uuid = uri.split(":", 3)
             self.set_state("selected_iface", iface)
             self.set_state("iface_filter", "all")
             STATE.set("network", f"selected_prof_{iface}", uuid)
-            self.active_tab = "ifaces"
-            STATE.set("control_center", "subtab_network", "interfaces")
-            self._trigger_full_resync("ifaces")
-            self.request_throttled_refresh()
+            self._jump_subtab("interfaces", "ifaces")
         elif uri.startswith("net:sel_iface:"):
             iface = uri.split(":", 2)[2]
             self.set_state("selected_iface", iface)
@@ -2031,13 +2198,33 @@ class Panel(BasePanel):
                 if _is_nm_running():
                     if up:
                         probe.run_cmd_full(["nmcli", "device", "set", iface, "managed", "yes"], timeout=2.0)
-                    probe.run_cmd_full(["nmcli", "device", "connect" if up else "disconnect", iface], timeout=6.0)
+                    ok, out, err = probe.run_cmd_full(["nmcli", "device", "connect" if up else "disconnect", iface], timeout=6.0)
+                elif probe.has_bin("ip"):
+                    ok, out, err = probe.run_cmd_full(["ip", "link", "set", iface, "up" if up else "down"], timeout=3.0)
                 else:
-                    probe.run_cmd_full(["ip", "link", "set", iface, "up" if up else "down"], timeout=3.0)
+                    return False, t("cc_network.fb_action_failed", p0="nmcli/ip")
+                if not ok:
+                    return False, t("cc_network.fb_action_failed", p0=(err or out or iface))
+                # Read back kernel operstate / link flag
+                time.sleep(0.15)
+                oper = _read_sysfs_str(f"/sys/class/net/{iface}/operstate", "down").lower()
+                if not up and oper == "up":
+                    return False, t("cc_network.fb_action_failed", p0=iface)
+                return True, t("cc_network.fb_iface_up" if up else "cc_network.fb_iface_down", p0=iface)
 
-            probe.run_async(_toggle_if, on_done=lambda _: self._trigger_full_resync())
+            def _done_if(res):
+                self._emit_fb("interfaces", res[0], res[1])
+                self._trigger_full_resync()
+                return False
+
+            probe.run_async(_toggle_if, on_done=_done_if)
         elif uri.startswith("net:buf:"):
             _, _, iface, key, val = uri.split(":", 4)
+            if key in ("route_metric", "autoconnect_priority"):
+                try:
+                    val = int(val)
+                except ValueError:
+                    pass
             self._set_edit_field(iface, key, val)
             self.request_throttled_refresh()
         elif uri.startswith("net:del_route:"):
@@ -2057,8 +2244,7 @@ class Panel(BasePanel):
             if isinstance(buf_all, dict) and iface in buf_all:
                 del buf_all[iface]
                 self.set_state("edit_buffer", buf_all)
-            with _NET_LOCK:
-                _APPLY_FEEDBACK.pop(iface, None)
+            STATE.set("network", "fb_interfaces", {})
             self.request_throttled_refresh()
         elif uri.startswith("net:nm_create:"):
             iface = uri.split(":", 2)[2]
@@ -2084,26 +2270,16 @@ class Panel(BasePanel):
             self._trigger_full_resync("ifaces")
         elif uri.startswith("net:nm_clone_prof:"):
             _, _, iface, uuid = uri.split(":", 3)
-
-            def _do_clone():
-                ok, _c_uuid, msg = clone_verified_nm_profile(iface, uuid)
-                nm_prof = _collect_nm_profile_details(iface)
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ts"]["nm"] = time.time()
-                return ok, msg
-
-            def _done_clone(res):
-                ok, msg = res
-                _set_feedback(iface, "ok" if ok else "err", msg, duration_ms=1800 if ok else 3500, refresh_cb=refresh_cb)
-
-            probe.run_async(_do_clone, on_done=_done_clone)
+            self._run_nm_profile_action(
+                iface,
+                lambda: (lambda res: (res[0], res[2]))(clone_verified_nm_profile(iface, uuid)),
+            )
         elif uri.startswith("net:nm_up_prof:") or uri.startswith("net:nm_down_prof:"):
             parts = uri.split(":", 3)
             is_up_act = (parts[1] == "nm_up_prof")
             iface, uuid = parts[2], parts[3]
 
-            def _do_prof_updown():
+            def _prof_updown():
                 if is_up_act:
                     probe.run_cmd_full(["nmcli", "device", "set", iface, "managed", "yes"], timeout=2.0)
                     ok, out, err = probe.run_cmd_full(["nmcli", "connection", "up", uuid, "ifname", iface], timeout=10.0)
@@ -2111,34 +2287,20 @@ class Panel(BasePanel):
                         ok, out, err = probe.run_cmd_full(["nmcli", "connection", "up", uuid], timeout=10.0)
                 else:
                     ok, out, err = probe.run_cmd_full(["nmcli", "connection", "down", uuid], timeout=6.0)
-                nm_prof = _collect_nm_profile_details(iface)
-                ip_map, ip6_map, gw_map, routes = _collect_ip_and_routes()
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ip_map"] = ip_map
-                    _NET_STATE["ip6_map"] = ip6_map
-                    _NET_STATE["gw_map"] = gw_map
-                    _NET_STATE["routes"] = routes
-                    _NET_STATE["ts"]["nm"] = time.time()
-                    _NET_STATE["ts"]["ip"] = time.time()
-                return ok, (f"Profilo {'attivato' if is_up_act else 'disattivato'} su {iface}." if ok else (err or out))
+                msg = t("cc_network.fb_prof_up" if is_up_act else "cc_network.fb_prof_down", p0=iface) if ok else (err or out)
+                return ok, msg
 
-            def _done_prof_updown(res):
-                ok, msg = res
-                _set_feedback(iface, "ok" if ok else "err", msg, duration_ms=1600 if ok else 3200, refresh_cb=refresh_cb)
-
-            probe.run_async(_do_prof_updown, on_done=_done_prof_updown)
+            self._run_nm_profile_action(iface, _prof_updown, resync_ip=True)
         elif uri.startswith("net:nm_auto_prof:"):
             _, _, iface, uuid, new_ac = uri.split(":", 4)
 
-            def _do_prof_ac():
-                probe.run_cmd_full(["nmcli", "connection", "modify", uuid, "connection.autoconnect", new_ac], timeout=3.0)
-                nm_prof = _collect_nm_profile_details(iface)
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ts"]["nm"] = time.time()
+            def _prof_ac():
+                ok, out, err = probe.run_cmd_full(["nmcli", "connection", "modify", uuid, "connection.autoconnect", new_ac], timeout=3.0)
+                if not ok:
+                    return False, (err or out)
+                return True, t("cc_network.fb_prof_auto", p0=new_ac.upper())
 
-            probe.run_async(_do_prof_ac, on_done=lambda _: refresh_cb() if refresh_cb else None)
+            self._run_nm_profile_action(iface, _prof_ac)
         elif uri.startswith("net:inline_rename_prof:"):
             _, _, iface, uuid = uri.split(":", 3)
             with _NET_LOCK:
@@ -2156,14 +2318,11 @@ class Panel(BasePanel):
         elif uri.startswith("net:nm_del_prof:"):
             _, _, iface, uuid = uri.split(":", 3)
 
-            def _del_p():
-                probe.run_cmd_full(["nmcli", "connection", "delete", uuid], timeout=4.0)
-                nm_prof = _collect_nm_profile_details(iface)
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ts"]["nm"] = time.time()
+            def _prof_del():
+                ok, out, err = probe.run_cmd_full(["nmcli", "connection", "delete", uuid], timeout=4.0)
+                return ok, (t("cc_network.fb_prof_del") if ok else (err or out))
 
-            probe.run_async(_del_p, on_done=lambda _: refresh_cb() if refresh_cb else None)
+            self._run_nm_profile_action(iface, _prof_del)
         elif uri.startswith("net:nm_apply:"):
             _, _, iface, uuid = uri.split(":", 3)
             buf_all = self.get_state("edit_buffer", {})
@@ -2172,49 +2331,32 @@ class Panel(BasePanel):
                 nm_cur = copy.deepcopy(_NET_STATE["nm_profiles"].get(iface, {}))
             ifaces_now = get_interfaces_fast()
             iface_up = any(i["name"] == iface and i["up"] for i in ifaces_now)
-
-            def _do_apply_verified():
-                ok, msg = apply_and_verify_nm_profile(iface, uuid, buf, nm_cur, iface_up=iface_up)
-                nm_prof = _collect_nm_profile_details(iface)
-                ip_map, ip6_map, gw_map, routes = _collect_ip_and_routes()
-                with _NET_LOCK:
-                    _NET_STATE["nm_profiles"][iface] = nm_prof
-                    _NET_STATE["ip_map"] = ip_map
-                    _NET_STATE["ip6_map"] = ip6_map
-                    _NET_STATE["gw_map"] = gw_map
-                    _NET_STATE["routes"] = routes
-                    _NET_STATE["ts"]["nm"] = time.time()
-                    _NET_STATE["ts"]["ip"] = time.time()
-                return ok, msg
-
-            def _on_apply_done(res):
-                ok, msg = res
-                if ok:
-                    cur_all = self.get_state("edit_buffer", {})
-                    if isinstance(cur_all, dict) and iface in cur_all:
-                        del cur_all[iface]
-                        self.set_state("edit_buffer", cur_all)
-                    _set_feedback(iface, "ok", msg, duration_ms=1400, refresh_cb=refresh_cb)
-                else:
-                    _set_feedback(iface, "err", msg, duration_ms=2800, refresh_cb=refresh_cb)
-
-            probe.run_async(_do_apply_verified, on_done=_on_apply_done)
+            self._run_nm_profile_action(
+                iface,
+                lambda: apply_and_verify_nm_profile(iface, uuid, buf, nm_cur, iface_up=iface_up),
+                resync_ip=True,
+                clear_buf_on_ok=True,
+            )
         elif uri.startswith("net:proxy_mode:"):
             m_val = uri.split(":", 2)[2]
             STATE.set("network", "proxy_mode", m_val)
-            _write_proxy_env()
-            _set_feedback("vpn_proxy", "ok", t("cc_network.fb_proxy_mode", p0=m_val.upper()), refresh_cb=refresh_cb)
+            ok_w, err_w = _write_proxy_env()
+            self._emit_fb("vpn_proxy", ok_w, t("cc_network.fb_proxy_mode", p0=m_val.upper()) if ok_w else t("cc_network.fb_action_failed", p0=err_w))
             self._trigger_full_resync("vpn")
-        elif uri == "net:inline_proxy_http":
+        elif uri in ("net:inline_proxy_http", "net:inline_proxy_socks"):
+            kind_p = "http" if uri == "net:inline_proxy_http" else "socks"
             with _NET_LOCK:
                 pr = copy.deepcopy(_NET_STATE["proxy"])
-            cur = f"{pr['http_host']}:{pr['http_port']}" if pr["http_host"] else ""
-            start_inline_input("net_proxy_http", shell=self.shell, trigger_uri=uri, initial_text=cur, max_len=36, on_commit=lambda s: self.on_prompt_submit("net_proxy_http", s))
-        elif uri == "net:inline_proxy_socks":
-            with _NET_LOCK:
-                pr = copy.deepcopy(_NET_STATE["proxy"])
-            cur = f"{pr['socks_host']}:{pr['socks_port']}" if pr["socks_host"] else ""
-            start_inline_input("net_proxy_socks", shell=self.shell, trigger_uri=uri, initial_text=cur, max_len=36, on_commit=lambda s: self.on_prompt_submit("net_proxy_socks", s))
+            cur = f"{pr[f'{kind_p}_host']}:{pr[f'{kind_p}_port']}" if pr[f"{kind_p}_host"] else ""
+            start_inline_input(
+                f"net_proxy_{kind_p}",
+                shell=self.shell,
+                trigger_uri=uri,
+                initial_text=cur,
+                max_len=36,
+                validator=self._validate_proxy_endpoint,
+                on_commit=lambda s, aid=f"net_proxy_{kind_p}": self.on_prompt_submit(aid, s),
+            )
         elif uri == "net:prompt_proxy_pac":
             with _NET_LOCK:
                 pr = copy.deepcopy(_NET_STATE["proxy"])
@@ -2222,7 +2364,7 @@ class Panel(BasePanel):
         elif uri == "net:inline_add_ping":
             start_inline_input("net_add_ping", shell=self.shell, trigger_uri=uri, initial_text="", max_len=40, validator=lambda s: bool(s.strip()), on_commit=lambda s: self.on_prompt_submit("net_add_ping", s))
         elif uri in ("net:refresh_wan", "net:refresh_ping"):
-            target_f = WAN_CACHE_FILE if uri == "net:refresh_wan" else PING_CACHE_FILE
+            target_f = _cache_path("wan_cache.json" if uri == "net:refresh_wan" else "net_ping_cache.json")
             if os.path.exists(target_f):
                 try:
                     os.remove(target_f)
@@ -2230,7 +2372,7 @@ class Panel(BasePanel):
                     pass
             with _NET_LOCK:
                 _NET_STATE["ts"]["wan" if uri == "net:refresh_wan" else "ping"] = 0.0
-            _set_feedback("wan_routing", "ok", t("cc_network.fb_wan_refresh"), refresh_cb=refresh_cb)
+            self._emit_fb("wan_routing", True, t("cc_network.fb_wan_refresh"))
             self._schedule_bg_refresh(mode_hint="vpn", force=True)
 
         elif uri.startswith("wifi:"):
@@ -2241,91 +2383,90 @@ class Panel(BasePanel):
                 with _NET_LOCK:
                     _NET_STATE["wifi"]["enabled"] = (rest == "on")
                 self.request_throttled_refresh()
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "radio", "wifi", rest], timeout=3.0),
-                    on_done=lambda res: (
-                        _set_feedback("wifi_bt", "ok" if res[0] else "err", t("cc_network.fb_wifi_radio", p0=rest.upper()) if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("wifi"),
-                    ),
-                )
+                self._run_net_cmd("wifi_bt", ["nmcli", "radio", "wifi", rest], t("cc_network.fb_wifi_radio", p0=rest.upper()), "wifi", timeout=3.0)
             elif act == "powersave":
+                if not probe.has_bin("iw"):
+                    self._emit_fb("wifi_bt", False, t("cc_network.fb_action_failed", p0="iw"))
+                    return
                 wifi_devs = [i["name"] for i in get_interfaces_fast() if i["kind"] == "wifi"]
-                target_wdev = wifi_devs[0] if wifi_devs else "wlan0"
+                if not wifi_devs:
+                    self._emit_fb("wifi_bt", False, t("cc_net_wifi.no_wifi_adapter"))
+                    return
+                ps_mode = "on" if rest == "3" else "off"
+                target_wdev = wifi_devs[0]
                 with _NET_LOCK:
-                    _NET_STATE["wifi"]["powersave"] = "on" if rest == "3" else "off"
-                probe.run_async(
-                    lambda: probe.run_cmd(["iw", "dev", target_wdev, "set", "power_save", "on" if rest == "3" else "off"], timeout=2.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
+                    _NET_STATE["wifi"]["powersave"] = ps_mode
+
+                def _verify_ps():
+                    ok_v, out_v, err_v = probe.run_cmd_full(["iw", "dev", target_wdev, "get", "power_save"], timeout=1.5)
+                    if ok_v and f"power save: {ps_mode}" in out_v.lower():
+                        return True, ""
+                    return False, (err_v or out_v or target_wdev)
+
+                self._run_net_cmd(
+                    "wifi_bt",
+                    ["iw", "dev", target_wdev, "set", "power_save", ps_mode],
+                    t("cc_network.fb_wifi_powersave", p0=ps_mode.upper()),
+                    "wifi",
+                    timeout=2.0,
+                    verify_fn=_verify_ps,
                 )
             elif act == "band":
                 u_id, b_val = rest.split(":", 1)
                 band_arg = "" if b_val == "auto" else b_val
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "modify", u_id, "802-11-wireless.band", band_arg], timeout=3.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
+                self._run_net_cmd(
+                    "wifi_bt",
+                    ["nmcli", "connection", "modify", u_id, "802-11-wireless.band", band_arg],
+                    t("cc_network.fb_wifi_band", p0=b_val),
+                    "wifi",
+                    timeout=3.0,
                 )
             elif act == "mac_priv":
                 u_id, m_val = rest.split(":", 1)
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "modify", u_id, "802-11-wireless.cloned-mac-address", m_val], timeout=3.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
+                self._run_net_cmd(
+                    "wifi_bt",
+                    ["nmcli", "connection", "modify", u_id, "802-11-wireless.cloned-mac-address", m_val],
+                    t("cc_network.fb_wifi_mac_priv", p0=m_val),
+                    "wifi",
+                    timeout=3.0,
                 )
             elif act == "rescan":
-                if os.path.exists(WIFI_CACHE_FILE):
-                    os.remove(WIFI_CACHE_FILE)
-
-                def _do_rescan():
-                    probe.run_cmd(["nmcli", "dev", "wifi", "rescan"], timeout=6.0)
-                    wifi_st, saved_ssids = _collect_wifi_state(force_rescan=False)
-                    with _NET_LOCK:
-                        _NET_STATE["wifi"] = wifi_st
-                        _NET_STATE["saved_wifi_ssids"] = saved_ssids
-                        _NET_STATE["ts"]["wifi"] = time.time()
-
-                probe.run_async(
-                    _do_rescan,
-                    on_done=lambda _: _set_feedback("wifi_bt", "ok", t("cc_network.fb_wifi_scan"), refresh_cb=refresh_cb),
+                self._run_net_cmd(
+                    "wifi_bt",
+                    ["nmcli", "dev", "wifi", "rescan"],
+                    t("cc_network.fb_wifi_scan"),
+                    "wifi",
+                    timeout=6.0,
+                    clear_wifi_cache=True,
                 )
             elif act == "prompt_hidden":
                 self.request_prompt("wifi_hidden", t("cc_network.ssid_password_optional"), "", title=t("cc_network.connect_hidden_wi_fi"), required=True)
             elif act == "prompt_hotspot":
-                self.request_prompt("wifi_hotspot", t("cc_network.ssid_hotspot_password_wpa2_min_8_c"), "Nightcity-AP | ncui12345", title=t("cc_network.start_wi_fi_hotspot"), required=True)
+                host_prefix = socket.gethostname().split(".")[0] or "ncui"
+                self.request_prompt("wifi_hotspot", t("cc_network.ssid_hotspot_password_wpa2_min_8_c"), f"{host_prefix}-AP | ", title=t("cc_network.start_wi_fi_hotspot"), required=True)
             elif act == "prompt_pass" and rest:
                 self.request_prompt(f"wifi_pass|{rest}", t("cc_network.enter_password_for", p0=rest), secret=True, title=rest, required=True)
             elif act == "toggle_auto":
                 u_id, new_ac = rest.split(":", 1)
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "modify", u_id, "connection.autoconnect", new_ac], timeout=3.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
+                self._run_net_cmd(
+                    "wifi_bt",
+                    ["nmcli", "connection", "modify", u_id, "connection.autoconnect", new_ac],
+                    t("cc_network.fb_wifi_auto", p0=new_ac.upper()),
+                    "wifi",
+                    timeout=3.0,
                 )
             elif act == "up_uuid":
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "up", rest], timeout=8.0),
-                    on_done=lambda res: (
-                        _set_feedback("wifi_bt", "ok" if res[0] else "err", t("cc_network.fb_wifi_up", p0=rest) if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("wifi"),
-                    ),
-                )
+                self._run_net_cmd("wifi_bt", ["nmcli", "connection", "up", rest], t("cc_network.fb_wifi_up", p0=rest[:8]), "wifi", timeout=8.0)
             elif act == "del_uuid":
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "delete", rest], timeout=4.0),
-                    on_done=lambda res: (
-                        _set_feedback("wifi_bt", "ok" if res[0] else "err", t("cc_network.fb_wifi_del") if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("wifi"),
-                    ),
-                )
+                self._run_net_cmd("wifi_bt", ["nmcli", "connection", "delete", rest], t("cc_network.fb_wifi_del"), "wifi", timeout=4.0)
             elif act == "disc":
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "down", rest], timeout=5.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
-                )
+                self._run_net_cmd("wifi_bt", ["nmcli", "connection", "down", rest], t("cc_network.fb_wifi_disc", p0=rest), "wifi", timeout=5.0, clear_wifi_cache=True)
             elif act == "forget":
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "delete", rest], timeout=5.0),
-                    on_done=lambda _: self._trigger_full_resync("wifi"),
-                )
+                self._run_net_cmd("wifi_bt", ["nmcli", "connection", "delete", rest], t("cc_network.fb_wifi_forget", p0=rest), "wifi", timeout=5.0, clear_wifi_cache=True)
             elif act == "conn":
-                ssid, _, sec = rest.partition(":")
+                ssid, sep, sec = rest.rpartition(":")
+                if not sep:
+                    ssid, sec = rest, ""
                 sec = sec or "OPEN"
                 is_open = sec in ("", "OPEN", "--")
                 with _NET_LOCK:
@@ -2336,18 +2477,25 @@ class Panel(BasePanel):
                     return
 
                 def _try_conn():
-                    ok, _ = probe.run_cmd(["nmcli", "connection", "up", ssid], timeout=8.0)
+                    ok, out, err = probe.run_cmd_full(["nmcli", "connection", "up", ssid], timeout=8.0)
                     if not ok and is_open:
-                        ok, _ = probe.run_cmd(["nmcli", "dev", "wifi", "connect", ssid], timeout=10.0)
-                    if os.path.exists(WIFI_CACHE_FILE):
-                        os.remove(WIFI_CACHE_FILE)
-                    return ok
+                        ok, out, err = probe.run_cmd_full(["nmcli", "dev", "wifi", "connect", ssid], timeout=10.0)
+                    wc = _cache_path("net_wifi_cache.json")
+                    if os.path.exists(wc):
+                        try:
+                            os.remove(wc)
+                        except Exception:
+                            pass
+                    return ok, (err or out)
 
-                def _after_conn(ok):
+                def _after_conn(res):
+                    ok, err_s = res
                     if not ok and self.shell:
                         self.request_prompt(f"wifi_pass|{ssid}", t("cc_network.enter_password_for", p0=ssid), secret=True)
                     else:
+                        self._emit_fb("wifi_bt", ok, t("cc_network.fb_wifi_conn", p0=ssid) if ok else t("cc_network.fb_action_failed", p0=err_s))
                         self._trigger_full_resync("wifi")
+                    return False
 
                 probe.run_async(_try_conn, on_done=_after_conn)
 
@@ -2355,28 +2503,20 @@ class Panel(BasePanel):
             parts = uri.split(":", 2)
             act = parts[1]
             arg = parts[2] if len(parts) > 2 else ""
+            if not probe.has_bin("bluetoothctl"):
+                self._emit_fb("wifi_bt", False, t("cc_network.fb_action_failed", p0="bluetoothctl"))
+                return
             if act == "power":
                 with _NET_LOCK:
                     _NET_STATE["bt"]["powered"] = (arg == "on")
                 self.request_throttled_refresh()
-                probe.run_async(
-                    lambda: probe.run_cmd(["bluetoothctl", "power", arg], timeout=3.0),
-                    on_done=lambda res: (
-                        _set_feedback("wifi_bt", "ok" if res[0] else "err", t("cc_network.fb_bt_power", p0=arg.upper()) if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("bt"),
-                    ),
-                )
+                self._run_net_cmd("wifi_bt", ["bluetoothctl", "power", arg], t("cc_network.fb_bt_power", p0=arg.upper()), "bt", timeout=3.0)
             elif act == "scan":
-                probe.spawn_bg(["bash", "-c", "bluetoothctl --timeout 15 scan on"])
+                probe.spawn_bg(["bluetoothctl", "--timeout", "15", "scan", "on"])
                 with _NET_LOCK:
                     _NET_STATE["bt"]["scanning"] = True
-                cur_map = self.get_state("open_sections", {})
-                if not isinstance(cur_map, dict):
-                    cur_map = {}
-                cur_map["bt_disc"] = True
-                self.set_state("open_sections", cur_map)
-                _set_feedback("wifi_bt", "ok", t("cc_network.fb_bt_scan"), refresh_cb=refresh_cb)
-                self.request_throttled_refresh()
+                self._state_owner().set_state("bt_disc", True)
+                self._emit_fb("wifi_bt", True, t("cc_network.fb_bt_scan"))
                 from gi.repository import GLib
                 GLib.timeout_add(1500, lambda: self._trigger_full_resync("bt") or False)
             elif act in ("conn", "disc", "remove", "pair") and arg:
@@ -2384,18 +2524,21 @@ class Panel(BasePanel):
 
                 def _do_bt():
                     if act == "pair":
-                        probe.run_cmd(["bluetoothctl", "pair", arg], timeout=10.0)
-                        probe.run_cmd(["bluetoothctl", "trust", arg], timeout=3.0)
-                        return probe.run_cmd(["bluetoothctl", "connect", arg], timeout=6.0)
-                    return probe.run_cmd(["bluetoothctl", bt_cmd, arg], timeout=8.0)
+                        for sub_c, tout in (("pair", 10.0), ("trust", 3.0), ("connect", 6.0)):
+                            ok_b, out_b, err_b = probe.run_cmd_full(["bluetoothctl", sub_c, arg], timeout=tout)
+                            if not ok_b:
+                                return False, (err_b or out_b or sub_c)
+                        return True, ""
+                    ok_b, out_b, err_b = probe.run_cmd_full(["bluetoothctl", bt_cmd, arg], timeout=8.0)
+                    return ok_b, (err_b or out_b)
 
-                probe.run_async(
-                    _do_bt,
-                    on_done=lambda res: (
-                        _set_feedback("wifi_bt", "ok" if res[0] else "err", t("cc_network.fb_bt_conn", p0=arg, p1=act) if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("bt"),
-                    ),
-                )
+                def _done_bt(res):
+                    ok, err_s = res
+                    self._emit_fb("wifi_bt", ok, t("cc_network.fb_bt_conn", p0=arg, p1=act) if ok else t("cc_network.fb_action_failed", p0=err_s))
+                    self._trigger_full_resync("bt")
+                    return False
+
+                probe.run_async(_do_bt, on_done=_done_bt)
 
         elif uri.startswith("vpn:"):
             parts = uri.split(":", 2)
@@ -2403,18 +2546,25 @@ class Panel(BasePanel):
             rest = parts[2] if len(parts) > 2 else ""
             if act == "prompt_import":
                 exts = [".conf"] if rest == "wireguard" else [".ovpn", ".conf"]
-                self.request_prompt(f"vpn_import|{rest}", t("cc_network.path_to_file", p0='conf' if rest == 'wireguard' else 'ovpn'), "~/", title=t("cc_network.import", p0=rest.title()), required=True, completion=("path_ext", exts))
+                self.request_prompt(f"vpn_import|{rest}", t("cc_network.path_to_file", p0="conf" if rest == "wireguard" else "ovpn"), "~/", title=t("cc_network.import", p0=rest.title()), required=True, completion=("path_ext", exts))
             elif act == "toggle_auto":
                 u_id, ac_val = rest.split(":", 1)
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "modify", u_id, "connection.autoconnect", ac_val], timeout=3.0),
-                    on_done=lambda _: self._trigger_full_resync("vpn"),
+                self._run_net_cmd(
+                    "vpn_proxy",
+                    ["nmcli", "connection", "modify", u_id, "connection.autoconnect", ac_val],
+                    t("cc_network.fb_vpn_auto", p0=self._vpn_name(u_id), p1=ac_val.upper()),
+                    "vpn",
+                    timeout=3.0,
                 )
             elif act == "toggle_split":
                 u_id, nd_val = rest.split(":", 1)
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "modify", u_id, "ipv4.never-default", nd_val], timeout=4.0),
-                    on_done=lambda _: self._trigger_full_resync("vpn"),
+                lbl = t("cc_net_vpn.split_tunnel") if nd_val == "yes" else t("cc_net_vpn.full_tunnel")
+                self._run_net_cmd(
+                    "vpn_proxy",
+                    ["nmcli", "connection", "modify", u_id, "ipv4.never-default", nd_val],
+                    t("cc_network.fb_vpn_split", p0=self._vpn_name(u_id), p1=lbl),
+                    "vpn",
+                    timeout=4.0,
                 )
             elif act == "inline_dns":
                 start_inline_input(
@@ -2427,20 +2577,14 @@ class Panel(BasePanel):
                     on_commit=lambda s, u=rest: self.on_prompt_submit(f"vpn_dns|{u}", s),
                 )
             elif act == "del":
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "delete", rest], timeout=4.0),
-                    on_done=lambda res: (
-                        _set_feedback("vpn_proxy", "ok" if res[0] else "err", t("cc_network.fb_vpn_del") if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("vpn"),
-                    ),
-                )
+                self._run_net_cmd("vpn_proxy", ["nmcli", "connection", "delete", rest], t("cc_network.fb_vpn_del"), "vpn", timeout=4.0)
             elif act in ("up", "down"):
-                probe.run_async(
-                    lambda: probe.run_cmd(["nmcli", "connection", "up" if act == "up" else "down", rest], timeout=8.0),
-                    on_done=lambda res: (
-                        _set_feedback("vpn_proxy", "ok" if res[0] else "err", t("cc_network.fb_vpn_state", p0=rest, p1=act.upper()) if res[0] else t("cc_network.fb_action_failed", p0=res[1]), refresh_cb=refresh_cb),
-                        self._trigger_full_resync("vpn"),
-                    ),
+                self._run_net_cmd(
+                    "vpn_proxy",
+                    ["nmcli", "connection", "up" if act == "up" else "down", rest],
+                    t("cc_network.fb_vpn_state", p0=self._vpn_name(rest), p1=act.upper()),
+                    "vpn",
+                    timeout=8.0,
                 )
 
 
@@ -2460,11 +2604,7 @@ def build_cc_network_cards(cc_panel, canvas: Canvas, active_sub: str) -> list:
     net_p = _get_cc_net_panel(cc_panel)
     net_p._update_live_speeds()
     ifaces = get_interfaces_fast(net_p._speeds)
-    unit_mode = net_p.get_state("speed_unit", CONFIG["network"].get("default_speed_unit", "bytes"))
-    mon_iface = net_p.get_state("monitored_iface", "auto")
-    if mon_iface not in [i["name"] for i in ifaces] and mon_iface != "ALL":
-        up_ifs = [i["name"] for i in ifaces if i["up"]]
-        mon_iface = up_ifs[0] if up_ifs else (ifaces[0]["name"] if ifaces else "N/D")
+    mon_iface, unit_mode = net_p._resolve_mon_and_unit(ifaces)
     return net_p._build_expanded_view(canvas, ifaces, mon_iface, unit_mode, forced_tab=active_sub, is_cc=True)
 
 
@@ -2482,7 +2622,3 @@ def handle_cc_network_prompt(cc_panel, action_id: str, text: str) -> bool:
         net_p.on_prompt_submit(action_id, text)
         return True
     return False
-
-
-def create_panel(panel_id: str, shell=None) -> BasePanel:
-    return Panel(shell)

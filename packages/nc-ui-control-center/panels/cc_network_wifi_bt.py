@@ -4,13 +4,14 @@ import copy
 from core.i18n import t
 from ui.canvas import Canvas
 from ui.kit import (
+    ActionBtn,
+    Badge,
     Box,
     Divider,
-    Txt,
     SelectPill,
-    ActionBtn,
     StateBadge,
-    FoldToggle,
+    Txt,
+    make_feedback_cards,
 )
 from panels.cc_engine_network import (
     SIGNAL_BARS,
@@ -18,7 +19,6 @@ from panels.cc_engine_network import (
     _NET_STATE,
     _spaced_rows,
     get_interfaces_fast,
-    get_net_tab_feedback_cards,
 )
 
 
@@ -28,18 +28,33 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
 
     cards = []
     if not wifi["available"]:
-        b = Box(t("cc_net_wifi.wireless_network_802_11"), icon="\uf1eb")
-        b.add_row(" ")
-        msg = t("cc_net_wifi.networkmanager_nmcli_is_not_instal")
-        b.add_row(f"  {Txt(msg, role='inactive')}")
-        b.add_row(" ")
+        b = Box(
+            t("cc_net_wifi.wireless_network_802_11"),
+            icon="\uf1eb",
+            actions=[Badge(t("ui.missing", p0="nmcli"), style="warn")],
+        )
+        b.add_row(f"  {Txt(t('cc_net_wifi.networkmanager_nmcli_is_not_instal'), role='inactive')}")
         cards.append(b)
-        cards.append(Divider(t("cc_network.bt_bluez_short"), icon="\uf294"))
+        cards.append(Divider(t("cc_net_wifi.bluetooth_bluez_controller_devices"), icon="\uf294"))
         cards.extend(panel._build_bt_cards(canvas))
+        cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_wifi_bt"))
         return cards
 
     wifi_devs = [i["name"] for i in get_interfaces_fast() if i["kind"] == "wifi"]
     primary_wdev = wifi_devs[0] if wifi_devs else ""
+
+    if not wifi_devs:
+        b = Box(
+            t("cc_net_wifi.wireless_network_802_11"),
+            icon="\uf1eb",
+            actions=[StateBadge(False, "", t("cc_net_wifi.no_adapter_badge"))],
+        )
+        b.add_row(f"  {Txt(t('cc_net_wifi.no_wifi_adapter'), role='inactive')}")
+        cards.append(b)
+        cards.append(Divider(t("cc_net_wifi.bluetooth_bluez_controller_devices"), icon="\uf294"))
+        cards.extend(panel._build_bt_cards(canvas))
+        cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_wifi_bt"))
+        return cards
 
     # =========================================================================
     # CARD 1: CONTROLLO RADIO 802.11 (+ Opzioni Radio Avanzate Collapsible)
@@ -50,27 +65,21 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
         if wifi["enabled"]
         else ActionBtn(t("cc_net_wifi.turn_on"), "wifi:radio:on", tone="apply")
     )
-    jump_if_btn = (
-        ActionBtn(t("cc_net_wifi.ip_profiles", p0=primary_wdev), f"net:jump_iface:{primary_wdev}", tone="neutral")
-        if primary_wdev
-        else ""
-    )
-    adv_w_open, adv_w_btn = FoldToggle(panel, "wifi_radio_adv", default=False)
+    jump_if_btn = ActionBtn(t("cc_net_wifi.ip_profiles", p0=primary_wdev), f"net:jump_iface:{primary_wdev}", tone="neutral")
+    adv_w_open, adv_w_btn = panel._fold("wifi_radio_adv", default=False)
 
     ctrl_box = Box(
         t("cc_net_wifi.802_11_wireless_radio"),
         icon="\uf1eb",
         actions=[a for a in [st_badge, jump_if_btn, radio_btn] if a],
     )
-    ctrl_box.add_row(" ")
 
     if not wifi["enabled"]:
-        msg = t("cc_net_wifi.enable_the_wi_fi_radio_above_to_sc")
-        ctrl_box.add_row(f"  {Txt(msg, role='inactive')}")
-        ctrl_box.add_row(" ")
+        ctrl_box.add_row(f"  {Txt(t('cc_net_wifi.enable_the_wi_fi_radio_above_to_sc'), role='inactive')}")
         cards.append(ctrl_box)
         cards.append(Divider(t("cc_net_wifi.bluetooth_bluez_controller_devices"), icon="\uf294"))
         cards.extend(panel._build_bt_cards(canvas))
+        cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_wifi_bt"))
         return cards
 
     active_net = next((n for n in wifi.get("networks", []) if n.get("in_use")), None)
@@ -96,40 +105,32 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
         uniform_row_height=True,
         show_headers=False,
     )
-    ctrl_box.add_section(t("cc_net_wifi.802_11_power_save"), actions=[adv_w_btn])
+    ctrl_box.add_section(t("cc_net_wifi.advanced_radio_options"), actions=[adv_w_btn])
     if adv_w_open:
-        adv_rows = []
         ps_cur = str(wifi.get("powersave", "default"))
         ps_btns = "  ".join([
             SelectPill(t("cc_net_wifi.low_latency_off"), "wifi:powersave:2", selected=(ps_cur == "off")),
             SelectPill(t("cc_net_wifi.power_save_on"), "wifi:powersave:3", selected=(ps_cur == "on")),
         ])
-        adv_rows.append([Txt(t("cc_net_wifi.802_11_power_save"), role="schema"), ps_btns])
+        ctrl_box.add_kv(t("cc_net_wifi.802_11_power_save"), ps_btns, key_width=20, requires=["iw"])
 
         active_saved = next((s for s in wifi.get("saved", []) if s.get("active")), None)
         if active_saved:
             au_uuid = active_saved["uuid"]
+            cur_band = str(wifi.get("active_band", "auto") or "auto")
+            cur_macp = str(wifi.get("active_mac_priv", "") or "")
             band_btns = "  ".join([
-                ActionBtn(t("cc_net_wifi.auto_2_4_5ghz"), f"wifi:band:{au_uuid}:auto", tone="neutral"),
-                ActionBtn(t("cc_net_wifi.5_ghz_only"), f"wifi:band:{au_uuid}:a", tone="neutral"),
-                ActionBtn(t("cc_net_wifi.2_4_ghz_only"), f"wifi:band:{au_uuid}:bg", tone="neutral"),
+                SelectPill(t("cc_net_wifi.auto_2_4_5ghz"), f"wifi:band:{au_uuid}:auto", selected=(cur_band == "auto")),
+                SelectPill(t("cc_net_wifi.5_ghz_only"), f"wifi:band:{au_uuid}:a", selected=(cur_band == "a")),
+                SelectPill(t("cc_net_wifi.2_4_ghz_only"), f"wifi:band:{au_uuid}:bg", selected=(cur_band == "bg")),
             ])
             mac_p_btns = "  ".join([
-                ActionBtn(t("cc_net_wifi.permanent_mac"), f"wifi:mac_priv:{au_uuid}:permanent", tone="neutral"),
-                ActionBtn(t("cc_net_wifi.stable_ssid"), f"wifi:mac_priv:{au_uuid}:stable", tone="neutral"),
-                ActionBtn(t("cc_net_wifi.random_mac"), f"wifi:mac_priv:{au_uuid}:random", tone="neutral"),
+                SelectPill(t("cc_net_wifi.permanent_mac"), f"wifi:mac_priv:{au_uuid}:permanent", selected=(cur_macp == "permanent")),
+                SelectPill(t("cc_net_wifi.stable_ssid"), f"wifi:mac_priv:{au_uuid}:stable", selected=(cur_macp == "stable")),
+                SelectPill(t("cc_net_wifi.random_mac"), f"wifi:mac_priv:{au_uuid}:random", selected=(cur_macp == "random")),
             ])
-            adv_rows.append([Txt(t("cc_net_wifi.frequency_band"), role="schema"), band_btns])
-            adv_rows.append([Txt(t("cc_net_wifi.mac_privacy"), role="schema"), mac_p_btns])
-        ctrl_box.add_table(
-            headers=[],
-            widths=[20, "flex"],
-            rows=_spaced_rows(adv_rows),
-            aligns=["left", "left"],
-            uniform_row_height=True,
-            show_headers=False,
-        )
-    ctrl_box.add_row(" ")
+            ctrl_box.add_kv(t("cc_net_wifi.frequency_band"), band_btns, key_width=20)
+            ctrl_box.add_kv(t("cc_net_wifi.mac_privacy"), mac_p_btns, key_width=20)
     cards.append(ctrl_box)
 
     # =========================================================================
@@ -141,11 +142,9 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
         icon="\uf012",
         actions=[ActionBtn(t("cc_net_wifi.rescan_networks"), "wifi:rescan", tone="neutral")],
     )
-    scan_box.add_row(" ")
 
     if not nets:
-        msg = t("cc_net_wifi.scanning_networks_click_rescan_net")
-        scan_box.add_row(f"  {Txt(msg, role='inactive')}")
+        scan_box.add_row(f"  {Txt(t('cc_net_wifi.scanning_networks_click_rescan_net'), role='inactive')}")
     else:
         rows = []
         for n in nets[:16]:
@@ -156,7 +155,7 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
             else:
                 ssid_col = f"{Txt('\u00a0\u25cb\u00a0', role='inactive')}{Txt(ssid_trunc, role='focus')}"
 
-            rate_short = n.get('rate', 'N/D').replace(' Mbit/s', 'M').replace('MBit/s', 'M')[:8]
+            rate_short = n.get("rate", "N/D").replace(" Mbit/s", "M").replace("MBit/s", "M")[:8]
             ch_rate = f"CH {n['chan']} \u00b7 {rate_short}"
             sig = int(n["signal"])
             bar_idx = min(3, max(0, int(sig // 26)))
@@ -170,7 +169,9 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
             if in_use:
                 disc_uri = "wifi:disc:" + n["ssid"]
                 forget_uri = "wifi:forget:" + n["ssid"]
-                act = f"{ActionBtn(t("cc_net_wifi.disc"), disc_uri, tone='danger_soft')} {ActionBtn(t("cc_net_wifi.forget"), forget_uri, tone='danger_soft')}"
+                act = f"{ActionBtn(t('cc_net_wifi.disc'), disc_uri, tone='danger_soft')} {ActionBtn(t('cc_net_wifi.forget'), forget_uri, tone='danger_soft')}"
+            elif n.get("hidden"):
+                act = ActionBtn(t("cc_net_wifi.conn"), "wifi:prompt_hidden", tone="apply")
             else:
                 conn_uri = "wifi:conn:" + n["ssid"] + ":" + n["security"]
                 pass_uri = f"wifi:prompt_pass:{n['ssid']}"
@@ -196,7 +197,6 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
             rows=_spaced_rows(rows),
             aligns=["left", "left", "left", "left", "right"],
         )
-    scan_box.add_row(" ")
     cards.append(scan_box)
 
     # =========================================================================
@@ -204,31 +204,26 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
     # =========================================================================
     saved_nets = wifi.get("saved", [])
     if saved_nets:
-        sv_open, sv_toggle = FoldToggle(panel, "wifi_saved_list", default=False)
+        sv_open, sv_toggle = panel._fold("wifi_saved_list", default=False)
         s_box = Box(
             t("cc_net_wifi.saved_wi_fi_networks", p0=len(saved_nets)),
             icon="\uf0c7",
             actions=[sv_toggle],
         )
-        s_box.add_row(" ")
         if not sv_open:
             names_preview = ", ".join(sn["name"] for sn in saved_nets[:4])
             if len(saved_nets) > 4:
                 names_preview += f" (+{len(saved_nets) - 4})"
-            s_box.add_row(f"  {Txt(t("cc_net_wifi.ssid"), role='inactive')} {Txt(names_preview, role='val')}")
+            s_box.add_row(f"  {Txt(t('cc_net_wifi.ssid'), role='inactive')} {Txt(names_preview, role='val')}")
         else:
             s_rows = []
             for sn in saved_nets[:12]:
                 is_act = bool(sn["active"])
-                st_dot = StateBadge(is_act, t("cc_net_wifi.active"), t("cc_net_wifi.saved"), on_tone="ok")
+                st_dot = StateBadge(is_act, t("cc_net_wifi.active"), t("cc_net_wired.standby"), on_tone="ok")
                 is_ac = str(sn["autoconnect"]).lower() == "yes"
-                ac_lbl = f"Auto ({sn['priority']})" if is_ac else t("cc_net_wifi.manual_lbl")
+                ac_lbl = t("cc_net_wifi.auto_prio", p0=sn["priority"]) if is_ac else t("cc_net_wifi.manual_lbl")
                 ac_toggle = f"wifi:toggle_auto:{sn['uuid']}:{'no' if is_ac else 'yes'}"
-                edit_prof_btn = (
-                    ActionBtn(t("cc_net_wifi.ip_prof"), f"net:jump_wifi_prof:{primary_wdev}:{sn['uuid']}", tone="neutral")
-                    if primary_wdev
-                    else ""
-                )
+                edit_prof_btn = ActionBtn(t("cc_net_wifi.ip_prof"), f"net:jump_wifi_prof:{primary_wdev}:{sn['uuid']}", tone="neutral")
                 conn_btn = ActionBtn(t("cc_net_wifi.up"), "wifi:up_uuid:" + sn["uuid"], tone="apply")
                 del_btn = ActionBtn("x", "wifi:del_uuid:" + sn["uuid"], tone="danger_soft")
 
@@ -249,7 +244,6 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
                 rows=_spaced_rows(s_rows),
                 aligns=["left", "left", "left", "right"],
             )
-        s_box.add_row(" ")
         cards.append(s_box)
 
     # =========================================================================
@@ -257,7 +251,7 @@ def build_wifi_tab_cards(panel, canvas: Canvas) -> list:
     # =========================================================================
     cards.append(Divider(t("cc_net_wifi.bluetooth_bluez_controller_devices"), icon="\uf294"))
     cards.extend(panel._build_bt_cards(canvas))
-    cards.extend(get_net_tab_feedback_cards("wifi_bt"))
+    cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_wifi_bt"))
 
     return cards
 

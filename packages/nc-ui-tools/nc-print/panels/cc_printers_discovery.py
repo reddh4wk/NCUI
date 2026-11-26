@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """NC-UI Control Center — Add Printer, Discovery & Drivers (`panels/cc_printers_discovery.py`)."""
 
-import os
 import time
 from urllib.parse import urlparse
 
@@ -20,10 +19,10 @@ from ui.kit import (
     SelectPill,
     StateBadge,
     Txt,
-    get_active_inline_entry,
     register_scroll_zone,
 )
 from panels.cc_engine_printers import (
+    add_ppd_picker_kv,
     build_tcp_uri,
     feedback_cards,
     get_add_draft,
@@ -41,34 +40,11 @@ from panels.cc_engine_printers import (
     is_drivers_loading,
     is_install_running,
     is_tcp_scan_running,
+    render_scalar_kv,
     resolve_effective_driver,
     search_cups_drivers,
     trigger_smart_probe_async,
-    validate_ppd_file,
 )
-
-
-def _draft_scalar_row(
-    bx: Box,
-    canvas: Canvas,
-    label: str,
-    field_key: str,
-    cur_val: str,
-    placeholder: str,
-    empty_btn_lbl: str,
-    extra_right: str = "",
-) -> None:
-    eid = f"prn_draft_{field_key}"
-    uri = f"cc_prn:draft_field:{field_key}"
-    if get_active_inline_entry() == eid:
-        fld = InlineField(eid, uri, value=cur_val, placeholder=placeholder, width=44)
-        bx.add_kv(label, fld, right_markup=extra_right)
-    elif cur_val:
-        r_btns = " ".join(x for x in (ActionBtn(t("cc_printers.edit_dots_btn"), uri, tone="neutral"), extra_right) if x)
-        bx.add_kv(label, Txt(canvas.truncate_plain(cur_val, 46), role="val"), right_markup=r_btns)
-    else:
-        r_btns = " ".join(x for x in (ActionBtn(empty_btn_lbl, uri, tone="neutral"), extra_right) if x)
-        bx.add_kv(label, Txt(placeholder, role="inactive"), right_markup=r_btns)
 
 
 def _find_installed_printer(printers: list[dict], uri: str, ip: str = "") -> dict | None:
@@ -124,7 +100,8 @@ def _render_auto_found_table(bx: Box, canvas: Canvas, d: dict, auto_info: dict, 
         elif it["installed"]:
             item_uri = f"cc_prn:pick_pkg_drv:{it['pkg']}"
             register_scroll_zone(item_uri, scroll_act)
-            main_cell = SelectPill(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), item_uri, selected=False)
+            is_pkg_sel = (d["drv_mode"] == "db" and d.get("selected_pkg") == it["pkg"])
+            main_cell = SelectPill(canvas.truncate_plain(f"{it['label']} ({it['repo']})", 36), item_uri, selected=is_pkg_sel)
             act_cell = StateBadge(True, t("cc_printers.pkg_installed_tag"))
         else:
             pk = it["pkg"]
@@ -189,7 +166,8 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
             clear_uri="cc_prn:drv_search_clear",
             width=34,
         )
-        rescan_b = ActionBtn(f"\u21bb {auto_info['pkg_mgr']}", "cc_prn:drv_pkg_rescan", tone="neutral")
+        rescan_lbl = f"\u21bb {auto_info['pkg_mgr']}" if auto_info["pkg_mgr"] else t("cc_printers.rescan_btn")
+        rescan_b = ActionBtn(rescan_lbl, "cc_prn:drv_pkg_rescan", tone="neutral")
         nav_acts: list[str] = []
         if has_auto_box:
             off = auto_info["offset"]
@@ -254,13 +232,7 @@ def _render_driver_selector(bx: Box, cc_panel, canvas: Canvas, d: dict, smart: d
             elif gap_adv == "local_optimal" and auto_info["total"] > 0:
                 bx.add_row(f"  {Txt('\u25b8', role='vitality')} {Txt(t('cc_printers.leg_gap_local_optimal'), role='schema')}")
     elif d["drv_mode"] == "ppd":
-        ppd_btn = ActionBtn(t("cc_printers.browse_ppd_btn"), "cc_prn:browse_ppd", tone="neutral")
-        if d["ppd_path"]:
-            v_ok, _ = validate_ppd_file(d["ppd_path"])
-            st_b = StateBadge(True, t("cc_printers.ppd_valid_badge")) if v_ok else Badge(t("cc_printers.ppd_invalid_badge"), style="crit")
-            bx.add_kv(t("cc_printers.kv_ppd_file"), f"{Txt(os.path.basename(d['ppd_path']), role='val')}  {st_b}", right_markup=ppd_btn)
-        else:
-            bx.add_kv(t("cc_printers.kv_ppd_file"), Txt(t("common.unset"), role="inactive"), right_markup=ppd_btn)
+        add_ppd_picker_kv(bx, d["ppd_path"], "cc_prn:browse_ppd")
 
 
 def _render_install_actions(bx: Box, daemon: dict, d: dict, include_cancel: bool = True) -> None:
@@ -271,7 +243,7 @@ def _render_install_actions(bx: Box, daemon: dict, d: dict, include_cancel: bool
     bx.add_kv(t("cc_printers.kv_install_flags"), opt_pills)
 
     inst_active = bool(is_install_running())
-    can_install = bool(not inst_active and d["name"] and "://" in d["uri"] and d["uri"] != "usb://")
+    can_install = bool(daemon["cups_installed"] and not inst_active and d["name"] and "://" in d["uri"] and d["uri"] != "usb://")
     inst_lbl = t("cc_printers.install_printer_btn") if daemon["scheduler_up"] else t("cc_printers.start_and_install_btn")
     btns = [
         ActionBtn(inst_lbl, "cc_prn:install_printer", tone="apply" if can_install else "muted"),
@@ -280,7 +252,9 @@ def _render_install_actions(bx: Box, daemon: dict, d: dict, include_cancel: bool
     if include_cancel:
         btns.append(ActionBtn(t("common.cancel"), "cc_prn:wiz_close", tone="neutral"))
     bx.add_kv("", " ".join(btns))
-    if not daemon["scheduler_up"]:
+    if not daemon["cups_installed"]:
+        bx.add_kv("", Txt(t("ui.missing", p0="cups"), role="attention"))
+    elif not daemon["scheduler_up"]:
         bx.add_kv("", Txt(t("cc_printers.wiz_autostart_cups_hint"), role="attention"))
 
 
@@ -344,34 +318,38 @@ def _render_attached_wizard(
         if diag_parts and (not is_manual or p_ms or caps):
             bx.add_kv(t("cc_printers.kv_auto_diag"), Txt(canvas.truncate_plain(" \u00b7 ".join(diag_parts), 64), role="val"))
 
-    _draft_scalar_row(
+    render_scalar_kv(
         bx,
         canvas,
         t("cc_printers.kv_queue_name"),
-        "name",
+        "prn_draft_name",
+        "cc_prn:draft_field:name",
         d["name"],
         t("cc_printers.ph_queue_name"),
-        t("cc_printers.set_name_btn"),
+        empty_btn_lbl=t("cc_printers.set_name_btn"),
+        width=44,
     )
 
     _ph_map = {
-        "socket": build_tcp_uri("10.10.0.45", d["tcp_port"]),
-        "ipp": "ipp://10.10.0.45:631/ipp/print",
-        "ipps": "ipps://10.10.0.45:631/ipp/print",
-        "lpd": "lpd://10.10.0.45/BINARY_P1",
+        "socket": build_tcp_uri("192.168.1.50", d["tcp_port"]),
+        "ipp": "ipp://192.168.1.50:631/ipp/print",
+        "ipps": "ipps://192.168.1.50:631/ipp/print",
+        "lpd": "lpd://192.168.1.50/BINARY_P1",
         "smb": "smb://WORKGROUP/server/printer",
         "usb": "usb://Vendor/Model?serial=...",
     }
-    uri_ph = _ph_map.get(d["proto"], "socket://10.10.0.45:9100")
+    uri_ph = _ph_map.get(d["proto"], "socket://192.168.1.50:9100")
     probe_b = ActionBtn(t("cc_printers.probe_port_btn"), "cc_prn:probe_uri", tone="neutral") if (d["proto"] != "usb" and (d["host"] or d["uri"])) else ""
-    _draft_scalar_row(
+    render_scalar_kv(
         bx,
         canvas,
         t("cc_printers.kv_device_uri"),
-        "uri",
+        "prn_draft_uri",
+        "cc_prn:draft_field:uri",
         d["uri"] if d["uri"] != "usb://" else "",
         uri_ph,
-        t("cc_printers.set_uri_btn"),
+        empty_btn_lbl=t("cc_printers.set_uri_btn"),
+        width=44,
         extra_right=probe_b,
     )
 
@@ -386,23 +364,27 @@ def _render_attached_wizard(
         adv_summary_parts.append(canvas.truncate_plain(d["loc"], 18))
 
     def _build_wiz_adv(sub_bx: Box) -> None:
-        _draft_scalar_row(
+        render_scalar_kv(
             sub_bx,
             canvas,
             t("cc_printers.kv_description"),
-            "desc",
+            "prn_draft_desc",
+            "cc_prn:draft_field:desc",
             d["desc"],
             t("cc_printers.ph_description"),
-            t("cc_printers.set_desc_btn"),
+            empty_btn_lbl=t("cc_printers.set_desc_btn"),
+            width=44,
         )
-        _draft_scalar_row(
+        render_scalar_kv(
             sub_bx,
             canvas,
             t("cc_printers.kv_location"),
-            "loc",
+            "prn_draft_loc",
+            "cc_prn:draft_field:loc",
             d["loc"],
             t("cc_printers.ph_location"),
-            t("cc_printers.set_loc_btn"),
+            empty_btn_lbl=t("cc_printers.set_loc_btn"),
+            width=44,
         )
         proto_pills = " ".join(
             SelectPill(lbl, f"cc_prn:draft_proto:{pid}", selected=(d["proto"] == pid))
@@ -421,14 +403,16 @@ def _render_attached_wizard(
             sub_bx.add_kv(t("cc_printers.kv_tcp_port_mode"), tcp_mode_pills)
         if d["proto"] != "usb":
             smb_auth = ActionBtn(t("cc_printers.smb_auth_btn"), "cc_prn:smb_auth_prompt", tone="apply") if d["proto"] == "smb" else ""
-            _draft_scalar_row(
+            render_scalar_kv(
                 sub_bx,
                 canvas,
                 t("cc_printers.kv_host_ip"),
-                "host",
+                "prn_draft_host",
+                "cc_prn:draft_field:host",
                 d["host"],
                 t("cc_printers.ph_host_ip"),
-                t("cc_printers.set_host_btn"),
+                empty_btn_lbl=t("cc_printers.set_host_btn"),
+                width=44,
                 extra_right=smb_auth,
             )
             if d["proto"] == "smb":
@@ -478,7 +462,7 @@ def _render_split_table_with_wizard(
         bx.add_table(headers=headers, widths=widths, rows=rows[open_idx + 1 :], aligns=aligns, show_headers=False)
 
 
-def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     cards = feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
     daemon = get_cups_daemon_state()
     snap = get_printers_snapshot()
@@ -534,8 +518,13 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
         box_acts.append(ActionBtn(t("cc_printers.open_manual_btn"), "cc_prn:wiz_open_manual", tone="neutral"))
     if daemon["scheduler_up"] and daemon["has_cups_pdf"] and not snap["has_pdf_queue"]:
         box_acts.append(ActionBtn(t("cc_printers.create_pdf_btn"), "cc_prn:create_pdf_queue", tone="apply"))
-    if not daemon["scheduler_up"]:
-        box_acts.append(ActionBtn(t("cc_printers.start_cups"), "cc_prn:svc:start:cups.service", tone="apply"))
+    if not daemon["cups_installed"]:
+        box_acts.append(Badge(t("ui.missing", p0="cups"), style="warn"))
+    elif not daemon["scheduler_up"]:
+        if daemon.get("has_systemctl", True):
+            box_acts.append(ActionBtn(t("cc_printers.start_cups"), "cc_prn:svc:start:cups.service", tone="apply"))
+        else:
+            box_acts.append(Badge(t("ui.missing", p0="systemctl"), style="warn"))
 
     disc_box = Box(
         t("cc_printers.unified_discovery_box_title", p0=len(unified_entries)),
@@ -698,7 +687,3 @@ def _build_discovery_standard(cc_panel, canvas: Canvas) -> list:
                 cls_box.add_kv(t("cc_printers.kv_pool_members_of", p0=sel_cls_name), mem_pills, right_markup=new_pool_b)
     cards.append(cls_box)
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_discovery_standard(cc_panel, canvas)

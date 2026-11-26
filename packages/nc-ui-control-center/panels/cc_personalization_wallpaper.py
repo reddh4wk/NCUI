@@ -29,7 +29,7 @@ from core.config import THEME, is_ncmatrix_available
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, InlineEntry, InlineField, SelectPill, Slider, StateBadge, SwatchTxt, Txt, get_inline_entry_error, get_semantic_palette
+from ui.kit import ActionBtn, Badge, Box, InlineField, SelectPill, Slider, StateBadge, SwatchTxt, Txt, get_inline_entry_error, get_semantic_palette, hex_to_rgba_f, rounded_rect_path
 from ui.widgets import AsciiCard
 from panels.cc_engine_personalization import (
     SOLID_CLASSIC_PRESETS,
@@ -88,16 +88,6 @@ _NCM_SPEED_MS = (520.0, 420.0, 330.0, 260.0, 200.0, 150.0, 110.0, 75.0, 45.0, 20
 def _ncm_speed_to_ms(spd: int) -> float:
     idx = max(1, min(10, int(spd))) - 1
     return _NCM_SPEED_MS[idx]
-
-
-def _hex_to_rgb_f(hex_str: str, fallback: tuple = (0.0, 0.94, 1.0)) -> tuple:
-    h = str(hex_str or "").strip().lstrip("#")
-    if len(h) == 6:
-        try:
-            return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
-        except ValueError:
-            pass
-    return fallback
 
 
 def _vivid_rainbow_rgb(seed_b: bytes) -> tuple:
@@ -408,16 +398,6 @@ class _MiniMatrixSim:
             self.step_dt(dt_ms, shimmer_m)
 
 
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(r, w / 2.0, h / 2.0))
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi / 2, 0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0, math.pi / 2)
-    cr.arc(x + rad, y + h - rad, rad, math.pi / 2, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, 3 * math.pi / 2)
-    cr.close_path()
-
-
 def _get_fitted_pixbuf(path: str, target_w: int, target_h: int, fit: str = "fill", align: str = "center"):
     """Scale preview pixbuf according to fit mode ('fill', 'fit', 'center', 'stretch') and vertical crop align."""
     if not path or not os.path.isfile(path) or target_w < 8 or target_h < 8:
@@ -659,7 +639,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         if is_rainbow:
             rgb = _MATRIX_RGB["green"]
         elif col_raw.startswith("#") and len(col_raw) == 7:
-            rgb = _hex_to_rgb_f(col_raw, _MATRIX_RGB["green"])
+            rgb = hex_to_rgba_f(col_raw, fallback=_MATRIX_RGB["green"])[:3]
         else:
             rgb = _MATRIX_RGB.get(col_raw, _MATRIX_RGB["green"])
         charset = str(st.get("charset", "katakana"))
@@ -883,7 +863,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         bh_px = 18
         bx = rx + rw - bw_px - 6
         by = ry + 6
-        _rounded_rect(cr, bx, by, bw_px, bh_px, 3.0)
+        rounded_rect_path(cr, bx, by, bw_px, bh_px, 3.0)
         cr.set_source_rgba(*b_bg)
         cr.fill_preserve()
         cr.set_source_rgba(b_rgb[0], b_rgb[1], b_rgb[2], 0.88)
@@ -925,7 +905,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             if col_low == "rainbow":
                 tag_rgb = (0.0, 0.94, 1.0)
             elif col_low.startswith("#"):
-                tr, tg, tb = _hex_to_rgb_f(col_low, _MATRIX_RGB["green"])
+                tr, tg, tb = hex_to_rgba_f(col_low, fallback=_MATRIX_RGB["green"])[:3]
                 tag_rgb = (0.88, 0.92, 0.99) if max(tr, tg, tb) < 0.25 else (tr, tg, tb)
             else:
                 tag_rgb = _MATRIX_RGB.get(col_low, _MATRIX_RGB["green"])
@@ -934,7 +914,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             tag_rgb = (0.85, 0.90, 1.0)
         else:
             tag = t("cc_personalization.desktop_mode_none")
-            tag_rgb = _hex_to_rgb_f(THEME["colors"].get("schema", "#8c9bba"), (0.55, 0.61, 0.73))
+            tag_rgb = hex_to_rgba_f(THEME["colors"].get("schema", "#8c9bba"), fallback=(0.55, 0.61, 0.73))[:3]
 
         hud_h = max(25, min(30, int(rh * 0.26)))
         cr.set_source_rgba(0.03, 0.04, 0.07, 0.86)
@@ -945,7 +925,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         if is_selected:
             cr.set_source_rgb(1.0, 1.0, 1.0)
         else:
-            c_unsel = _hex_to_rgb_f(THEME["colors"].get("schema", "#8c9bba"), (0.55, 0.61, 0.73))
+            c_unsel = hex_to_rgba_f(THEME["colors"].get("schema", "#8c9bba"), fallback=(0.55, 0.61, 0.73))[:3]
             cr.set_source_rgb(*c_unsel)
         mon_txt = f"{'●' if is_selected else '○'} {out_name} {ld.get('width', 0)}x{ld.get('height', 0)}"
         left_ext = cr.text_extents(mon_txt)
@@ -975,11 +955,11 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             self._compute_layout(resize_widgets=False)
 
         pal = get_semantic_palette()
-        c_sbg = _hex_to_rgb_f(pal["structure_bg"], (0.10, 0.11, 0.14))
-        c_struct_rgb = _hex_to_rgb_f(pal["structure"], (0.26, 0.29, 0.36))
-        c_sch_rgb = _hex_to_rgb_f(pal["schema"], (0.55, 0.61, 0.73))
-        c_vit = _hex_to_rgb_f(THEME["colors"].get("vitality", "#00ff73"), (0.0, 1.0, 0.45))
-        c_attn = _hex_to_rgb_f(THEME["colors"].get("attention", "#ffeb19"), (1.0, 0.92, 0.10))
+        c_sbg = hex_to_rgba_f(pal["structure_bg"], fallback=(0.10, 0.11, 0.14))[:3]
+        c_struct_rgb = hex_to_rgba_f(pal["structure"], fallback=(0.26, 0.29, 0.36))[:3]
+        c_sch_rgb = hex_to_rgba_f(pal["schema"], fallback=(0.55, 0.61, 0.73))[:3]
+        c_vit = hex_to_rgba_f(THEME["colors"].get("vitality", "#00ff73"), fallback=(0.0, 1.0, 0.45))[:3]
+        c_attn = hex_to_rgba_f(THEME["colors"].get("attention", "#ffeb19"), fallback=(1.0, 0.92, 0.10))[:3]
 
         bx = float(self.inset_x)
         bw = max(60.0, float(alloc_w - (2 * self.inset_x)))
@@ -987,7 +967,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         canvas_h = max(72.0, bh - float(self.footer_h))
 
         # Recessed nested container matching Display Topology (zero dot-grid)
-        _rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, bh - 1.0, 6.0)
+        rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, bh - 1.0, 6.0)
         cr.set_source_rgba(c_sbg[0], c_sbg[1], c_sbg[2], 0.65)
         cr.fill_preserve()
         cr.set_source_rgba(c_struct_rgb[0], c_struct_rgb[1], c_struct_rgb[2], 0.85)
@@ -995,7 +975,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         cr.stroke()
 
         cr.save()
-        _rounded_rect(cr, bx + 1.0, 1.0, bw - 2.0, bh - 2.0, 5.5)
+        rounded_rect_path(cr, bx + 1.0, 1.0, bw - 2.0, bh - 2.0, 5.5)
         cr.clip()
 
         for out_name, rx, ry, rw, rh, ld in self.rects:
@@ -1005,7 +985,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             is_staged = bool(st.get("staged"))
 
             cr.save()
-            _rounded_rect(cr, rx, ry, rw, rh, 8.0)
+            rounded_rect_path(cr, rx, ry, rw, rh, 8.0)
             cr.clip()
 
             if mode in ("scene", "slideshow"):
@@ -1019,7 +999,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
                     Gdk.cairo_set_source_pixbuf(cr, pb, rx + ox, ry + oy)
                     cr.paint()
             elif mode == "solid":
-                sr, sg, sb = _hex_to_rgb_f(st.get("hex", "#18181a"), (0.09, 0.09, 0.10))
+                sr, sg, sb = hex_to_rgba_f(st.get("hex", "#18181a"), fallback=(0.09, 0.09, 0.10))[:3]
                 cr.set_source_rgb(sr, sg, sb)
                 cr.paint()
             elif mode in ("ncmatrix", "cmatrix"):
@@ -1035,7 +1015,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             self._draw_monitor_hud(cr, out_name, rx, ry, rw, rh, ld, st, is_selected=is_selected)
             cr.restore()
 
-            _rounded_rect(cr, rx + 1.0, ry + 1.0, rw - 2.0, rh - 2.0, 8.0)
+            rounded_rect_path(cr, rx + 1.0, ry + 1.0, rw - 2.0, rh - 2.0, 8.0)
             if is_staged:
                 cr.set_source_rgba(c_attn[0], c_attn[1], c_attn[2], 0.98)
                 cr.set_line_width(2.4)
@@ -1181,8 +1161,8 @@ class EmbeddedYaziWidget(Gtk.EventBox):
             pix = self.session.preview_pixbuf
 
         p = get_semantic_palette()
-        def_fg = _hex_to_rgb_f(p["focus_val"], (0.89, 0.92, 0.99))
-        def_bg = _hex_to_rgb_f(p["structure_bg"], (0.10, 0.11, 0.14))
+        def_fg = hex_to_rgba_f(p["focus_val"], fallback=(0.89, 0.92, 0.99))[:3]
+        def_bg = hex_to_rgba_f(p["structure_bg"], fallback=(0.10, 0.11, 0.14))[:3]
         typo = THEME["typography"]
         desc_reg = Pango.FontDescription.from_string(
             f"{typo['font_family']}, Font Awesome 6 Free, Font Awesome 6 Brands, Symbols Nerd Font, monospace {typo['font_weight']} {typo['font_size']}"
@@ -1212,7 +1192,7 @@ class EmbeddedYaziWidget(Gtk.EventBox):
                         if eb2 != eff_bg or t2[5]:
                             break
                         c2 += 1
-                    _rounded_rect(cr, x0 + c * cw, ry + 1.0, (c2 - c) * cw, max(2.0, ch - 2.0), 2.5)
+                    rounded_rect_path(cr, x0 + c * cw, ry + 1.0, (c2 - c) * cw, max(2.0, ch - 2.0), 2.5)
                     cr.set_source_rgba(eff_bg[0], eff_bg[1], eff_bg[2], 0.92)
                     cr.fill()
                     c = c2
@@ -1755,13 +1735,16 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
                 style="secondary",
             )
             for c in ("green", "cyan", "yellow", "white", "rainbow")
-        ) + " " + InlineEntry(
+        ) + " " + InlineField(
             "cm_col_custom",
             "cc_desk:cm_col_custom",
-            label=t("cc_personalization.wp_color_custom"),
+            value=cm_col.upper() if is_custom_hex else "",
+            empty_label=t("cc_personalization.wp_color_custom"),
             placeholder=t("cc_personalization.wp_custom_placeholder"),
-            max_len=6,
-            active_value=cm_col.upper() if is_custom_hex else "",
+            width=9,
+            icon="",
+            tone="neutral",
+            is_hex_color=True,
             selected=is_custom_hex,
             dirty=(has_staged_sel and is_custom_hex),
         )
@@ -1916,7 +1899,7 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         cpu_info = get_ncmatrix_live_cpu_usage(sel_mons)
         if cpu_info["running"]:
             core_pct = cpu_info["core_pct"]
-            cpu_role = "ok" if core_pct < 50.0 else ("warn" if core_pct < 75.0 else ("alert" if core_pct < 90.0 else "crit"))
+            cpu_role = "ok" if core_pct < 50.0 else ("warn" if core_pct < 75.0 else ("interrupt" if core_pct < 90.0 else "crit"))
             mons_str = ", ".join(cpu_info["monitors"])
             detail_txt = (
                 t("cc_personalization.wp_ncmatrix_cpu_live_detail", p0=f"{cpu_info['sys_pct']:.2f}%")

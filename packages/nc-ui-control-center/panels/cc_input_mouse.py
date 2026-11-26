@@ -13,16 +13,15 @@ from ui.kit import (
     Slider,
     StateBadge,
     Txt,
+    feedback_cards,
     get_active_inline_entry,
 )
 from ui.widgets import AsciiCard
 from panels.cc_engine_input import (
     _collect_mouse_state,
-    _mouse_feedback_cards,
     _mouse_toggle_pair,
 )
 from panels.cc_engine_personalization import (
-    _feedback_cards as _pers_feedback_cards,
     _list_cursor_themes,
     _read_cursor_cfg,
     get_active_yazi_session,
@@ -30,8 +29,7 @@ from panels.cc_engine_personalization import (
 from panels.cc_personalization_wallpaper import EmbeddedYaziWidget
 
 
-def _build_mouse_general_standard(cc_panel, canvas: Canvas) -> list:
-    st = _collect_mouse_state()
+def _build_mouse_general_standard(cc_panel, canvas: Canvas, st: dict) -> list:
     b = Box(t("cc_mouse.general_mouse_config_niri_config_k"), icon="\uf245", highlighted=False)
     b.add_row(" ")
     b.add_kv(
@@ -67,10 +65,11 @@ def _build_mouse_general_standard(cc_panel, canvas: Canvas) -> list:
     return [b]
 
 
-def _build_mouse_pointer_standard(cc_panel, canvas: Canvas) -> list:
-    st = _collect_mouse_state()
+def _build_mouse_pointer_standard(cc_panel, canvas: Canvas, st: dict) -> list:
     as_str = f"{st['accel_speed']:+.2f}"
-    b = Box(t("cc_mouse.pointer_speed_acceleration_touchpa"), icon="\uf192", highlighted=False)
+    has_tp = bool(st.get("has_touchpad"))
+    title_k = "cc_mouse.pointer_speed_acceleration_touchpa" if has_tp else "cc_mouse.pointer_speed_acceleration"
+    b = Box(t(title_k), icon="\uf192", highlighted=False)
     b.add_row(" ")
     b.add_kv(
         t("cc_mouse.accel_speed_1_1"),
@@ -83,12 +82,18 @@ def _build_mouse_pointer_standard(cc_panel, canvas: Canvas) -> list:
     prof_pills = f"{SelectPill(t('cc_mouse.adaptive'), 'cc_mouse:prof:adaptive', selected=(st['accel_profile'] == 'adaptive'))} {SelectPill(t('cc_mouse.flat_raw_1_1'), 'cc_mouse:prof:flat', selected=(st['accel_profile'] == 'flat'))}"
     b.add_kv(t("cc_mouse.accel_profile"), prof_pills, requires=["niri"])
 
-    def _fill_tp(bx: Box):
-        bx.add_kv(t("cc_mouse.tap_to_click"), _mouse_toggle_pair("cc_mouse:tp:tap:1", "cc_mouse:tp:tap:0", st["tp_tap"]), requires=["niri"])
-        bx.add_kv(t("cc_mouse.disable_while_typing"), _mouse_toggle_pair("cc_mouse:tp:dwt:1", "cc_mouse:tp:dwt:0", st["tp_dwt"]), requires=["niri"])
-        bx.add_kv(t("cc_mouse.touchpad_natural_scroll"), _mouse_toggle_pair("cc_mouse:tp:natural-scroll:1", "cc_mouse:tp:natural-scroll:0", st["tp_natural_scroll"]), requires=["niri"])
+    if has_tp:
+        tp_names = ", ".join(tp["name"] for tp in st.get("touchpads", []) if tp.get("name"))
 
-    b.add_collapsible(cc_panel, "mouse_touchpad", t("cc_mouse.touchpad_settings_tap_dwt_natural"), _fill_tp)
+        def _fill_tp(bx: Box):
+            if tp_names:
+                bx.add_kv(t("cc_mouse.touchpad_device_lbl"), Txt(canvas.truncate_plain(tp_names, 48), role="val"))
+            bx.add_kv(t("cc_mouse.tap_to_click"), _mouse_toggle_pair("cc_mouse:tp:tap:1", "cc_mouse:tp:tap:0", st["tp_tap"]), requires=["niri"])
+            bx.add_kv(t("cc_mouse.disable_while_typing"), _mouse_toggle_pair("cc_mouse:tp:dwt:1", "cc_mouse:tp:dwt:0", st["tp_dwt"]), requires=["niri"])
+            bx.add_kv(t("cc_mouse.touchpad_natural_scroll"), _mouse_toggle_pair("cc_mouse:tp:natural-scroll:1", "cc_mouse:tp:natural-scroll:0", st["tp_natural_scroll"]), requires=["niri"])
+            bx.add_kv(t("cc_mouse.middle_click_emulation"), _mouse_toggle_pair("cc_mouse:tp:middle-emulation:1", "cc_mouse:tp:middle-emulation:0", st.get("tp_middle_emulation", False)), requires=["niri"])
+
+        b.add_collapsible(cc_panel, "mouse_touchpad", t("cc_mouse.touchpad_settings_tap_dwt_natural"), _fill_tp)
     b.add_row(" ")
     return [b]
 
@@ -203,8 +208,12 @@ def _build_mouse_cursors_standard(cc_panel, canvas: Canvas) -> list:
 
 
 def build_cards(cc_panel, canvas: Canvas) -> list:
-    cards = _mouse_feedback_cards() + _pers_feedback_cards()
-    cards.extend(_build_mouse_general_standard(cc_panel, canvas))
-    cards.extend(_build_mouse_pointer_standard(cc_panel, canvas))
+    st = _collect_mouse_state()
+    cards = (
+        feedback_cards("mouse", "cc_mouse.status_title")
+        + feedback_cards("personalization", "cc_personalization.theme_personalization_status")
+    )
+    cards.extend(_build_mouse_general_standard(cc_panel, canvas, st))
+    cards.extend(_build_mouse_pointer_standard(cc_panel, canvas, st))
     cards.extend(_build_mouse_cursors_standard(cc_panel, canvas))
     return cards

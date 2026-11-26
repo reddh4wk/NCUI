@@ -8,8 +8,9 @@ import time
 import zoneinfo
 
 from core import probe
+from core.config import _xdg_base
 from core.i18n import _load_lang_file, get_active_language, t
-from core.paths import find_panel_file
+from core.paths import find_package_file, find_panel_file
 
 _CACHE: dict[str, tuple[float, object]] = {}
 _CC_INDEX_CACHE: dict[str, list[dict]] = {}
@@ -321,9 +322,10 @@ def catalog_timezones(exclude: str = "") -> list[tuple[str, str, str]]:
 
 def _scan_desktop_entries() -> list[dict]:
     def _load() -> list[dict]:
+        xdg_data = _xdg_base("XDG_DATA_HOME", "~/.local/share")
         dirs = [
-            os.path.expanduser("~/.local/share/applications"),
-            os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+            os.path.join(xdg_data, "applications"),
+            os.path.join(xdg_data, "flatpak", "exports", "share", "applications"),
             "/usr/local/share/applications",
             "/usr/share/applications",
             "/var/lib/flatpak/exports/share/applications",
@@ -521,15 +523,15 @@ def catalog_mono_fonts() -> list[tuple[str, str, str]]:
 
 def catalog_cursor_themes() -> list[tuple[str, str, str]]:
     def _load() -> list[tuple[str, str, str]]:
+        xdg_data = _xdg_base("XDG_DATA_HOME", "~/.local/share")
         roots = [
             os.path.expanduser("~/.icons"),
-            os.path.expanduser("~/.local/share/icons"),
+            os.path.join(xdg_data, "icons"),
             "/usr/share/icons",
         ]
         found: list[str] = []
         seen: set[str] = set()
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if os.path.isdir(os.path.join(root_dir, "assets", "cursors", "ncui-cursor")):
+        if find_package_file("assets", "cursors", "ncui-cursor"):
             found.append("NCUI Cursor")
             seen.add("NCUI Cursor")
         for r in roots:
@@ -597,9 +599,10 @@ def _clean_index_label(raw: str) -> str:
 
 def _build_cc_search_index(lang: str) -> list[dict]:
     try:
-        from panels.control_center import get_section_blueprints
+        from panels.control_center import get_section_blueprints, get_tab_title
         blueprints = get_section_blueprints()
     except ImportError:
+        get_tab_title = None
         try:
             from panels.control_center import SECTION_BLUEPRINTS as blueprints
         except ImportError:
@@ -617,7 +620,7 @@ def _build_cc_search_index(lang: str) -> list[dict]:
         sec_en = _lookup_dict(en_dict, f"control_center.sections.{sec_key}") or sec_id.title()
 
         for sub_id in tabs:
-            sub_act = _lookup_dict(act_dict, f"control_center.tabs.{sec_id}.{sub_id}") or _lookup_dict(en_dict, f"control_center.tabs.{sec_id}.{sub_id}") or sub_id.title()
+            sub_act = (get_tab_title(sec_id, sub_id) if callable(get_tab_title) else "") or _lookup_dict(act_dict, f"control_center.tabs.{sec_id}.{sub_id}") or _lookup_dict(en_dict, f"control_center.tabs.{sec_id}.{sub_id}") or sub_id.title()
             sub_en = _lookup_dict(en_dict, f"control_center.tabs.{sec_id}.{sub_id}") or sub_id.title()
             entries.append({
                 "section": sec_id,

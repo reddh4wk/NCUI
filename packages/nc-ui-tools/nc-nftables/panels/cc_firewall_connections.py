@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+from core import probe
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, CyclePill, InlineFilter, InspectorCell, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, CyclePill, InlineFilter, InspectorCell, StateBadge, Txt, feedback_cards
 from panels.cc_engine_firewall import (
-    _feedback_cards,
+    _fw_dict,
     _read_active_flows,
 )
 
@@ -20,25 +21,24 @@ def _build_flow_inspector(flow: dict) -> Box:
     ibox.add_row(" ")
     st_cell = StateBadge(True, flow["state"]) if flow["state"] == "ESTAB" else Txt(flow["state"], role="schema" if flow["state"] == "LISTEN" else "inactive")
     iface_s = f"  \u00b7  {Txt('if:' + flow['iface'], role='schema')}" if flow["iface"] else ""
-    ibox.add_kv(t("cc_firewall.flow_proto_state"), f"{Txt(flow['proto'], role='val')}  {st_cell}{iface_s}", key_width=16)
-    ibox.add_kv(t("cc_firewall.flow_local"), Txt(flow["laddr"], role="focus"), key_width=16)
-    ibox.add_kv(t("cc_firewall.flow_remote"), Txt(flow["raddr"], role="val"), key_width=16)
-    ibox.add_kv(t("cc_firewall.flow_process"), Txt(flow["proc"], role="val"), key_width=16)
+    ibox.add_kv(t("cc_firewall.flow_proto_state"), f"{Txt(flow['proto'], role='val')}  {st_cell}{iface_s}")
+    ibox.add_kv(t("cc_firewall.flow_local"), Txt(flow["laddr"], role="focus"))
+    ibox.add_kv(t("cc_firewall.flow_remote"), Txt(flow["raddr"], role="val"))
+    ibox.add_kv(t("cc_firewall.flow_process"), Txt(flow["proc"], role="val"))
     ibox.add_row(" ")
     return ibox
 
 
-def _build_connections_tab(cc_panel, canvas: Canvas) -> list:
-    flows = _read_active_flows()
-    cf = STATE.get("firewall", "conn_flt", {})
-    if not isinstance(cf, dict):
-        cf = {}
-    f_state = str(cf.get("state", "ALL")).upper()
-    f_proto = str(cf.get("proto", "ALL")).upper()
-    f_port = str(cf.get("port", ""))
-    f_peer = str(cf.get("peer", ""))
-    f_proc = str(cf.get("proc", ""))
-    cards = _feedback_cards()
+def build_cards(cc_panel, canvas: Canvas) -> list:
+    has_ss = probe.has_bin("ss")
+    flows = _read_active_flows() if has_ss else []
+    cf = _fw_dict("conn_flt")
+    f_state = cf["state"]
+    f_proto = cf["proto"]
+    f_port = cf["port"]
+    f_peer = cf["peer"]
+    f_proc = cf["proc"]
+    cards = feedback_cards("firewall", "cc_firewall.status_title")
 
     shown = []
     for f in flows:
@@ -63,6 +63,8 @@ def _build_connections_tab(cc_panel, canvas: Canvas) -> list:
     sel_flow = next((f for f in visible_flows if f["key"] == sel_key), visible_flows[0] if visible_flows else None)
 
     hdr_acts = [Txt(f"LISTEN:{n_listen}  ESTAB:{n_estab}", role="schema")]
+    if not has_ss:
+        hdr_acts.append(Badge(t("ui.missing", p0="ss"), style="warn"))
     if has_cflt:
         hdr_acts.append(ActionBtn(t("cc_firewall.reset_flt"), "cc_fw:cflt_clear", tone="warn"))
     hdr_acts.append(ActionBtn(t("cc_firewall.refresh"), "cc_fw:refresh", tone="neutral"))
@@ -77,9 +79,9 @@ def _build_connections_tab(cc_panel, canvas: Canvas) -> list:
     rows = [[
         CyclePill(f_proto, "cc_fw:cflt_cycle:proto", active=(f_proto != "ALL")),
         CyclePill(f_state, "cc_fw:cflt_cycle:state", active=(f_state != "ALL")),
-        InlineFilter("fw_cflt_port", f_port, "port:*", "cc_fw:cflt_inline:port", width=16, compact=True),
-        InlineFilter("fw_cflt_peer", f_peer, "peer:*", "cc_fw:cflt_inline:peer", width=16, compact=True),
-        InlineFilter("fw_cflt_proc", f_proc, "proc:*", "cc_fw:cflt_inline:proc", width=14, compact=True),
+        InlineFilter("fw_cflt_port", f_port, t("cc_firewall.cflt_port_ph"), "cc_fw:cflt_inline:port", width=16, compact=True),
+        InlineFilter("fw_cflt_peer", f_peer, t("cc_firewall.cflt_peer_ph"), "cc_fw:cflt_inline:peer", width=16, compact=True),
+        InlineFilter("fw_cflt_proc", f_proc, t("cc_firewall.cflt_proc_ph"), "cc_fw:cflt_inline:proc", width=14, compact=True),
     ]]
     proc_max = max(20, canvas.inner_cols - 72)
     for f in visible_flows:
@@ -106,7 +108,9 @@ def _build_connections_tab(cc_panel, canvas: Canvas) -> list:
         rows=rows,
         aligns=["left", "left", "left", "left", "left"],
     )
-    if not visible_flows:
+    if not has_ss:
+        box.add_row(f"  {Txt(t('cc_firewall.ss_not_installed'), role='warn')}")
+    elif not visible_flows:
         box.add_row(f"  {Txt(t('cc_firewall.no_matching_flows'), role='inactive')}")
     box.add_row(" ")
     cards.append(box)
@@ -115,7 +119,3 @@ def _build_connections_tab(cc_panel, canvas: Canvas) -> list:
         cards.append(_build_flow_inspector(sel_flow))
 
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_connections_tab(cc_panel, canvas)

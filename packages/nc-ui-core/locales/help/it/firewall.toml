@@ -66,7 +66,7 @@ short = "Seleziona questa regola per visualizzarne i criteri completi, la riga `
 ["cc_fw:toggle:*"]
 title = "Abilita / Disabilita Regola"
 short = "Attiva o disattiva l'inclusione di questa regola nel ruleset `table inet filter` generato (`firewall_rules.json`)."
-verbose = "Le regole disabilitate restano salvate in `~/.config/nc-ui/firewall_rules.json` per poterle riattivare in seguito; premi Applica o Salva per aggiornare il kernel."
+verbose = "Le regole disabilitate restano salvate in `~/.config/ncui/firewall_rules.json` per poterle riattivare in seguito; premi Applica o Salva per aggiornare il kernel."
 
 ["cc_fw:edit:*"]
 title = "Modifica Regola Selezionata"
@@ -153,7 +153,7 @@ verbose = "L'approccio default-allow (`policy accept`) lascia passare il traffic
 
 ["cc_fw:inline_lan"]
 title = "Modifica Subnet `$LAN_NETWORK`.."
-short = "Apre l'editor CIDR inline per la variabile `nftables` `$LAN_NETWORK` (predefinita `10.10.0.0/24`) usata dalle regole LAN."
+short = "Apre l'editor CIDR inline per la variabile `nftables` `$LAN_NETWORK` (predefinita `192.168.1.0/24`) usata dalle regole LAN."
 verbose = "Aggiorna `define LAN_NETWORK = <cidr>` in testa al file `nftables.conf` generato, propagando subito il nuovo prefisso a tutte le regole che usano `$LAN_NETWORK`."
 
 ["cc_fw:preset:*"]

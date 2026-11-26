@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import math
 import os
-from core.config import THEME, _parse_rgba_components
+from core.config import THEME
 from core.i18n import t
 from core.privileges import build_privilege_modal_card
 from core.state import STATE
@@ -16,14 +16,16 @@ from ui.kit import (
     SelectPill,
     StateBadge,
     Txt,
+    feedback_cards,
     get_semantic_palette,
+    hex_to_rgba_f,
+    rounded_rect_path,
 )
 from ui.widgets import AsciiCard
 from core.pad_mapper_core import get_macro_pad_usage
 from panels.cc_engine_input import (
     _RUNTIME_REC,
     _collect_keyboard_state,
-    _feedback_box,
     _find_saved_macro,
     _get_macro_draft,
     _is_macro_engine_running,
@@ -33,24 +35,6 @@ from panels.cc_engine_input import (
 )
 
 _TICK_STEPS_MS = (5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000)
-
-
-def _hex_rgba(hex_str: str, alpha: float = 1.0) -> tuple[float, float, float, float]:
-    r, g, b, _ = _parse_rgba_components(hex_str)
-    return (r / 255.0, g / 255.0, b / 255.0, alpha)
-
-
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(float(r), float(w) * 0.5, float(h) * 0.5))
-    if rad <= 0.0:
-        cr.rectangle(x, y, w, h)
-        return
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi * 0.5, 0.0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0.0, math.pi * 0.5)
-    cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, math.pi * 1.5)
-    cr.close_path()
 
 
 class _MacroTimelineMixin:
@@ -237,23 +221,23 @@ class _MacroTimelineMixin:
         track_bot = h - footer_h
 
         # 1. Outer recessed Tactical Blueprint container
-        _rounded_rect(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
-        cr.set_source_rgba(*_hex_rgba(pal["structure_bg"], 0.62))
+        rounded_rect_path(cr, bx + 0.5, 0.5, bw - 1.0, h - 1.0, 6.0)
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.62))
         cr.fill_preserve()
-        cr.set_source_rgba(*_hex_rgba(pal["fault"] if self.is_rec else pal["structure"], 0.90))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["fault"] if self.is_rec else pal["structure"], 0.90))
         cr.set_line_width(1.2 if self.is_rec else 1.0)
         cr.stroke()
 
         cr.save()
-        _rounded_rect(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
+        rounded_rect_path(cr, bx + 1.0, 1.0, bw - 2.0, h - 2.0, 5.5)
         cr.clip()
 
         # 2. Top Millisecond Ruler Band
         surf_hex = str((THEME.get("colors") or {}).get("bg_panel") or pal["structure_bg"])
-        cr.set_source_rgba(*_hex_rgba(surf_hex, 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.72))
         cr.rectangle(bx + 1.0, 1.0, bw - 2.0, ruler_h - 1.0)
         cr.fill()
-        cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.72))
         cr.set_line_width(1.0)
         cr.move_to(bx + 1.0, ruler_h + 0.5)
         cr.line_to(bx + bw - 1.0, ruler_h + 0.5)
@@ -288,7 +272,7 @@ class _MacroTimelineMixin:
         ml_lay.set_text(mode_txt, -1)
         _, ml_ext = ml_lay.get_pixel_extents()
         mode_x = bx + bw - 12.0 - ml_ext.width
-        cr.set_source_rgba(*_hex_rgba(mode_col, 0.95))
+        cr.set_source_rgba(*hex_to_rgba_f(mode_col, 0.95))
         cr.move_to(mode_x, max(3.0, (ruler_h - ml_ext.height) * 0.5))
         PangoCairo.show_layout(cr, ml_lay)
 
@@ -302,7 +286,7 @@ class _MacroTimelineMixin:
                 break
             # Vertical dashed gridline in track area
             cr.save()
-            cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.34 if t_cur > 0 else 0.52))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.34 if t_cur > 0 else 0.52))
             cr.set_line_width(1.0)
             if t_cur > 0:
                 cr.set_dash([2.5, 4.0])
@@ -312,7 +296,7 @@ class _MacroTimelineMixin:
             cr.restore()
 
             # Major tick mark on ruler
-            cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.65))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.65))
             cr.set_line_width(1.0)
             cr.move_to(math.floor(tx) + 0.5, ruler_h - 6.0)
             cr.line_to(math.floor(tx) + 0.5, ruler_h)
@@ -324,14 +308,14 @@ class _MacroTimelineMixin:
             tl.set_text(lbl_str, -1)
             _, te = tl.get_pixel_extents()
             if tx + 4.0 + te.width < mode_x - 10.0:
-                cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.85))
+                cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.85))
                 cr.move_to(tx + 4.0, max(3.0, (ruler_h - te.height) * 0.5))
                 PangoCairo.show_layout(cr, tl)
 
             # Halfway minor tick
             mid_x = tx + (step_ms * 0.5) * self._px_per_ms
             if mid_x < bx + bw - 12.0:
-                cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.70))
+                cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.70))
                 cr.move_to(math.floor(mid_x) + 0.5, ruler_h - 3.5)
                 cr.line_to(math.floor(mid_x) + 0.5, ruler_h)
                 cr.stroke()
@@ -348,7 +332,7 @@ class _MacroTimelineMixin:
             el.set_width(int(max(80.0, bw - 32.0) * Pango.SCALE))
             el.set_text(t("cc_keyboard.tl_empty_hint"), -1)
             _, ee = el.get_pixel_extents()
-            cr.set_source_rgba(*_hex_rgba(pal["inactive"], 0.92))
+            cr.set_source_rgba(*hex_to_rgba_f(pal["inactive"], 0.92))
             cr.move_to(bx + 16.0, ruler_h + max(8.0, (track_bot - ruler_h - ee.height) * 0.5))
             PangoCairo.show_layout(cr, el)
         else:
@@ -361,7 +345,7 @@ class _MacroTimelineMixin:
                 if prev_b["vis_lane"] == cur_b["vis_lane"] and gap_x2 - gap_x1 >= 8.0:
                     cy = cur_b["y"] + cur_b["h"] * 0.5
                     cr.save()
-                    cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.78))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.78))
                     cr.set_line_width(1.0)
                     cr.set_dash([3.0, 3.0])
                     cr.move_to(gap_x1 + 2.0, cy)
@@ -374,7 +358,7 @@ class _MacroTimelineMixin:
                         gl.set_text(f"+{int(round(cur_b['eff_delay']))}ms", -1)
                         _, ge = gl.get_pixel_extents()
                         if ge.width <= (gap_x2 - gap_x1 - 6.0):
-                            cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.78))
+                            cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.78))
                             cr.move_to(gap_x1 + (gap_x2 - gap_x1 - ge.width) * 0.5, cy - ge.height - 2.0)
                             PangoCairo.show_layout(cr, gl)
 
@@ -399,33 +383,33 @@ class _MacroTimelineMixin:
                 is_mod = b["is_mod"]
 
                 cr.save()
-                _rounded_rect(cr, ix + 0.5, iy + 0.5, iw - 1.0, ih - 1.0, 4.5)
+                rounded_rect_path(cr, ix + 0.5, iy + 0.5, iw - 1.0, ih - 1.0, 4.5)
                 if is_sel or is_drag:
-                    cr.set_source_rgba(*_hex_rgba(pal["intent_bg"], 0.92 if is_drag else 0.84))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["intent_bg"], 0.92 if is_drag else 0.84))
                 elif is_hov:
-                    cr.set_source_rgba(*_hex_rgba(pal["structure_bg"], 0.98))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["structure_bg"], 0.98))
                 else:
-                    cr.set_source_rgba(*_hex_rgba(surf_hex, 0.88))
+                    cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.88))
                 cr.fill_preserve()
 
                 if is_sel or is_drag:
-                    cr.set_source_rgba(*_hex_rgba(pal["intent"], 1.0))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["intent"], 1.0))
                     cr.set_line_width(1.6 if is_drag else 1.4)
                 elif is_hov:
-                    cr.set_source_rgba(*_hex_rgba(pal["focus"], 0.92))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["focus"], 0.92))
                     cr.set_line_width(1.2)
                 else:
-                    cr.set_source_rgba(*_hex_rgba(pal["attention"] if is_mod else pal["structure"], 0.72 if is_mod else 0.95))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["attention"] if is_mod else pal["structure"], 0.72 if is_mod else 0.95))
                     cr.set_line_width(1.0)
                 cr.stroke()
 
                 # Clip interior for onset accent stripe, key label, hold telemetry, and resize grip
-                _rounded_rect(cr, ix + 1.0, iy + 1.0, max(2.0, iw - 2.0), max(2.0, ih - 2.0), 4.0)
+                rounded_rect_path(cr, ix + 1.0, iy + 1.0, max(2.0, iw - 2.0), max(2.0, ih - 2.0), 4.0)
                 cr.clip()
 
                 # Left press-onset vertical bar (▼ Key Down marker)
                 accent_col = pal["intent"] if (is_sel or is_drag) else (pal["attention"] if is_mod else pal["vitality"])
-                cr.set_source_rgba(*_hex_rgba(accent_col, 0.95))
+                cr.set_source_rgba(*hex_to_rgba_f(accent_col, 0.95))
                 cr.rectangle(ix + 1.0, iy + 1.0, 3.2, ih - 2.0)
                 cr.fill()
 
@@ -453,12 +437,12 @@ class _MacroTimelineMixin:
                     sl = None
                     ty = iy + max(2.0, (ih - ke.height) * 0.5)
 
-                cr.set_source_rgba(*_hex_rgba(pal["focus"] if (is_sel or is_hov or is_drag) else pal["focus_val"], 1.0))
+                cr.set_source_rgba(*hex_to_rgba_f(pal["focus"] if (is_sel or is_hov or is_drag) else pal["focus_val"], 1.0))
                 cr.move_to(ix + pad_in, ty)
                 PangoCairo.show_layout(cr, kl)
 
                 if sl is not None:
-                    cr.set_source_rgba(*_hex_rgba(pal["intent"] if (is_sel or is_drag) else pal["schema"], 0.92))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["intent"] if (is_sel or is_drag) else pal["schema"], 0.92))
                     cr.move_to(ix + pad_in, ty + ke.height + 1.5)
                     PangoCairo.show_layout(cr, sl)
 
@@ -468,7 +452,7 @@ class _MacroTimelineMixin:
                     il.set_font_description(f_sub)
                     il.set_text(f"#{b['idx'] + 1:02d}", -1)
                     _, ie = il.get_pixel_extents()
-                    cr.set_source_rgba(*_hex_rgba(pal["intent"] if is_sel else pal["schema"], 0.72))
+                    cr.set_source_rgba(*hex_to_rgba_f(pal["intent"] if is_sel else pal["schema"], 0.72))
                     cr.move_to(ix + iw - ie.width - 10.0, iy + 3.0)
                     PangoCairo.show_layout(cr, il)
 
@@ -477,7 +461,7 @@ class _MacroTimelineMixin:
                     gx = ix + iw - 5.5
                     cy_mid = iy + ih * 0.5
                     grip_col = pal["intent"] if (is_drag or self._hovered_edge) else pal["schema"]
-                    cr.set_source_rgba(*_hex_rgba(grip_col, 0.90))
+                    cr.set_source_rgba(*hex_to_rgba_f(grip_col, 0.90))
                     for dy in (-4.0, 0.0, 4.0):
                         cr.arc(gx, cy_mid + dy, 1.15, 0.0, 2.0 * math.pi)
                         cr.fill()
@@ -487,7 +471,7 @@ class _MacroTimelineMixin:
             if self.is_rec:
                 last_end_x = max(b["x"] + b["w"] for b in blocks) + 4.0
                 ph_x = min(bx + bw - 8.0, last_end_x)
-                cr.set_source_rgba(*_hex_rgba(pal["fault"], 0.95))
+                cr.set_source_rgba(*hex_to_rgba_f(pal["fault"], 0.95))
                 cr.set_line_width(1.6)
                 cr.move_to(ph_x, ruler_h + 1.0)
                 cr.line_to(ph_x, track_bot - 1.0)
@@ -495,10 +479,10 @@ class _MacroTimelineMixin:
 
         # 4. Integrated Telemetry Footer Strip
         fy = track_bot
-        cr.set_source_rgba(*_hex_rgba(surf_hex, 0.78))
+        cr.set_source_rgba(*hex_to_rgba_f(surf_hex, 0.78))
         cr.rectangle(bx + 1.0, fy, bw - 2.0, footer_h)
         cr.fill()
-        cr.set_source_rgba(*_hex_rgba(pal["structure"], 0.72))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["structure"], 0.72))
         cr.set_line_width(1.0)
         cr.move_to(bx + 1.0, fy + 0.5)
         cr.line_to(bx + bw - 1.0, fy + 0.5)
@@ -543,11 +527,11 @@ class _MacroTimelineMixin:
         _, re_l = fl_l.get_pixel_extents()
 
         fty = fy + max(2.0, (footer_h - max(re_l.height, re_r.height)) * 0.5)
-        cr.set_source_rgba(*_hex_rgba(left_col, 0.94))
+        cr.set_source_rgba(*hex_to_rgba_f(left_col, 0.94))
         cr.move_to(bx + fpad, fty)
         PangoCairo.show_layout(cr, fl_l)
 
-        cr.set_source_rgba(*_hex_rgba(pal["schema"], 0.85))
+        cr.set_source_rgba(*hex_to_rgba_f(pal["schema"], 0.85))
         cr.move_to(bx + bw - fpad - re_r.width, fty)
         PangoCairo.show_layout(cr, fl_r)
 
@@ -648,14 +632,15 @@ def MacroTimelineWidget(*args, **kwargs):
 
 
 def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
-    cards = _feedback_box() + build_privilege_modal_card(cc_panel, canvas)
+    cards = feedback_cards("keyboard", "cc_keyboard.keyboard_configuration_status") + build_privilege_modal_card(cc_panel, canvas)
     cap_mode = str(STATE.get("keyboard", "capture_mode", "") or "")
     cap_prev = str(STATE.get("keyboard", "capture_preview", "") or "")
     draft = _get_macro_draft()
     macros = _load_macros()
     saved = _find_saved_macro(draft["id"], macros)
     is_dirty = is_macro_draft_dirty(draft, macros)
-    uinput_ok = os.access("/dev/uinput", os.W_OK)
+    uinput_exists = os.path.exists("/dev/uinput")
+    uinput_ok = uinput_exists and os.access("/dev/uinput", os.W_OK)
 
     is_rec = (cap_mode == "macro_rec")
     is_trig_cap = (cap_mode == "macro_trigger")
@@ -705,6 +690,7 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         ],
         highlighted=False,
     )
+    lib_box.add_row(" ")
     lib_box.add_kv(
         t("cc_keyboard.lib_search_lbl"),
         InlineFilter(
@@ -762,6 +748,7 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
             rows=l_rows,
             aligns=["left", "left", "left", "left", "right"],
         )
+    lib_box.add_row(" ")
     cards.append(lib_box)
 
     # =====================================================================
@@ -780,7 +767,13 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         actions=studio_hdr_actions,
         highlighted=False,
     )
-    if not uinput_ok:
+    studio_box.add_row(" ")
+    if not uinput_exists:
+        studio_box.add_kv(
+            t("cc_keyboard.uinput_driver"),
+            Badge(t("cc_keyboard.uinput_missing"), style="crit"),
+        )
+    elif not uinput_ok:
         studio_box.add_kv(
             t("cc_keyboard.uinput_driver"),
             Badge(t("cc_keyboard.kernel_uinput_permission_required"), style="warn"),
@@ -920,6 +913,7 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         icon="\uf0ae",
         highlighted=False,
     )
+    ed_box.add_row(" ")
 
     if steps:
         sel_s = steps[sel_idx]
@@ -980,7 +974,7 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
                     Txt(str(s.get("keycode", 0)), role="schema"),
                     Txt(f"+{int(s.get('delay_ms', 0))} ms", role="val"),
                     Txt(f"{int(s.get('hold_ms', 50))} ms", role="val"),
-                    f"{InlineField(f'cc_mac_step_{idx}', f'cc_kbd:step_inline_edit:{idx}', value='', empty_label='\u270e', placeholder='50, 80', width=10, icon='', tone='neutral')} {up_b}{dn_b} {ActionBtn(t('cc_keyboard.clear_x'), f'cc_kbd:step_del:{idx}', tone='danger_soft')}",
+                    f"{InlineField(f'cc_mac_step_{idx}', f'cc_kbd:step_inline_edit:{idx}', value='', empty_label=t('cc_keyboard.edit_dots'), placeholder='50, 80', width=10, icon='', tone='neutral')} {up_b}{dn_b} {ActionBtn(t('cc_keyboard.clear_x'), f'cc_kbd:step_del:{idx}', tone='danger_soft')}",
                 ])
             b.add_table(
                 headers=[
@@ -1084,6 +1078,7 @@ def _build_macros_standard(cc_panel, canvas: Canvas, st: dict) -> list:
         f"{ActionBtn(t('cc_keyboard.save_macro_btn'), 'cc_kbd:macro_save_draft', tone='apply' if is_dirty else 'inactive')}"
     )
     ed_box.add_row(f"  {sync_msg}", right_markup=commit_btns)
+    ed_box.add_row(" ")
     cards.append(ed_box)
     return cards
 

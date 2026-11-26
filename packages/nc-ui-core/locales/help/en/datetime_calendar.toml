@@ -68,7 +68,7 @@ verbose = "Rewrites the Waybar clock format string (`{:%H:%M}`, `{:%a %d %b  %H:
 ["cc_cal:mode:ical"]
 title = "Enable iCal + Local SQLite Mode"
 short = "Initializes/switches the calendar backend to `ical` mode, combining local `calendar.db` events with subscribed `.ics` feeds."
-verbose = "Stores remote feed definitions in `ical_feeds.json` and caches parsed `VEVENT`s alongside personal entries inside `~/.config/nc-ui/calendar.db`."
+verbose = "Stores remote feed definitions in `ical_feeds.json` and caches parsed `VEVENT`s alongside personal entries inside `~/.config/ncui/calendar.db`."
 
 ["cc_cal:mode:local"]
 title = "Enable Local SQLite Mode Only"
@@ -89,7 +89,7 @@ short = "Dispatches a live NC-UI desktop notification preview showing your curre
 ["cc_cal:clear_local"]
 title = "Clear All Local Events"
 short = "Deletes all locally created events from `calendar.db` while leaving subscribed iCal feed events untouched."
-verbose = "Executes `DELETE FROM events WHERE source = 'local'` on `~/.config/nc-ui/calendar.db`. Remote iCal events remain intact until their feed is removed."
+verbose = "Executes `DELETE FROM events WHERE source = 'local'` on `~/.config/ncui/calendar.db`. Remote iCal events remain intact until their feed is removed."
 
 ["cc_cal:ical_add"]
 title = "Add iCal (.ics) Subscription"

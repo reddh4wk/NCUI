@@ -20,9 +20,9 @@ from ui.kit import (
     Slider,
     StateBadge,
     Txt,
-    get_active_inline_entry,
 )
 from panels.cc_engine_printers import (
+    add_ppd_picker_kv,
     build_offline_spooler_card,
     feedback_cards,
     get_cups_daemon_state,
@@ -33,8 +33,8 @@ from panels.cc_engine_printers import (
     get_printers_snapshot,
     get_quick_print_draft,
     humanize_ppd_choice,
+    render_scalar_kv,
     search_cups_drivers,
-    validate_ppd_file,
 )
 
 
@@ -45,27 +45,7 @@ def _pill_row(prn_name: str, key: str, current: str, choices: list[tuple[str, st
     )
 
 
-def _editable_kv_row(
-    bx: Box,
-    canvas: Canvas,
-    key_label: str,
-    entry_id: str,
-    trigger_uri: str,
-    current_val: str,
-    placeholder: str,
-    extra_right: str = "",
-) -> None:
-    if get_active_inline_entry() == entry_id:
-        fld = InlineField(entry_id, trigger_uri, value=current_val, placeholder=placeholder, width=40)
-        bx.add_kv(key_label, fld, right_markup=extra_right)
-    else:
-        val_m = Txt(canvas.truncate_plain(current_val, 44 if extra_right else 52), role="val") if current_val else Txt(t("common.unset"), role="inactive")
-        edit_b = ActionBtn(t("cc_printers.edit_dots_btn"), trigger_uri, tone="neutral")
-        r_m = f"{edit_b} {extra_right}".strip() if extra_right else edit_b
-        bx.add_kv(key_label, val_m, right_markup=r_m)
-
-
-def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     cards = feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
     daemon = get_cups_daemon_state()
 
@@ -194,7 +174,7 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         highlighted=False,
     )
 
-    _editable_kv_row(
+    render_scalar_kv(
         insp,
         canvas,
         t("cc_printers.kv_prn_name"),
@@ -212,18 +192,18 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         uri_extra.append(ActionBtn(t("cc_printers.probe_port_btn"), f"cc_prn:probe_uri:{sel['uri']}", tone="neutral"))
     if net_host:
         uri_extra.append(ActionBtn(t("cc_printers.open_addr_btn"), f"cc_prn:open_addr:{pname}", tone="neutral"))
-    _editable_kv_row(
+    render_scalar_kv(
         insp,
         canvas,
         t("cc_printers.kv_device_uri"),
         f"prn_edit_uri_{pname}",
         f"cc_prn:edit_uri:{pname}",
         sel["uri"],
-        "ipp://10.10.0.45:631/ipp/print",
+        "ipp://192.168.1.50:631/ipp/print",
         extra_right=" ".join(uri_extra),
     )
 
-    _editable_kv_row(
+    render_scalar_kv(
         insp,
         canvas,
         t("cc_printers.kv_description"),
@@ -232,7 +212,7 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
         sel["description"],
         t("cc_printers.ph_description"),
     )
-    _editable_kv_row(
+    render_scalar_kv(
         insp,
         canvas,
         t("cc_printers.kv_location"),
@@ -286,19 +266,13 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
                 width=32,
             )
             bx.add_kv(t("cc_printers.kv_search_drv"), flt)
-            for drv_id, lbl in search_cups_drivers(de["query"], limit=4):
+            for drv_id, lbl in search_cups_drivers(de["query"], limit=4, cc_panel=cc_panel):
                 bx.add_kv(
                     "",
                     SelectPill(canvas.truncate_plain(lbl, 56), f"cc_prn:drv_edit_pick:{drv_id}", selected=(de["drv_id"] == drv_id)),
                 )
         elif de["mode"] == "ppd":
-            ppd_b = ActionBtn(t("cc_printers.browse_ppd_btn"), "cc_prn:drv_edit_ppd", tone="neutral")
-            if de["ppd_path"]:
-                v_ok, _ = validate_ppd_file(de["ppd_path"])
-                st_b = StateBadge(True, t("cc_printers.ppd_valid_badge")) if v_ok else Badge(t("cc_printers.ppd_invalid_badge"), style="crit")
-                bx.add_kv(t("cc_printers.kv_ppd_file"), f"{Txt(os.path.basename(de['ppd_path']), role='val')}  {st_b}", right_markup=ppd_b)
-            else:
-                bx.add_kv(t("cc_printers.kv_ppd_file"), Txt(t("common.unset"), role="inactive"), right_markup=ppd_b)
+            add_ppd_picker_kv(bx, de["ppd_path"], "cc_prn:drv_edit_ppd")
         bx.add_kv("", ActionBtn(t("cc_printers.apply_drv_btn"), f"cc_prn:drv_edit_apply:{pname}", tone="apply"))
 
     insp.add_collapsible(
@@ -390,7 +364,7 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
             "print-scaling",
             job.get("print-scaling", "auto"),
             [
-                ("auto", "Auto"),
+                ("auto", t("cc_printers.scale_auto")),
                 ("fit", t("cc_printers.scale_fit")),
                 ("fill", t("cc_printers.scale_fill")),
                 ("none", t("cc_printers.scale_none")),
@@ -587,7 +561,3 @@ def _build_devices_standard(cc_panel, canvas: Canvas) -> list:
 
     cards.append(insp)
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_devices_standard(cc_panel, canvas)

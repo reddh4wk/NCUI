@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-from core import probe
+import glob
+import os
 from core.config import THEME
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, FoldIconBtn, ProgressBar, Sparkline, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, FoldIconBtn, ProgressBar, Sparkline, StateBadge, Txt
 from ui.markup import format_bytes_short
 from panels.base import BasePanel
 from panels.cc_engine_resources import (
@@ -25,6 +26,83 @@ def _pct_role(pct: float) -> str:
     if pct < 90.0:
         return "interrupt"
     return "fault"
+
+
+def _sys_temp_role(temp: float) -> str:
+    if temp < 65.0:
+        return "vitality"
+    if temp < 80.0:
+        return "attention"
+    if temp < 85.0:
+        return "interrupt"
+    return "fault"
+
+
+def _temp_bar_pct(temp: float) -> float:
+    """Map thermal bands (<65 / <80 / <85 / >=85 °C) onto ProgressBar thresholds (<50 / <75 / <90 / >=90%)."""
+    if temp < 65.0:
+        return max(0.0, (temp / 65.0) * 49.0)
+    if temp < 80.0:
+        return 50.0 + ((temp - 65.0) / 15.0) * 24.0
+    if temp < 85.0:
+        return 75.0 + ((temp - 80.0) / 5.0) * 14.0
+    return min(100.0, 90.0 + ((temp - 85.0) / 10.0) * 10.0)
+
+
+def _read_sysfs_str(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _read_laptop_power() -> dict | None:
+    bat_dirs = sorted(glob.glob("/sys/class/power_supply/BAT*"))
+    if not bat_dirs:
+        return None
+    batteries = []
+    for bd in bat_dirs:
+        cap_s = _read_sysfs_str(os.path.join(bd, "capacity"))
+        if not cap_s:
+            continue
+        try:
+            cap = max(0, min(100, int(cap_s)))
+        except ValueError:
+            continue
+        status = _read_sysfs_str(os.path.join(bd, "status")) or "Unknown"
+        power_w = 0.0
+        p_raw = _read_sysfs_str(os.path.join(bd, "power_now"))
+        if p_raw.isdigit():
+            power_w = int(p_raw) / 1_000_000.0
+        else:
+            c_raw = _read_sysfs_str(os.path.join(bd, "current_now"))
+            v_raw = _read_sysfs_str(os.path.join(bd, "voltage_now"))
+            if c_raw.isdigit() and v_raw.isdigit():
+                power_w = (int(c_raw) * int(v_raw)) / 1_000_000_000_000.0
+        health_pct = None
+        for full_k, des_k in (("energy_full", "energy_full_design"), ("charge_full", "charge_full_design")):
+            f_s = _read_sysfs_str(os.path.join(bd, full_k))
+            d_s = _read_sysfs_str(os.path.join(bd, des_k))
+            if f_s.isdigit() and d_s.isdigit() and int(d_s) > 0:
+                health_pct = min(100, int(round((int(f_s) / int(d_s)) * 100.0)))
+                break
+        batteries.append({
+            "name": os.path.basename(bd),
+            "capacity": cap,
+            "status": status,
+            "power_w": power_w,
+            "health_pct": health_pct,
+        })
+    if not batteries:
+        return None
+    ac_online = None
+    for acd in sorted(glob.glob("/sys/class/power_supply/AC*") + glob.glob("/sys/class/power_supply/ADP*")):
+        val = _read_sysfs_str(os.path.join(acd, "online"))
+        if val in ("0", "1"):
+            ac_online = (val == "1")
+            break
+    return {"ac_online": ac_online, "batteries": batteries}
 
 
 class SystemPanel(BasePanel):
@@ -82,7 +160,7 @@ class SystemPanel(BasePanel):
             pct = tele["total_pct"]
             l1, l5, l15 = tele["loads"]
             temp = tele["temp_c"]
-            temp_role = "vitality" if temp < 65.0 else ("attention" if temp < 80.0 else ("interrupt" if temp < 85.0 else "fault"))
+            temp_role = _sys_temp_role(temp)
             gov = tele.get("governor", "")
             hdr_acts = [StateBadge(True, gov.upper(), on_tone="ok")] if gov else []
             hero = Box(
@@ -105,11 +183,14 @@ class SystemPanel(BasePanel):
                 f"{Txt(f'{max_ghz:4.2f} GHz', role='val')} {Txt(t('system.peak_tag'), role='schema')} "
                 f"{Txt('·', role='structure')} {Txt(f'{avg_ghz:4.2f} GHz', role='val')}",
             )
-            hero.add_kv(
-                t("system.thermal_kv"),
-                f"{ProgressBar(min(100.0, max(0.0, (temp / 95.0) * 100.0)), width=16)} "
-                f"{Txt(f'{temp:4.1f} °C', role=temp_role)}",
-            )
+            if temp > 0.0:
+                hero.add_kv(
+                    t("system.thermal_kv"),
+                    f"{ProgressBar(_temp_bar_pct(temp), width=16)} "
+                    f"{Txt(f'{temp:4.1f} °C', role=temp_role)}",
+                )
+            else:
+                hero.add_kv(t("system.thermal_kv"), Txt(t("common.nd"), role="inactive"))
             hero.add_kv(
                 t("system.load_avg_kv"),
                 f"{Txt(f'{l1:.2f}', role='val')} {Txt('1m', role='schema')} "
@@ -160,6 +241,7 @@ class SystemPanel(BasePanel):
                 )
                 hero.add_row(" ")
                 hero.add_row(f"  {Txt(t('system.gpu_unavailable'), role='inactive')}")
+                hero.add_row(" ")
             else:
                 pstate = tele.get("pstate", "")
                 hdr_acts = [StateBadge(True, pstate.upper(), on_tone="ok")] if pstate else []
@@ -177,50 +259,57 @@ class SystemPanel(BasePanel):
                     t("system.gpu_load_kv"),
                     f"{ProgressBar(util_pct, width=14)} {Txt(f'{util_pct:5.1f}%', role=_pct_role(util_pct))}",
                 )
-                vram_u_g = tele["vram_used"] / (1024.0 ** 3)
-                vram_t_g = tele["vram_total"] / (1024.0 ** 3)
-                vram_pct = tele["vram_pct"]
-                hero.add_kv(
-                    t("system.gpu_vram_kv"),
-                    f"{ProgressBar(vram_pct, width=12)} {Txt(f'{vram_u_g:4.1f}/{vram_t_g:.0f}G', role='val')} "
-                    f"{Txt(f'{vram_pct:4.0f}%', role=_pct_role(vram_pct))}",
-                )
-                temp = tele["temp_c"]
-                temp_role = "vitality" if temp < 65.0 else ("attention" if temp < 80.0 else ("interrupt" if temp < 85.0 else "fault"))
-                # Map thermal bands (<65 / <80 / <85 / >=85 °C) onto ProgressBar color thresholds (<50 / <75 / <90 / >=90%).
-                if temp < 65.0:
-                    temp_bar_pct = max(0.0, (temp / 65.0) * 49.0)
-                elif temp < 80.0:
-                    temp_bar_pct = 50.0 + ((temp - 65.0) / 15.0) * 24.0
-                elif temp < 85.0:
-                    temp_bar_pct = 75.0 + ((temp - 80.0) / 5.0) * 14.0
+                if tele.get("vram_total", 0) > 0:
+                    vram_u_g = tele["vram_used"] / (1024.0 ** 3)
+                    vram_t_g = tele["vram_total"] / (1024.0 ** 3)
+                    vram_pct = tele["vram_pct"]
+                    hero.add_kv(
+                        t("system.gpu_vram_kv"),
+                        f"{ProgressBar(vram_pct, width=12)} {Txt(f'{vram_u_g:4.1f}/{vram_t_g:.0f}G', role='val')} "
+                        f"{Txt(f'{vram_pct:4.0f}%', role=_pct_role(vram_pct))}",
+                    )
                 else:
-                    temp_bar_pct = min(100.0, 90.0 + ((temp - 85.0) / 10.0) * 10.0)
-                hero.add_kv(
-                    t("system.thermal_kv"),
-                    f"{ProgressBar(temp_bar_pct, width=14)} "
-                    f"{Txt(f'{temp:4.1f} °C', role=temp_role)}",
-                )
-                pwr_str = (
-                    f"{tele['power_w']:.1f} / {tele['power_limit_w']:.0f} W"
-                    if tele["power_limit_w"] > 0
-                    else f"{tele['power_w']:.1f} W"
-                )
-                pwr_val = Txt(pwr_str, role="val")
+                    hero.add_kv(t("system.gpu_vram_kv"), Txt(t("system.gpu_shared_uma"), role="schema"))
+                temp = tele["temp_c"]
+                if temp > 0.0:
+                    temp_role = _sys_temp_role(temp)
+                    hero.add_kv(
+                        t("system.thermal_kv"),
+                        f"{ProgressBar(_temp_bar_pct(temp), width=14)} "
+                        f"{Txt(f'{temp:4.1f} °C', role=temp_role)}",
+                    )
+                else:
+                    hero.add_kv(t("system.thermal_kv"), Txt(t("common.nd"), role="inactive"))
+                if tele["power_w"] > 0.0 or tele["power_limit_w"] > 0.0:
+                    pwr_str = (
+                        f"{tele['power_w']:.1f} / {tele['power_limit_w']:.0f} W"
+                        if tele["power_limit_w"] > 0
+                        else f"{tele['power_w']:.1f} W"
+                    )
+                    pwr_val = Txt(pwr_str, role="val")
+                elif tele["fan_pct"] is not None:
+                    pwr_val = ""
+                else:
+                    pwr_val = Txt(t("common.nd"), role="inactive")
                 if tele["fan_pct"] is not None:
                     fan_p = tele["fan_pct"]
-                    pwr_val += (
-                        f" {Txt('·', role='structure')} {Txt(t('system.gpu_fan_lbl'), role='schema')} "
+                    fan_part = (
+                        f"{Txt(t('system.gpu_fan_lbl'), role='schema')} "
                         f"{Txt(f'{fan_p}%', role='val')}"
                     )
+                    pwr_val = f"{pwr_val} {Txt('·', role='structure')} {fan_part}" if pwr_val else fan_part
                 hero.add_kv(t("system.gpu_power_kv"), pwr_val)
                 gfx_mhz = tele["gfx_mhz"]
                 mem_mhz = tele["mem_mhz"]
-                hero.add_kv(
-                    t("system.gpu_clocks_kv"),
-                    f"{Txt(f'{gfx_mhz} MHz', role='val')} {Txt(t('system.gpu_gfx_tag'), role='schema')} "
-                    f"{Txt('·', role='structure')} {Txt(f'{mem_mhz} MHz', role='val')} {Txt(t('system.gpu_mem_tag'), role='schema')}",
-                )
+                clk_parts = []
+                if gfx_mhz > 0:
+                    clk_parts.append(f"{Txt(f'{gfx_mhz} MHz', role='val')} {Txt(t('system.gpu_gfx_tag'), role='schema')}")
+                if mem_mhz > 0:
+                    clk_parts.append(f"{Txt(f'{mem_mhz} MHz', role='val')} {Txt(t('system.gpu_mem_tag'), role='schema')}")
+                if clk_parts:
+                    hero.add_kv(t("system.gpu_clocks_kv"), f" {Txt('·', role='structure')} ".join(clk_parts))
+                else:
+                    hero.add_kv(t("system.gpu_clocks_kv"), Txt(t("common.nd"), role="inactive"))
 
                 toggle_p_btn = FoldIconBtn(
                     show_procs,
@@ -271,11 +360,14 @@ class SystemPanel(BasePanel):
                 f"{Txt(format_bytes_short(rm['avail']), role=avail_role)} "
                 f"{Txt('·', role='structure')} {Txt(t('system.cache_label'), role='schema')} {Txt(format_bytes_short(rm['cache']), role='val')}",
             )
-            hero.add_kv(
-                t("system.swap_zram_kv"),
-                f"{ProgressBar(sw_pct, width=12)} {Txt(f'{sw_u_g:4.1f}/{sw_t_g:.0f}G', role='val')} "
-                f"{Txt(f'{sw_pct:4.0f}%', role=_pct_role(sw_pct))}",
-            )
+            if rm["sw_total"] > 0:
+                hero.add_kv(
+                    t("system.swap_zram_kv"),
+                    f"{ProgressBar(sw_pct, width=12)} {Txt(f'{sw_u_g:4.1f}/{sw_t_g:.0f}G', role='val')} "
+                    f"{Txt(f'{sw_pct:4.0f}%', role=_pct_role(sw_pct))}",
+                )
+            else:
+                hero.add_kv(t("system.swap_zram_kv"), Txt(t("common.none"), role="inactive"))
             hero.add_kv(
                 t("system.dirty_buf_kv"),
                 f"{Txt(t('system.dirty_label'), role='schema')} "
@@ -285,15 +377,53 @@ class SystemPanel(BasePanel):
 
         hero.set_bottom_bar(
             t("system.process_monitor_sec"),
-            actions=[ActionBtn("\uf013", "ui:open_settings:telemetry:resources", tone="neutral")],
+            actions=[ActionBtn("\uf013", f"ui:open_settings:power:{'gpu' if self.is_gpu else 'cpu_ram'}", tone="neutral")],
         )
-        return [hero]
-
-    def on_link(self, uri: str) -> None:
-        if uri == "sys:btop":
-            probe.open_terminal(["btop"])
-            if self.shell:
-                self.shell.dispatch_uri("ui:close")
+        cards = [hero]
+        if self.is_cpu:
+            lp = _read_laptop_power()
+            if lp is not None:
+                ac_acts = []
+                if lp["ac_online"] is not None:
+                    ac_acts.append(
+                        StateBadge(True, t("system.ac_online"), on_tone="ok")
+                        if lp["ac_online"]
+                        else Badge(t("system.on_battery"), style="warn")
+                    )
+                bat_box = Box(
+                    t("system.battery_box"),
+                    icon="\uf240",
+                    actions=ac_acts,
+                    highlighted=False,
+                    min_cols=target_cols,
+                    max_cols=target_cols,
+                )
+                bat_box.add_row(" ")
+                for bat in lp["batteries"]:
+                    cap = bat["capacity"]
+                    cap_role = "vitality" if cap >= 50 else ("attention" if cap >= 20 else "fault")
+                    st_l = bat["status"].strip().lower()
+                    if st_l == "charging":
+                        st_lbl = t("system.bat_charging")
+                    elif st_l == "discharging":
+                        st_lbl = t("system.bat_discharging")
+                    elif st_l == "not charging":
+                        st_lbl = t("system.bat_not_charging")
+                    elif st_l == "full":
+                        st_lbl = t("system.bat_full")
+                    else:
+                        st_lbl = t("common.nd")
+                    pwr_part = f" · {bat['power_w']:.1f} W" if bat["power_w"] > 0 else ""
+                    bat_box.add_kv(
+                        bat["name"],
+                        f"{ProgressBar(cap, width=12, invert_threshold=True)} {Txt(f'{cap}%', role=cap_role)} "
+                        f"{Txt(st_lbl + pwr_part, role='schema')}",
+                    )
+                    if bat["health_pct"] is not None:
+                        bat_box.add_kv(t("system.bat_health_kv"), Txt(f"{bat['health_pct']}%", role="val"))
+                bat_box.add_row(" ")
+                cards.append(bat_box)
+        return cards
 
 
 def create_panel(panel_id: str, shell=None) -> BasePanel:

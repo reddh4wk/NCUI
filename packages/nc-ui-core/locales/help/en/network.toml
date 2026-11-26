@@ -50,7 +50,7 @@ verbose = "Enter a bridge name (e.g., `br0`). Executes `nmcli connection add typ
 ["net:inline_vlan"]
 title = "Create 802.1Q VLAN Interface.."
 short = "Opens inline input (`parent|vlan_id`) to create a tagged 802.1Q VLAN connection in NetworkManager."
-verbose = "Type `<parent_iface>|<1..4094>` (for example `enp5s0|10`). Runs `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` and refreshes the interface table."
+verbose = "Type `<parent_iface>|<1..4094>` (for example `eth0|10`). Runs `nmcli connection add type vlan con-name <dev>.<id> ifname <dev>.<id> dev <dev> id <id>` and refreshes the interface table."
 diagram = "network_stack"
 diagram_focus = "iface"
 
@@ -88,7 +88,7 @@ short = "Creates and verifies a new persistent DHCP NetworkManager connection bo
 ["net:inline_new_prof:*"]
 title = "Create Named NM Profile.."
 short = "Opens inline input to create a new persistent NetworkManager connection profile for this interface."
-verbose = "Enter a profile name (e.g., `enp5s0-static`). Creates the connection via `nmcli`, verifies it in NetworkManager, and selects it for IPv4/IPv6/L2 configuration."
+verbose = "Enter a profile name (e.g., `eth0-static`). Creates the connection via `nmcli`, verifies it in NetworkManager, and selects it for IPv4/IPv6/L2 configuration."
 
 ["net:inline_rename_prof:*:*"]
 title = "Rename NM Profile.."
@@ -236,11 +236,11 @@ short = "Opens inline numeric entry (`-999..999`) to stage `connection.autoconne
 
 ["net:inline_field:net_ip:*"]
 title = "Edit Static IPv4 / CIDR.."
-short = "Opens inline entry to stage `ipv4.addresses` (e.g., `10.10.0.10/24`) and automatically switches method to `manual`."
+short = "Opens inline entry to stage `ipv4.addresses` (e.g., `192.168.1.10/24`) and automatically switches method to `manual`."
 
 ["net:inline_field:net_gw:*"]
 title = "Edit IPv4 Gateway.."
-short = "Opens inline entry to stage `ipv4.gateway` (e.g., `10.10.0.1`) and automatically switches method to `manual`."
+short = "Opens inline entry to stage `ipv4.gateway` (e.g., `192.168.1.1`) and automatically switches method to `manual`."
 
 ["net:inline_field:net_dns:*"]
 title = "Edit IPv4 DNS Servers.."
@@ -431,12 +431,12 @@ short = "Opens inline entry to set `ipv4.dns` resolvers pushed when this VPN tun
 ["net:proxy_mode:none"]
 title = "Proxy Mode: Direct (No Proxy)"
 short = "Switches system shell proxy mode to `none` and writes `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY ...` into `proxy.env`."
-verbose = "Rewrites `~/.config/nc-ui/proxy.env` with `PROXY_MODE=\"none\"` and clears exported proxy environment variables for new shells and wrappers."
+verbose = "Rewrites `~/.config/ncui/proxy.env` with `PROXY_MODE=\"none\"` and clears exported proxy environment variables for new shells and wrappers."
 
 ["net:proxy_mode:manual"]
 title = "Proxy Mode: Manual HTTP / SOCKS5"
 short = "Switches `proxy.env` to `manual`, exporting `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (SOCKS5), and local `NO_PROXY` exclusions."
-verbose = "Writes `~/.config/nc-ui/proxy.env` with your configured HTTP/HTTPS and SOCKS5 endpoints plus `NO_PROXY` bypasses for `localhost`, `127.0.0.1`, and RFC1918 private subnets."
+verbose = "Writes `~/.config/ncui/proxy.env` with your configured HTTP/HTTPS and SOCKS5 endpoints plus `NO_PROXY` bypasses for `localhost`, `127.0.0.1`, and RFC1918 private subnets."
 
 ["net:proxy_mode:auto"]
 title = "Proxy Mode: Automatic PAC URL"

@@ -4,16 +4,16 @@ from core.config import get_sys_notif_opacity_pct
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Box, InlineField, SelectPill, Slider, StateBadge, Txt, get_active_inline_entry
+from ui.kit import ActionBtn, Badge, Box, InlineField, SelectPill, Slider, StateBadge, Txt, feedback_cards, get_active_inline_entry
 from panels.cc_engine_notifications import (
     _collected_apps,
     _get_app_icon,
     _get_max_notifications,
     _load_rules,
-    _notif_feedback_cards,
     get_active_notifs,
     get_app_click_config,
     get_archive_unique_apps,
+    get_delivery_status,
     load_notifs,
     resolve_app_launch_cmd,
 )
@@ -53,6 +53,18 @@ def _build_delivery_box(rules: dict, max_n: int, active: list, total: list) -> B
         ],
         highlighted=False,
     )
+    st = get_delivery_status()
+    missing_badge = ""
+    if not st["has_notify_send"]:
+        missing_badge = Badge(t("cc_notifications.missing_notify_send"), style="warn")
+    elif not st["has_swaync"]:
+        missing_badge = Badge(t("ui.missing", p0="swaync-client"), style="warn")
+    b.add_kv(
+        t("cc_notifications.delivery_backend"),
+        StateBadge(st["swaync_live"], t("cc_notifications.daemon_swaync"), t("cc_notifications.daemon_local_only"), on_tone="ok"),
+        right_markup=missing_badge,
+        icon="\uf233",
+    )
     dnd_on = SelectPill(f"\uf1f6 {t('common.on')}", "cc_notif:dnd:1", selected=rules["dnd"])
     dnd_off = SelectPill(f"\uf0f3 {t('common.off')}", "cc_notif:dnd:0", selected=not rules["dnd"])
     b.add_kv(t("cc_notifications.do_not_disturb"), f"{dnd_on} {dnd_off}", icon="\uf1f6")
@@ -66,7 +78,7 @@ def _build_delivery_box(rules: dict, max_n: int, active: list, total: list) -> B
     b.add_kv(t("cc_notifications.quiet_hours"), q_state, right_markup=q_acts, icon="\uf186")
     b.add_kv(
         t("cc_notifications.quiet_presets"),
-        " ".join(SelectPill(w, f"cc_notif:quiet_win:{w}", selected=(rules["quiet_window"] == w)) for w in q_presets),
+        " ".join(SelectPill(w, f"cc_notif:quiet_win:{w}", selected=(bool(rules["quiet_enabled"]) and rules["quiet_window"] == w)) for w in q_presets),
         icon="\uf017",
     )
     m_pills = " ".join(SelectPill(str(n), f"cc_notif:max:{n}", selected=(max_n == n)) for n in (25, 50, 100, 200))
@@ -137,7 +149,7 @@ def _build_popup_box(rules: dict) -> Box:
 
 
 def _build_rules_box(cc_panel, canvas: Canvas, rules: dict, unique_apps: list) -> Box:
-    muted = {a.lower() for a in rules.get("muted_apps", [])}
+    muted = {str(a).strip().lower() for a in (rules.get("muted_apps") or []) if a is not None}
     apps = _collected_apps(rules)
     urg = str(rules.get("min_urgency", "low")).lower()
 
@@ -154,7 +166,7 @@ def _build_rules_box(cc_panel, canvas: Canvas, rules: dict, unique_apps: list) -
     else:
         app_pills = []
     box.add_inline_picker(
-        t("cc_notifications.mute_app"),
+        t("cc_notifications.mute_app_lbl"),
         query=app_q,
         placeholder=t("cc_notifications.app_name_to_suppress_e_g_discord"),
         trigger_uri="cc_notif:app_pick_open",
@@ -162,7 +174,7 @@ def _build_rules_box(cc_panel, canvas: Canvas, rules: dict, unique_apps: list) -
         clear_uri="cc_notif:app_pick_clear" if app_q else "",
         active=app_pick_active,
         max_pills_per_row=3,
-        width=28,
+        width=32,
         entry_id="cc_notif_app_picker",
         show_empty=bool(app_q),
     )
@@ -196,7 +208,7 @@ def _build_rules_box(cc_panel, canvas: Canvas, rules: dict, unique_apps: list) -
 
     def _fill_archive_apps(bx: Box):
         if not unique_apps:
-            bx.add_row(f"  {Txt(t('cc_notifications.no_archive_apps'), role='schema')}")
+            bx.add_row(f"  {Txt(t('cc_notifications.no_archive_apps'), role='inactive')}")
             return
         custom_lbl = t("cc_notifications.custom_action")
         click_lbl = f"\uf245 {t('cc_notifications.clickable')}"
@@ -244,9 +256,13 @@ def _build_archive_box(canvas: Canvas, rules: dict, active: list, max_n: int) ->
         return box
 
     hist_rows = []
-    for n in reversed(active[-8:]):
-        nid = n.get("id", 0)
-        full_app = str(n.get("app_name") or n.get("app") or "sys").strip()
+    open_lbl = t("notifications.click_open")
+    sys_fallback = t("cc_notifications.system_app")
+    for n in active[:8]:
+        nid = n.get("id")
+        if nid is None:
+            nid = 0
+        full_app = str(n.get("app_name") or n.get("app") or sys_fallback).strip()
         raw_title = str(n.get("title") or n.get("summary") or "").strip()
         raw_body = str(n.get("body") or "").strip().replace("\n", " ")
         time_s = str(n.get("time") or "").strip()
@@ -255,14 +271,19 @@ def _build_archive_box(canvas: Canvas, rules: dict, active: list, max_n: int) ->
         app_b = Txt(f"{_get_app_icon(full_app)} {canvas.truncate_plain(full_app, 15)}", role="schema")
         title_s = canvas.truncate_plain(raw_title or full_app, 22)
         is_click = bool(get_app_click_config(full_app, rules))
-        title_cell = ActionBtn(title_s, f"cc_notif:trigger_click:{nid}", tone="primary", brackets=False) if is_click else Txt(title_s, role="focus")
-        body_cell = Txt(canvas.truncate_plain(raw_body, 32), role="schema") if raw_body else ""
-        right_cell = f"{Txt(time_s, role='schema')} {ActionBtn('x', f'cc_notif:del:{nid}', tone='danger_soft')}" if time_s else ActionBtn("x", f"cc_notif:del:{nid}", tone="danger_soft")
-        hist_rows.append([app_b, title_cell, body_cell, right_cell])
+        title_cell = Txt(title_s, role="focus")
+        body_cell = Txt(canvas.truncate_plain(raw_body, 28), role="schema") if raw_body else ""
+        del_btn = ActionBtn("x", f"cc_notif:del:{nid}", tone="danger_soft")
+        right_parts = ([ActionBtn(open_lbl, f"cc_notif:trigger_click:{nid}", tone="apply")] if is_click else [])
+        if time_s:
+            right_parts.append(Txt(time_s, role="schema"))
+        right_parts.append(del_btn)
+        hist_rows.append([app_b, title_cell, body_cell, " ".join(right_parts)])
 
+    right_w = max(10, len(open_lbl) + 12)
     box.add_table(
         headers=[],
-        widths=[18, 22, "flex", 10],
+        widths=[18, 22, "flex", right_w],
         rows=hist_rows,
         aligns=["left", "left", "left", "right"],
         show_headers=False,
@@ -270,20 +291,16 @@ def _build_archive_box(canvas: Canvas, rules: dict, active: list, max_n: int) ->
     return box
 
 
-def _build_system_standard(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     rules = _load_rules()
     max_n = _get_max_notifications()
     active = get_active_notifs()
     total = load_notifs()
     unique_apps = get_archive_unique_apps(rules)
 
-    cards = _notif_feedback_cards()
+    cards = feedback_cards("notifications", "cc_notifications.status_title")
     cards.append(_build_delivery_box(rules, max_n, active, total))
     cards.append(_build_popup_box(rules))
     cards.append(_build_rules_box(cc_panel, canvas, rules, unique_apps))
     cards.append(_build_archive_box(canvas, rules, active, max_n))
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_system_standard(cc_panel, canvas)

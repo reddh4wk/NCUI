@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
+from core import probe
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, CyclePill, InlineField, InlineFilter, InspectorCell, SelectPill, StateBadge, Txt
+from ui.kit import ActionBtn, Badge, Box, CyclePill, InlineField, InlineFilter, InspectorCell, SelectPill, StateBadge, Txt, feedback_cards
 from panels.cc_engine_firewall import (
-    _feedback_cards,
     _load_fw_store,
     _service_active,
-    _get_filters,
-    _get_draft,
+    _fw_dict,
     _dir_short,
     _verdict_style,
     _rule_to_nft_line,
@@ -57,21 +56,18 @@ def _build_composer_box(draft: dict, edit_idx: int | None) -> Box:
         f"{CyclePill(_dir_short(draft['chain']), 'cc_fw:draft_cycle:chain', active=True, dirty=is_edit)}  "
         f"{CyclePill(draft['proto'].upper(), 'cc_fw:draft_cycle:proto', active=True, dirty=is_edit)}  "
         f"{CyclePill(draft['verdict'].upper(), 'cc_fw:draft_cycle:verdict', active=True, dirty=is_edit)}",
-        key_width=16,
     )
     cbox.add_kv(
         t("cc_firewall.source_port"),
-        f"{InlineField('fw_draft_src', 'cc_fw:draft_inline:src', value=draft['src'], empty_label=t('cc_firewall.src_any'), placeholder='10.10.0.0/24', width=16, tone='neutral', selected=bool(draft['src']), dirty=bool(draft['src'] and is_edit))}  "
-        f"{InlineField('fw_draft_dport', 'cc_fw:draft_inline:dport', value=draft['dport'], empty_label=t('cc_firewall.port_any'), placeholder='22,80,443', width=13, tone='neutral', selected=bool(draft['dport']), dirty=bool(draft['dport'] and is_edit))}  "
-        f"{InlineField('fw_draft_iface', 'cc_fw:draft_inline:iface', value=draft['iface'], empty_label=t('cc_firewall.if_any'), placeholder=t('cc_firewall.iface_ph'), width=12, tone='neutral', selected=bool(draft['iface']), dirty=bool(draft['iface'] and is_edit))}",
-        key_width=16,
+        f"{InlineField('fw_draft_src', 'cc_fw:draft_inline:src', value=draft['src'], empty_label=t('cc_firewall.src_any'), placeholder=t('cc_firewall.cidr_ph'), width=16, tone='neutral', selected=False, dirty=bool(draft['src'] and is_edit))}  "
+        f"{InlineField('fw_draft_dport', 'cc_fw:draft_inline:dport', value=draft['dport'], empty_label=t('cc_firewall.port_any'), placeholder='22,80,443', width=13, tone='neutral', selected=False, dirty=bool(draft['dport'] and is_edit))}  "
+        f"{InlineField('fw_draft_iface', 'cc_fw:draft_inline:iface', value=draft['iface'], empty_label=t('cc_firewall.if_any'), placeholder=t('cc_firewall.iface_ph'), width=12, tone='neutral', selected=False, dirty=bool(draft['iface'] and is_edit))}",
     )
     ct_s = t("cc_firewall.ct_val", p0=draft["ct"]) if draft["ct"] else t("cc_firewall.ct_any")
     cbox.add_kv(
         t("cc_firewall.extras_ct_limit"),
         f"{CyclePill(ct_s, 'cc_fw:draft_cycle:ct', active=bool(draft['ct']), dirty=bool(draft['ct'] and is_edit))}  "
-        f"{InlineField('fw_draft_limit', 'cc_fw:draft_inline:limit', value=draft['limit'], empty_label=t('cc_firewall.limit_none'), placeholder='10/minute', width=14, tone='neutral', selected=bool(draft['limit']), dirty=bool(draft['limit'] and is_edit))}",
-        key_width=16,
+        f"{InlineField('fw_draft_limit', 'cc_fw:draft_inline:limit', value=draft['limit'], empty_label=t('cc_firewall.limit_none'), placeholder='10/minute', width=14, tone='neutral', selected=False, dirty=bool(draft['limit'] and is_edit))}",
     )
     cbox.add_kv(
         t("cc_firewall.comment_lbl"),
@@ -83,12 +79,11 @@ def _build_composer_box(draft: dict, edit_idx: int | None) -> Box:
             placeholder=t("cc_firewall.comment_ph"),
             width=36,
             tone="neutral",
-            selected=bool(draft["comment"]),
+            selected=False,
             dirty=bool(draft["comment"] and is_edit),
         ),
-        key_width=16,
     )
-    cbox.add_kv("nftables", Txt(_rule_to_nft_line(draft) or "-", role="schema"), key_width=16)
+    cbox.add_kv("nftables", Txt(_rule_to_nft_line(draft) or "-", role="schema"))
     cbox.add_row(" ")
     return cbox
 
@@ -115,7 +110,6 @@ def _build_rule_inspector(rules: list[dict], sel_idx: int) -> Box:
         t("cc_firewall.inspector_rule"),
         f"{Txt(r.get('chain', 'input').upper() + ' · ' + str(r.get('proto', 'any')).upper(), role='val' if en else 'inactive')}  "
         f"{v_badge}  {Txt(r.get('comment') or '-', role='focus' if en else 'inactive')}",
-        key_width=16,
     )
     match_parts = [
         f"src:{r['src']}" if r.get("src") else "",
@@ -126,33 +120,39 @@ def _build_rule_inspector(rules: list[dict], sel_idx: int) -> Box:
         f"limit:{r['limit']}" if r.get("limit") else "",
     ]
     match_txt = "  ·  ".join(p for p in match_parts if p) or "any"
-    ibox.add_kv(t("cc_firewall.inspector_match"), Txt(match_txt, role="val" if en else "inactive"), key_width=16)
-    ibox.add_kv("nftables", Txt(_rule_to_nft_line(r) or "-", role="schema"), key_width=16)
+    ibox.add_kv(t("cc_firewall.inspector_match"), Txt(match_txt, role="val" if en else "inactive"))
+    ibox.add_kv("nftables", Txt(_rule_to_nft_line(r) or "-", role="schema"))
     ibox.add_row(" ")
     return ibox
 
 
-def _build_rules_tab(cc_panel, canvas: Canvas) -> list:
+def build_cards(cc_panel, canvas: Canvas) -> list:
     store = _load_fw_store()
     pols = store.get("policies", {})
     rules = store.get("rules", [])
+    has_nft = probe.has_bin("nft")
     svc_on = _service_active()
-    flt = _get_filters()
-    draft = _get_draft()
+    flt = _fw_dict("filters")
+    draft = _fw_dict("draft")
     edit_idx = draft.get("edit_idx")
     if not (isinstance(edit_idx, int) and 0 <= edit_idx < len(rules)):
         edit_idx = None
     composer_open = bool(STATE.get("firewall", "composer_open", False)) or (edit_idx is not None)
-    cards = _feedback_cards()
+    cards = feedback_cards("firewall", "cc_firewall.status_title")
+
+    hdr_acts = [StateBadge(svc_on, t("cc_firewall.active"), t("cc_firewall.stopped"), on_tone="ok" if svc_on else "warn")]
+    if has_nft:
+        hdr_acts.extend([
+            ActionBtn(t("cc_firewall.apply"), "cc_fw:apply_live", tone="apply"),
+            ActionBtn(t("cc_firewall.save_etc"), "cc_fw:save_etc", tone="neutral"),
+        ])
+    else:
+        hdr_acts.append(Badge(t("ui.missing", p0="nft"), style="warn"))
 
     hdr = Box(
         t("cc_firewall.firewall_status_nftables"),
         icon="\uf3ed",
-        actions=[
-            StateBadge(svc_on, t("cc_firewall.active"), t("cc_firewall.stopped"), on_tone="ok" if svc_on else "warn"),
-            ActionBtn(t("cc_firewall.apply"), "cc_fw:apply_live", tone="apply"),
-            ActionBtn(t("cc_firewall.save_etc"), "cc_fw:save_etc", tone="neutral"),
-        ],
+        actions=hdr_acts,
         highlighted=False,
     )
     hdr.add_row(" ")
@@ -165,17 +165,13 @@ def _build_rules_tab(cc_panel, canvas: Canvas) -> list:
         f"{Badge('FWD: ' + p_fwd, style='ok' if p_fwd == 'ACCEPT' else 'crit')}"
     )
     en_cnt = sum(1 for r in rules if r.get("enabled", True))
-    hdr.add_kv(
-        t("cc_firewall.chain_policies"),
-        pol_badges,
-        key_width=16,
-        right_markup=f"{ActionBtn(t('cc_firewall.dry_run'), 'cc_fw:dry_run', tone='neutral')} {ActionBtn(t('cc_firewall.sync_etc'), 'cc_fw:sync_etc', tone='neutral')}",
-        requires=["nft"],
-    )
+    sync_btn = ActionBtn(t("cc_firewall.sync_etc"), "cc_fw:sync_etc", tone="neutral")
+    right_pol = f"{ActionBtn(t('cc_firewall.dry_run'), 'cc_fw:dry_run', tone='neutral')} {sync_btn}" if has_nft else sync_btn
+    hdr.add_kv(t("cc_firewall.chain_policies"), pol_badges, right_markup=right_pol)
+    lan_s = str(store.get("lan_net") or "").strip() or t("cc_firewall.lan_unset")
     hdr.add_kv(
         t("cc_firewall.rules_summary"),
-        Txt(t("cc_firewall.enabled_rules_lan", p0=en_cnt, p1=len(rules), p2=store.get("lan_net", "10.10.0.0/24")), role="schema"),
-        key_width=16,
+        Txt(t("cc_firewall.enabled_rules_lan", p0=en_cnt, p1=len(rules), p2=lan_s), role="val"),
     )
     hdr.add_row(" ")
     cards.append(hdr)
@@ -227,7 +223,7 @@ def _build_rules_tab(cc_panel, canvas: Canvas) -> list:
         rows.append([
             InspectorCell(chain_s, f"cc_fw:sel_rule:{idx}", selected=(idx == sel_idx), is_alive=en),
             Txt(proto_s, role="val" if en else "inactive"),
-            Txt(canvas.truncate_plain(src_s, 14), role="focus" if en else "inactive"),
+            Txt(canvas.truncate_plain(src_s, 14), role="val" if en else "inactive"),
             Txt(canvas.truncate_plain(port_s, 11), role="val" if en else "inactive"),
             Badge(verd_s, style=_verdict_style(verd_s)) if en else f"\u00a0{Txt(verd_s, role='inactive')}\u00a0",
             Txt(canvas.truncate_plain(meta_txt, comment_max), role="schema" if en else "inactive"),
@@ -258,7 +254,3 @@ def _build_rules_tab(cc_panel, canvas: Canvas) -> list:
         cards.append(_build_rule_inspector(rules, sel_idx))
 
     return cards
-
-
-def build_cards(cc_panel, canvas: Canvas) -> list:
-    return _build_rules_tab(cc_panel, canvas)

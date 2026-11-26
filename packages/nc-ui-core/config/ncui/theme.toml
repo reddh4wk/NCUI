@@ -3,7 +3,7 @@ font_family = "Courier"
 font_size = 11
 font_weight = "bold"
 cursor_theme = "NCUI Cursor"
-cursor_size = 16
+cursor_size = 24
 cursor_archive = ""
 
 [geometry]
@@ -36,17 +36,17 @@ kv_separator = ":"
 search_prefix = " >"
 search_brackets = ["▏", "▕"]
 search_cursor = "│"
-sys_notif_style = "tactical"
+sys_notif_style = "clean"
 toast_style = "tactical"
 hover_help_style = "cyberpunk"
 
 [colors]
 surface_bg = "#080a0f"
 window_opacity = 0.86
-box_opacity = 0.55
-toast_opacity = 0.8
-sys_notif_opacity = 0.8
-hover_help_opacity = 0.80
+box_opacity = 0.72
+toast_opacity = 0.95
+sys_notif_opacity = 0.95
+hover_help_opacity = 0.96
 waybar_sync_opacity = true
 waybar_sync_color = true
 window_bg = "rgba(8, 10, 15, 0.86)"

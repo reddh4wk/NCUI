@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib.util
 from core.config import (
     CONFIG,
     get_network_show_bar_speed,
@@ -31,7 +32,7 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
     lock_disp = (
         Txt(lock_cmd, role="val")
         if lock_cmd
-        else Txt(t("cc_waybar.not_configured_select_a_preset_or"), role="attention")
+        else Txt(t("cc_waybar.not_configured_select_a_preset_or"), role="inactive")
     )
     lock_box.add_kv(
         t("cc_waybar.lock_command"),
@@ -163,13 +164,13 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
         f"{ProgressBar(used_pct, width=24, color_by_threshold=False)}   "
         f"{Txt(t('cc_waybar.used', p0=used_pct), role='val')} {Txt(t('cc_waybar.margin', p0=free_margin_pct), role='schema')}",
     )
-    len_box.add_row(Txt(t("cc_waybar.music_bar_updates_live_immediately"), role="schema"))
+    len_box.add_row(Txt(t("cc_waybar.music_bar_updates_live_immediately"), role="inactive"))
     cards.append(len_box)
 
     # ── CARD 4: CPU & RAM CRITICAL GLOW (custom/cpu, custom/ram) ──
     sys_glow = bool(STATE.get("waybar", "sys_glow_enabled", True))
     sys_thresh = max(50, min(95, int(STATE.get("waybar", "sys_glow_threshold", 80) or 80)))
-    sys_badge = StateBadge(sys_glow, t("cc_waybar.sys_glow_on", p0=sys_thresh), t("cc_waybar.sys_glow_off"), on_tone="crit")
+    sys_badge = StateBadge(sys_glow, t("cc_waybar.sys_glow_on", p0=sys_thresh), t("cc_waybar.sys_glow_off"), on_tone="ok")
     sys_box = Box(
         t("cc_waybar.sys_glow_card_title"),
         icon="\uf2db",
@@ -200,31 +201,32 @@ def _build_waybar_options_tab(cc_panel, canvas: Canvas) -> list:
     cards.append(sys_box)
 
     # ── CARD 5: PRINT SPOOLER INDICATOR PLUGIN (custom/printers) ──
-    prn_vis = str(STATE.get("waybar", "printers_bar_mode", "auto") or "auto").lower()
-    if prn_vis not in ("auto", "always"):
-        prn_vis = "auto"
-    prn_badge = (
-        StateBadge(True, t("cc_waybar.prn_auto_badge"), on_tone="ok")
-        if prn_vis == "auto"
-        else StateBadge(True, t("cc_waybar.prn_always_badge"), on_tone="ok")
-    )
-    prn_box = Box(
-        t("cc_waybar.printers_plugin_custom"),
-        icon="\uf02f",
-        actions=[
-            prn_badge,
-            ActionBtn(t("cc_waybar.open_printers_sec"), "cc:section:printers", tone="neutral"),
-        ],
-        highlighted=False,
-    )
-    prn_box.add_row(" ")
-    vis_pills = (
-        f"{SelectPill(t('cc_waybar.prn_vis_auto'), 'cc_wb:prn_vis:auto', selected=(prn_vis == 'auto'))} "
-        f"{SelectPill(t('cc_waybar.prn_vis_always'), 'cc_wb:prn_vis:always', selected=(prn_vis == 'always'))}"
-    )
-    prn_box.add_kv(t("cc_waybar.prn_vis_lbl"), vis_pills)
-    prn_box.add_row(" ")
-    cards.append(prn_box)
+    if importlib.util.find_spec("panels.cc_printers_devices") is not None:
+        prn_vis = str(STATE.get("waybar", "printers_bar_mode", "auto") or "auto").lower()
+        if prn_vis not in ("auto", "always"):
+            prn_vis = "auto"
+        prn_badge = (
+            StateBadge(True, t("cc_waybar.prn_auto_badge"), on_tone="ok")
+            if prn_vis == "auto"
+            else StateBadge(True, t("cc_waybar.prn_always_badge"), on_tone="ok")
+        )
+        prn_box = Box(
+            t("cc_waybar.printers_plugin_custom"),
+            icon="\uf02f",
+            actions=[
+                prn_badge,
+                ActionBtn(t("cc_waybar.open_printers_sec"), "cc:section:printers", tone="neutral"),
+            ],
+            highlighted=False,
+        )
+        prn_box.add_row(" ")
+        vis_pills = (
+            f"{SelectPill(t('cc_waybar.prn_vis_auto'), 'cc_wb:prn_vis:auto', selected=(prn_vis == 'auto'))} "
+            f"{SelectPill(t('cc_waybar.prn_vis_always'), 'cc_wb:prn_vis:always', selected=(prn_vis == 'always'))}"
+        )
+        prn_box.add_kv(t("cc_waybar.prn_vis_lbl"), vis_pills)
+        prn_box.add_row(" ")
+        cards.append(prn_box)
     cards.extend(get_wb_feedback_cards())
 
     return cards

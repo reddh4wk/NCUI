@@ -12,8 +12,10 @@ from ui.kit import (
     SelectPill,
     StateBadge,
     Txt,
+    feedback_cards,
 )
-from panels.cc_engine_telemetry import _build_guide_box, _collect_backup_data, _feedback_cards
+from panels.cc_engine_boot import detect_bootloader
+from panels.cc_engine_telemetry import _build_guide_box, _collect_backup_data
 
 
 def _compact_mtime(raw: str) -> str:
@@ -119,7 +121,7 @@ def _build_host_view(cc_panel, data: dict, rec_env: dict, rec_cfg: dict) -> list
     )
     box2.add_row(" ")
 
-    uki_ok = data["duskcity_exists"] or rec_env.get("UKI_PRESENT") == "1"
+    uki_ok = data["rescue_uki_ok"] or rec_env.get("UKI_PRESENT") == "1"
     uki_name = rec_env.get("UKI_NAME") or rec_cfg.get("uki_name", "nc-rescue.efi")
     uki_sz = rec_env.get("UKI_SIZE", "-")
     sb_signed = rec_env.get("UKI_SIGNED") == "1"
@@ -142,13 +144,14 @@ def _build_host_view(cc_panel, data: dict, rec_env: dict, rec_cfg: dict) -> list
         right_markup=uki_acts,
     )
 
-    lim_ok = rec_env.get("LIMINE_HAS_RECOVERY") == "1"
-    lim_path = rec_env.get("LIMINE_CONF_PATH") or "/boot/limine.conf"
-    box2.add_kv(
-        t("cc_system.rescue_limine_lbl"),
-        f"{StateBadge(lim_ok, t('cc_system.rescue_limine_reg'), t('cc_system.rescue_limine_miss'))} {Txt(lim_path, role='schema')}",
-        right_markup=ActionBtn(t("cc_system.rescue_reg_limine_btn"), "cc_sys:rescue_reg_limine", tone="apply" if not lim_ok else "neutral"),
-    )
+    if detect_bootloader().get("kind") == "limine":
+        lim_ok = rec_env.get("LIMINE_HAS_RECOVERY") == "1"
+        lim_path = rec_env.get("LIMINE_CONF_PATH") or "/boot/limine.conf"
+        box2.add_kv(
+            t("cc_system.rescue_limine_lbl"),
+            f"{StateBadge(lim_ok, t('cc_system.rescue_limine_reg'), t('cc_system.rescue_limine_miss'))} {Txt(lim_path, role='schema')}",
+            right_markup=ActionBtn(t("cc_system.rescue_reg_limine_btn"), "cc_sys:rescue_reg_limine", tone="apply" if not lim_ok else "neutral"),
+        )
 
     _add_rollback_kv(box2, data, rec_env)
 
@@ -197,7 +200,8 @@ def _build_recovery_chroot_card(canvas: Canvas, data: dict, rec_env: dict, origi
         box.add_kv(t("cc_system.rescue_origin_lbl"), Txt(t("cc_system.rescue_origin_unknown"), role="inactive"))
 
     if ch_mounted:
-        ch_tgt = Txt(f"{rec_env.get('CHROOT_DEV') or '/dev/mapper'} ({rec_env.get('CHROOT_VG') or '-'}) -> /run/nightcity-chroot", role="val")
+        ch_mnt = rec_env.get("CHROOT_MNT") or "/run/ncui-chroot"
+        ch_tgt = Txt(f"{rec_env.get('CHROOT_DEV') or '/dev/mapper'} ({rec_env.get('CHROOT_VG') or '-'}) -> {ch_mnt}", role="val")
     elif cands is not None:
         ch_tgt = Txt(t("cc_system.rescue_chroot_cands", p0=ext_n, p1=host_n), role="val")
     else:
@@ -343,12 +347,12 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     data = _collect_backup_data()
     rec_env = data["rescue_env"]
     rec_cfg = data["rec_cfg"]
-    dc_env = data["duskcity_env"]
+    dc_env = data["rescue_env_info"]
     is_live = bool(dc_env.get("is_live"))
     origin_host = str(dc_env.get("origin_host") or "").strip()
     origin_uuid = str(dc_env.get("origin_luks_uuid") or "").strip()
 
-    cards = _feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
+    cards = feedback_cards("system", "cc_system.system_control_status") + build_privilege_modal_card(cc_panel, canvas)
     rec_stat = f"{rec_env.get('ESP_MOUNT', '/boot')} · {'LIVE RAM' if is_live else 'HOST ROOT'}"
     guide_tpfx = "guide_rec_live" if is_live else "guide_rec_host"
     cards.extend(_build_guide_box(cc_panel, canvas, "guide_recovery_open", "guide_rec", "recovery", rec_stat, text_prefix=guide_tpfx))

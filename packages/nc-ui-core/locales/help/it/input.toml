@@ -107,7 +107,7 @@ short = "Legge dagli appunti Wayland il percorso di un pacchetto cursori e lo in
 
 ["cc_pers:del_cursor:*"]
 title = "Elimina Tema Cursore Utente"
-short = "Elimina questa cartella di tema cursore installata dall'utente da `~/.local/share/icons/` (e `~/.config/nc-ui/cursors/`)."
+short = "Elimina questa cartella di tema cursore installata dall'utente da `~/.local/share/icons/` (e `~/.config/ncui/cursors/`)."
 
 # ==============================================================================
 # INPUT -> TASTIERA & LAYOUT (`panels/cc_input_keyboard.py`)
@@ -452,7 +452,7 @@ short = "Svuota il Compositore Scorciatoie per creare un nuovo keybinding `niri`
 ["cc_kbd:restore_defaults:*"]
 title = "Ripristina Scorciatoie Predefinite Niri"
 short = "Verifica i binding predefiniti `niri` di questo ambito (`window`, `system` o `apps`) e apre il Wizard Conflitti se ci sono sovrapposizioni."
-verbose = "Confronta le scorciatoie standard Nightcity/Niri con il blocco `binds` di `config.kdl`: i tasti già assegnati aprono la procedura guidata di risoluzione invece di sovrascrivere in silenzio."
+verbose = "Confronta le scorciatoie standard NC-UI/Niri con il blocco `binds` di `config.kdl`: i tasti già assegnati aprono la procedura guidata di risoluzione invece di sovrascrivere in silenzio."
 
 ["cc_kbd:reload_niri"]
 title = "Ricarica Configurazione Niri"

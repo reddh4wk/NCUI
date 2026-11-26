@@ -11,19 +11,16 @@ from core.i18n import t
 from core.privileges import get_privileged_action
 from core.resilience import run_helper_async as _run_helper_async
 from core.state import STATE
-from ui.kit import FeedbackBox
+from ui.kit import feedback_cards, set_feedback
 from ui.markup import format_bytes_short
 
 
 def _set_sys_fb(ok: bool, msg: str) -> None:
-    STATE.set("system", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
+    set_feedback("system", ok, msg)
 
 
 def _feedback_cards() -> list:
-    fb = STATE.get("system", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return [FeedbackBox(t("cc_system.system_control_status"), bool(fb["ok"]), fb["msg"])]
-    return []
+    return feedback_cards("system", "cc_system.system_control_status")
 
 
 def _human_bytes(val_b: int | None) -> str:
@@ -310,7 +307,7 @@ def handle_cc_disks_link(cc_panel, uri: str) -> bool:
         STATE.set("system", "disks_scope", act.split(":", 1)[1])
     elif act.startswith("disk_smart_term:"):
         dp = act.split(":", 1)[1]
-        if re.match(r"^/dev/[a-zA-Z0-9._-]+$", dp):
+        if probe.has_bin("smartctl") and re.match(r"^/dev/[a-zA-Z0-9._-]+$", dp):
             from ui.embedded_tui import start_panel_terminal
 
             start_panel_terminal(cc_panel, t("common.term_title", p0=f"SMART {dp}"), ["sudo", "smartctl", "-a", dp])

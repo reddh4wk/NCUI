@@ -17,11 +17,12 @@ from ui.kit import (
     Sparkline,
     StateBadge,
     Txt,
+    feedback_cards,
+    temp_role,
 )
 from panels.cc_engine_power import _probe_gaming_mode
 from panels.cc_engine_resources import (
     _ensure_btop_config,
-    _feedback_cards,
     get_cpu_telemetry,
     get_ram_telemetry,
 )
@@ -41,7 +42,7 @@ def _build_cpu_ram_standard(cc_panel, canvas: Canvas) -> list:
     cpu = get_cpu_telemetry({})
     ram = get_ram_telemetry()
     gm = _probe_gaming_mode()
-    cards = _feedback_cards()
+    cards = feedback_cards("system", "cc_system.system_control_status")
 
     top_acts = []
     if gm["available"]:
@@ -61,7 +62,7 @@ def _build_cpu_ram_standard(cc_panel, canvas: Canvas) -> list:
     )
     top.add_row(" ")
     c_pct, c_tmp, c_ghz = cpu["total_pct"], cpu["temp_c"], cpu["max_ghz"]
-    tmp_role = "vitality" if c_tmp < 65.0 else ("attention" if c_tmp < 80.0 else "fault")
+    tmp_role = temp_role(c_tmp, warn_c=65.0, fault_c=80.0, ok_role="vitality")
     r_used_g, r_tot_g = ram["used"] / (1024 ** 3), ram["total"] / (1024 ** 3)
     s_used_g, s_tot_g = ram["sw_used"] / (1024 ** 3), ram["sw_total"] / (1024 ** 3)
     top.add_kv(

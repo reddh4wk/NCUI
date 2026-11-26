@@ -7,27 +7,24 @@ import os
 import platform
 import pwd
 import shlex
+import socket
 from core import probe
-from core.i18n import get_active_language, t
-from ui.canvas import Canvas
-from ui.kit import ActionBtn, Badge, Box, FeedbackBox, SelectPill, StateBadge, Txt
+from core.i18n import t
+from ui.kit import feedback_cards, set_feedback
 
-_MSG = ""
-_ERR = ""
 _CRITICAL_GROUPS = [
-    ("wheel", "sudo / admin privilege"),
-    ("docker", "Docker daemon socket"),
-    ("libvirt", "KVM / QEMU hypervisor"),
-    ("wireshark", "Packet capture"),
-    ("video", "GPU / DRM display"),
-    ("input", "Raw libinput / evdev"),
-    ("uucp", "Serial / USB TTL"),
+    ("wheel", "cc_accounts.grp_desc_wheel"),
+    ("docker", "cc_accounts.grp_desc_docker"),
+    ("libvirt", "cc_accounts.grp_desc_libvirt"),
+    ("wireshark", "cc_accounts.grp_desc_wireshark"),
+    ("video", "cc_accounts.grp_desc_video"),
+    ("input", "cc_accounts.grp_desc_input"),
+    ("uucp", "cc_accounts.grp_desc_uucp"),
 ]
 
+
 def _feedback_cards() -> list:
-    if not _MSG and not _ERR:
-        return []
-    return [FeedbackBox(t("cc_accounts.status_title"), not bool(_ERR), _ERR if _ERR else _MSG)]
+    return feedback_cards("sysinfo", "cc_accounts.status_title")
 
 
 def _probe_profile() -> dict:
@@ -66,18 +63,27 @@ def _probe_profile() -> dict:
 def _probe_groups(user: str) -> list[dict]:
     active_gids = set(os.getgroups())
     rows = []
-    for gname, desc in _CRITICAL_GROUPS:
+    for gname, desc_key in _CRITICAL_GROUPS:
+        eff_name = gname
         exists = False
         member = False
         gid_val = "-"
         try:
-            g = grp.getgrnam(gname)
+            g = grp.getgrnam(eff_name)
             exists = True
+        except KeyError:
+            g = None
+            if gname == "wheel":
+                try:
+                    g = grp.getgrnam("sudo")
+                    eff_name = "sudo"
+                    exists = True
+                except KeyError:
+                    pass
+        if g is not None:
             gid_val = str(g.gr_gid)
             member = (g.gr_gid in active_gids) or (user in g.gr_mem)
-        except KeyError:
-            pass
-        rows.append({"name": gname, "desc": desc, "exists": exists, "member": member, "gid": gid_val})
+        rows.append({"name": eff_name, "desc": t(desc_key), "exists": exists, "member": member, "gid": gid_val})
     return rows
 
 
@@ -161,44 +167,64 @@ def _resolve_os_icon(os_rel: dict) -> str:
 
 def _collect_about_data() -> dict:
     un = os.uname()
+    host = socket.gethostname().split(".", 1)[0].strip() or un.nodename
     try:
         os_rel = platform.freedesktop_os_release()
     except OSError:
         os_rel = {}
-    os_pretty = os_rel.get("PRETTY_NAME") or os_rel.get("NAME") or "Arch Linux"
-    os_name = f"{os_pretty} ({un.machine})"
+    os_info = probe.get_os_release()
+    os_name = f"{os_info['pretty_name']} ({un.machine})"
     os_icon = _resolve_os_icon(os_rel)
-    kernels = []
-    ok, out = probe.run_cmd(["pacman", "-Q", "linux-cachyos", "linux-cachyos-hardened"], timeout=1.0)
-    if ok and out:
-        kernels = [l.strip() for l in out.splitlines() if l.strip()]
-    limine_ver = "N/A"
-    ok_l, out_l = probe.run_cmd(["pacman", "-Q", "limine"], timeout=0.8)
-    if ok_l and out_l:
-        limine_ver = out_l.strip()
-    niri_ver = "N/A"
+
+    kernels: list[str] = []
+    if probe.has_bin("pacman"):
+        ok, out = probe.run_cmd(["pacman", "-Q", "linux-cachyos", "linux-cachyos-hardened"], timeout=1.0)
+        if ok and out:
+            kernels = [l.strip() for l in out.splitlines() if l.strip()]
+    if not kernels and os.path.isdir("/lib/modules"):
+        try:
+            kernels = sorted(os.listdir("/lib/modules"))[:4]
+        except OSError:
+            pass
+    if not kernels:
+        kernels = [un.release]
+
+    boot_ver = "-"
+    if probe.has_bin("pacman"):
+        ok_l, out_l = probe.run_cmd(["pacman", "-Q", "limine"], timeout=0.8)
+        if ok_l and out_l:
+            boot_ver = out_l.strip()
+    if boot_ver == "-" and probe.has_bin("limine"):
+        ok_l, out_l = probe.run_cmd(["limine", "--version"], timeout=0.8)
+        boot_ver = out_l.splitlines()[0].strip() if (ok_l and out_l) else "limine"
+    elif boot_ver == "-" and os.path.isdir("/sys/firmware/efi") and probe.has_bin("bootctl"):
+        boot_ver = "systemd-boot"
+    elif boot_ver == "-" and (probe.has_bin("grub-install") or probe.has_bin("grub2-install")):
+        boot_ver = "GRUB"
+
+    wm_ver = "-"
     if probe.has_bin("niri"):
         ok_n, out_n = probe.run_cmd(["niri", "--version"], timeout=0.8)
         if ok_n and out_n:
-            niri_ver = out_n.strip()
+            wm_ver = out_n.strip()
+    if wm_ver == "-":
+        wm_ver = os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("WAYLAND_DISPLAY") or "-"
+
     return {
-        "host": un.nodename,
+        "host": host,
         "os_name": os_name,
         "os_icon": os_icon,
         "kernel_rel": un.release,
         "uptime": _read_uptime(),
         "kernels": kernels,
-        "limine": limine_ver,
-        "niri": niri_ver,
+        "limine": boot_ver,
+        "niri": wm_ver,
     }
 
 
 def handle_cc_sysinfo_link(cc_panel, uri: str) -> bool:
-    global _MSG, _ERR
     if not uri.startswith("cc_acc:"):
         return False
-    _MSG = ""
-    _ERR = ""
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
@@ -234,8 +260,8 @@ def handle_cc_sysinfo_link(cc_panel, uri: str) -> bool:
         return True
     elif cmd == "kill_sess" and arg:
         ok, _, err = probe.run_cmd_full(["loginctl", "terminate-session", arg], timeout=2.0)
-        _MSG = f"Terminated session {arg}." if ok else ""
-        _ERR = "" if ok else (err or f"Failed terminating session {arg}")
+        msg = t("cc_accounts.session_terminated", p0=arg) if ok else (err or t("cc_accounts.session_term_failed", p0=arg))
+        set_feedback("sysinfo", ok, msg)
     else:
         return False
 

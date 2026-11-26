@@ -12,7 +12,7 @@ from gi.repository import Gdk, GLib, Gtk, Pango, PangoCairo  # noqa: E402
 from core.config import THEME, get_layout_margins  # noqa: E402
 from core.i18n import t  # noqa: E402
 from ui.canvas import Canvas  # noqa: E402
-from ui.kit import ActionBtn, Badge, Box, Divider, FoldIconBtn, StateBadge, Txt, get_semantic_palette  # noqa: E402
+from ui.kit import ActionBtn, Badge, Box, Divider, FoldIconBtn, StateBadge, Txt, get_semantic_palette, hex_to_rgba_f, rounded_rect_path as _rounded_rect  # noqa: E402
 from ui.widgets import AsciiCard, _NO_LIGA_SPAN_OPEN, _extract_and_strip_bg_spans  # noqa: E402
 from panels.cc_engine_resources import (  # noqa: E402
     _tui_copy_text,
@@ -32,23 +32,7 @@ _PANEL_TERM_META: dict = {}
 
 
 def _hex_to_rgb_f(hex_str: str, fallback: tuple = (0.0, 0.94, 1.0)) -> tuple:
-    h = str(hex_str or "").strip().lstrip("#")
-    if len(h) == 6:
-        try:
-            return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
-        except ValueError:
-            pass
-    return fallback
-
-
-def _rounded_rect(cr, x: float, y: float, w: float, h: float, r: float) -> None:
-    rad = max(0.0, min(r, w / 2.0, h / 2.0))
-    cr.new_sub_path()
-    cr.arc(x + w - rad, y + rad, rad, -math.pi / 2, 0)
-    cr.arc(x + w - rad, y + h - rad, rad, 0, math.pi / 2)
-    cr.arc(x + rad, y + h - rad, rad, math.pi / 2, math.pi)
-    cr.arc(x + rad, y + rad, rad, math.pi, 3 * math.pi / 2)
-    cr.close_path()
+    return hex_to_rgba_f(hex_str, 1.0, fallback)[:3]
 
 
 def _compute_tui_grid_metrics(target_w: int, char_w: float, font_size_pt: float = 9.0, flush: bool = False):

@@ -44,19 +44,20 @@ _FAST_MONO_PLAIN_RE = re.compile(r"^[\x20-\u024f\u2026\u2500-\u257f\u25cf\u25cb]
 _CTRL_XML_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # MEMENTO TIPOGRAFICO (Golden Standard §5.1):
 # 1) Le ligature OpenType DEVONO restare disattivate (liga=0, clig=0, dlig=0, hlig=0) per non alterare le colonne.
-# 2) I glifi Nerd Font / PUA in _FALLBACK_GLYPH_RE vengono scalati al 62% e agganciati a multipli interi di cella monospace.
+# 2) I glifi Nerd Font / PUA in _FALLBACK_GLYPH_RE vengono scalati al 62% (con micro-shrink 1-cella se 1.0 < gw/space_w <= 1.25),
+#    centrati verticalmente con Pango `rise` clamped sull'altezza riga, e agganciati a multipli interi di cella monospace.
 _NO_LIGA_FEATURES = "liga=0, clig=0, dlig=0, hlig=0"
 _NO_LIGA_SPAN_OPEN = "<span font_features='liga=0, clig=0, dlig=0, hlig=0'>"
 _SANITIZE_CACHE: dict[tuple[str, float, str, bool, str], str] = {}
-_GLYPH_LS_CACHE: dict[tuple[str, float, str, int, bool, str, bool], int] = {}
+_GLYPH_METRICS_CACHE: dict[tuple[str, float, str, int, bool, str, bool], tuple[int, int, int]] = {}
 _GLYPH_LAYOUT = None
 _GLYPH_SURF = None
 _GLYPH_LAYOUT_HAS_SCREEN = False
 _GLYPH_NO_LIGA_ATTRS = None
 
 
-def _glyph_letter_spacing(ch: str, pt: int, use_dejavu: bool = False) -> int:
-    """Return Pango `letter_spacing` so a scaled glyph snaps to an exact integer multiple of monospace cells."""
+def _glyph_metrics(ch: str, pt: int, use_dejavu: bool = False) -> tuple[int, int, int]:
+    """Return `(eff_pt, letter_spacing, rise)` so fallback glyphs fit exact monospace cells and center vertically."""
     global _GLYPH_LAYOUT, _GLYPH_SURF, _GLYPH_LAYOUT_HAS_SCREEN, _GLYPH_NO_LIGA_ATTRS
     _ensure_pango()
     screen = Gdk.Screen.get_default()
@@ -72,15 +73,15 @@ def _glyph_letter_spacing(ch: str, pt: int, use_dejavu: bool = False) -> int:
         _GLYPH_NO_LIGA_ATTRS.insert(Pango.AttrFontFeatures.new(_NO_LIGA_FEATURES))
         _GLYPH_LAYOUT.set_attributes(_GLYPH_NO_LIGA_ATTRS)
         _GLYPH_LAYOUT_HAS_SCREEN = has_scr
-        _GLYPH_LS_CACHE.clear()
+        _GLYPH_METRICS_CACHE.clear()
         _SANITIZE_CACHE.clear()
 
     typo = THEME.get("typography", {})
     fam = str(typo.get("font_family", "Courier") or "Courier")
-    sz = float(typo.get("font_size", 11))
+    sz = float(typo.get("font_weight_size", typo.get("font_size", 11)) if "font_weight_size" in typo else typo.get("font_size", 11))
     wt = str(typo.get("font_weight", "bold") or "bold")
     key = (fam, sz, wt, pt, use_dejavu, ch, _GLYPH_LAYOUT_HAS_SCREEN)
-    cached = _GLYPH_LS_CACHE.get(key)
+    cached = _GLYPH_METRICS_CACHE.get(key)
     if cached is not None:
         return cached
 
@@ -92,15 +93,39 @@ def _glyph_letter_spacing(ch: str, pt: int, use_dejavu: bool = False) -> int:
     _GLYPH_LAYOUT.set_attributes(_GLYPH_NO_LIGA_ATTRS)
     _GLYPH_LAYOUT.set_text(" " * 20, -1)
     space_w = max(1.0, (_GLYPH_LAYOUT.get_size()[0] / Pango.SCALE) / 20.0)
+
+    _GLYPH_LAYOUT.set_text("0A", -1)
+    ink_base, log_base = _GLYPH_LAYOUT.get_extents()
+    base_bl = _GLYPH_LAYOUT.get_baseline()
+    base_mid_rel = (ink_base.y + ink_base.height * 0.5) - base_bl
+
+    is_block = "\u2580" <= ch <= "\u259f"
     fam_attr = " font_family='DejaVu Sans Mono'" if use_dejavu else ""
-    _GLYPH_LAYOUT.set_markup(f"<span{fam_attr} size='{pt}'>{html.escape(ch)}</span>", -1)
+    eff_pt = int(pt)
+    _GLYPH_LAYOUT.set_markup(f"<span{fam_attr} size='{eff_pt}'>{html.escape(ch)}</span>", -1)
     gw = _GLYPH_LAYOUT.get_size()[0] / Pango.SCALE
+
+    if not use_dejavu and not is_block and space_w < gw <= space_w * 1.25:
+        eff_pt = max(1024, int(eff_pt * (space_w - 0.15) / gw))
+        _GLYPH_LAYOUT.set_markup(f"<span size='{eff_pt}'>{html.escape(ch)}</span>", -1)
+        gw = _GLYPH_LAYOUT.get_size()[0] / Pango.SCALE
+
     target_cells = max(1, int(math.ceil((gw - 0.5) / space_w)))
     ls = max(0, int(round((target_cells * space_w - gw) * _PANGO_SCALE)))
-    if len(_GLYPH_LS_CACHE) > 512:
-        _GLYPH_LS_CACHE.clear()
-    _GLYPH_LS_CACHE[key] = ls
-    return ls
+
+    rise = 0
+    if not is_block and gw > 0:
+        ink_g, log_g = _GLYPH_LAYOUT.get_extents()
+        g_bl = _GLYPH_LAYOUT.get_baseline()
+        g_mid_rel = (ink_g.y + ink_g.height * 0.5) - g_bl
+        max_safe_rise = max(0, (base_bl - log_base.y) - (g_bl - log_g.y))
+        rise = max(0, min(int(round(g_mid_rel - base_mid_rel)), max_safe_rise))
+
+    res = (eff_pt, ls, rise)
+    if len(_GLYPH_METRICS_CACHE) > 512:
+        _GLYPH_METRICS_CACHE.clear()
+    _GLYPH_METRICS_CACHE[key] = res
+    return res
 
 
 def _safe_box_chars(raw_chars: dict) -> dict:
@@ -113,6 +138,19 @@ def _safe_pair(seq, d_l: str, d_r: str) -> tuple[str, str]:
     if isinstance(seq, (list, tuple)) and len(seq) >= 2:
         return (str(seq[0]) if seq[0] is not None else d_l, str(seq[1]) if seq[1] is not None else d_r)
     return d_l, d_r
+
+
+def rounded_rect_path(cr, x: float, y: float, w: float, h: float, r: float) -> None:
+    rad = max(0.0, min(float(r), float(w) * 0.5, float(h) * 0.5))
+    if rad <= 0.0:
+        cr.rectangle(x, y, w, h)
+        return
+    cr.new_sub_path()
+    cr.arc(x + w - rad, y + rad, rad, -math.pi * 0.5, 0.0)
+    cr.arc(x + w - rad, y + h - rad, rad, 0.0, math.pi * 0.5)
+    cr.arc(x + rad, y + h - rad, rad, math.pi * 0.5, math.pi)
+    cr.arc(x + rad, y + rad, rad, math.pi, math.pi * 1.5)
+    cr.close_path()
 
 
 class Canvas:
@@ -245,26 +283,30 @@ class Canvas:
                 has_size = bool(prev_tag and _SPAN_SIZE_RE.search(prev_tag))
                 has_fam = bool(prev_tag and "font_family=" in prev_tag.lower())
                 has_ls = bool(prev_tag and "letter_spacing=" in prev_tag.lower())
+                has_rise = bool(prev_tag and "rise=" in prev_tag.lower())
                 m_sz = _SPAN_SIZE_VAL_RE.search(prev_tag) if has_size else None
                 parsed_pt = int(m_sz.group(1)) if m_sz else pt
 
-                def _g_repl(m, _has_size=has_size, _has_fam=has_fam, _has_ls=has_ls, _ppt=parsed_pt):
+                def _g_repl(m, _has_size=has_size, _has_fam=has_fam, _has_ls=has_ls, _has_rise=has_rise, _ppt=parsed_pt):
                     g = m.group(1)
                     use_dv = (g in _GEO_TRIANGLE_CHARS)
                     if _has_size:
                         if _has_ls or ("\u2580" <= g <= "\u259f"):
                             return g
-                        ls = _glyph_letter_spacing(g, _ppt, use_dejavu=use_dv)
+                        _eff_pt, ls, rise = _glyph_metrics(g, _ppt, use_dejavu=use_dv)
                         attrs = ""
                         if use_dv and not _has_fam:
                             attrs += " font_family='DejaVu Sans Mono'"
                         if ls > 0:
                             attrs += f" letter_spacing='{ls}'"
+                        if rise > 0 and not _has_rise:
+                            attrs += f" rise='{rise}'"
                         return f"<span{attrs}>{g}</span>" if attrs else g
-                    ls = _glyph_letter_spacing(g, pt, use_dejavu=use_dv)
+                    eff_pt, ls, rise = _glyph_metrics(g, pt, use_dejavu=use_dv)
                     fam_attr = " font_family='DejaVu Sans Mono'" if use_dv else ""
                     ls_attr = f" letter_spacing='{ls}'" if ls > 0 else ""
-                    return f"<span{fam_attr} size='{pt}'{ls_attr}>{g}</span>"
+                    rise_attr = f" rise='{rise}'" if rise > 0 else ""
+                    return f"<span{fam_attr} size='{eff_pt}'{ls_attr}{rise_attr}>{g}</span>"
 
                 parts[idx] = _FALLBACK_GLYPH_RE.sub(_g_repl, seg)
             s_safe = "".join(parts)

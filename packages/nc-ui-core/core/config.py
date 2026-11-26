@@ -14,7 +14,6 @@ except ImportError:
 from core.paths import (
     CORE_ROOT,
     bootstrap_sys_path,
-    find_all_package_files,
     find_bin,
     find_package_file,
 )
@@ -22,9 +21,41 @@ from core.paths import (
 bootstrap_sys_path(__file__)
 
 ROOT_DIR = CORE_ROOT
-CONFIG_DIR = os.path.expanduser("~/.config/nc-ui")
-THEME_PATH = os.path.join(CONFIG_DIR, "theme.toml")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.toml")
+
+
+def _xdg_base(env_var: str, default_rel: str) -> str:
+    val = os.environ.get(env_var, "").strip()
+    return os.path.expanduser(val) if val else os.path.expanduser(default_rel)
+
+
+def get_config_dir() -> str:
+    base = _xdg_base("XDG_CONFIG_HOME", "~/.config")
+    ncui = os.path.join(base, "ncui")
+    legacy = os.path.join(base, "nc-ui")
+    if not os.path.exists(ncui) and os.path.isdir(legacy) and not os.path.islink(legacy):
+        return legacy
+    return ncui
+
+
+def get_cache_dir() -> str:
+    return os.path.join(_xdg_base("XDG_CACHE_HOME", "~/.cache"), "ncui")
+
+
+def get_waybar_config_dir() -> str:
+    return os.path.join(_xdg_base("XDG_CONFIG_HOME", "~/.config"), "waybar")
+
+
+def _config_path() -> str:
+    return os.path.join(get_config_dir(), "config.toml")
+
+
+def _theme_path() -> str:
+    return os.path.join(get_config_dir(), "theme.toml")
+
+
+CONFIG_DIR = get_config_dir()
+THEME_PATH = _theme_path()
+CONFIG_PATH = _config_path()
 
 # MEMENTO ARCHITETTURALE (Golden Standard §5.1 / §5.2):
 # Sono ammessi SOLO stili di cornice a cella singola con metriche verticali continue.
@@ -91,7 +122,7 @@ def _norm_notif_style(val, default: str = "tactical") -> str:
     return s if s in NOTIF_STYLES else default
 
 # =====================================================================
-# TEMA CAPOSTIPITE: NIGHTCITY (Il Gioiello / Riferimento Canonico NC-UI)
+# TEMA CAPOSTIPITE: NC-UI CYBERDECK (Riferimento Canonico NC-UI)
 # =====================================================================
 DEFAULT_THEME = {
     "typography": {
@@ -159,7 +190,7 @@ DEFAULT_THEME = {
         # Asse 4 — Focus & Readout (Bianco Puro titoli / Bianco Ghiaccio valori di lettura)
         "focus": "#ffffff",
         "focus_val": "#dce6f7",
-        # Asse 5 — Intent (Ciano Laser Nightcity: ESCLUSIVO per selezione/navigazione/focus)
+        # Asse 5 — Intent (Ciano Laser: ESCLUSIVO per selezione/navigazione/focus)
         "intent": "#00f0ff",
         "intent_soft": "#3ec8d6",
         "intent_bg": "#002b36",
@@ -502,17 +533,26 @@ def sanitize_theme_dict(theme_dict: dict) -> dict:
     return theme_dict
 
 
+_JSONC_COMMENT_RE = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*[\s\S]*?\*/')
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def strip_jsonc_comments(text: str, strip_trailing_commas: bool = True) -> str:
+    cleaned = _JSONC_COMMENT_RE.sub(lambda m: m.group(1) or "", str(text or ""))
+    return _TRAILING_COMMA_RE.sub(r"\1", cleaned) if strip_trailing_commas else cleaned
+
+
 def load_theme() -> dict:
     repo_theme = find_package_file("config", "ncui", "theme.toml")
     merged = _deep_merge(DEFAULT_THEME, _load_toml(repo_theme) if repo_theme else {})
-    merged = _deep_merge(merged, _load_toml(THEME_PATH))
+    merged = _deep_merge(merged, _load_toml(_theme_path()))
     return sanitize_theme_dict(merged)
 
 
 def load_config() -> dict:
     repo_cfg = find_package_file("config", "ncui", "config.toml")
     merged = _deep_merge(DEFAULT_CONFIG, _load_toml(repo_cfg) if repo_cfg else {})
-    merged = _deep_merge(merged, _load_toml(CONFIG_PATH))
+    merged = _deep_merge(merged, _load_toml(_config_path()))
     if isinstance(merged.get("waybar_widgets"), dict):
         merged["waybar_plugins"] = _deep_merge(merged.get("waybar_plugins", {}), merged.pop("waybar_widgets"))
     return merged
@@ -521,7 +561,8 @@ def load_config() -> dict:
 def get_waybar_look() -> dict:
     res = {"top": 34, "bg": None, "rad": None}
     h = 30
-    wb_conf = os.path.expanduser("~/.config/waybar/config.jsonc")
+    wb_dir = get_waybar_config_dir()
+    wb_conf = os.path.join(wb_dir, "config.jsonc")
     if os.path.exists(wb_conf):
         try:
             with open(wb_conf, "r", encoding="utf-8") as f:
@@ -535,7 +576,7 @@ def get_waybar_look() -> dict:
         except Exception:
             pass
 
-    wb_css = os.path.expanduser("~/.config/waybar/style.css")
+    wb_css = os.path.join(wb_dir, "style.css")
     if os.path.exists(wb_css):
         try:
             with open(wb_css, "r", encoding="utf-8") as f:
@@ -572,9 +613,9 @@ def get_layout_margins() -> tuple[int, int]:
 
 def sync_waybar_outer_margin(outer_margin: int, reload_bar: bool = False) -> None:
     val = max(0, min(64, int(outer_margin)))
-    wb_paths = [os.path.expanduser("~/.config/waybar/config.jsonc")] + find_all_package_files("config", "waybar", "config.jsonc")
+    wb_conf = os.path.join(get_waybar_config_dir(), "config.jsonc")
     changed = False
-    for rp in _unique_existing_paths(*wb_paths):
+    for rp in _unique_existing_paths(wb_conf):
         try:
             with open(rp, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -612,7 +653,7 @@ def set_layout_margins(
     new_inner = max(2, min(64, int(inner_padding))) if inner_padding is not None else cur_inner
     new_outer = max(0, min(64, int(outer_margin))) if outer_margin is not None else cur_outer
 
-    theme_targets = (THEME_PATH,) + tuple(find_all_package_files("config", "ncui", "theme.toml"))
+    theme_targets = (_theme_path(),)
 
     if inner_padding is not None:
         CONFIG.setdefault("control_center", {})["inner_padding"] = new_inner
@@ -620,7 +661,7 @@ def set_layout_margins(
         _update_toml_key_in_section("control_center", "inner_padding", str(new_inner))
         _update_toml_key_in_section(
             "geometry", "panel_padding", str(new_inner),
-            target_files=theme_targets, create_fallback=False,
+            target_files=theme_targets, create_fallback=True,
         )
 
     if outer_margin is not None:
@@ -630,11 +671,11 @@ def set_layout_margins(
         _update_toml_key_in_section("control_center", "outer_margin", str(new_outer))
         _update_toml_key_in_section(
             "geometry", "screen_margin", str(new_outer),
-            target_files=theme_targets, create_fallback=False,
+            target_files=theme_targets, create_fallback=True,
         )
         _update_toml_key_in_section(
             "geometry", "popup_gap_top", str(new_outer),
-            target_files=theme_targets, create_fallback=False,
+            target_files=theme_targets, create_fallback=True,
         )
         if sync_bar:
             sync_waybar_outer_margin(new_outer, reload_bar=reload_bar)
@@ -656,7 +697,7 @@ def _update_toml_key_in_section(
     section: str, key: str, raw_toml_val: str, target_files: tuple = None, create_fallback: bool = True
 ) -> None:
     if target_files is None:
-        target_files = (CONFIG_PATH,) + tuple(find_all_package_files("config", "ncui", "config.toml"))
+        target_files = (_config_path(),)
     sec_hdr_re = re.compile(rf"^\[{re.escape(section)}\]\s*$", flags=re.MULTILINE)
     key_in_sec_re = re.compile(
         rf"(^\[{re.escape(section)}\]\s*\n(?:(?!^\[)[^\n]*\n)*?^\s*{re.escape(key)}\s*=\s*)(?:\"[^\n\"]*\"|\[[^\n\]]*\]|[^\n#]+)",
@@ -672,7 +713,7 @@ def _update_toml_key_in_section(
                 if key_in_sec_re.search(content):
                     new_c = key_in_sec_re.sub(lambda m: m.group(1) + raw_toml_val, content, count=1)
                 else:
-                    new_c = sec_hdr_re.sub(f"[{section}]\n{key} = {raw_toml_val}", content, count=1)
+                    new_c = sec_hdr_re.sub(lambda _m: f"[{section}]\n{key} = {raw_toml_val}", content, count=1)
             else:
                 new_c = content.rstrip() + f"\n\n[{section}]\n{key} = {raw_toml_val}\n"
             with open(rp, "w", encoding="utf-8") as f:
@@ -682,9 +723,10 @@ def _update_toml_key_in_section(
             pass
 
     if not updated_any and create_fallback:
+        fallback_path = target_files[0] if target_files else _config_path()
         try:
-            os.makedirs(CONFIG_DIR, exist_ok=True)
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(fallback_path), exist_ok=True)
+            with open(fallback_path, "w", encoding="utf-8") as f:
                 f.write(f"[{section}]\n{key} = {raw_toml_val}\n")
         except Exception:
             pass
@@ -747,40 +789,39 @@ def set_hover_tooltip_delay(val: float) -> float:
     return v
 
 
+def _get_notif_style(key: str, default: str) -> str:
+    return _norm_notif_style((THEME.get("ascii") or {}).get(key), default)
+
+
+def _set_notif_style(key: str, style: str, default: str) -> str:
+    clean = _norm_notif_style(style, default)
+    THEME.setdefault("ascii", {})[key] = clean
+    _update_toml_key_in_section("ascii", key, f'"{clean}"', target_files=_theme_toml_targets(), create_fallback=True)
+    return clean
+
+
 def get_sys_notif_style() -> str:
-    return _norm_notif_style((THEME.get("ascii") or {}).get("sys_notif_style"), "clean")
+    return _get_notif_style("sys_notif_style", "clean")
 
 
 def set_sys_notif_style(style: str) -> str:
-    clean = _norm_notif_style(style, "clean")
-    THEME.setdefault("ascii", {})["sys_notif_style"] = clean
-    targets = _theme_toml_targets()
-    _update_toml_key_in_section("ascii", "sys_notif_style", f'"{clean}"', target_files=targets, create_fallback=False)
-    return clean
+    return _set_notif_style("sys_notif_style", style, "clean")
 
 
 def get_toast_style() -> str:
-    return _norm_notif_style((THEME.get("ascii") or {}).get("toast_style"), "tactical")
+    return _get_notif_style("toast_style", "tactical")
 
 
 def set_toast_style(style: str) -> str:
-    clean = _norm_notif_style(style, "tactical")
-    THEME.setdefault("ascii", {})["toast_style"] = clean
-    targets = _theme_toml_targets()
-    _update_toml_key_in_section("ascii", "toast_style", f'"{clean}"', target_files=targets, create_fallback=False)
-    return clean
+    return _set_notif_style("toast_style", style, "tactical")
 
 
 def get_hover_help_style() -> str:
-    return _norm_notif_style((THEME.get("ascii") or {}).get("hover_help_style"), "cyberpunk")
+    return _get_notif_style("hover_help_style", "cyberpunk")
 
 
 def set_hover_help_style(style: str) -> str:
-    clean = _norm_notif_style(style, "cyberpunk")
-    THEME.setdefault("ascii", {})["hover_help_style"] = clean
-    targets = _theme_toml_targets()
-    _update_toml_key_in_section("ascii", "hover_help_style", f'"{clean}"', target_files=targets, create_fallback=False)
-    return clean
+    return _set_notif_style("hover_help_style", style, "cyberpunk")
 
 
 def get_capture_action() -> str:
@@ -890,15 +931,12 @@ def estimate_waybar_free_chars_budget() -> dict:
     except Exception:
         pass
 
-    wb_conf = os.path.expanduser("~/.config/waybar/config.jsonc")
+    wb_conf = os.path.join(get_waybar_config_dir(), "config.jsonc")
     active_mods = []
     if os.path.exists(wb_conf):
         try:
             with open(wb_conf, "r", encoding="utf-8") as f:
-                raw = f.read()
-            cleaned = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*', lambda m: m.group(1) if m.group(1) else "", raw)
-            cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-            d = json.loads(cleaned)
+                d = json.loads(strip_jsonc_comments(f.read()))
             if isinstance(d, dict):
                 active_mods = (
                     list(d.get("modules-left", []) or [])
@@ -997,7 +1035,7 @@ def _parse_rgba_components(color_str: str) -> tuple[int, int, int, float]:
 
 
 def _theme_toml_targets() -> tuple[str, ...]:
-    return (THEME_PATH,) + tuple(find_all_package_files("config", "ncui", "theme.toml"))
+    return (_theme_path(),)
 
 
 def get_surface_bg_hex() -> str:
@@ -1005,63 +1043,58 @@ def get_surface_bg_hex() -> str:
 
 
 def get_surface_bg_rgb() -> tuple[int, int, int]:
-    hx = get_surface_bg_hex()
-    return int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16)
+    return _hex_to_rgb(get_surface_bg_hex())
+
+
+def _get_theme_opacity(key: str, default: float, lo: float = 0.0) -> float:
+    try:
+        return max(lo, min(1.0, float(THEME.get("colors", {}).get(key, default))))
+    except Exception:
+        return default
+
+
+def _get_theme_opacity_pct(key: str, default: float, lo_pct: int = 0) -> int:
+    return max(lo_pct, min(100, int(round(_get_theme_opacity(key, default) * 100.0))))
 
 
 def get_window_opacity() -> float:
-    try:
-        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("window_opacity", 0.86))))
-    except Exception:
-        return 0.86
+    return _get_theme_opacity("window_opacity", 0.86)
 
 
 def get_ui_transparency_pct() -> int:
-    return max(5, min(100, int(round(get_window_opacity() * 100.0))))
+    return _get_theme_opacity_pct("window_opacity", 0.86, lo_pct=5)
 
 
 def get_box_opacity() -> float:
-    try:
-        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("box_opacity", 0.72))))
-    except Exception:
-        return 0.72
+    return _get_theme_opacity("box_opacity", 0.72)
 
 
 def get_box_opacity_pct() -> int:
-    return max(0, min(100, int(round(get_box_opacity() * 100.0))))
+    return _get_theme_opacity_pct("box_opacity", 0.72)
 
 
 def get_toast_opacity() -> float:
-    try:
-        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("toast_opacity", 0.95))))
-    except Exception:
-        return 0.95
+    return _get_theme_opacity("toast_opacity", 0.95)
 
 
 def get_toast_opacity_pct() -> int:
-    return max(0, min(100, int(round(get_toast_opacity() * 100.0))))
+    return _get_theme_opacity_pct("toast_opacity", 0.95)
 
 
 def get_sys_notif_opacity() -> float:
-    try:
-        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("sys_notif_opacity", 0.95))))
-    except Exception:
-        return 0.95
+    return _get_theme_opacity("sys_notif_opacity", 0.95)
 
 
 def get_sys_notif_opacity_pct() -> int:
-    return max(0, min(100, int(round(get_sys_notif_opacity() * 100.0))))
+    return _get_theme_opacity_pct("sys_notif_opacity", 0.95)
 
 
 def get_hover_help_opacity() -> float:
-    try:
-        return max(0.0, min(1.0, float(THEME.get("colors", {}).get("hover_help_opacity", 0.96))))
-    except Exception:
-        return 0.96
+    return _get_theme_opacity("hover_help_opacity", 0.96)
 
 
 def get_hover_help_opacity_pct() -> int:
-    return max(0, min(100, int(round(get_hover_help_opacity() * 100.0))))
+    return _get_theme_opacity_pct("hover_help_opacity", 0.96)
 
 
 def get_waybar_sync_opacity() -> bool:
@@ -1083,6 +1116,23 @@ def sync_waybar_colors_from_theme(colors_dict: dict = None) -> dict:
     c["wb_warn"] = _norm_hex_color(c.get("attention"), "#ffe619")
     c["wb_crit"] = _norm_hex_color(c.get("fault"), "#ff2442")
     return c
+
+
+def hex_to_rgba_f(hx: str, alpha: float = 1.0, fallback: tuple = (1.0, 1.0, 1.0)) -> tuple[float, float, float, float]:
+    s = str(hx or "").strip()
+    if s.lower().startswith("rgb"):
+        r, g, b, _ = _parse_rgba_components(s)
+        return (r / 255.0, g / 255.0, b / 255.0, float(alpha))
+    clean = s.lstrip("#")
+    if len(clean) == 8:
+        clean = clean[2:]
+    if len(clean) == 6:
+        try:
+            return (int(clean[0:2], 16) / 255.0, int(clean[2:4], 16) / 255.0, int(clean[4:6], 16) / 255.0, float(alpha))
+        except ValueError:
+            pass
+    fb_a = float(fallback[3]) if len(fallback) > 3 else float(alpha)
+    return (float(fallback[0]), float(fallback[1]), float(fallback[2]), fb_a)
 
 
 def _hex_to_rgb(hx: str) -> tuple[int, int, int]:
@@ -1144,10 +1194,7 @@ def apply_waybar_palette(
     if css_targets is not None:
         paths = _unique_existing_paths(*css_targets)
     else:
-        paths = _unique_existing_paths(
-            os.path.expanduser("~/.config/waybar/style.css"),
-            *find_all_package_files("config", "waybar", "style.css"),
-        )
+        paths = _unique_existing_paths(os.path.join(get_waybar_config_dir(), "style.css"))
 
     for rp in paths:
         try:
@@ -1279,6 +1326,20 @@ def apply_waybar_transparency(sync_opacity: bool = None, sync_color: bool = None
     return apply_waybar_palette(sync_opacity=sync_opacity, sync_color=sync_color, force_palette=False)
 
 
+def _set_theme_opacity_pct(key: str, opacity_pct: int, save_key: str, lo_pct: int = 0) -> int:
+    from core import probe
+    clamped = max(lo_pct, min(100, int(opacity_pct)))
+    op = round(clamped / 100.0, 2)
+    THEME.setdefault("colors", {})[key] = op
+    targets = _theme_toml_targets()
+    probe.enqueue_latest(
+        save_key,
+        lambda v=op, k=key, tgts=targets: _update_toml_key_in_section("colors", k, f"{v:.2f}", target_files=tgts, create_fallback=True),
+        debounce_ms=150,
+    )
+    return clamped
+
+
 def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
     from core import probe
     from core.state import STATE
@@ -1294,8 +1355,8 @@ def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
     targets = _theme_toml_targets()
 
     def _persist(a=alpha, rgba=new_rgba, tgts=targets) -> None:
-        _update_toml_key_in_section("colors", "window_opacity", f"{a:.2f}", target_files=tgts, create_fallback=False)
-        _update_toml_key_in_section("colors", "window_bg", f'"{rgba}"', target_files=tgts, create_fallback=False)
+        _update_toml_key_in_section("colors", "window_opacity", f"{a:.2f}", target_files=tgts, create_fallback=True)
+        _update_toml_key_in_section("colors", "window_bg", f'"{rgba}"', target_files=tgts, create_fallback=True)
 
     probe.enqueue_latest("theme_window_op_save", _persist, debounce_ms=150)
 
@@ -1305,64 +1366,24 @@ def set_ui_transparency_pct(opacity_pct: int, sync_waybar: bool = False) -> int:
 
 
 def set_box_opacity_pct(opacity_pct: int) -> int:
-    from core import probe
-    clamped = max(0, min(100, int(opacity_pct)))
-    box_op = round(clamped / 100.0, 2)
-    THEME.setdefault("colors", {})["box_opacity"] = box_op
-    targets = _theme_toml_targets()
-    probe.enqueue_latest(
-        "theme_box_op_save",
-        lambda b=box_op, tgts=targets: _update_toml_key_in_section("colors", "box_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
-        debounce_ms=150,
-    )
-    return clamped
+    return _set_theme_opacity_pct("box_opacity", opacity_pct, "theme_box_op_save")
 
 
 def set_toast_opacity_pct(opacity_pct: int) -> int:
-    from core import probe
-    clamped = max(0, min(100, int(opacity_pct)))
-    toast_op = round(clamped / 100.0, 2)
-    THEME.setdefault("colors", {})["toast_opacity"] = toast_op
-    targets = _theme_toml_targets()
-    probe.enqueue_latest(
-        "theme_toast_op_save",
-        lambda b=toast_op, tgts=targets: _update_toml_key_in_section("colors", "toast_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
-        debounce_ms=150,
-    )
-    return clamped
+    return _set_theme_opacity_pct("toast_opacity", opacity_pct, "theme_toast_op_save")
 
 
 def set_sys_notif_opacity_pct(opacity_pct: int) -> int:
-    from core import probe
-    clamped = max(0, min(100, int(opacity_pct)))
-    sys_op = round(clamped / 100.0, 2)
-    THEME.setdefault("colors", {})["sys_notif_opacity"] = sys_op
-    targets = _theme_toml_targets()
-    probe.enqueue_latest(
-        "theme_sys_notif_op_save",
-        lambda b=sys_op, tgts=targets: _update_toml_key_in_section("colors", "sys_notif_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
-        debounce_ms=150,
-    )
-    return clamped
+    return _set_theme_opacity_pct("sys_notif_opacity", opacity_pct, "theme_sys_notif_op_save")
 
 
 def set_hover_help_opacity_pct(opacity_pct: int) -> int:
-    from core import probe
-    clamped = max(0, min(100, int(opacity_pct)))
-    hov_op = round(clamped / 100.0, 2)
-    THEME.setdefault("colors", {})["hover_help_opacity"] = hov_op
-    targets = _theme_toml_targets()
-    probe.enqueue_latest(
-        "theme_hover_help_op_save",
-        lambda b=hov_op, tgts=targets: _update_toml_key_in_section("colors", "hover_help_opacity", f"{b:.2f}", target_files=tgts, create_fallback=False),
-        debounce_ms=150,
-    )
-    return clamped
+    return _set_theme_opacity_pct("hover_help_opacity", opacity_pct, "theme_hover_help_op_save")
 
 
 def set_surface_bg(hex_color: str, sync_waybar: bool = False) -> str:
     norm_hex = _norm_hex_color(hex_color, get_surface_bg_hex())
-    r, g, b = int(norm_hex[1:3], 16), int(norm_hex[3:5], 16), int(norm_hex[5:7], 16)
+    r, g, b = _hex_to_rgb(norm_hex)
     alpha = get_window_opacity()
     new_rgba = f"rgba({r}, {g}, {b}, {alpha:.2f})"
     colors = THEME.setdefault("colors", {})
@@ -1370,8 +1391,8 @@ def set_surface_bg(hex_color: str, sync_waybar: bool = False) -> str:
     colors["window_bg"] = new_rgba
 
     targets = _theme_toml_targets()
-    _update_toml_key_in_section("colors", "surface_bg", f'"{norm_hex}"', target_files=targets, create_fallback=False)
-    _update_toml_key_in_section("colors", "window_bg", f'"{new_rgba}"', target_files=targets, create_fallback=False)
+    _update_toml_key_in_section("colors", "surface_bg", f'"{norm_hex}"', target_files=targets, create_fallback=True)
+    _update_toml_key_in_section("colors", "window_bg", f'"{new_rgba}"', target_files=targets, create_fallback=True)
 
     if sync_waybar is True:
         apply_waybar_transparency(sync_opacity=get_waybar_sync_opacity(), sync_color=True)
@@ -1381,7 +1402,7 @@ def set_surface_bg(hex_color: str, sync_waybar: bool = False) -> str:
 def set_waybar_sync_opacity(enabled: bool, sync_waybar: bool = False) -> bool:
     val = bool(enabled)
     THEME.setdefault("colors", {})["waybar_sync_opacity"] = val
-    _update_toml_key_in_section("colors", "waybar_sync_opacity", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=False)
+    _update_toml_key_in_section("colors", "waybar_sync_opacity", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=True)
     if val and sync_waybar is True:
         apply_waybar_transparency(sync_opacity=True, sync_color=get_waybar_sync_color())
     return val
@@ -1390,7 +1411,7 @@ def set_waybar_sync_opacity(enabled: bool, sync_waybar: bool = False) -> bool:
 def set_waybar_sync_color(enabled: bool, sync_waybar: bool = False) -> bool:
     val = bool(enabled)
     THEME.setdefault("colors", {})["waybar_sync_color"] = val
-    _update_toml_key_in_section("colors", "waybar_sync_color", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=False)
+    _update_toml_key_in_section("colors", "waybar_sync_color", "true" if val else "false", target_files=_theme_toml_targets(), create_fallback=True)
     if val and sync_waybar is True:
         apply_waybar_transparency(sync_opacity=get_waybar_sync_opacity(), sync_color=True)
     return val
@@ -1406,7 +1427,7 @@ def get_row_gap() -> int:
 def set_row_gap(val: int) -> int:
     clamped = max(0, min(6, int(val)))
     THEME.setdefault("geometry", {})["row_gap"] = clamped
-    _update_toml_key_in_section("geometry", "row_gap", str(clamped), target_files=_theme_toml_targets(), create_fallback=False)
+    _update_toml_key_in_section("geometry", "row_gap", str(clamped), target_files=_theme_toml_targets(), create_fallback=True)
     return clamped
 
 

@@ -49,7 +49,12 @@ CHAR_SETS = {
 FULLWIDTH_SETS = {"kanjis", "katakana"}
 COLOR_MODES = ("color", "grayscale", "matrix", "amber")
 ASCII_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
-ASCII_CACHE_DIR = os.path.expanduser("~/.cache/nc-ui/asciified")
+def _ascii_cache_dir() -> str:
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip() or "~/.cache"
+    return os.path.join(os.path.expanduser(xdg), "ncui", "asciified")
+
+
+ASCII_CACHE_DIR = _ascii_cache_dir()
 
 ASCIIFY_DEFAULTS = {
     "enabled": False,
@@ -189,7 +194,7 @@ def get_font(size: int, char_set_key: str = "standard"):
 
 
 def _order_cache_file() -> str:
-    return os.path.join(ASCII_CACHE_DIR, "_char_order.json")
+    return os.path.join(_ascii_cache_dir(), "_char_order.json")
 
 
 def sort_chars_by_density(chars: str, char_set_key: str = "standard") -> str:
@@ -241,7 +246,7 @@ def sort_chars_by_density(chars: str, char_set_key: str = "standard") -> str:
     with _CACHE_LOCK:
         _SORTED_CHARS_CACHE[mem_key] = result
         try:
-            os.makedirs(ASCII_CACHE_DIR, exist_ok=True)
+            os.makedirs(_ascii_cache_dir(), exist_ok=True)
             disk_data[disk_key] = result
             tmp_p = f"{order_path}.tmp.{os.getpid()}.{threading.get_ident()}"
             with open(tmp_p, "w", encoding="utf-8") as f:
@@ -284,7 +289,7 @@ def image_cache_key(image_path: str, cfg: dict | None, preview: bool = False) ->
 
 def _cache_file_for(image_path: str, cfg: dict | None, preview: bool = False) -> str:
     prefix = "prev" if preview else "img"
-    return os.path.join(ASCII_CACHE_DIR, f"{prefix}_{image_cache_key(image_path, cfg, preview=preview)}.png")
+    return os.path.join(_ascii_cache_dir(), f"{prefix}_{image_cache_key(image_path, cfg, preview=preview)}.png")
 
 
 def get_cached_ascii_path(image_path: str, cfg: dict | None, preview: bool = False) -> str:
@@ -468,7 +473,7 @@ def render_ascii_image(image_path: str, cfg: dict | None, preview: bool = False)
 
 
 def list_folder_media_for_slideshow(folder_path: str) -> tuple[list[str], list[str]]:
-    """Return (static_images, gif_files) up to depth 2, matching nc_util_desktop.sh."""
+    """Return (static_images, gif_files) up to depth 2, matching core.wallpaper."""
     root = os.path.abspath(os.path.expanduser(str(folder_path or "").strip()))
     if not os.path.isdir(root):
         return [], []
@@ -508,7 +513,7 @@ def render_ascii_folder(
     fhash = hashlib.sha256(
         json.dumps([_RENDER_VERSION, root, items, sigs], separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
-    out_dir = os.path.join(ASCII_CACHE_DIR, f"slide_{fhash}")
+    out_dir = os.path.join(_ascii_cache_dir(), f"slide_{fhash}")
     os.makedirs(out_dir, exist_ok=True)
 
     expected = {}
@@ -549,13 +554,14 @@ def render_ascii_folder(
 
 
 def get_ascii_cache_stats() -> tuple[int, int]:
-    """Return (png_file_count, total_bytes) in ASCII_CACHE_DIR."""
-    if not os.path.isdir(ASCII_CACHE_DIR):
+    """Return (png_file_count, total_bytes) in ASCII cache dir."""
+    cdir = _ascii_cache_dir()
+    if not os.path.isdir(cdir):
         return 0, 0
     cnt = 0
     total_bytes = 0
     try:
-        with os.scandir(ASCII_CACHE_DIR) as it:
+        with os.scandir(cdir) as it:
             for ent in it:
                 if ent.name == "_char_order.json" or not ent.name.endswith(".png"):
                     continue
@@ -572,7 +578,8 @@ def get_ascii_cache_stats() -> tuple[int, int]:
 
 def clear_ascii_cache(keep_paths: set[str] | None = None) -> tuple[int, int]:
     """Delete cached PNGs and slide_* dirs, preserving live keep_paths and their targets."""
-    if not os.path.isdir(ASCII_CACHE_DIR):
+    cdir = _ascii_cache_dir()
+    if not os.path.isdir(cdir):
         return 0, 0
 
     protected = set()
@@ -594,7 +601,7 @@ def clear_ascii_cache(keep_paths: set[str] | None = None) -> tuple[int, int]:
     removed_entries = 0
     freed_bytes = 0
     try:
-        with os.scandir(ASCII_CACHE_DIR) as it:
+        with os.scandir(cdir) as it:
             for ent in it:
                 if ent.name == "_char_order.json":
                     continue

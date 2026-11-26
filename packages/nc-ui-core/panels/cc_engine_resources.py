@@ -19,14 +19,11 @@ import termios
 import threading
 import time
 from core import probe
-from core.config import CONFIG
+from core.config import CONFIG, get_cache_dir
 from core.i18n import t
 from core.state import STATE
-from ui.kit import FeedbackBox, get_active_inline_entry, handle_inline_entry_key_press
-
-CPU_BAR_SAMPLE = "/tmp/nc_cpu_bar_sample.json"
-_LIMINE_CANDIDATES = ("/boot/limine.conf", "/efi/limine/limine.conf", "/boot/limine/limine.conf")
-_DEFAULT_ENTRIES = ["linux-cachyos", "linux-cachyos-hardened", "Golden Image Recovery", "Windows"]
+from ui.kit import feedback_cards, get_active_inline_entry, handle_inline_entry_key_press, set_feedback
+from ui.markup import format_bytes_short
 
 _CPU_MODEL_CACHE: str | None = None
 _CPU_FREQ_PATHS: list[str] | None = None
@@ -54,14 +51,17 @@ def read_proc_stat() -> dict:
 def get_cpu_bar_pct() -> float:
     curr = read_proc_stat().get("cpu", (0, 0))
     prev = curr
-    if os.path.exists(CPU_BAR_SAMPLE):
+    cache_dir = get_cache_dir()
+    sample_path = os.path.join(cache_dir, "cpu_bar_sample.json")
+    if os.path.exists(sample_path):
         try:
-            with open(CPU_BAR_SAMPLE, "r", encoding="utf-8") as f:
+            with open(sample_path, "r", encoding="utf-8") as f:
                 prev = tuple(json.load(f))
         except Exception:
             pass
     try:
-        with open(CPU_BAR_SAMPLE, "w", encoding="utf-8") as f:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(sample_path, "w", encoding="utf-8") as f:
             json.dump(list(curr), f)
     except Exception:
         pass
@@ -133,24 +133,27 @@ def get_cpu_telemetry(prev_stat: dict) -> dict:
 
     if _CPU_TEMP_PATH is None:
         found_temp = ""
+        laptop_temp = ""
         fallback_temp = ""
         try:
             hwmon_base = "/sys/class/hwmon"
             if os.path.exists(hwmon_base):
-                for hm in os.listdir(hwmon_base):
+                for hm in sorted(os.listdir(hwmon_base)):
                     hm_dir = os.path.join(hwmon_base, hm)
                     name_p = os.path.join(hm_dir, "name")
-                    hm_name = open(name_p, "r", encoding="utf-8").read().strip() if os.path.exists(name_p) else ""
+                    hm_name = _read_sysfs_txt(name_p).lower()
                     t_p = os.path.join(hm_dir, "temp1_input")
                     if os.path.exists(t_p):
                         if hm_name in ("k10temp", "coretemp", "zenpower"):
                             found_temp = t_p
                             break
+                        if hm_name in ("thinkpad", "dell_smm", "asus-ec-sensors", "asusec", "acpitz") and not laptop_temp:
+                            laptop_temp = t_p
                         elif not fallback_temp:
                             fallback_temp = t_p
         except Exception:
             pass
-        _CPU_TEMP_PATH = found_temp or fallback_temp
+        _CPU_TEMP_PATH = found_temp or laptop_temp or fallback_temp
 
     temp_c = 0.0
     if _CPU_TEMP_PATH:
@@ -236,6 +239,94 @@ def _read_sysfs_txt(path: str) -> str:
         return ""
 
 
+_PCI_NAME_CACHE: dict[str, str] = {}
+
+
+def _opt_float(val: str) -> float | None:
+    s = str(val or "").strip()
+    if not s or s.startswith("[") or "n/a" in s.lower() or "not supported" in s.lower():
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _lookup_pci_gpu_name(pci_slot: str) -> str:
+    """Resolve human-readable GPU model name via lspci once per PCI slot."""
+    slot = str(pci_slot or "").strip()
+    if not slot:
+        return ""
+    if slot in _PCI_NAME_CACHE:
+        return _PCI_NAME_CACHE[slot]
+
+    name = ""
+    if probe.has_bin("lspci"):
+        import shlex
+        ok, out = probe.run_cmd(["lspci", "-mm", "-s", slot], timeout=1.0)
+        if ok and out:
+            try:
+                toks = shlex.split(out.splitlines()[0])
+                raw_dev = toks[3] if len(toks) > 3 else (toks[2] if len(toks) > 2 else "")
+                m = re.search(r"\[([^\]]+)\]", raw_dev)
+                name = m.group(1).strip() if m else raw_dev.strip()
+            except Exception:
+                name = ""
+        if not name:
+            ok2, out2 = probe.run_cmd(["lspci", "-s", slot], timeout=1.0)
+            if ok2 and out2 and ":" in out2:
+                tail = out2.splitlines()[0].split(":", 2)[-1].strip()
+                name = re.sub(r"\s*\(rev [^)]+\)\s*$", "", tail).strip()
+    if len(_PCI_NAME_CACHE) < 16:
+        _PCI_NAME_CACHE[slot] = name
+    return name
+
+
+def _classify_drm_gpu(
+    vendor_hex: str,
+    pci_slot: str,
+    name: str,
+    has_fan: bool,
+    vram_bytes: int,
+    power_cap_w: float | None,
+) -> tuple[str, str]:
+    """Classify a DRM device into `(category, vendor)`."""
+    vhex = str(vendor_hex or "").strip().lower()
+    low = str(name or "").lower()
+    slot_low = str(pci_slot or "").strip().lower()
+
+    if vhex == "0x10de":
+        return "nvidia_dgpu", "nvidia"
+    if vhex == "0x8086":
+        return ("igpu", "intel") if slot_low.startswith("0000:00:02.") else ("intel_dgpu", "intel")
+    if vhex == "0x1002":
+        apu_tokens = (
+            "raphael", "phoenix", "rembrandt", "cezanne", "renoir", "picasso",
+            "raven", "granite ridge", "strix", "hawk point",
+            "780m", "680m", "880m", "890m", "760m", "740m",
+        )
+        dgpu_tokens = ("radeon rx", "radeon pro", "radeon vii", "firepro", "instinct")
+        is_apu = any(tok in low for tok in apu_tokens)
+        if not is_apu and "vega" in low and not any(x in low for x in ("56", "64", "vii", "frontier")):
+            is_apu = True
+        if not is_apu and "radeon graphics" in low and not any(x in low for x in ("rx", "pro")):
+            is_apu = True
+        is_dgpu = any(tok in low for tok in dgpu_tokens) or (
+            has_fan and (vram_bytes >= 3 * (1024 ** 3) or (power_cap_w or 0.0) >= 75.0)
+        )
+        return ("amd_dgpu", "amd") if (is_dgpu and not is_apu) else ("igpu", "amd")
+    return "igpu", "gpu"
+
+
+def has_nvidia_gpu() -> bool:
+    if shutil.which("nvidia-smi"):
+        return True
+    for vp in glob.glob("/sys/class/drm/card[0-9]*/device/vendor"):
+        if _read_sysfs_txt(vp).lower() == "0x10de":
+            return True
+    return False
+
+
 def _read_nvidia_gpu(include_procs: bool = False) -> dict | None:
     if not shutil.which("nvidia-smi"):
         return None
@@ -262,8 +353,15 @@ def _read_nvidia_gpu(include_procs: bool = False) -> dict | None:
 
     mem_used_mib = _safe_float(parts[3])
     mem_tot_mib = _safe_float(parts[4])
-    fan_raw = parts[6].strip()
-    fan_pct = None if (not fan_raw or fan_raw.startswith("[") or fan_raw.upper() == "N/A") else _safe_int(fan_raw)
+    util_pct = max(0.0, min(100.0, _safe_float(parts[1])))
+    mem_ctrl_pct = max(0.0, min(100.0, _safe_float(parts[2])))
+    temp_opt = _opt_float(parts[5])
+    fan_opt = _opt_float(parts[6])
+    fan_pct = max(0, min(100, int(round(fan_opt)))) if fan_opt is not None else None
+    pwr_opt = _opt_float(parts[7])
+    lim_opt = _opt_float(parts[8])
+    gfx_mhz = _safe_int(parts[9])
+    mem_mhz = _safe_int(parts[10])
     pstate_raw = parts[11].strip()
     pstate = "" if (not pstate_raw or pstate_raw.startswith("[") or pstate_raw.upper() == "N/A") else pstate_raw
 
@@ -272,85 +370,126 @@ def _read_nvidia_gpu(include_procs: bool = False) -> dict | None:
         p_ok, p_out = probe.run_cmd(["nvidia-smi", "pmon", "-c", "1", "-s", "m"], timeout=1.5)
         if p_ok and p_out:
             by_pid: dict[int, dict] = {}
+            cmd_idx = 5
             for pline in p_out.splitlines():
                 ps = pline.strip()
-                if not ps or ps.startswith("#"):
+                if not ps:
                     continue
-                cols = ps.split(None, 5)
-                if len(cols) < 6 or cols[0] != "0" or not cols[1].isdigit():
+                if ps.startswith("#"):
+                    hdr = ps.lstrip("#").split()
+                    if "command" in hdr:
+                        cmd_idx = hdr.index("command")
+                    continue
+                cols = ps.split(None, cmd_idx)
+                if len(cols) <= cmd_idx or cols[0] != "0" or not cols[1].isdigit():
                     continue
                 pid = int(cols[1])
                 vram_mib = _safe_int(cols[3], 0)
-                name = _read_sysfs_txt(f"/proc/{pid}/comm") or os.path.basename(cols[5].split()[0])
+                raw_cmd = next((tok for tok in cols[cmd_idx].split() if tok != "-"), "-")
+                name = _read_sysfs_txt(f"/proc/{pid}/comm") or os.path.basename(raw_cmd)
                 if pid not in by_pid or vram_mib > by_pid[pid]["vram_mib"]:
                     by_pid[pid] = {"pid": pid, "name": name, "vram_mib": vram_mib}
             procs = sorted(by_pid.values(), key=lambda x: (-x["vram_mib"], x["name"]))
 
     return {
         "available": True,
+        "source": "nvidia-smi",
         "vendor": "nvidia",
+        "category": "nvidia_dgpu",
+        "card": "",
+        "pci_slot": "",
+        "dpm": "",
         "model": parts[0] or "NVIDIA GPU",
-        "util_pct": max(0.0, min(100.0, _safe_float(parts[1]))),
-        "mem_ctrl_pct": max(0.0, min(100.0, _safe_float(parts[2]))),
+        "util_pct": util_pct,
+        "gpu_util": util_pct,
+        "mem_ctrl_pct": mem_ctrl_pct,
+        "mem_util": mem_ctrl_pct,
         "vram_used": int(mem_used_mib * 1024 * 1024),
         "vram_total": int(mem_tot_mib * 1024 * 1024),
-        "vram_pct": max(0.0, min(100.0, (mem_used_mib / mem_tot_mib) * 100.0)),
-        "temp_c": _safe_float(parts[5]),
+        "vram_used_mb": int(round(mem_used_mib)),
+        "vram_total_mb": int(round(mem_tot_mib)),
+        "vram_pct": max(0.0, min(100.0, (mem_used_mib / mem_tot_mib) * 100.0)) if mem_tot_mib > 0 else 0.0,
+        "temp_c": temp_opt if temp_opt is not None else 0.0,
+        "temp_c_opt": temp_opt,
         "fan_pct": fan_pct,
-        "power_w": _safe_float(parts[7]),
-        "power_limit_w": _safe_float(parts[8]),
-        "gfx_mhz": _safe_int(parts[9]),
-        "mem_mhz": _safe_int(parts[10]),
+        "fan_rpm": None,
+        "power_w": pwr_opt if pwr_opt is not None else 0.0,
+        "power_w_opt": pwr_opt,
+        "power_limit_w": lim_opt if lim_opt is not None else 0.0,
+        "power_limit_w_opt": lim_opt,
+        "gfx_mhz": gfx_mhz,
+        "sclk_mhz": gfx_mhz,
+        "mem_mhz": mem_mhz,
+        "mclk_mhz": mem_mhz,
         "pstate": pstate,
         "procs": procs,
     }
 
 
 def _read_sysfs_gpu() -> dict | None:
+    fallback_igpu: dict | None = None
     for dev_dir in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
         card_name = os.path.basename(os.path.dirname(dev_dir))
         if "-" in card_name:
             continue
+        vendor_hex = _read_sysfs_txt(os.path.join(dev_dir, "vendor")).lower()
+        if not vendor_hex:
+            continue
+        try:
+            pci_slot = os.path.basename(os.path.realpath(dev_dir))
+        except Exception:
+            pci_slot = ""
+
         vram_tot = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "mem_info_vram_total")))
         if vram_tot <= 0:
             vram_tot = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "tile0/vram0/physical_vram_size_bytes")))
-        # Require dedicated VRAM (>= 256 MiB) to filter out integrated GPUs.
-        if vram_tot < 256 * 1024 * 1024:
-            continue
-
-        vendor_hex = _read_sysfs_txt(os.path.join(dev_dir, "vendor")).lower()
-        vendor = {"0x1002": "amd", "0x8086": "intel", "0x10de": "nvidia"}.get(vendor_hex, "gpu")
         vram_used = _safe_int(_read_sysfs_txt(os.path.join(dev_dir, "mem_info_vram_used")))
         util_pct = max(0.0, min(100.0, _safe_float(_read_sysfs_txt(os.path.join(dev_dir, "gpu_busy_percent")))))
-        model = _read_sysfs_txt(os.path.join(dev_dir, "product_name")) or {
-            "amd": "AMD Radeon GPU",
-            "intel": "Intel Arc GPU",
-            "nvidia": "NVIDIA GPU",
-        }.get(vendor, "Dedicated GPU")
 
-        temp_c = 0.0
-        fan_pct = None
-        power_w = 0.0
-        power_limit_w = 0.0
+        temp_opt: float | None = None
+        fan_pct: int | None = None
+        fan_rpm: int | None = None
+        power_opt: float | None = None
+        limit_opt: float | None = None
+        hw_clk_mhz = 0
         for hw in sorted(glob.glob(os.path.join(dev_dir, "hwmon", "hwmon*"))):
-            t_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "temp1_input")))
-            if t_raw > 0:
-                temp_c = t_raw / 1000.0 if t_raw > 200 else t_raw
-            p_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_average"))) or _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_input")))
-            if p_raw > 0:
-                power_w = p_raw / 1_000_000.0
-            cap_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "power1_cap")))
-            if cap_raw > 0:
-                power_limit_w = cap_raw / 1_000_000.0
-            fan_cur = _safe_float(_read_sysfs_txt(os.path.join(hw, "fan1_input")))
-            fan_max = _safe_float(_read_sysfs_txt(os.path.join(hw, "fan1_max")))
-            if fan_max > 0 and fan_cur >= 0:
-                fan_pct = max(0, min(100, int(round((fan_cur / fan_max) * 100.0))))
-            else:
-                pwm_raw = _safe_float(_read_sysfs_txt(os.path.join(hw, "pwm1")), -1.0)
-                if pwm_raw >= 0:
-                    fan_pct = max(0, min(100, int(round((pwm_raw / 255.0) * 100.0))))
-            break
+            if temp_opt is None:
+                for tname in ("temp1_input", "temp2_input"):
+                    t_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, tname)))
+                    if t_raw is not None:
+                        temp_opt = round(t_raw / 1000.0 if t_raw > 200 else t_raw, 1)
+                        break
+            if power_opt is None:
+                for pname in ("power1_average", "power1_input"):
+                    p_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, pname)))
+                    if p_raw is not None and p_raw >= 0:
+                        power_opt = round(p_raw / 1_000_000.0, 1)
+                        break
+            if limit_opt is None:
+                for lname in ("power1_cap", "power1_cap_max"):
+                    cap_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, lname)))
+                    if cap_raw is not None and cap_raw > 0:
+                        limit_opt = round(cap_raw / 1_000_000.0, 0)
+                        break
+            if fan_rpm is None:
+                fr_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, "fan1_input")))
+                if fr_raw is not None and fr_raw >= 0:
+                    fan_rpm = int(round(fr_raw))
+            if fan_pct is None:
+                fan_cur = _opt_float(_read_sysfs_txt(os.path.join(hw, "fan1_input")))
+                fan_max = _opt_float(_read_sysfs_txt(os.path.join(hw, "fan1_max")))
+                if fan_cur is not None and fan_max is not None and fan_max > 0:
+                    fan_pct = max(0, min(100, int(round((fan_cur / fan_max) * 100.0))))
+                else:
+                    pwm_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, "pwm1")))
+                    if pwm_raw is not None and pwm_raw >= 0:
+                        pwm_max = _opt_float(_read_sysfs_txt(os.path.join(hw, "pwm1_max")))
+                        denom = pwm_max if (pwm_max is not None and pwm_max > 0) else 255.0
+                        fan_pct = max(0, min(100, int(round((pwm_raw / denom) * 100.0))))
+            if hw_clk_mhz == 0:
+                f_raw = _opt_float(_read_sysfs_txt(os.path.join(hw, "freq1_input")))
+                if f_raw is not None and f_raw > 0:
+                    hw_clk_mhz = int(round(f_raw / 1_000_000.0))
 
         gfx_mhz = 0
         mem_mhz = 0
@@ -364,26 +503,72 @@ def _read_sysfs_gpu() -> dict | None:
                         else:
                             mem_mhz = int(m.group(1))
                     break
+        if gfx_mhz == 0:
+            drm_dir = os.path.dirname(dev_dir)
+            for cpath in (
+                os.path.join(drm_dir, "gt_act_freq_mhz"),
+                os.path.join(drm_dir, "gt_cur_freq_mhz"),
+                os.path.join(dev_dir, "tile0", "gt0", "freq0", "act_freq"),
+            ):
+                cval = _safe_int(_read_sysfs_txt(cpath))
+                if cval > 0:
+                    gfx_mhz = cval
+                    break
+        if gfx_mhz == 0 and hw_clk_mhz > 0:
+            gfx_mhz = hw_clk_mhz
 
-        return {
+        dpm = _read_sysfs_txt(os.path.join(dev_dir, "power_dpm_force_performance_level"))
+        name = _read_sysfs_txt(os.path.join(dev_dir, "product_name")) or _lookup_pci_gpu_name(pci_slot)
+        has_fan = fan_rpm is not None or fan_pct is not None
+        category, vendor = _classify_drm_gpu(vendor_hex, pci_slot, name, has_fan, vram_tot, limit_opt)
+        if not name:
+            name = {
+                ("amd_dgpu", "amd"): "AMD Radeon GPU",
+                ("intel_dgpu", "intel"): "Intel Arc GPU",
+                ("igpu", "intel"): "Intel Integrated GPU",
+                ("igpu", "amd"): "AMD Integrated GPU",
+                ("nvidia_dgpu", "nvidia"): "NVIDIA GPU",
+            }.get((category, vendor), "Integrated GPU")
+
+        pstate = dpm.upper() if dpm else ("iGPU" if category == "igpu" else "AUTO")
+        entry = {
             "available": True,
+            "source": "sysfs",
             "vendor": vendor,
-            "model": model,
+            "category": category,
+            "card": card_name,
+            "pci_slot": pci_slot,
+            "dpm": dpm,
+            "model": name,
             "util_pct": util_pct,
+            "gpu_util": util_pct,
             "mem_ctrl_pct": 0.0,
+            "mem_util": 0.0,
             "vram_used": vram_used,
             "vram_total": vram_tot,
-            "vram_pct": max(0.0, min(100.0, (vram_used / float(vram_tot)) * 100.0)),
-            "temp_c": temp_c,
+            "vram_used_mb": int(round(vram_used / (1024 * 1024))),
+            "vram_total_mb": int(round(vram_tot / (1024 * 1024))),
+            "vram_pct": max(0.0, min(100.0, (vram_used / float(vram_tot)) * 100.0)) if vram_tot > 0 else 0.0,
+            "temp_c": temp_opt if temp_opt is not None else 0.0,
+            "temp_c_opt": temp_opt,
             "fan_pct": fan_pct,
-            "power_w": power_w,
-            "power_limit_w": power_limit_w,
+            "fan_rpm": fan_rpm,
+            "power_w": power_opt if power_opt is not None else 0.0,
+            "power_w_opt": power_opt,
+            "power_limit_w": limit_opt if limit_opt is not None else 0.0,
+            "power_limit_w_opt": limit_opt,
             "gfx_mhz": gfx_mhz,
+            "sclk_mhz": gfx_mhz,
             "mem_mhz": mem_mhz,
-            "pstate": "",
+            "mclk_mhz": mem_mhz,
+            "pstate": pstate,
             "procs": [],
         }
-    return None
+        if category != "igpu":
+            return entry
+        if fallback_igpu is None:
+            fallback_igpu = entry
+    return fallback_igpu
 
 
 def get_gpu_telemetry(include_procs: bool = False) -> dict:
@@ -395,19 +580,34 @@ def get_gpu_telemetry(include_procs: bool = False) -> dict:
         return sys_gpu
     return {
         "available": False,
+        "source": "",
         "vendor": "",
+        "category": "",
+        "card": "",
+        "pci_slot": "",
+        "dpm": "",
         "model": "",
         "util_pct": 0.0,
+        "gpu_util": 0.0,
         "mem_ctrl_pct": 0.0,
+        "mem_util": 0.0,
         "vram_used": 0,
         "vram_total": 0,
+        "vram_used_mb": 0,
+        "vram_total_mb": 0,
         "vram_pct": 0.0,
         "temp_c": 0.0,
+        "temp_c_opt": None,
         "fan_pct": None,
+        "fan_rpm": None,
         "power_w": 0.0,
+        "power_w_opt": None,
         "power_limit_w": 0.0,
+        "power_limit_w_opt": None,
         "gfx_mhz": 0,
+        "sclk_mhz": 0,
         "mem_mhz": 0,
+        "mclk_mhz": 0,
         "pstate": "",
         "procs": [],
     }
@@ -475,22 +675,8 @@ def signal_processes(pids_csv: str, force_kill: bool = False) -> None:
         probe.run_cmd(["kill", sig] + pids, timeout=1.5)
 
 
-def _set_sys_fb(ok: bool, msg: str) -> None:
-    STATE.set("system", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_sys_fb() -> dict:
-    fb = STATE.get("system", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
-
-
 def _feedback_cards() -> list:
-    fb = _get_sys_fb()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_system.system_control_status"), bool(fb["ok"]), fb["msg"])]
+    return feedback_cards("system", "cc_system.system_control_status")
 
 
 
@@ -665,7 +851,7 @@ def _tui_child_preexec() -> None:
 
 
 def _reap_orphan_btop() -> None:
-    """Termina eventuali processi btop avviati con /tmp/nc_btop.conf rimasti orfani sotto init/systemd --user."""
+    """Termina eventuali processi btop avviati con btop.conf rimasti orfani sotto init/systemd --user."""
     live_pids = {s.proc.pid for s in _TUI_SESSIONS.values() if s.proc is not None and s.proc.poll() is None}
     for proc_dir in glob.glob("/proc/[0-9]*"):
         try:
@@ -674,7 +860,7 @@ def _reap_orphan_btop() -> None:
                 continue
             with open(os.path.join(proc_dir, "cmdline"), "rb") as f:
                 cmd = f.read().replace(b"\x00", b" ")
-            if b"/tmp/nc_btop.conf" not in cmd or b"btop" not in cmd:
+            if b"ncui/btop.conf" not in cmd or b"btop" not in cmd:
                 continue
             ppid = 0
             with open(os.path.join(proc_dir, "status"), "r", encoding="utf-8", errors="ignore") as f:
@@ -704,9 +890,11 @@ def get_active_tui() -> str:
 
 
 def _ensure_btop_config() -> str:
-    cfg_path = "/tmp/nc_btop.conf"
+    cfg_dir = get_cache_dir()
+    cfg_path = os.path.join(cfg_dir, "btop.conf")
     if not os.path.exists(cfg_path):
         try:
+            os.makedirs(cfg_dir, exist_ok=True)
             with open(cfg_path, "w", encoding="utf-8") as f:
                 f.write(
                     "theme_background = False\n"
@@ -726,20 +914,15 @@ def _ensure_nvtop_bin() -> str:
     """
     Limita l'altezza massima del grafico superiore di `nvtop` a 15 righe
     (invece di 23) per riservare più spazio verticale alla tabella processi.
-    Scrive in ~/.cache/nc-ui (mai su /tmp che può essere montato noexec) e verifica execve reale.
+    Scrive in get_cache_dir() (mai su /tmp che può essere montato noexec) e verifica execve reale.
     """
     global _NVTOP_BIN_CACHE
-    for stale in ("/tmp/nc_nvtop", "/tmp/nc_nvtop.meta"):
-        if os.path.exists(stale):
-            try:
-                os.remove(stale)
-            except OSError:
-                pass
-
     src = shutil.which("nvtop") or "/usr/bin/nvtop"
     if not src or not os.path.exists(src):
         return "nvtop"
-    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "nc-ui")
+    if os.uname().machine != "x86_64":
+        return src
+    cache_dir = get_cache_dir()
     dst = os.path.join(cache_dir, "nc_nvtop")
     meta_path = os.path.join(cache_dir, "nc_nvtop.meta")
     old_pat = bytes.fromhex("89c389c2b81700000039c30f46c3")
@@ -1098,37 +1281,38 @@ class EmbeddedTuiSession:
             self._write_btop_fallback_frame()
 
     def _write_nvtop_fallback_frame(self) -> None:
-        ok, out = probe.run_cmd(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw,power.limit",
-                "--format=csv,noheader,nounits",
-            ],
-            timeout=1.5,
-        )
+        g = get_gpu_telemetry(include_procs=False)
         w = self.cols
         lines = ["\x1b[2J\x1b[H"]
-        if ok and out.strip():
-            parts = [p.strip() for p in out.strip().splitlines()[0].split(",")]
-            if len(parts) >= 8:
-                name, ug, _um, mu, mt, tmp, pwr, plim = parts[:8]
-                try:
-                    ug_f = max(0.0, min(100.0, float(ug)))
-                    mu_f, mt_f = float(mu), max(1.0, float(mt))
-                    mem_f = max(0.0, min(100.0, (mu_f / mt_f) * 100.0))
-                    bw = max(12, min(32, w // 4))
-                    g_bar = ("|" * int(round(ug_f / 100.0 * bw))).ljust(bw)
-                    m_bar = ("|" * int(round(mem_f / 100.0 * bw))).ljust(bw)
-                    hdr = f" Device 0 [{name}]   TEMP {tmp}°C   POW {pwr} / {plim} W"
-                    lines.append(f"\x1b[1;38;2;0;240;255m{hdr[:w].ljust(w)}\x1b[0m")
-                    lines.append(
-                        f"\x1b[38;2;0;255;115m GPU[{g_bar}{ug_f:4.0f}%] "
-                        f"\x1b[38;2;255;235;25mMEM[{m_bar}{mu_f/1024.0:6.3f}Gi/{mt_f/1024.0:.3f}Gi]\x1b[0m"
-                    )
-                except ValueError:
-                    lines.append(f"\x1b[38;2;226;234;252m {out.strip().splitlines()[0][:w-2]}\x1b[0m")
+        if g.get("available"):
+            ug_f = max(0.0, min(100.0, float(g.get("util_pct") or 0.0)))
+            bw = max(12, min(32, w // 4))
+            g_bar = ("|" * int(round(ug_f / 100.0 * bw))).ljust(bw)
+            tmp_s = f"TEMP {g['temp_c']:.0f}°C" if float(g.get("temp_c") or 0.0) > 0 else "TEMP -"
+            pw = float(g.get("power_w") or 0.0)
+            plim = float(g.get("power_limit_w") or 0.0)
+            if pw > 0 and plim > 0:
+                pwr_s = f"POW {pw:.1f} / {plim:.0f} W"
+            elif pw > 0:
+                pwr_s = f"POW {pw:.1f} W"
+            elif g.get("gfx_mhz"):
+                pwr_s = f"CLK {g['gfx_mhz']} MHz"
+            else:
+                pwr_s = g.get("pstate") or "ACTIVE"
+            hdr = f" Device 0 [{g.get('model') or 'GPU'}]   {tmp_s}   {pwr_s}"
+            lines.append(f"\x1b[1;38;2;0;240;255m{hdr[:w].ljust(w)}\x1b[0m")
+            vt = float(g.get("vram_total") or 0.0)
+            if vt > 0:
+                vu_gi = float(g.get("vram_used") or 0.0) / (1024.0 ** 3)
+                vt_gi = vt / (1024.0 ** 3)
+                mem_f = max(0.0, min(100.0, float(g.get("vram_pct") or 0.0)))
+                m_bar = ("|" * int(round(mem_f / 100.0 * bw))).ljust(bw)
+                mem_s = f"MEM[{m_bar}{vu_gi:6.2f}Gi/{vt_gi:.2f}Gi]"
+            else:
+                mem_s = "MEM[UMA Shared]"
+            lines.append(f"\x1b[38;2;0;255;115m GPU[{g_bar}{ug_f:4.0f}%] \x1b[38;2;255;235;25m{mem_s}\x1b[0m")
         else:
-            lines.append("\x1b[1;38;2;255;235;25m nvtop binary unavailable (live nvidia-smi telemetry unavailable)\x1b[0m")
+            lines.append("\x1b[1;38;2;255;235;25m nvtop binary unavailable (no live GPU telemetry detected)\x1b[0m")
         payload = "\r\n".join(lines).encode("utf-8")
         with self.lock:
             if self._vt:
@@ -1797,7 +1981,7 @@ def handle_cc_resources_link(cc_panel, uri: str) -> bool:
     act = uri[len("cc_sys:"):]
     if act == "sync_disks":
         probe.run_cmd_full(["sync"], timeout=2.0)
-        _set_sys_fb(True, t("cc_system.filesystem_buffers_synced"))
+        set_feedback("system", True, t("cc_system.filesystem_buffers_synced"))
     elif act == "btop":
         probe.open_terminal(["btop"])
         return True
@@ -1816,7 +2000,7 @@ def handle_cc_resources_link(cc_panel, uri: str) -> bool:
     elif act.startswith("term:") or act.startswith("kill:"):
         op, pid = act.split(":", 1)
         signal_processes(pid, force_kill=(op == "kill"))
-        _set_sys_fb(True, t("cc_system.sent_sig_to_pid", p0="KILL" if op == "kill" else "TERM", p1=pid))
+        set_feedback("system", True, t("cc_system.sent_sig_to_pid", p0="KILL" if op == "kill" else "TERM", p1=pid))
     elif act == "goto_power_profiles":
         if cc_panel and hasattr(cc_panel, "set_section"):
             cc_panel.set_section("power")

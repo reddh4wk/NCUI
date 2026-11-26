@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import tempfile
 import time
 import cairo
@@ -16,7 +17,9 @@ from core.config import (
     THEME,
     VALID_CAPTURE_ACTIONS,
     get_capture_action,
+    get_waybar_config_dir,
     set_capture_action,
+    strip_jsonc_comments,
 )
 from core.paths import find_all_package_files
 from core.i18n import t
@@ -26,8 +29,29 @@ from ui.kit import Box, InlineField, Txt, SelectPill, ActionBtn, start_inline_in
 from ui.widgets import AsciiCard
 from panels.base import BasePanel
 
-SCREENSHOTS_DIR = os.path.expanduser("~/Pictures/Screenshots")
-RAM_STATE_FILE = "/tmp/nc_capture_session.json"
+
+def _screenshots_dir() -> str:
+    pic = os.environ.get("XDG_PICTURES_DIR", "").strip()
+    if not pic:
+        cfg_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        ud = os.path.join(os.path.expanduser(cfg_home) if cfg_home else os.path.expanduser("~/.config"), "user-dirs.dirs")
+        if os.path.isfile(ud):
+            try:
+                with open(ud, "r", encoding="utf-8", errors="ignore") as f:
+                    for ln in f:
+                        m = re.match(r'^\s*XDG_PICTURES_DIR\s*=\s*"?([^"\n]+)"?', ln)
+                        if m:
+                            pic = os.path.expandvars(m.group(1).strip())
+                            break
+            except OSError:
+                pass
+    base = os.path.expanduser(pic) if pic else os.path.expanduser("~/Pictures")
+    return os.path.join(base, "Screenshots")
+
+
+def _ram_state_file() -> str:
+    rt = os.environ.get("XDG_RUNTIME_DIR", "").strip() or "/tmp"
+    return os.path.join(os.path.expanduser(rt), "nc_capture_session.json")
 
 _CAPTURE_ACTION_KEYS = [
     ("clipboard",       "\uf0ea  ", "act_clipboard"),
@@ -44,10 +68,11 @@ MODE_ICONS = {
 
 
 def _read_ram_state() -> dict:
-    if not os.path.exists(RAM_STATE_FILE):
+    rf = _ram_state_file()
+    if not os.path.exists(rf):
         return {}
     try:
-        with open(RAM_STATE_FILE, "r", encoding="utf-8") as f:
+        with open(rf, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data if isinstance(data, dict) else {}
     except Exception:
@@ -55,11 +80,14 @@ def _read_ram_state() -> dict:
 
 
 def _write_ram_state(data: dict) -> None:
+    rf = _ram_state_file()
+    rdir = os.path.dirname(rf)
     try:
-        fd, tmp_path = tempfile.mkstemp(dir="/tmp", prefix=".nc_cap_ram_", suffix=".tmp")
+        os.makedirs(rdir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=rdir, prefix=".nc_cap_ram_", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        os.replace(tmp_path, RAM_STATE_FILE)
+        os.replace(tmp_path, rf)
     except Exception as e:
         log.error(f"_write_ram_state error: {e}")
 
@@ -235,16 +263,14 @@ def _get_focused_output_name() -> str:
 def is_screenshot_plugin_active() -> bool:
     """Return True if Waybar has the custom/screenshot plugin enabled."""
     for path in (
-        [os.path.expanduser("~/.config/waybar/config.jsonc")]
+        [os.path.join(get_waybar_config_dir(), "config.jsonc")]
         + find_all_package_files("config", "waybar", "config.jsonc")
     ):
         if not os.path.exists(path):
             continue
         try:
             raw = open(path, "r", encoding="utf-8").read()
-            cleaned = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*[\s\S]*?\*/', lambda m: m.group(1) or "", raw)
-            cleaned = re.sub(r",(\s*[}\]])", r"\1", cleaned)
-            d = json.loads(cleaned)
+            d = json.loads(strip_jsonc_comments(raw))
             if isinstance(d, dict):
                 mods = (
                     list(d.get("modules-left") or [])
@@ -258,9 +284,10 @@ def is_screenshot_plugin_active() -> bool:
 
 
 def get_last_screenshot() -> str:
-    if not os.path.exists(SCREENSHOTS_DIR):
+    s_dir = _screenshots_dir()
+    if not os.path.exists(s_dir):
         return ""
-    files = glob.glob(os.path.join(SCREENSHOTS_DIR, "*.png")) + glob.glob(os.path.join(SCREENSHOTS_DIR, "*.jpg"))
+    files = glob.glob(os.path.join(s_dir, "*.png")) + glob.glob(os.path.join(s_dir, "*.jpg"))
     if not files:
         return ""
     return max(files, key=os.path.getctime)
@@ -271,11 +298,11 @@ class Panel(BasePanel):
     icon = "\uf030"
 
     def __init__(self, shell=None):
-        self.title = t("capture.title", "Capture Studio")
+        self.title = t("capture.title") if shell is not None else self.id
         super().__init__(shell)
 
     def get_bar_pill(self) -> dict:
-        text = Txt(f"\uf030  {t('capture.pill_label', 'Capture')}", role="focus")
+        text = Txt(f"\uf030  {t('capture.pill_label')}", role="focus")
         return {"text": text, "tooltip": "", "class": "module-nc"}
 
     def on_bar_action(self, action: str, args: list = None) -> None:
@@ -373,12 +400,12 @@ class Panel(BasePanel):
             "wp_cap_delay",
             "cap:delay_inline",
             value=f"{delay}s" if delay > 0 else "",
-            empty_label="0s",
-            placeholder="0..999",
+            empty_label="0s..",
+            placeholder="0..9999",
             width=6,
-            icon="",
+            icon="\u270e",
             tone="neutral",
-            selected=(delay > 0),
+            selected=False,
         )
 
         box_params.add_row(" ")
@@ -482,7 +509,8 @@ class Panel(BasePanel):
             )
             for _ in range(2):
                 box_last.add_row(" ")
-            box_last.add_row(f"  {Txt(t('capture.no_captures'), role='inactive')}")
+            s_disp = _screenshots_dir().replace(os.path.expanduser("~"), "~", 1)
+            box_last.add_row(f"  {Txt(canvas.truncate_plain(t('capture.no_captures', p0=s_disp), target_cols - 6), role='inactive')}")
             for _ in range(2):
                 box_last.add_row(" ")
             cards.append(box_last)
@@ -491,16 +519,17 @@ class Panel(BasePanel):
 
     def _build_grim_action_pipeline(self, target_expr: str, act_mode: str, filepath: str) -> str:
         t_part = f" {target_expr}" if target_expr else ""
+        q_fp = shlex.quote(filepath)
         if act_mode == "clipboard":
             return f"grim{t_part} - | wl-copy --type image/png"
         if act_mode == "satty":
-            return f"grim{t_part} - | satty --filename - --output-filename '{filepath}' --copy-command 'wl-copy --type image/png'"
+            return f"grim{t_part} - | satty --filename - --output-filename {q_fp} --copy-command 'wl-copy --type image/png'"
         if act_mode == "save":
-            return f"grim{t_part} '{filepath}'"
+            return f"grim{t_part} {q_fp}"
         return (
-            f"grim{t_part} '{filepath}' && "
-            f"wl-copy --type image/png < '{filepath}' && "
-            f"satty --filename '{filepath}' --output-filename '{filepath}' --copy-command 'wl-copy --type image/png'"
+            f"grim{t_part} {q_fp} && "
+            f"wl-copy --type image/png < {q_fp} && "
+            f"satty --filename {q_fp} --output-filename {q_fp} --copy-command 'wl-copy --type image/png'"
         )
 
     def _build_window_capture_script(
@@ -518,17 +547,18 @@ class Panel(BasePanel):
         attende la scrittura asincrona del frame su disco, rifila il margine trasparente con `magick`
         ed esegue l'azione richiesta (`clipboard`, `satty`, `save`, `clipboard_satty`).
         """
+        q_fp = shlex.quote(filepath)
         if act_mode == "clipboard":
             post_cmd = 'wl-copy --type image/png < "$TMP_WIN"; sleep 0.15; rm -f "$TMP_WIN"'
         elif act_mode == "satty":
-            post_cmd = f'satty --filename "$TMP_WIN" --output-filename \'{filepath}\' --copy-command "wl-copy --type image/png"; rm -f "$TMP_WIN"'
+            post_cmd = f'satty --filename "$TMP_WIN" --output-filename {q_fp} --copy-command "wl-copy --type image/png"; rm -f "$TMP_WIN"'
         elif act_mode == "save":
-            post_cmd = f'mv -f "$TMP_WIN" \'{filepath}\''
+            post_cmd = f'mv -f "$TMP_WIN" {q_fp}'
         else:
             post_cmd = (
-                f'mv -f "$TMP_WIN" \'{filepath}\' && '
-                f"wl-copy --type image/png < '{filepath}' && "
-                f"satty --filename '{filepath}' --output-filename '{filepath}' --copy-command 'wl-copy --type image/png'"
+                f'mv -f "$TMP_WIN" {q_fp} && '
+                f"wl-copy --type image/png < {q_fp} && "
+                f"satty --filename {q_fp} --output-filename {q_fp} --copy-command 'wl-copy --type image/png'"
             )
 
         if fixed_win_id and str(fixed_win_id).isdigit():
@@ -551,7 +581,7 @@ class Panel(BasePanel):
 
         return (
             f"sleep {wait_sec}; "
-            'TMP_WIN="$(mktemp /tmp/nc-win-shot-XXXXXX.png)"; '
+            'TMP_WIN="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/nc-win-shot-XXXXXX.png")"; '
             f"{niri_shot_cmd}"
             'WAITED=0; '
             'while [ ! -s "$TMP_WIN" ] && [ "$WAITED" -lt 40 ]; do sleep 0.05; WAITED=$((WAITED + 1)); done; '
@@ -590,14 +620,29 @@ class Panel(BasePanel):
         if act_mode is None:
             act_mode = get_active_capture_action()
 
-        os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+        eff_mode = last_sel["mode"] if mode == "last" else mode
+        needed = ["niri"] if eff_mode == "window" else (["grim", "slurp"] if eff_mode == "area" else ["grim"])
+        if act_mode in ("clipboard", "clipboard_satty"):
+            needed.append("wl-copy")
+        if act_mode in ("satty", "clipboard_satty"):
+            needed.append("satty")
+        missing = [b for b in dict.fromkeys(needed) if not probe.has_bin(b)]
+        if missing:
+            if self.shell:
+                self.shell.show_toast(t("ui.missing", p0=", ".join(missing)), level="err", title=t("capture.title"))
+            return
+
+        s_dir = _screenshots_dir()
+        os.makedirs(s_dir, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
-        filepath = os.path.join(SCREENSHOTS_DIR, f"Screenshot_{ts}.png")
+        filepath = os.path.join(s_dir, f"Screenshot_{ts}.png")
         wait_sec = delay if delay > 0 else (0.20 if close_ui else 0.05)
 
+        ram_file = _ram_state_file()
+        ram_dir = os.path.dirname(ram_file)
         save_py_snippet = (
             "import json, os, tempfile; "
-            f"p = {RAM_STATE_FILE!r}; "
+            f"p = {ram_file!r}; "
             "d = json.load(open(p)) if os.path.exists(p) else {}; "
             "wj = json.loads(os.environ.get('NC_CAP_WIN_JSON', '') or 'null') if os.environ.get('NC_CAP_WIN_JSON') else None; "
             "wid = str(wj.get('id', '')) if isinstance(wj, dict) else os.environ.get('NC_CAP_WIN_ID', ''); "
@@ -610,15 +655,14 @@ class Panel(BasePanel):
             "'win_id': wid, "
             "'delay': int(os.environ.get('NC_CAP_DELAY', '0') or 0)"
             "}; "
-            "fd, tp = tempfile.mkstemp(dir='/tmp', prefix='.nc_cap_ram_'); "
+            f"fd, tp = tempfile.mkstemp(dir={ram_dir!r}, prefix='.nc_cap_ram_'); "
             "os.write(fd, json.dumps(d).encode('utf-8')); os.close(fd); os.replace(tp, p)"
         )
 
         if mode == "last":
             last_mode = last_sel["mode"]
             if last_mode == "area":
-                geom_escaped = last_sel["geom"].replace("'", "")
-                target_expr = f"-g '{geom_escaped}'"
+                target_expr = f"-g {shlex.quote(last_sel['geom'])}"
                 pipeline = self._build_grim_action_pipeline(target_expr, act_mode, filepath)
                 cmd = f"sleep {wait_sec}; {pipeline}"
             elif last_mode == "window":
@@ -632,8 +676,8 @@ class Panel(BasePanel):
                     update_last_sel=False,
                 )
             else:
-                out_escaped = last_sel.get("output", "").replace("'", "")
-                target_expr = f"-o '{out_escaped}'" if out_escaped else ""
+                out_val = last_sel.get("output", "")
+                target_expr = f"-o {shlex.quote(out_val)}" if out_val else ""
                 pipeline = self._build_grim_action_pipeline(target_expr, act_mode, filepath)
                 cmd = f"sleep {wait_sec}; {pipeline}"
         elif mode == "area":
@@ -655,12 +699,13 @@ class Panel(BasePanel):
                 update_last_sel=True,
             )
         else:
-            focused_out = _get_focused_output_name().replace("'", "")
-            target_expr = f"-o '{focused_out}'" if focused_out else ""
+            focused_out = _get_focused_output_name()
+            q_out = shlex.quote(focused_out)
+            target_expr = f"-o {q_out}" if focused_out else ""
             pipeline = self._build_grim_action_pipeline(target_expr, act_mode, filepath)
             cmd = (
                 f"sleep {wait_sec}; "
-                f'NC_CAP_MODE=screen NC_CAP_GEOM="" NC_CAP_OUT=\'{focused_out}\' NC_CAP_WIN_ID="" NC_CAP_DELAY="{int(delay)}" python3 -c "{save_py_snippet}"; '
+                f'NC_CAP_MODE=screen NC_CAP_GEOM="" NC_CAP_OUT={q_out} NC_CAP_WIN_ID="" NC_CAP_DELAY="{int(delay)}" python3 -c "{save_py_snippet}"; '
                 f"{pipeline}"
             )
 
@@ -708,28 +753,30 @@ class Panel(BasePanel):
             mode = uri.split(":", 2)[2]
             self._trigger_capture(mode, close_ui=True)
         elif uri.startswith("cap:annotate:"):
+            if not probe.has_bin("satty"):
+                if self.shell:
+                    self.shell.show_toast(t("ui.missing", p0="satty"), level="err", title=t("capture.title"))
+                return
             fp = uri.split(":", 2)[2]
             probe.spawn_bg(["satty", "--filename", fp, "--copy-command", "wl-copy --type image/png"])
             if self.shell:
                 self.shell.dispatch_uri("ui:close")
         elif uri.startswith("cap:copy:"):
+            if not probe.has_bin("wl-copy"):
+                if self.shell:
+                    self.shell.show_toast(t("ui.missing", p0="wl-copy"), level="err", title=t("capture.title"))
+                return
             fp = uri.split(":", 2)[2]
             mime = "image/jpeg" if fp.lower().endswith((".jpg", ".jpeg")) else "image/png"
-            probe.spawn_bg(["bash", "-c", f"wl-copy --type {mime} < '{fp}'"])
+            probe.spawn_bg(["bash", "-c", f"wl-copy --type {mime} < {shlex.quote(fp)}"])
             if self.shell:
                 self.shell.dispatch_uri("ui:close")
         elif uri == "cap:open_dir":
-            probe.spawn_bg(["xdg-open", SCREENSHOTS_DIR])
+            s_dir = _screenshots_dir()
+            os.makedirs(s_dir, exist_ok=True)
+            probe.spawn_bg(["xdg-open", s_dir])
             if self.shell:
                 self.shell.dispatch_uri("ui:close")
-
-    def on_prompt_submit(self, action_id: str, text: str) -> None:
-        if action_id == "cap_delay":
-            try:
-                val = max(0, min(9999, int(text.strip())))
-                self.set_state("delay", val)
-            except ValueError:
-                log.error(f"Invalid timer value: {text}")
 
 
 def create_panel(panel_id: str, shell=None) -> BasePanel:

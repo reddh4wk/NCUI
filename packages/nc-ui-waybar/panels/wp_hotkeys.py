@@ -5,6 +5,7 @@
 import os
 import shlex
 
+from core.config import get_screen_lock_cmd
 from core.i18n import t
 from core.state import STATE
 from panels.base import BasePanel
@@ -29,11 +30,14 @@ _KEY_NAMES = {
 }
 
 
+_GENERIC_LOCKERS = ("swaylock", "swaylock-effects", "hyprlock", "gtklock", "waylock", "i3lock")
+
+
 def _format_combo(combo: str) -> str:
     return " + ".join(_KEY_NAMES.get(tok, tok) for tok in str(combo or "").split("+") if tok)
 
 
-def _format_action(action: str, std_map: dict) -> str:
+def _format_action(action: str, std_map: dict, lock_prog: str = "") -> str:
     norm = _norm_action_str(action)
     std = std_map.get(norm)
     if std:
@@ -45,7 +49,12 @@ def _format_action(action: str, std_map: dict) -> str:
             tokens = norm[6:].split()
         if tokens:
             prog = os.path.basename(tokens[0])
-            if prog in ("robcolm", "swaylock", "hyprlock") or "--lock" in tokens:
+            if (
+                (lock_prog and prog == lock_prog)
+                or prog in _GENERIC_LOCKERS
+                or (prog == "loginctl" and "lock-session" in tokens)
+                or "--lock" in tokens
+            ):
                 return t("hotkeys.act_lock_screen")
             if prog == "nc-ctl" and len(tokens) >= 3:
                 return f"NC-UI {' '.join(tokens[1:])}"
@@ -81,6 +90,13 @@ class Panel(BasePanel):
 
         st = _collect_keyboard_state()
         std_map = _std_action_lookup()
+        lock_cmd = get_screen_lock_cmd()
+        lock_prog = ""
+        if lock_cmd:
+            try:
+                lock_prog = os.path.basename(shlex.split(lock_cmd)[0])
+            except ValueError:
+                lock_prog = os.path.basename(lock_cmd.split()[0])
         q = self.query.strip().lower()
 
         grouped = {cat: [] for cat in _CAT_ORDER}
@@ -92,7 +108,7 @@ class Panel(BasePanel):
             if cat not in grouped:
                 cat = "custom"
             c_disp = _format_combo(raw_combo)
-            a_desc = _format_action(raw_act, std_map)
+            a_desc = _format_action(raw_act, std_map, lock_prog)
             if q:
                 hay = f"{c_disp} {raw_combo} {a_desc} {raw_act} {t(f'hotkeys.cat_{cat}')}".lower()
                 if q not in hay:
@@ -122,7 +138,7 @@ class Panel(BasePanel):
                 "hk:flt_open",
                 clear_uri="hk:flt_clear" if self.query else "",
                 width=26,
-                active=bool(self.query),
+                active=False,
             ),
             key_width=10,
         )

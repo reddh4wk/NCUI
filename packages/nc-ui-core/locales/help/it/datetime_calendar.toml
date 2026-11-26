@@ -68,7 +68,7 @@ verbose = "Sostituisce la stringa di formato dell'orologio Waybar (`{:%H:%M}`, `
 ["cc_cal:mode:ical"]
 title = "Attiva Modalità iCal + SQLite Locale"
 short = "Inizializza o imposta il backend calendario su `ical`, unendo gli eventi locali di `calendar.db` ai feed `.ics` sottoscritti."
-verbose = "Salva gli URL dei feed remoti in `ical_feeds.json` e mantiene nella cache di `~/.config/nc-ui/calendar.db` sia i `VEVENT` sincronizzati sia gli appuntamenti locali."
+verbose = "Salva gli URL dei feed remoti in `ical_feeds.json` e mantiene nella cache di `~/.config/ncui/calendar.db` sia i `VEVENT` sincronizzati sia gli appuntamenti locali."
 
 ["cc_cal:mode:local"]
 title = "Attiva Solo Modalità SQLite Locale"
@@ -89,7 +89,7 @@ short = "Invia subito un'anteprima di notifica desktop NC-UI mostrando i minuti 
 ["cc_cal:clear_local"]
 title = "Svuota Tutti gli Eventi Locali"
 short = "Elimina tutti gli eventi creati localmente in `calendar.db` lasciando intatti gli eventi sincronizzati dai feed iCal."
-verbose = "Esegue `DELETE FROM events WHERE source = 'local'` su `~/.config/nc-ui/calendar.db`. Gli eventi provenienti da sottoscrizioni iCal restano invariati finché il feed è attivo."
+verbose = "Esegue `DELETE FROM events WHERE source = 'local'` su `~/.config/ncui/calendar.db`. Gli eventi provenienti da sottoscrizioni iCal restano invariati finché il feed è attivo."
 
 ["cc_cal:ical_add"]
 title = "Aggiungi Sottoscrizione iCal (.ics)"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+from core import probe
 from core.i18n import t
 from core.privileges import build_privilege_modal_card
 from core.state import STATE
@@ -14,8 +15,9 @@ from ui.kit import (
     SelectPill,
     StateBadge,
     Txt,
+    feedback_cards,
 )
-from panels.cc_engine_telemetry import _build_guide_box, _collect_backup_data, _feedback_cards, _read_env_kv
+from panels.cc_engine_telemetry import _build_guide_box, _collect_backup_data
 
 
 def _compact_created_ts(raw_ts: str) -> str:
@@ -35,7 +37,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     if sel_slot not in ("auto", "stable"):
         sel_slot = "auto"
 
-    cards = _feedback_cards() + build_privilege_modal_card(cc_panel, canvas)
+    cards = feedback_cards("system", "cc_system.system_control_status") + build_privilege_modal_card(cc_panel, canvas)
     snap_stat = f"{'Btrfs' if backend == 'btrfs' else 'LVM + UKI'} · {booted_slot.upper()}"
     cards.extend(_build_guide_box(cc_panel, canvas, "guide_snapshots_open", "guide_snap", "snapshots", snap_stat))
 
@@ -72,7 +74,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     snap_box.add_kv(
         t("cc_system.boot_environment"),
         boot_env_widget,
-        right_markup=StateBadge(bk["duskcity_exists"], t("cc_system.duskcity_ready"), t("cc_system.not_detected_on_esp")),
+        right_markup=StateBadge(bk["rescue_uki_ok"], t("cc_system.rescue_ready"), t("cc_system.not_detected_on_esp")),
     )
 
     pool_free = dr.get("VG_FREE", "-")
@@ -87,12 +89,15 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         right_markup=Txt(pool_detail, role="schema"),
     )
 
-    hook_on = bool(bk["pacman_hook"])
-    snap_box.add_kv(
-        t("cc_system.snap_hook_lbl"),
-        f"{SelectPill(t('cc_system.snap_hook_on'), 'cc_sys:snap_hook:on', selected=hook_on)} "
-        f"{SelectPill(t('cc_system.snap_hook_off'), 'cc_sys:snap_hook:off', selected=(not hook_on))}",
-    )
+    hook_kind = bk.get("hook_kind", "pacman")
+    if hook_kind in ("pacman", "apt"):
+        hook_on = bool(bk["pacman_hook"])
+        hook_lbl = t("cc_system.snap_hook_apt_lbl") if hook_kind == "apt" else t("cc_system.snap_hook_lbl")
+        snap_box.add_kv(
+            hook_lbl,
+            f"{SelectPill(t('cc_system.snap_hook_on'), 'cc_sys:snap_hook:on', selected=hook_on)} "
+            f"{SelectPill(t('cc_system.snap_hook_off'), 'cc_sys:snap_hook:off', selected=(not hook_on))}",
+        )
 
     note_field = InlineField(
         "snap_note_draft",
@@ -232,10 +237,11 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         f"{SelectPill(t('cc_system.snap_backend_btrfs'), 'cc_sys:snap_cfg:backend:btrfs', selected=(be == 'btrfs'))}",
     )
     pref_field = InlineField("snap_prefix", "cc_sys:snap_prefix_open", pref, placeholder=t("cc_system.snap_prefix_ph"), width=18)
+    esp_choices = list(dict.fromkeys([*probe.detect_esp_mounts(), "/boot", "/efi", *([esp] if esp else [])]))
+    esp_pills = " ".join(SelectPill(p, f"cc_sys:snap_cfg:esp_mount:{p}", selected=(esp == p)) for p in esp_choices)
     cfg_box.add_kv(
         t("cc_system.snap_cfg_esp_prefix"),
-        f"{SelectPill('/boot', 'cc_sys:snap_cfg:esp_mount:/boot', selected=(esp == '/boot'))} "
-        f"{SelectPill('/efi', 'cc_sys:snap_cfg:esp_mount:/efi', selected=(esp == '/efi'))}  {pref_field}",
+        f"{esp_pills}  {pref_field}",
         right_markup=Txt(f"{pref}-auto.efi / {pref}-stable.efi", role="schema"),
     )
     if be == "lvm_uki":

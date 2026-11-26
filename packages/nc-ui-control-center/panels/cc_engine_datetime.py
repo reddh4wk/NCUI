@@ -4,40 +4,24 @@
 import os
 import re
 import time
-import zoneinfo
 from core import probe
 from core.completion import catalog_timezones, rank_candidates
+from core.config import get_waybar_config_dir
 from core.i18n import t
 from core.state import STATE
-from ui.kit import FeedbackBox, start_inline_input
+from ui.kit import feedback_cards, set_feedback, start_inline_input
 
-_MSG = ""
-_ERR = ""
-_ALL_TZS: list[str] | None = None
-_NTP_PRESETS = ["0.arch.pool.ntp.org 1.arch.pool.ntp.org", "time.cloudflare.com", "pool.ntp.org"]
 _CLOCK_FMTS = [
-    ("24h Compact", "{:%H:%M}"),
-    ("24h + Date", "{:%a %d %b  %H:%M}"),
-    ("ISO Full", "{:%Y-%m-%d %H:%M:%S}"),
-    ("12h AM/PM", "{:%I:%M %p}"),
+    ("cc_datetime.fmt_24h_compact", "{:%H:%M}"),
+    ("cc_datetime.fmt_24h_date", "{:%a %d %b  %H:%M}"),
+    ("cc_datetime.fmt_iso_full", "{:%Y-%m-%d %H:%M:%S}"),
+    ("cc_datetime.fmt_12h_ampm", "{:%I:%M %p}"),
 ]
 
 
-def _load_all_timezones() -> list[str]:
-    global _ALL_TZS
-    if _ALL_TZS is None:
-        tzs = [
-            z for z in zoneinfo.available_timezones()
-            if ("/" in z and not z.startswith(("posix/", "right/", "SystemV/", "Etc/"))) or z == "UTC"
-        ]
-        _ALL_TZS = sorted(tzs)
-    return _ALL_TZS
-
-
 def _feedback_cards() -> list:
-    if not _MSG and not _ERR:
-        return []
-    return [FeedbackBox(t("cc_datetime.status_title"), not bool(_ERR), _ERR if _ERR else _MSG)]
+    return feedback_cards("datetime", "cc_datetime.status_title")
+
 
 def _probe_timedate() -> dict:
     info = {
@@ -45,7 +29,7 @@ def _probe_timedate() -> dict:
         "ntp": False,
         "ntp_sync": False,
         "rtc_local": False,
-        "ntp_srv": "default (arch pool)",
+        "ntp_srv": t("cc_datetime.ntp_default"),
         "lang": os.environ.get("LANG", "en_US.UTF-8"),
         "lc_time": os.environ.get("LC_TIME", "C.UTF-8"),
         "bar_fmt": "{:%H:%M}",
@@ -89,7 +73,7 @@ def _probe_timedate() -> dict:
         except Exception:
             pass
 
-    wb_cfg = os.path.expanduser("~/.config/waybar/config.jsonc")
+    wb_cfg = os.path.join(get_waybar_config_dir(), "config.jsonc")
     if os.path.exists(wb_cfg):
         try:
             raw = open(wb_cfg, "r", encoding="utf-8", errors="ignore").read()
@@ -101,33 +85,29 @@ def _probe_timedate() -> dict:
     return info
 
 
-
 def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
-    global _MSG, _ERR
-    if not uri.startswith("cc_dt:"):
+    if not isinstance(uri, str) or not uri.startswith("cc_dt:"):
         return False
-    _MSG = ""
-    _ERR = ""
     parts = uri.split(":", 2)
     cmd = parts[1]
     arg = parts[2] if len(parts) > 2 else ""
 
-    if cmd == "prompt_tz" and cc_panel:
-        cc_panel.request_prompt("cc_dt_tz", t("cc_datetime.enter_timezone_e_g_europe_rome"), _probe_timedate()["tz"])
-        return True
-    if cmd == "tz_search_open" and cc_panel:
+    if cmd == "tz_search_open" and not arg:
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur_q = str(STATE.get("datetime", "tz_query", "") or "")
+
         def _commit_raw_tz(txt: str) -> None:
-            global _MSG, _ERR
             val = str(txt or "").strip()
             STATE.set("datetime", "tz_query", "")
             if not val:
+                set_feedback("datetime", False, t("cc_datetime.tz_empty"))
                 return
             ranked = rank_candidates(catalog_timezones(), val, limit=1)
             tz = ranked[0][0] if ranked else val
             ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", tz], timeout=3.0)
-            _MSG = f"Timezone set to {tz}" if ok else ""
-            _ERR = "" if ok else (err or f"Invalid or denied timezone: {tz}")
+            set_feedback("datetime", ok, t("cc_datetime.tz_set", p0=tz) if ok else t("cc_datetime.tz_err", p0=err or tz))
+
         start_inline_input(
             entry_id="cc_dt_tz_picker",
             shell=cc_panel.shell,
@@ -140,9 +120,11 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
             on_commit=_commit_raw_tz,
         )
         return True
-    if cmd == "tz_search_clear":
+    if cmd == "tz_search_clear" and not arg:
         STATE.set("datetime", "tz_query", "")
-    elif cmd == "sync_now":
+    elif cmd == "sync_now" and not arg:
+        if not cc_panel:
+            return False
         from ui.embedded_tui import start_panel_terminal
 
         start_panel_terminal(
@@ -153,49 +135,46 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
         return True
     elif cmd == "ntp" and arg in ("true", "false"):
         ok, _, err = probe.run_cmd_full(["timedatectl", "set-ntp", arg], timeout=3.0)
-        _MSG = f"timedatectl set-ntp {arg}" if ok else ""
-        _ERR = "" if ok else (err or "timedatectl set-ntp failed (try sudo in terminal)")
+        msg = (t("cc_datetime.ntp_on") if arg == "true" else t("cc_datetime.ntp_off")) if ok else t("cc_datetime.ntp_err", p0=err or arg)
+        set_feedback("datetime", ok, msg)
     elif cmd == "rtc" and arg in ("0", "1"):
         ok, _, err = probe.run_cmd_full(["timedatectl", "set-local-rtc", arg], timeout=3.0)
-        _MSG = f"Set LocalRTC={arg}" if ok else ""
-        _ERR = "" if ok else (err or "timedatectl set-local-rtc failed")
-    elif cmd == "ntp_term":
+        set_feedback("datetime", ok, t("cc_datetime.rtc_set", p0=arg) if ok else t("cc_datetime.rtc_err", p0=err or arg))
+    elif cmd == "ntp_term" and not arg:
         ok_ed, ed_info = probe.open_in_editor("/etc/systemd/timesyncd.conf", sudo=True)
         if ok_ed:
-            _MSG = t("cc_datetime.opened_timesyncd_conf_in_editor")
+            set_feedback("datetime", True, t("cc_datetime.opened_timesyncd_conf_in_editor"))
         elif ed_info == "unset":
-            _ERR = t("common.editor_not_configured")
+            set_feedback("datetime", False, t("common.editor_not_configured"))
         else:
-            _ERR = t("common.editor_not_found", p0=ed_info.split(":", 1)[-1])
+            set_feedback("datetime", False, t("common.editor_not_found", p0=ed_info.split(":", 1)[-1]))
     elif cmd == "set_tz" and arg:
         ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", arg], timeout=3.0)
-        _MSG = f"Timezone set to {arg}" if ok else ""
-        _ERR = "" if ok else (err or f"Failed to set timezone {arg}")
+        set_feedback("datetime", ok, t("cc_datetime.tz_set", p0=arg) if ok else t("cc_datetime.tz_err", p0=err or arg))
         STATE.set("datetime", "tz_query", "")
     elif cmd == "lang" and arg:
         ok, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LANG={arg}"], timeout=3.0)
-        _MSG = f"Set LANG={arg}" if ok else ""
-        _ERR = "" if ok else (err or "localectl set-locale failed")
+        set_feedback("datetime", ok, t("cc_datetime.lang_set", p0=arg) if ok else t("cc_datetime.locale_err", p0=err or arg))
     elif cmd == "lctime" and arg:
         ok, _, err = probe.run_cmd_full(["localectl", "set-locale", f"LC_TIME={arg}"], timeout=3.0)
-        _MSG = f"Set LC_TIME={arg}" if ok else ""
-        _ERR = "" if ok else (err or "localectl set-locale failed")
-    elif cmd == "barfmt" and arg.isdigit():
+        set_feedback("datetime", ok, t("cc_datetime.lctime_set", p0=arg) if ok else t("cc_datetime.locale_err", p0=err or arg))
+    elif cmd == "barfmt" and arg.isascii() and arg.isdigit():
         idx = int(arg)
-        if 0 <= idx < len(_CLOCK_FMTS):
-            new_fmt = _CLOCK_FMTS[idx][1]
-            wb_cfg = os.path.expanduser("~/.config/waybar/config.jsonc")
-            if os.path.exists(wb_cfg):
-                raw = open(wb_cfg, "r", encoding="utf-8", errors="ignore").read()
-                new_raw, n = re.subn(r'("clock"\s*:\s*\{[^}]*?"format"\s*:\s*")([^"]+)(")', rf"\g<1>{new_fmt}\g<3>", raw, count=1, flags=re.DOTALL)
-                if n:
-                    open(wb_cfg, "w", encoding="utf-8").write(new_raw)
-                    probe.spawn_bg(["pkill", "-SIGUSR2", "waybar"])
-                    _MSG = t("cc_datetime.waybar_clock_format_set_to", p0=new_fmt)
-                else:
-                    _ERR = t("cc_datetime.could_not_locate_clock_format_in_w")
+        if not (0 <= idx < len(_CLOCK_FMTS)):
+            return False
+        new_fmt = _CLOCK_FMTS[idx][1]
+        wb_cfg = os.path.join(get_waybar_config_dir(), "config.jsonc")
+        if os.path.exists(wb_cfg):
+            raw = open(wb_cfg, "r", encoding="utf-8", errors="ignore").read()
+            new_raw, n = re.subn(r'("clock"\s*:\s*\{[^}]*?"format"\s*:\s*")([^"]+)(")', rf"\g<1>{new_fmt}\g<3>", raw, count=1, flags=re.DOTALL)
+            if n:
+                open(wb_cfg, "w", encoding="utf-8").write(new_raw)
+                probe.spawn_bg(["pkill", "-SIGUSR2", "waybar"])
+                set_feedback("datetime", True, t("cc_datetime.waybar_clock_format_set_to", p0=new_fmt))
             else:
-                _ERR = t("cc_datetime.waybar_config_jsonc_not_found")
+                set_feedback("datetime", False, t("cc_datetime.could_not_locate_clock_format_in_w"))
+        else:
+            set_feedback("datetime", False, t("cc_datetime.waybar_config_jsonc_not_found"))
     else:
         return False
 
@@ -205,39 +184,8 @@ def handle_cc_datetime_link(cc_panel, uri: str) -> bool:
 
 
 def handle_cc_datetime_prompt_change(cc_panel, action_id: str, text: str) -> bool:
-    if action_id == "cc_dt_tz_search":
-        STATE.set("datetime", "tz_query", str(text or ""))
-        return True
     return False
 
 
 def handle_cc_datetime_prompt(cc_panel, action_id: str, text: str) -> bool:
-    global _MSG, _ERR
-    if action_id == "cc_dt_tz_search":
-        val = text.strip()
-        if val:
-            ql = val.lower()
-            all_tzs = _load_all_timezones()
-            exact = next((z for z in all_tzs if z.lower() == ql), None)
-            if exact:
-                tz = exact
-            else:
-                matches = [z for z in all_tzs if ql in z.lower()]
-                matches.sort(key=lambda z: (0 if z.split("/")[-1].lower().startswith(ql) else 1, len(z), z))
-                tz = matches[0] if matches else val
-            ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", tz], timeout=3.0)
-            _MSG = f"Timezone set to {tz}" if ok else ""
-            _ERR = "" if ok else (err or f"Invalid or denied timezone: {tz}")
-        STATE.set("datetime", "tz_query", "")
-        if cc_panel and cc_panel.shell:
-            cc_panel.shell.refresh_view()
-        return True
-    if action_id != "cc_dt_tz" or not text.strip():
-        return False
-    tz = text.strip()
-    ok, _, err = probe.run_cmd_full(["timedatectl", "set-timezone", tz], timeout=3.0)
-    _MSG = f"Timezone set to {tz}" if ok else ""
-    _ERR = "" if ok else (err or f"Invalid or denied timezone: {tz}")
-    if cc_panel and cc_panel.shell:
-        cc_panel.shell.refresh_view()
-    return True
+    return False

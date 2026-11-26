@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -165,11 +166,18 @@ def list_installed_terminals() -> list[str]:
     return [term for term in KNOWN_TERMINALS if has_bin(term)]
 
 
-def open_terminal(args: list) -> None:
-    pref = CONFIG["general"].get("terminal", "auto")
-    candidates = ([pref] if pref != "auto" else []) + list_installed_terminals()
-    term = next((shutil.which(c) for c in candidates if shutil.which(c)), "kitty")
-    spawn_bg([term, "-e"] + list(args))
+def open_terminal(args: list) -> bool:
+    pref = str(CONFIG.get("general", {}).get("terminal", "auto") or "auto").strip()
+    env_term = str(os.environ.get("TERMINAL", "") or "").strip()
+    candidates = ([pref] if pref and pref != "auto" else []) + ([env_term] if env_term else []) + list_installed_terminals()
+    term = next((shutil.which(c) for c in candidates if c and shutil.which(c)), "")
+    if not term:
+        log.warn("open_terminal: no supported terminal emulator found")
+        return False
+    bn = os.path.basename(term)
+    prefix = [term, "--"] if bn == "gnome-terminal" else ([term, "start", "--"] if bn == "wezterm" else [term, "-e"])
+    spawn_bg(prefix + list(args))
+    return True
 
 
 def resolve_user_editor() -> str:
@@ -205,8 +213,76 @@ def open_in_editor(path: str, *, sudo: bool = False) -> tuple[bool, str]:
     if not parts or not has_bin(parts[0]):
         return False, f"missing:{parts[0] if parts else ed}"
     prefix = "sudo " if sudo else ""
-    open_terminal(["bash", "-c", f"{prefix}{shlex.join(parts)} {shlex.quote(path)} || read -p 'Press Enter to close...'"])
+    if not open_terminal(["bash", "-c", f"{prefix}{shlex.join(parts)} {shlex.quote(path)} || read -p 'Press Enter to close...'"]):
+        return False, "no_terminal"
     return True, parts[0]
+
+
+_OS_RELEASE_CACHE: dict | None = None
+_DISTRO_FAMILIES = {
+    "arch": ("arch", "archlinux", "cachyos", "endeavouros", "manjaro", "garuda", "artix", "arcolinux", "archcraft"),
+    "debian": ("debian", "ubuntu", "linuxmint", "pop", "kali", "parrot", "elementary", "zorin"),
+    "fedora": ("fedora", "rhel", "centos", "almalinux", "rocky", "nobara"),
+    "suse": ("opensuse", "suse", "sles", "opensuse-tumbleweed", "opensuse-leap"),
+}
+_FAMILY_PKG_MANAGERS = {
+    "arch": ("paru", "yay", "pikaur", "trizen", "pacman"),
+    "debian": ("apt", "apt-get", "nala"),
+    "fedora": ("dnf", "dnf5", "yum"),
+    "suse": ("zypper",),
+}
+
+
+def get_os_release() -> dict:
+    """Read `/etc/os-release` and classify family (`arch`/`debian`/`fedora`/`suse`/`unknown`)."""
+    global _OS_RELEASE_CACHE
+    if _OS_RELEASE_CACHE is not None:
+        return dict(_OS_RELEASE_CACHE)
+    try:
+        raw = platform.freedesktop_os_release()
+    except OSError:
+        raw = {}
+    os_id = str(raw.get("ID", "") or "").strip().lower()
+    id_like = str(raw.get("ID_LIKE", "") or "").strip().lower()
+    pretty = str(raw.get("PRETTY_NAME") or raw.get("NAME") or "Linux").strip()
+    tokens = [t for t in [os_id, *id_like.split()] if t]
+    family = "unknown"
+    for fam, keys in _DISTRO_FAMILIES.items():
+        if any(tok in keys for tok in tokens):
+            family = fam
+            break
+    _OS_RELEASE_CACHE = {
+        "id": os_id or "linux",
+        "id_like": id_like,
+        "pretty_name": pretty,
+        "family": family,
+    }
+    return dict(_OS_RELEASE_CACHE)
+
+
+get_distro_info = get_os_release
+
+
+def detect_esp_mounts() -> list[str]:
+    """Detect mounted EFI System Partitions via findmnt or standard paths (`/boot`, `/efi`, `/boot/efi`)."""
+    found: list[str] = []
+    if has_bin("findmnt"):
+        ok, out = run_cmd(["findmnt", "-rn", "-t", "vfat,msdos", "-o", "TARGET"], timeout=1.2)
+        if ok and out:
+            for ln in out.splitlines():
+                mp = ln.strip()
+                if mp in ("/efi", "/boot", "/boot/efi") or os.path.isdir(os.path.join(mp, "EFI")):
+                    if mp not in found:
+                        found.append(mp)
+    for cand in ("/efi", "/boot/efi", "/boot"):
+        if cand not in found and os.path.isdir(os.path.join(cand, "EFI")):
+            found.append(cand)
+    return found
+
+
+def detect_esp() -> str:
+    mounts = detect_esp_mounts()
+    return mounts[0] if mounts else "/boot"
 
 
 KNOWN_PKG_MANAGERS = ("paru", "yay", "pikaur", "trizen", "pacman", "apt", "dnf", "zypper", "apk", "xbps-query")
@@ -218,7 +294,16 @@ def list_installed_pkg_managers() -> list[str]:
 
 def get_preferred_pkg_manager(aur_only: bool = False) -> str:
     cfg_pm = str(CONFIG.get("general", {}).get("pkg_manager", "auto") or "auto").strip().lower()
-    candidates = ("paru", "yay", "pikaur", "trizen") if aur_only else KNOWN_PKG_MANAGERS
-    if cfg_pm in candidates and has_bin(cfg_pm):
+    if aur_only:
+        cands = ("paru", "yay", "pikaur", "trizen")
+        if cfg_pm in cands and has_bin(cfg_pm):
+            return cfg_pm
+        return next((m for m in cands if has_bin(m)), "")
+    fam_cands = _FAMILY_PKG_MANAGERS.get(get_os_release()["family"], ())
+    all_cands = tuple(dict.fromkeys(fam_cands + KNOWN_PKG_MANAGERS))
+    if cfg_pm in all_cands and has_bin(cfg_pm):
         return cfg_pm
-    return next((m for m in candidates if has_bin(m)), "")
+    return next((m for m in all_cands if has_bin(m)), "")
+
+
+detect_pkg_manager = get_preferred_pkg_manager

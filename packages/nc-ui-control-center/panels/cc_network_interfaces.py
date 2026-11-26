@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import copy
 
+from core import probe
 from core.config import get_network_show_bar_speed
 from core.i18n import t
 from ui.canvas import Canvas
@@ -9,19 +10,17 @@ from ui.kit import (
     Badge,
     Box,
     Divider,
-    FeedbackBox,
-    FoldToggle,
     InlineField,
     InspectorCell,
     SelectPill,
     StateBadge,
     Txt,
+    make_feedback_cards,
 )
 from ui.markup import format_speed, format_bytes_short
 from panels.cc_engine_network import (
     _NET_LOCK,
     _NET_STATE,
-    _get_feedback,
     _spaced_rows,
 )
 
@@ -58,8 +57,8 @@ def build_wired_tab_cards(
     # =========================================================================
     flt_all = SelectPill(t("cc_net_wired.all"), "net:if_filter:all", selected=(cur_filter == "all"))
     flt_eth = SelectPill(t("cc_net_wired.wired_virt"), "net:if_filter:wired", selected=(cur_filter == "wired"))
-    flt_wifi = SelectPill("Wi-Fi", "net:if_filter:wifi", selected=(cur_filter == "wifi"))
-    virt_open, virt_btn = FoldToggle(panel, "wired_virt", default=False)
+    flt_wifi = SelectPill(t("cc_net_wired.wifi"), "net:if_filter:wifi", selected=(cur_filter == "wifi"))
+    virt_open, virt_btn = panel._fold("wired_virt", default=False)
 
     if_box = Box(
         t("cc_net_wired.network_interfaces_live_telemetry"),
@@ -71,13 +70,16 @@ def build_wired_tab_cards(
             ActionBtn(t("cc_net_wired.unit", p0=unit_mode.upper()), "net:toggle_unit", tone="neutral"),
         ],
     )
-    if_box.add_row(" ")
 
     if not filtered_ifaces:
-        if_box.add_row(f"  {Txt(t("cc_net_wired.no_network_interfaces_detected"), role='inactive')}")
-        if_box.add_row(" ")
-        return [if_box]
+        if_box.add_row(f"  {Txt(t('cc_net_wired.no_network_interfaces_detected'), role='inactive')}")
+        cards.append(if_box)
+        cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_interfaces"))
+        return cards
 
+    if_up_lbl = t("cc_net_wired.up_2")
+    if_dn_lbl = t("cc_net_wired.down")
+    if_updn_mc = max(len(if_up_lbl), len(if_dn_lbl))
     if_rows = []
     for iface in filtered_ifaces:
         name = iface["name"]
@@ -86,19 +88,15 @@ def build_wired_tab_cards(
         is_up = bool(iface["up"])
         ic = "\uf1eb" if iface["kind"] == "wifi" else ("\uf132" if iface["kind"] == "vpn" else ("\uf0e8" if iface["kind"] == "bridge" else "\uf6ff"))
 
-        # Colonna 1: Selezione UI (Ciano su Blu Cobalto se in ispezione, altrimenti Bianco/Grafite)
         dev_str = InspectorCell(name[:11], f"net:sel_iface:{name}", selected=is_sel, is_alive=is_up, icon=ic)
 
-        # Colonna 2: Stato Fisico Link (Verde Matrix se UP, Grigio Spento se DOWN)
         spd_s = iface.get("link_speed", "N/D")
         spd_tag = f" {spd_s[:6]}" if (is_up and spd_s and spd_s != "N/D") else ""
-        st_link = StateBadge(is_up, f"UP{spd_tag}", "DOWN", on_tone="ok")
+        st_link = StateBadge(is_up, f"{t('common.up')}{spd_tag}", t("common.down"), on_tone="ok")
 
-        # Colonna 3: Indirizzo IPv4 (Bianco Puro se assegnato, Grigio Spento se N/D)
         has_ip = (iface["ip"] != "N/D")
-        ip_col = Txt(iface["ip"][:18], role="focus" if has_ip else "inactive")
+        ip_col = Txt(iface["ip"][:18] if has_ip else t("common.nd"), role="val" if has_ip else "inactive")
 
-        # Colonna 4: Traffico (Verde Fosforo per RX attivo, Ciano attenuato per TX attivo, Grafite se 0)
         rx_val, tx_val = iface["rx_rate"], iface["tx_rate"]
         rx_s = format_speed(rx_val, unit_mode).strip()
         tx_s = format_speed(tx_val, unit_mode).strip()
@@ -109,11 +107,10 @@ def build_wired_tab_cards(
             f"{Txt(f'\u2191\u00a0{tx_s:<8}', role=tx_role)}"
         )
 
-        # Colonna 5: Azioni ([Bar] mostrato SOLO se show_bar_speed è attivo)
         updn_b = (
-            ActionBtn(t("cc_net_wired.down"), f"net:ifdown:{name}", tone="danger_soft")
+            ActionBtn(if_dn_lbl, f"net:ifdown:{name}", tone="danger_soft", min_chars=if_updn_mc)
             if is_up
-            else ActionBtn(t("cc_net_wired.up_2"), f"net:ifup:{name}", tone="apply")
+            else ActionBtn(if_up_lbl, f"net:ifup:{name}", tone="apply", min_chars=if_updn_mc)
         )
         if show_bar_spd:
             mon_b = SelectPill(t("cc_net_wired.bar"), f"net:mon:{name}", selected=is_mon)
@@ -136,8 +133,9 @@ def build_wired_tab_cards(
         aligns=["left", "left", "left", "left", "right"],
     )
 
-    if_box.add_section(t("cc_net_wired.virtual_interfaces_bridge_802_1q_v"), actions=[virt_btn])
-    if virt_open:
+    has_nmcli = probe.has_bin("nmcli")
+    if_box.add_section(t("cc_net_wired.virtual_interfaces_bridge_802_1q_v"), actions=[virt_btn] if has_nmcli else [], requires=["nmcli"])
+    if virt_open and has_nmcli:
         if_box.add_row(
             f"  {Txt(t('cc_net_wired.create_virtual_nm_interface'), role='schema')}",
             right_markup=(
@@ -146,7 +144,6 @@ def build_wired_tab_cards(
             ),
         )
 
-    if_box.add_row(" ")
     cards.append(if_box)
 
     sel_obj = next((i for i in ifaces if i["name"] == sel_iface), ifaces[0])
@@ -154,20 +151,31 @@ def build_wired_tab_cards(
 
     with _NET_LOCK:
         nm_cur = copy.deepcopy(_NET_STATE["nm_profiles"].get(sel_iface, {}))
+        net_init = bool(_NET_STATE.get("initialized"))
+        nm_global_run = bool(_NET_STATE.get("nm_running", False))
 
     buf_all = panel.get_state("edit_buffer", {})
     buf = copy.deepcopy(buf_all.get(sel_iface, {}) if isinstance(buf_all, dict) else {})
-    fb = _get_feedback(sel_iface)
 
     def _eff(key: str, default=""):
         return buf[key] if key in buf else nm_cur.get(key, default)
 
     def _is_dirty(key: str) -> bool:
-        return key in buf and buf[key] != nm_cur.get(key)
+        if key not in buf:
+            return False
+        b_val, n_val = buf[key], nm_cur.get(key)
+        if key in ("route_metric", "autoconnect_priority"):
+            return str(b_val) != str(n_val)
+        return b_val != n_val
 
-    # Banner di feedback operazione (FeedbackBox uniforme)
-    if fb.get("state") in ("ok", "err", "err_banner") and fb.get("msg"):
-        cards.append(FeedbackBox(t("cc_net_wired.networkmanager_operation_status"), fb["state"] == "ok", fb["msg"]))
+    def _pills(field: str, cur_val: str, opts: list[tuple[str, str]], sep: str = "  ") -> str:
+        d = _is_dirty(field)
+        return sep.join(
+            SelectPill(lbl, f"net:buf:{sel_iface}:{field}:{k}", selected=(cur_val == k), dirty=(cur_val == k and d))
+            for k, lbl in opts
+        )
+
+    cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_interfaces"))
 
     # =========================================================================
     # CARD 1: PROFILI NETWORKMANAGER ASSOCIATI ALL'INTERFACCIA SELEZIONATA
@@ -181,23 +189,36 @@ def build_wired_tab_cards(
 
     avail_profs = nm_cur.get("available_profiles", [])
     sel_uuid = nm_cur.get("uuid", "")
+    nm_active = has_nmcli and net_init and nm_cur.get("nm_running", nm_global_run)
 
-    prof_actions = [
-        InlineField(f"net_new_prof_{sel_iface}", f"net:inline_new_prof:{sel_iface}", value="", empty_label=t("cc_net_wired.new_profile"), placeholder=f"{sel_iface}-static", width=16, icon="", tone="apply"),
-    ]
-    if is_wifi_iface:
-        prof_actions.insert(0, ActionBtn(t("cc_net_wired.wi_fi_scanner"), "net:jump_wifi_tab", tone="neutral"))
+    prof_actions = []
+    if not has_nmcli:
+        prof_actions.append(Badge(t("ui.missing", p0="nmcli"), style="warn"))
+    elif nm_active:
+        if is_wifi_iface:
+            prof_actions.append(ActionBtn(t("cc_net_wired.wi_fi_scanner"), "net:jump_wifi_tab", tone="neutral"))
+        prof_actions.append(
+            InlineField(f"net_new_prof_{sel_iface}", f"net:inline_new_prof:{sel_iface}", value="", empty_label=t("cc_net_wired.new_profile"), placeholder=f"{sel_iface}-static", width=16, icon="", tone="apply")
+        )
 
     prof_box = Box(
         t("cc_net_wired.1_associated_networkmanager_profil", p0=sel_iface, p1=len(avail_profs)),
         icon="\uf0c7",
         actions=prof_actions,
     )
-    prof_box.add_row(" ")
 
-    if not nm_cur.get("nm_running", True):
+    if not has_nmcli:
+        prof_box.add_row(f"  {Txt(t('cc_net_wired.nmcli_missing'), role='inactive')}")
+        cards.append(prof_box)
+        return cards
+
+    if not net_init:
+        prof_box.add_row(f"  {Txt(t('network.detecting'), role='inactive')}")
+        cards.append(prof_box)
+        return cards
+
+    if not nm_cur.get("nm_running", nm_global_run):
         prof_box.add_row(f"  {Txt(t('cc_net_wired.networkmanager_service_is_not_runn'), role='fault')}")
-        prof_box.add_row(" ")
         cards.append(prof_box)
         return cards
 
@@ -206,10 +227,12 @@ def build_wired_tab_cards(
             f"  {Txt(t('cc_net_wired.no_persistent_networkmanager_profi'), role='attention')}",
             right_markup=ActionBtn(t("cc_net_wired.create_default_profile"), f"net:nm_create:{sel_iface}", tone="apply"),
         )
-        prof_box.add_row(" ")
         cards.append(prof_box)
         return cards
 
+    p_up_lbl = t("cc_net_wired.up")
+    p_dn_lbl = t("cc_net_wired.down")
+    p_updn_mc = max(len(p_up_lbl), len(p_dn_lbl))
     p_rows = []
     for pr in avail_profs:
         p_uuid = pr["uuid"]
@@ -225,7 +248,7 @@ def build_wired_tab_cards(
             is_alive=is_live,
         )
         live_cell = StateBadge(is_live, t("cc_net_wired.active"), t("cc_net_wired.standby"), on_tone="ok")
-        ac_lbl = f"Auto ({prio_s})" if is_ac else t("cc_net_wired.manual_lbl")
+        ac_lbl = t("cc_net_wired.auto_prio", p0=prio_s) if is_ac else t("cc_net_wired.manual_lbl")
         ac_btn = SelectPill(
             ac_lbl,
             f"net:nm_auto_prof:{sel_iface}:{p_uuid}:{'no' if is_ac else 'yes'}",
@@ -233,12 +256,12 @@ def build_wired_tab_cards(
         )
 
         act_updn = (
-            ActionBtn(t("cc_net_wired.down"), f"net:nm_down_prof:{sel_iface}:{p_uuid}", tone="danger_soft")
+            ActionBtn(p_dn_lbl, f"net:nm_down_prof:{sel_iface}:{p_uuid}", tone="danger_soft", min_chars=p_updn_mc)
             if is_live
-            else ActionBtn(t("cc_net_wired.up"), f"net:nm_up_prof:{sel_iface}:{p_uuid}", tone="apply")
+            else ActionBtn(p_up_lbl, f"net:nm_up_prof:{sel_iface}:{p_uuid}", tone="apply", min_chars=p_updn_mc)
         )
         clone_b = ActionBtn(t("cc_net_wired.clone"), f"net:nm_clone_prof:{sel_iface}:{p_uuid}", tone="neutral")
-        ren_b = InlineField(f"net_ren_{p_uuid}", f"net:inline_rename_prof:{sel_iface}:{p_uuid}", value="", empty_label=t("cc_net_wired.rename"), placeholder="name", width=12, icon="", tone="neutral")
+        ren_b = InlineField(f"net_ren_{p_uuid}", f"net:inline_rename_prof:{sel_iface}:{p_uuid}", value="", empty_label=t("cc_net_wired.rename"), placeholder="name", width=12, icon="\u270e", tone="neutral")
         del_b = ActionBtn("x", f"net:nm_del_prof:{sel_iface}:{p_uuid}", tone="danger_soft")
 
         p_rows.append([
@@ -261,13 +284,12 @@ def build_wired_tab_cards(
         rows=_spaced_rows(p_rows),
         aligns=["left", "left", "left", "left", "right"],
     )
-    prof_box.add_row(" ")
     cards.append(prof_box)
 
     # =========================================================================
     # CARD 2: CONFIGURAZIONE IPv4 & PARAMETRI PRINCIPALI (+ Avanzate Collapsible)
     # =========================================================================
-    has_dirty = bool(buf)
+    has_dirty = any(_is_dirty(k) for k in buf)
     con_name = str(_eff("con_name", sel_iface))
     method = str(_eff("method", "auto"))
     ip_cidr = str(_eff("ip_cidr", ""))
@@ -300,23 +322,18 @@ def build_wired_tab_cards(
         icon="\uf124",
         actions=v4_actions,
     )
-    v4_box.add_row(" ")
 
-    m_opts = [
-        ("auto", "DHCP Auto"),
+    m_btns = _pills("method", method, [
+        ("auto", t("cc_net_wired.dhcp_auto")),
         ("manual", t("cc_net_wired.static_manual")),
-        ("shared", "Shared (NAT)"),
-        ("disabled", "Off"),
-    ]
-    m_btns = "  ".join(
-        SelectPill(lbl, f"net:buf:{sel_iface}:method:{k}", selected=(method == k), dirty=(method == k and _is_dirty("method")))
-        for k, lbl in m_opts
-    )
+        ("shared", t("cc_net_wired.shared_nat")),
+        ("disabled", t("cc_net_wired.off_lbl")),
+    ])
 
     ac_yes = (autoconn.lower() == "yes")
     ac_btns = "  ".join([
-        SelectPill("ON", f"net:buf:{sel_iface}:autoconnect:yes", selected=ac_yes, dirty=(ac_yes and _is_dirty("autoconnect"))),
-        SelectPill("OFF", f"net:buf:{sel_iface}:autoconnect:no", selected=not ac_yes, dirty=(not ac_yes and _is_dirty("autoconnect"))),
+        SelectPill(t("common.on"), f"net:buf:{sel_iface}:autoconnect:yes", selected=ac_yes, dirty=(ac_yes and _is_dirty("autoconnect"))),
+        SelectPill(t("common.off"), f"net:buf:{sel_iface}:autoconnect:no", selected=not ac_yes, dirty=(not ac_yes and _is_dirty("autoconnect"))),
         InlineField(
             f"net_prio_{sel_iface}",
             f"net:inline_field:net_prio:{sel_iface}",
@@ -351,10 +368,11 @@ def build_wired_tab_cards(
             return Txt(s_trunc, role="schema")
         return Txt(s_trunc, role="val")
 
-    live_ip_hint = f"DHCP ({sel_obj['ip']})" if sel_obj["ip"] != "N/D" else "DHCP Auto"
-    ip_disp = ip_cidr if ip_cidr else (live_ip_hint if method == "auto" else (t("cc_net_wired.not_set")))
-    gw_disp = gw if gw else (f"DHCP ({sel_obj['gw']})" if (method == "auto" and sel_obj["gw"]) else (sel_obj["gw"] or (t("cc_net_wired.auto"))))
-    dns_disp = dns if dns else (t("cc_net_wired.automatic_dhcp"))
+    has_live_ip = (sel_obj["ip"] != "N/D")
+    live_ip_hint = t("cc_net_wired.dhcp_val", p0=sel_obj["ip"]) if has_live_ip else t("cc_net_wired.dhcp_auto")
+    ip_disp = ip_cidr if ip_cidr else (live_ip_hint if method == "auto" else t("cc_net_wired.not_set"))
+    gw_disp = gw if gw else (t("cc_net_wired.dhcp_val", p0=sel_obj["gw"]) if (method == "auto" and sel_obj["gw"]) else (sel_obj["gw"] or t("cc_net_wired.auto")))
+    dns_disp = dns if dns else t("cc_net_wired.automatic_dhcp")
 
     ign_yes = (ignore_auto_dns.lower() == "yes")
     auto_dns_pill = SelectPill(
@@ -365,17 +383,17 @@ def build_wired_tab_cards(
     )
 
     clean_live_ip = sel_obj["ip"].split("/")[0]
+    ip_copy_btn = ActionBtn(t("cc_net_wired.copy"), "ui:copy:" + clean_live_ip, tone="neutral") if has_live_ip else ""
     param_rows = [
         [
             Txt(t("cc_net_wired.ipv4_cidr"), role="schema"),
             _fmt_val(ip_disp, _is_dirty("ip_cidr"), is_auto_fallback=(not ip_cidr)),
-            f"{InlineField(f'net_ip_{sel_iface}', f'net:inline_field:net_ip:{sel_iface}', value='', empty_label=t('cc_net_wired.edit'), placeholder='10.10.0.10/24', width=15, icon='\u270e', tone='neutral')} "
-            f"{ActionBtn(t('cc_net_wired.copy'), 'ui:copy:' + clean_live_ip, tone='neutral')}",
+            f"{InlineField(f'net_ip_{sel_iface}', f'net:inline_field:net_ip:{sel_iface}', value='', empty_label=t('cc_net_wired.edit'), placeholder='10.0.0.10/24', width=15, icon='\u270e', tone='neutral')} {ip_copy_btn}".strip(),
         ],
         [
             Txt(t("cc_net_wired.gateway_ipv4"), role="schema"),
             _fmt_val(gw_disp, _is_dirty("gateway"), is_auto_fallback=(not gw)),
-            f"{InlineField(f'net_gw_{sel_iface}', f'net:inline_field:net_gw:{sel_iface}', value='', empty_label=t('cc_net_wired.edit'), placeholder='10.10.0.1', width=14, icon='\u270e', tone='neutral')} "
+            f"{InlineField(f'net_gw_{sel_iface}', f'net:inline_field:net_gw:{sel_iface}', value='', empty_label=t('cc_net_wired.edit'), placeholder='10.0.0.1', width=14, icon='\u270e', tone='neutral')} "
             f"{ActionBtn(t('cc_net_wired.clear'), f'net:buf:{sel_iface}:gateway:', tone='danger_soft') if gw else ''}".strip(),
         ],
         [
@@ -396,40 +414,39 @@ def build_wired_tab_cards(
     )
 
     adv_dirty = any(_is_dirty(k) for k in ("dns_search", "route_metric", "never_default", "zone", "metered", "static_routes"))
-    adv_open, adv_toggle = FoldToggle(panel, f"v4_adv_{sel_iface}", default=False, dirty=adv_dirty)
+    adv_open, adv_toggle = panel._fold(f"v4_adv_{sel_iface}", default=False, dirty=adv_dirty)
 
     v4_box.add_section(
         t("cc_net_wired.advanced_routing_firewall_static_r"),
         actions=[adv_toggle],
     )
     if not adv_open:
-        z_sum = zone or "Default"
-        m_sum = f"{route_metric}" if int(route_metric) >= 0 else "Auto"
+        z_sum = zone or t("cc_net_wired.zone_default")
+        m_sum = f"{route_metric}" if int(route_metric) >= 0 else t("cc_net_wired.auto_2")
         r_sum = str(len(static_routes))
         v4_box.add_row(
-            f"  {Txt(t("cc_net_wired.firewall_zone"), role='inactive')} {Txt(z_sum, role='val')}  \u00b7  "
-            f"{Txt(t("cc_net_wired.metric"), role='inactive')} {Txt(m_sum, role='val')}  \u00b7  "
-            f"{Txt(t("cc_net_wired.static_routes_2"), role='inactive')} {Txt(r_sum, role='val')}"
+            f"  {Txt(t('cc_net_wired.firewall_zone'), role='inactive')} {Txt(z_sum, role='val')}  \u00b7  "
+            f"{Txt(t('cc_net_wired.metric'), role='inactive')} {Txt(m_sum, role='val')}  \u00b7  "
+            f"{Txt(t('cc_net_wired.static_routes_2'), role='inactive')} {Txt(r_sum, role='val')}"
         )
     else:
-        v4_box.add_row(" ")
-        nd_yes = (never_default.lower() == "yes")
-        nd_btns = "  ".join([
-            SelectPill(t("cc_net_wired.default_route_ok"), f"net:buf:{sel_iface}:never_default:no", selected=not nd_yes, dirty=(not nd_yes and _is_dirty("never_default"))),
-            SelectPill(t("cc_net_wired.no_default_route_split"), f"net:buf:{sel_iface}:never_default:yes", selected=nd_yes, dirty=(nd_yes and _is_dirty("never_default"))),
+        nd_btns = _pills("never_default", never_default.lower(), [
+            ("no", t("cc_net_wired.default_route_ok")),
+            ("yes", t("cc_net_wired.no_default_route_split")),
         ])
-
-        z_opts = [("", "Default"), ("trusted", "Trusted"), ("home", "Home"), ("work", "Work"), ("public", "Public"), ("drop", "Drop")]
-        z_btns = " ".join(
-            SelectPill(lbl, f"net:buf:{sel_iface}:zone:{zk}", selected=(zone == zk), dirty=(zone == zk and _is_dirty("zone")))
-            for zk, lbl in z_opts
-        )
-
-        met_opts = [("unknown", "Auto"), ("yes", "Metered (Limit)"), ("no", "Unmetered")]
-        met_btns = "  ".join(
-            SelectPill(lbl, f"net:buf:{sel_iface}:metered:{mk}", selected=(metered == mk), dirty=(metered == mk and _is_dirty("metered")))
-            for mk, lbl in met_opts
-        )
+        z_btns = _pills("zone", zone, [
+            ("", t("cc_net_wired.zone_default")),
+            ("trusted", t("cc_net_wired.zone_trusted")),
+            ("home", t("cc_net_wired.zone_home")),
+            ("work", t("cc_net_wired.zone_work")),
+            ("public", t("cc_net_wired.zone_public")),
+            ("drop", t("cc_net_wired.zone_drop")),
+        ], sep=" ")
+        met_btns = _pills("metered", metered, [
+            ("unknown", t("cc_net_wired.auto_2")),
+            ("yes", t("cc_net_wired.metered_yes")),
+            ("no", t("cc_net_wired.metered_no")),
+        ])
 
         v4_box.add_table(
             headers=[],
@@ -445,8 +462,8 @@ def build_wired_tab_cards(
         )
         v4_box.add_row(" ")
 
-        search_disp = dns_search if dns_search else (t("cc_net_wired.none"))
-        metric_disp = f"{route_metric}" if int(route_metric) >= 0 else "Auto (-1)"
+        search_disp = dns_search if dns_search else t("cc_net_wired.none")
+        metric_disp = f"{route_metric}" if int(route_metric) >= 0 else t("cc_net_wired.auto_neg1")
         adv_param_rows = [
             [
                 Txt(t("cc_net_wired.dns_search"), role="schema"),
@@ -479,7 +496,6 @@ def build_wired_tab_cards(
             ]
             v4_box.add_table(headers=["", ""], widths=["flex", 6], rows=rt_rows, aligns=["left", "right"], show_headers=False)
 
-    v4_box.add_row(" ")
     cards.append(v4_box)
 
     # =========================================================================
@@ -489,7 +505,7 @@ def build_wired_tab_cards(
     ip6_privacy = str(_eff("ip6_privacy", "default"))
     ip6_dns = str(_eff("ip6_dns", ""))
     v6_dirty = any(_is_dirty(k) for k in ("ip6_method", "ip6_privacy", "ip6_dns"))
-    v6_open, v6_toggle = FoldToggle(panel, f"v6_sec_{sel_iface}", default=False, dirty=v6_dirty)
+    v6_open, v6_toggle = panel._fold(f"v6_sec_{sel_iface}", default=False, dirty=v6_dirty)
 
     v6_acts = [v6_toggle]
     if v6_open and v6_dirty:
@@ -500,26 +516,27 @@ def build_wired_tab_cards(
         icon="\uf0ac",
         actions=v6_acts,
     )
-    live_ip6 = sel_obj.get("ip6") or (t("cc_net_wired.none_link_local"))
-    v6_box.add_row(" ")
+    live_ip6 = sel_obj.get("ip6") or t("cc_net_wired.none_link_local")
     if not v6_open:
         v6_box.add_row(
-            f"  {Txt(t("cc_net_wired.method"), role='inactive')} {Txt(ip6_method.upper(), role='val')}  \u00b7  "
-            f"{Txt(t("cc_net_wired.ipv6"), role='inactive')} {Txt(live_ip6[:32], role='val')}  \u00b7  "
-            f"{Txt(t("cc_net_wired.privacy"), role='inactive')} {Txt(ip6_privacy, role='val')}"
+            f"  {Txt(t('cc_net_wired.method'), role='inactive')} {Txt(ip6_method.upper(), role='val')}  \u00b7  "
+            f"{Txt(t('cc_net_wired.ipv6'), role='inactive')} {Txt(live_ip6[:32], role='val')}  \u00b7  "
+            f"{Txt(t('cc_net_wired.privacy'), role='inactive')} {Txt(ip6_privacy, role='val')}"
         )
     else:
-        m6_opts = [("auto", "SLAAC / Auto"), ("dhcp", "DHCPv6"), ("link-local", "Link-Local"), ("ignore", "Ignore"), ("disabled", "Off")]
-        m6_btns = " ".join(
-            SelectPill(lbl, f"net:buf:{sel_iface}:ip6_method:{k}", selected=(ip6_method == k), dirty=(ip6_method == k and _is_dirty("ip6_method")))
-            for k, lbl in m6_opts
-        )
-
-        p6_opts = [("default", "Default"), ("0", "Off (EUI-64)"), ("1", "Prefer Public"), ("2", "Prefer Temp (RFC4941)")]
-        p6_btns = " ".join(
-            SelectPill(lbl, f"net:buf:{sel_iface}:ip6_privacy:{k}", selected=(ip6_privacy == k), dirty=(ip6_privacy == k and _is_dirty("ip6_privacy")))
-            for k, lbl in p6_opts
-        )
+        m6_btns = _pills("ip6_method", ip6_method, [
+            ("auto", t("cc_net_wired.ip6_slaac")),
+            ("dhcp", t("cc_net_wired.ip6_dhcp")),
+            ("link-local", t("cc_net_wired.ip6_link_local")),
+            ("ignore", t("cc_net_wired.ip6_ignore")),
+            ("disabled", t("cc_net_wired.off_lbl")),
+        ], sep=" ")
+        p6_btns = _pills("ip6_privacy", ip6_privacy, [
+            ("default", t("cc_net_wired.zone_default")),
+            ("0", t("cc_net_wired.ip6_priv_off")),
+            ("1", t("cc_net_wired.ip6_priv_public")),
+            ("2", t("cc_net_wired.ip6_priv_temp")),
+        ], sep=" ")
 
         v6_box.add_table(
             headers=[],
@@ -541,7 +558,7 @@ def build_wired_tab_cards(
             ],
             [
                 Txt(t("cc_net_wired.dnsv6_servers"), role="schema"),
-                _fmt_val(ip6_dns or "Auto", _is_dirty("ip6_dns"), is_auto_fallback=(not ip6_dns)),
+                _fmt_val(ip6_dns or t("cc_net_wired.auto_2"), _is_dirty("ip6_dns"), is_auto_fallback=(not ip6_dns)),
                 InlineField(f"net_ip6_dns_{sel_iface}", f"net:inline_field:net_ip6_dns:{sel_iface}", value="", empty_label=t("cc_net_wired.edit"), placeholder="2606:4700::1111", width=16, icon="\u270e", tone="neutral"),
             ],
         ]
@@ -552,7 +569,7 @@ def build_wired_tab_cards(
             aligns=["left", "left", "right"],
             show_headers=False,
         )
-    v6_box.add_row(" ")
+
     cards.append(v6_box)
 
     # =========================================================================
@@ -565,7 +582,7 @@ def build_wired_tab_cards(
     wifi_band = str(_eff("wifi_band", "auto"))
 
     hw_dirty = any(_is_dirty(k) for k in ("mtu", "cloned_mac", "wol", "lldp", "wifi_band"))
-    hw_open, hw_toggle = FoldToggle(panel, f"hw_sec_{sel_iface}", default=False, dirty=hw_dirty)
+    hw_open, hw_toggle = panel._fold(f"hw_sec_{sel_iface}", default=False, dirty=hw_dirty)
 
     hw_acts = [hw_toggle]
     if hw_open and hw_dirty:
@@ -582,29 +599,46 @@ def build_wired_tab_cards(
         actions=hw_acts,
     )
 
-    hw_box.add_row(" ")
+    mac_disp = sel_obj["mac"] if sel_obj["mac"] != "N/D" else t("common.nd")
     if not hw_open:
-        extra_sum = f"{Txt(t("cc_net_wired.band"), role='inactive')} {Txt(wifi_band, role='val')}" if is_wifi_iface else f"{Txt('WoL:', role='inactive')} {Txt(wol, role='val')}"
+        extra_sum = f"{Txt(t('cc_net_wired.band'), role='inactive')} {Txt(wifi_band, role='val')}" if is_wifi_iface else f"{Txt(t('cc_net_wired.wol_short'), role='inactive')} {Txt(wol, role='val')}"
         mtu_s = f"{sel_obj['mtu']} ({mtu})"
         hw_box.add_row(
-            f"  {Txt(t("cc_net_wired.mac"), role='inactive')} {Txt(sel_obj['mac'], role='val')}  \u00b7  "
-            f"{Txt(t("cc_net_wired.mtu"), role='inactive')} {Txt(mtu_s, role='val')}  \u00b7  "
+            f"  {Txt(t('cc_net_wired.mac'), role='inactive')} {Txt(mac_disp, role='val')}  \u00b7  "
+            f"{Txt(t('cc_net_wired.mtu'), role='inactive')} {Txt(mtu_s, role='val')}  \u00b7  "
             f"{extra_sum}"
         )
     else:
+        is_custom_mtu = mtu not in ("auto", "1500", "1420", "9000")
         mtu_presets = "  ".join([
-            SelectPill(t("cc_net_wired.auto_2"), f"net:buf:{sel_iface}:mtu:auto", selected=(mtu == "auto"), dirty=(mtu == "auto" and _is_dirty("mtu"))),
-            SelectPill(t("cc_net_wired.1500_std"), f"net:buf:{sel_iface}:mtu:1500", selected=(mtu == "1500"), dirty=(mtu == "1500" and _is_dirty("mtu"))),
-            SelectPill(t("cc_net_wired.1420_wg"), f"net:buf:{sel_iface}:mtu:1420", selected=(mtu == "1420"), dirty=(mtu == "1420" and _is_dirty("mtu"))),
-            SelectPill(t("cc_net_wired.9000_jumbo"), f"net:buf:{sel_iface}:mtu:9000", selected=(mtu == "9000"), dirty=(mtu == "9000" and _is_dirty("mtu"))),
-            InlineField(f"net_mtu_{sel_iface}", f"net:inline_field:net_mtu:{sel_iface}", value="", empty_label=t("cc_net_wired.custom"), placeholder="1500", width=8, icon="\u270e", tone="neutral"),
+            _pills("mtu", mtu, [
+                ("auto", t("cc_net_wired.auto_2")),
+                ("1500", t("cc_net_wired.1500_std")),
+                ("1420", t("cc_net_wired.1420_wg")),
+                ("9000", t("cc_net_wired.9000_jumbo")),
+            ]),
+            InlineField(
+                f"net_mtu_{sel_iface}",
+                f"net:inline_field:net_mtu:{sel_iface}",
+                value=mtu if is_custom_mtu else "",
+                empty_label=t("cc_net_wired.custom"),
+                placeholder="1500",
+                width=8,
+                icon="\u270e",
+                tone="neutral",
+                selected=is_custom_mtu,
+                dirty=(is_custom_mtu and _is_dirty("mtu")),
+            ),
         ])
 
+        is_custom_mac = bool(cloned_mac and cloned_mac not in ("permanent", "preserve", "stable", "random"))
         mac_presets = "  ".join([
-            SelectPill(t("cc_net_wired.permanent"), f"net:buf:{sel_iface}:cloned_mac:permanent", selected=(cloned_mac == "permanent"), dirty=(cloned_mac == "permanent" and _is_dirty("cloned_mac"))),
-            SelectPill(t("cc_net_wired.preserve"), f"net:buf:{sel_iface}:cloned_mac:preserve", selected=(cloned_mac == "preserve"), dirty=(cloned_mac == "preserve" and _is_dirty("cloned_mac"))),
-            SelectPill(t("cc_net_wired.stable"), f"net:buf:{sel_iface}:cloned_mac:stable", selected=(cloned_mac == "stable"), dirty=(cloned_mac == "stable" and _is_dirty("cloned_mac"))),
-            SelectPill(t("cc_net_wired.random"), f"net:buf:{sel_iface}:cloned_mac:random", selected=(cloned_mac == "random"), dirty=(cloned_mac == "random" and _is_dirty("cloned_mac"))),
+            _pills("cloned_mac", cloned_mac, [
+                ("permanent", t("cc_net_wired.permanent")),
+                ("preserve", t("cc_net_wired.preserve")),
+                ("stable", t("cc_net_wired.stable")),
+                ("random", t("cc_net_wired.random")),
+            ]),
             ActionBtn(t("cc_net_wired.clear"), f"net:buf:{sel_iface}:cloned_mac:", tone="danger_soft") if cloned_mac else "",
         ]).strip()
 
@@ -614,23 +648,23 @@ def build_wired_tab_cards(
         ]
 
         if is_wifi_iface:
-            b_opts = [("auto", "Auto (2.4/5 GHz)"), ("a", "5 GHz Only"), ("bg", "2.4 GHz Only")]
-            b_btns = "  ".join(
-                SelectPill(lbl, f"net:buf:{sel_iface}:wifi_band:{k}", selected=(wifi_band == k), dirty=(wifi_band == k and _is_dirty("wifi_band")))
-                for k, lbl in b_opts
-            )
+            b_btns = _pills("wifi_band", wifi_band, [
+                ("auto", t("cc_net_wired.band_auto")),
+                ("a", t("cc_net_wired.band_5")),
+                ("bg", t("cc_net_wired.band_24")),
+            ])
             hw_sel_rows.append([Txt(t("cc_net_wired.wi_fi_band"), role="schema"), b_btns])
         else:
-            wol_opts = [("default", "Default"), ("magic", "MagicPacket (ON)"), ("ignore", "Disabled")]
-            wol_btns = "  ".join(
-                SelectPill(lbl, f"net:buf:{sel_iface}:wol:{k}", selected=(wol == k), dirty=(wol == k and _is_dirty("wol")))
-                for k, lbl in wol_opts
-            )
-            lldp_opts = [("default", "Default"), ("rx", "Listen RX (ON)"), ("disable", "Disabled")]
-            lldp_btns = "  ".join(
-                SelectPill(lbl, f"net:buf:{sel_iface}:lldp:{k}", selected=(lldp == k), dirty=(lldp == k and _is_dirty("lldp")))
-                for k, lbl in lldp_opts
-            )
+            wol_btns = _pills("wol", wol, [
+                ("default", t("cc_net_wired.zone_default")),
+                ("magic", t("cc_net_wired.wol_magic")),
+                ("ignore", t("cc_net_wired.wol_disabled")),
+            ])
+            lldp_btns = _pills("lldp", lldp, [
+                ("default", t("cc_net_wired.zone_default")),
+                ("rx", t("cc_net_wired.lldp_rx")),
+                ("disable", t("cc_net_wired.wol_disabled")),
+            ])
             hw_sel_rows.append([Txt(t("cc_net_wired.wake_on_lan"), role="schema"), wol_btns])
             hw_sel_rows.append([Txt(t("cc_net_wired.lldp_listener"), role="schema"), lldp_btns])
 
@@ -646,19 +680,17 @@ def build_wired_tab_cards(
 
         rx_tot = format_bytes_short(sel_obj.get("rx_total", 0))
         tx_tot = format_bytes_short(sel_obj.get("tx_total", 0))
-        clone_role = "attention" if _is_dirty("cloned_mac") else "schema"
-        clone_s = f"(Clone: {cloned_mac or 'Off'})"
+        mac_copy_btn = ActionBtn(t("cc_net_wired.copy"), "ui:copy:" + sel_obj["mac"], tone="neutral") if sel_obj["mac"] != "N/D" else ""
         hw_param_rows = [
             [
                 Txt(t("cc_net_wired.hardware_mac"), role="schema"),
-                f"{Txt(sel_obj['mac'], role='focus')}   {Txt(clone_s, role=clone_role)}",
-                f"{InlineField(f'net_cmac_{sel_iface}', f'net:inline_field:net_cmac:{sel_iface}', value='', empty_label=t('cc_net_wired.spoof_mac'), placeholder='random / MAC', width=14, icon='\u270e', tone='neutral')} "
-                f"{ActionBtn(t('cc_net_wired.copy'), 'ui:copy:' + sel_obj['mac'], tone='neutral')}",
+                Txt(mac_disp, role="focus" if sel_obj["mac"] != "N/D" else "inactive"),
+                f"{InlineField(f'net_cmac_{sel_iface}', f'net:inline_field:net_cmac:{sel_iface}', value=cloned_mac if is_custom_mac else '', empty_label=t('cc_net_wired.spoof_mac'), placeholder='random / MAC', width=14, icon='\u270e', tone='neutral', selected=is_custom_mac, dirty=(is_custom_mac and _is_dirty('cloned_mac')))} {mac_copy_btn}".strip(),
             ],
             [
                 Txt(t("cc_net_wired.kernel_totals"), role="schema"),
                 f"{Txt(f'RX: {rx_tot}', role='ok_soft')}   {Txt(f'TX: {tx_tot}', role='val')}",
-                Txt((nm_cur.get("filename") or "unmanaged")[-26:], role="inactive"),
+                Txt((nm_cur.get("filename") or t("cc_net_wired.unmanaged"))[-26:], role="inactive"),
             ],
         ]
         hw_box.add_table(
@@ -668,7 +700,6 @@ def build_wired_tab_cards(
             aligns=["left", "left", "right"],
             show_headers=False,
         )
-    hw_box.add_row(" ")
 
     cards.append(hw_box)
     return cards

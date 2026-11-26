@@ -33,16 +33,19 @@ import gi
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-gi.require_version("GtkLayerShell", "0.1")
-from gi.repository import Gdk, GLib, Gtk, GtkLayerShell
+from gi.repository import Gdk, GLib, Gtk
+
+try:
+    gi.require_version("GtkLayerShell", "0.1")
+    from gi.repository import GtkLayerShell
+except (ValueError, ImportError):
+    GtkLayerShell = None
 
 from core.config import (
-    DEFAULT_THEME,
     THEME,
-    _deep_merge,
     get_sys_notif_opacity,
     get_sys_notif_style,
-    sanitize_theme_dict,
+    load_theme,
 )
 from core.i18n import t
 from panels.cc_engine_notifications import (
@@ -59,17 +62,7 @@ _MAX_VISIBLE = 4
 
 
 def _reload_live_notif_theme() -> None:
-    path = os.path.expanduser("~/.config/nc-ui/theme.toml")
-    if os.path.exists(path):
-        try:
-            import tomllib
-            with open(path, "rb") as f:
-                data = tomllib.load(f)
-            if isinstance(data, dict):
-                merged = sanitize_theme_dict(_deep_merge(DEFAULT_THEME, data))
-                THEME.update(merged)
-        except Exception:
-            pass
+    THEME.update(load_theme())
 
 
 def _resolve_transition(pos: str, effect: str) -> tuple[Gtk.RevealerTransitionType, int, bool]:
@@ -194,7 +187,10 @@ class _ToastSlot:
 
     @staticmethod
     def _calc_duration_ms(notif: dict, rules: dict) -> int:
-        sec = int(rules.get("popup_timeout", 5))
+        try:
+            sec = int(rules.get("popup_timeout", 5))
+        except (TypeError, ValueError):
+            sec = 5
         if sec <= 0:
             return 0
         if str(notif.get("urgency", "")).lower() == "critical":
@@ -345,13 +341,17 @@ class NotifyPopupHost(Gtk.Window):
         """
         prov = Gtk.CssProvider()
         prov.load_from_data(css.encode("utf-8"))
-        Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(),
-            prov,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-        )
+        scr = Gdk.Screen.get_default()
+        if scr is not None:
+            Gtk.StyleContext.add_provider_for_screen(
+                scr,
+                prov,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
 
     def _init_layer_shell(self) -> None:
+        if GtkLayerShell is None:
+            return
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_namespace(self, "nc-notify-popup")
         GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
@@ -359,6 +359,9 @@ class NotifyPopupHost(Gtk.Window):
         self.apply_position("top-right")
 
     def apply_position(self, pos: str) -> None:
+        self.current_pos = pos
+        if GtkLayerShell is None:
+            return
         is_bot = pos.startswith("bottom-")
         is_left = pos.endswith("-left")
         is_right = pos.endswith("-right")
@@ -373,7 +376,6 @@ class NotifyPopupHost(Gtk.Window):
         GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, 20 if is_bot else 0)
         GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, 18 if is_left else 0)
         GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, 18 if is_right else 0)
-        self.current_pos = pos
 
     def push_notification(self, notif: dict) -> None:
         _reload_live_notif_theme()
@@ -408,6 +410,9 @@ class NotifyPopupHost(Gtk.Window):
 
     def _start_socket_server(self) -> None:
         try:
+            sock_dir = os.path.dirname(self.sock_path)
+            if sock_dir:
+                os.makedirs(sock_dir, exist_ok=True)
             if os.path.exists(self.sock_path):
                 os.unlink(self.sock_path)
             srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -480,7 +485,7 @@ def main() -> int:
         except Exception:
             pass
 
-    if not payload:
+    if not payload or GtkLayerShell is None or Gdk.Display.get_default() is None or Gdk.Screen.get_default() is None:
         return 0
 
     host = NotifyPopupHost(initial_payload=payload)

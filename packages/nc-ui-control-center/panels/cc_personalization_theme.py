@@ -93,7 +93,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
                 "cc_pers:inline_save_theme",
                 value="",
                 empty_label=t("cc_personalization.save"),
-                placeholder="nightcity-custom",
+                placeholder="cyberdeck-custom",
                 width=16,
                 icon="\uf0c7",
                 tone="apply",
@@ -124,7 +124,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         t("cc_personalization.sample_searchbox"),
         InlineFilter(
             "cc_pers_demo_q",
-            "nightcity",
+            "cyberdeck",
             t("cc_personalization.filter_items"),
             "cc_pers:noop",
             clear_uri="cc_pers:noop",
@@ -156,7 +156,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     )
     row_cyber = " ".join(
         SelectPill(THEME_PRESETS[pid]["label"], f"cc_pers:preset:{pid}", selected=(active_preset == pid))
-        for pid in ("nightcity", "arasaka", "ghost_net")
+        for pid in ("cyberdeck", "arasaka", "ghost_net")
     )
     row_retro = " ".join(
         SelectPill(THEME_PRESETS[pid]["label"], f"cc_pers:preset:{pid}", selected=(active_preset == pid))

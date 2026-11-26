@@ -4,16 +4,7 @@
   "quiet_window": "23:00-07:00",
   "min_urgency": "low",
   "muted_apps": [],
-  "clickable_apps": {
-    "antigravity": {
-      "app": "Antigravity",
-      "cmd": ""
-    },
-    "telegram desktop": {
-      "app": "Telegram Desktop",
-      "cmd": ""
-    }
-  },
+  "clickable_apps": {},
   "group_by_app": true,
   "popup_enabled": true,
   "popup_timeout": 5,

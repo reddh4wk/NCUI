@@ -12,7 +12,27 @@ import subprocess
 import sys
 import time
 
-MACROS_FILE = os.path.expanduser("~/.config/nc-ui/macros.json")
+_OWN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _OWN_ROOT not in sys.path:
+    sys.path.insert(0, _OWN_ROOT)
+if os.path.isdir("/usr/lib/ncui") and "/usr/lib/ncui" not in sys.path:
+    sys.path.insert(0, "/usr/lib/ncui")
+try:
+    cur = os.path.dirname(os.path.realpath(__file__))
+    while cur and cur != os.path.dirname(cur):
+        core_pkg = os.path.join(cur, "packages", "nc-ui-core")
+        if os.path.isdir(core_pkg) and core_pkg not in sys.path:
+            sys.path.insert(0, core_pkg)
+            break
+        cur = os.path.dirname(cur)
+    from core.paths import bootstrap_sys_path
+    bootstrap_sys_path(__file__)
+except ImportError:
+    pass
+
+from core.pad_mapper_core import compile_macro_events, get_config_dir  # noqa: E402
+
+MACROS_FILE = os.path.join(get_config_dir(), "macros.json")
 UINPUT_PATH = "/dev/uinput"
 ACTIVE_PID_FILE = "/tmp/nc_macro_play_active.pid"
 _PANIC_KEYCODES = {"F12": 88, "Pause": 119}
@@ -67,38 +87,6 @@ def _send_key(fd: int, code: int, value: int) -> None:
     _emit(fd, EV_SYN, SYN_REPORT, 0)
 
 
-def _compile_timeline(macro: dict) -> list[tuple[float, int, int]]:
-    steps = macro.get("steps") or []
-    t_mode = str(macro.get("timing_mode", "recorded"))
-    fixed_ms = max(5, int(macro.get("fixed_delay_ms", 25) or 25))
-    speed = max(0.1, float(macro.get("speed_mult", 1.0) or 1.0))
-
-    events = []
-    cur_ms = 0.0
-    for st in steps:
-        kc = int(st.get("keycode", 0) or 0)
-        if kc <= 0 or kc >= 256:
-            continue
-        if t_mode == "zero":
-            events.append((cur_ms, kc, 1))
-            events.append((cur_ms + 4.0, kc, 0))
-            cur_ms += 6.0
-        elif t_mode == "fixed":
-            wait = fixed_ms / speed
-            hold = max(8.0, fixed_ms / speed)
-            cur_ms += wait
-            events.append((cur_ms, kc, 1))
-            events.append((cur_ms + hold, kc, 0))
-        else:
-            wait = max(0.0, float(st.get("delay_ms", 0))) / speed
-            hold = max(10.0, float(st.get("hold_ms", 50))) / speed
-            cur_ms += wait
-            events.append((cur_ms, kc, 1))
-            events.append((cur_ms + hold, kc, 0))
-    events.sort(key=lambda e: (e[0], 0 if e[2] == 1 else 1))
-    return events
-
-
 def _open_evdev_readers() -> list[int]:
     fds = []
     for path in sorted(glob.glob("/dev/input/event*")):
@@ -142,7 +130,7 @@ def _sleep_guard(sec: float, ev_fds: list[int], panic_code: int) -> bool:
 
 
 def _play_uinput(macro: dict, pid_file: str) -> int:
-    events = _compile_timeline(macro)
+    events = compile_macro_events(macro)
     if not events:
         cmd = str(macro.get("cmd", "") or "").strip()
         if cmd:

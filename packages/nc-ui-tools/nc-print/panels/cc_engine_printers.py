@@ -21,24 +21,16 @@ from urllib.parse import urlparse
 
 from core import log, probe
 from core.completion import rank_candidates
+from core.config import get_cache_dir
 from core.i18n import t
-from core.privileges import execute_privileged, get_privileged_action, request_privilege_modal
+from core.paths import find_bin
 from core.state import STATE
-from ui.kit import ActionBtn, Box, FeedbackBox, StateBadge, Txt, start_inline_input
+from ui.kit import ActionBtn, Badge, Box, InlineField, StateBadge, Txt, feedback_cards as _kit_feedback_cards, get_active_inline_entry, set_feedback, start_inline_input
 
 _CACHE: dict[str, tuple[float, object]] = {}
 _LPOPT_META_CACHE: dict[str, tuple[float, dict]] = {}
-_SMART_PROBE_CACHE: dict[str, dict] = {}
-_AUTO_DRV_PKG_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_AUTO_DRV_LOADING: set[str] = set()
-_AUTO_DRV_LOCK = threading.Lock()
 _PENDING_SUDO: dict[str, object] = {}
 _PENDING_INSTALL_SUDO: dict[str, object] = {}
-_DISC_LOCK = False
-_TCP_SCAN_LOCK = threading.Lock()
-_TCP_SCAN_RUNNING = False
-_DRV_LOCK = threading.Lock()
-_DRV_LOADING = False
 _INSTALL_LOCK = threading.Lock()
 _INSTALL_RUNNING = ""
 
@@ -49,11 +41,12 @@ _OPT_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 _PKG_NAME_RE = re.compile(r"^[a-z0-9@._+-]{1,128}$")
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}-\d{1,12}$")
 _PAGE_RANGE_RE = re.compile(r"^\d+(-\d+)?(,\d+(-\d+)?)*$")
-_IPP_JOBS_TEST_PATH = os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache"),
-    "nc-ui",
-    "ncui_ipp_jobs.test",
+_IPP_JOBS_TEST_PATH = (
+    os.path.join(os.environ["XDG_RUNTIME_DIR"], "ncui", "ncui_ipp_jobs.test")
+    if os.environ.get("XDG_RUNTIME_DIR")
+    else os.path.join(get_cache_dir(), "ncui_ipp_jobs.test")
 )
+_IPP_ATTRS_TEST = "/usr/share/cups/ipptool/get-printer-attributes.test"
 
 _IPP_JOBS_TEST_SPEC = """{
     NAME "NC-UI Get Jobs"
@@ -124,6 +117,21 @@ _LPADMIN_DEFAULT_KEYS = {
 }
 
 
+def _cups_bin(name: str) -> str:
+    p = find_bin(name)
+    if p:
+        return p
+    for d in ("/usr/sbin", "/sbin"):
+        cand = os.path.join(d, name)
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return ""
+
+
+def _bar_cache_path() -> str:
+    return os.path.join(get_cache_dir(), "printers_bar_cache.json")
+
+
 def _run_c(args: list[str], timeout: float = 2.0, input_data: bytes = None) -> tuple[bool, str, str]:
     return probe.run_cmd_full(["/usr/bin/env", "LC_ALL=C"] + list(args), timeout=timeout, input_data=input_data)
 
@@ -145,20 +153,17 @@ def invalidate_printers_cache(keep_drivers: bool = True) -> None:
     if drv is not None:
         _CACHE["drivers_list"] = drv
     try:
-        os.remove("/tmp/nc_printers_bar_cache.json")
+        os.remove(_bar_cache_path())
     except OSError:
         pass
 
 
 def _set_fb(ok: bool, msg: str) -> None:
-    STATE.set("printers", "fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
+    set_feedback("printers", ok, msg, key="fb")
 
 
 def feedback_cards() -> list:
-    fb = STATE.get("printers", "fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 16.0:
-        return [FeedbackBox(t("cc_printers.status_title"), bool(fb["ok"]), str(fb["msg"]))]
-    return []
+    return _kit_feedback_cards("printers", "cc_printers.status_title", key="fb", ttl=16.0)
 
 
 def get_pending_confirm(cc_panel) -> str:
@@ -203,22 +208,26 @@ def _unit_enabled_fallback(unit: str) -> bool:
     ):
         if os.path.lexists(os.path.join(d, unit)):
             return True
-    ok, out, _ = _run_c(["systemctl", "is-enabled", unit], timeout=0.6)
+    sc_bin = _cups_bin("systemctl")
+    if not sc_bin:
+        return False
+    ok, out, _ = _run_c([sc_bin, "is-enabled", unit], timeout=0.6)
     return bool(ok and out.strip() in ("enabled", "static", "indirect", "alias"))
-
-
-def _unit_active(unit: str) -> bool:
-    ok, out, _ = _run_c(["systemctl", "is-active", unit], timeout=0.6)
-    return bool(ok and out.strip() == "active")
 
 
 def get_cups_daemon_state() -> dict:
     def _load() -> dict:
         sock_exists = os.path.exists("/run/cups/cups.sock")
-        sched_ok, sched_out, _ = _run_c(["lpstat", "-r"], timeout=0.7) if probe.has_bin("lpstat") else (False, "", "")
+        lpstat_bin = _cups_bin("lpstat")
+        lpadmin_bin = _cups_bin("lpadmin")
+        systemctl_bin = _cups_bin("systemctl")
+        sched_ok, sched_out, _ = _run_c([lpstat_bin, "-r"], timeout=0.7) if lpstat_bin else (False, "", "")
         scheduler_up = bool(sched_ok and "is running" in sched_out.lower())
 
-        _ok_s, out_s, _ = _run_c(["systemctl", "is-active", "cups.service", "cups.socket", "avahi-daemon.service"], timeout=0.6)
+        if systemctl_bin:
+            _ok_s, out_s, _ = _run_c([systemctl_bin, "is-active", "cups.service", "cups.socket", "avahi-daemon.service"], timeout=0.6)
+        else:
+            out_s = ""
         u_lines = [ln.strip() for ln in (out_s or "").splitlines()]
         svc_active = (len(u_lines) > 0 and u_lines[0] == "active") or scheduler_up
         sock_active = (len(u_lines) > 1 and u_lines[1] == "active") or sock_exists
@@ -239,7 +248,8 @@ def get_cups_daemon_state() -> dict:
 
         has_cups_pdf = os.path.exists("/usr/lib/cups/backend/cups-pdf")
         return {
-            "cups_installed": probe.has_bin("lpstat") and probe.has_bin("lpadmin"),
+            "cups_installed": bool(lpstat_bin and lpadmin_bin),
+            "has_systemctl": bool(systemctl_bin),
             "scheduler_up": scheduler_up,
             "service_active": svc_active,
             "socket_active": sock_active,
@@ -251,7 +261,7 @@ def get_cups_daemon_state() -> dict:
             "spool_bytes": spool_bytes,
             "has_cups_pdf": has_cups_pdf,
             "tools": {
-                "cups": probe.has_bin("lpadmin"),
+                "cups": bool(lpadmin_bin),
                 "driverless": probe.has_bin("driverless"),
                 "ipptool": probe.has_bin("ipptool"),
                 "avahi": probe.has_bin("avahi-browse"),
@@ -274,14 +284,18 @@ def get_cups_daemon_state() -> dict:
 
 def build_offline_spooler_card(daemon: dict) -> Box:
     """Card unificata e coerente mostrata quando `cups.service` è fermo nelle viste operative."""
+    acts = [StateBadge(False, t("common.active"), t("cc_printers.stopped"))]
+    if not daemon.get("cups_installed"):
+        acts.append(Badge(t("ui.missing", p0="cups"), style="warn"))
+    elif daemon.get("has_systemctl", bool(_cups_bin("systemctl"))):
+        acts.append(ActionBtn(t("cc_printers.start_cups"), "cc_prn:svc:start:cups.service", tone="apply"))
+    else:
+        acts.append(Badge(t("ui.missing", p0="systemctl"), style="warn"))
+    acts.append(ActionBtn(t("cc_printers.server_tab_btn"), "cc_prn:goto_subtab:server", tone="neutral"))
     sp_box = Box(
         t("cc_printers.spooler_offline_title"),
         icon="\uf02f",
-        actions=[
-            StateBadge(False, t("common.active"), t("cc_printers.stopped")),
-            ActionBtn(t("cc_printers.start_cups"), "cc_prn:svc:start:cups.service", tone="apply"),
-            ActionBtn(t("cc_printers.server_tab_btn"), "cc_prn:goto_subtab:server", tone="neutral"),
-        ],
+        actions=acts,
         highlighted=False,
     )
     sp_box.add_kv(
@@ -291,6 +305,7 @@ def build_offline_spooler_card(daemon: dict) -> Box:
     sp_box.add_kv(
         t("cc_printers.boot_autostart"),
         StateBadge(daemon["service_enabled"], t("common.enabled"), t("common.disabled")),
+        requires=["systemctl"],
     )
     sp_box.add_kv(
         t("cc_printers.kv_avahi_mdns"),
@@ -545,6 +560,9 @@ def _get_lpoptions_summary_cached(printer_name: str) -> dict:
     if hit is not None and (now - hit[0]) < 15.0:
         return hit[1]
     res = {"make_model": "", "shared": False, "error_policy": "retry-job", "description": "", "location": ""}
+    if not probe.has_bin("lpoptions"):
+        _LPOPT_META_CACHE[printer_name] = (now, res)
+        return res
     ok_o, out_o, _ = _run_c(["lpoptions", "-p", printer_name], timeout=1.0)
     if ok_o and out_o:
         try:
@@ -689,7 +707,14 @@ def get_printer_classes() -> list[dict]:
     return list(get_printers_snapshot()["classes"])
 
 
-_PRINTERS_BAR_CACHE = "/tmp/nc_printers_bar_cache.json"
+def _write_bar_cache(bar_mode: str, sock_exists: bool, res: dict) -> None:
+    try:
+        path = _bar_cache_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "mode": bar_mode, "sock_exists": sock_exists, "summary": res}, f)
+    except OSError:
+        pass
 
 
 def get_printers_bar_summary(include_jobs: bool = False) -> dict:
@@ -699,9 +724,10 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
         bar_mode = "auto"
 
     sock_exists = os.path.exists("/run/cups/cups.sock")
-    if not include_jobs and os.path.exists(_PRINTERS_BAR_CACHE):
+    cache_path = _bar_cache_path()
+    if not include_jobs and os.path.exists(cache_path):
         try:
-            with open(_PRINTERS_BAR_CACHE, "r", encoding="utf-8") as f:
+            with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
             if (
                 isinstance(cached, dict)
@@ -718,7 +744,8 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
         if not sock_exists:
             scheduler_up = False
         else:
-            sched_ok, sched_out, _ = _run_c(["lpstat", "-r"], timeout=0.6) if probe.has_bin("lpstat") else (False, "", "")
+            lpstat_bin = _cups_bin("lpstat")
+            sched_ok, sched_out, _ = _run_c([lpstat_bin, "-r"], timeout=0.6) if lpstat_bin else (False, "", "")
             scheduler_up = bool(sched_ok and "is running" in sched_out.lower())
         daemon = {"scheduler_up": scheduler_up}
     else:
@@ -740,11 +767,7 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
             "total_jobs": 0,
         }
         if not include_jobs:
-            try:
-                with open(_PRINTERS_BAR_CACHE, "w", encoding="utf-8") as f:
-                    json.dump({"ts": time.time(), "mode": bar_mode, "sock_exists": sock_exists, "summary": res}, f)
-            except OSError:
-                pass
+            _write_bar_cache(bar_mode, sock_exists, res)
         return res
 
     snap = get_printers_snapshot()
@@ -788,11 +811,7 @@ def get_printers_bar_summary(include_jobs: bool = False) -> dict:
         "total_jobs": total_jobs,
     }
     if not include_jobs:
-        try:
-            with open(_PRINTERS_BAR_CACHE, "w", encoding="utf-8") as f:
-                json.dump({"ts": time.time(), "mode": bar_mode, "sock_exists": sock_exists, "summary": res}, f)
-        except OSError:
-            pass
+        _write_bar_cache(bar_mode, sock_exists, res)
     return res
 
 
@@ -835,7 +854,8 @@ def get_printer_options(printer_name: str) -> dict:
 
     def _load() -> dict:
         ppd_opts: dict[str, dict] = {}
-        ok_l, out_l, _ = _run_c(["lpoptions", "-p", printer_name, "-l"], timeout=1.5)
+        has_lpo = probe.has_bin("lpoptions")
+        ok_l, out_l, _ = _run_c(["lpoptions", "-p", printer_name, "-l"], timeout=1.5) if has_lpo else (False, "", "")
         if ok_l and out_l:
             for ln in out_l.splitlines():
                 if ":" not in ln:
@@ -865,7 +885,7 @@ def get_printer_options(printer_name: str) -> dict:
             "print-scaling": "auto",
             "job-sheets": "none",
         }
-        ok_j, out_j, _ = _run_c(["lpoptions", "-p", printer_name], timeout=1.0)
+        ok_j, out_j, _ = _run_c(["lpoptions", "-p", printer_name], timeout=1.0) if has_lpo else (False, "", "")
         if ok_j and out_j:
             try:
                 toks = shlex.split(out_j)
@@ -917,10 +937,9 @@ def get_printer_supplies(printer_name: str) -> dict:
             except OSError:
                 pass
 
-        test_file = "/usr/share/cups/ipptool/get-printer-attributes.test"
-        if probe.has_bin("ipptool") and os.path.isfile(test_file):
+        if probe.has_bin("ipptool") and os.path.isfile(_IPP_ATTRS_TEST):
             ok, out, _ = _run_c(
-                ["ipptool", "-t", "-T", "1", f"ipp://localhost:631/printers/{printer_name}", test_file],
+                ["ipptool", "-t", "-T", "1", f"ipp://localhost:631/printers/{printer_name}", _IPP_ATTRS_TEST],
                 timeout=1.5,
             )
             if ok and out:
@@ -958,8 +977,9 @@ def get_cups_server_settings() -> dict:
             "port": "631",
             "web_interface": True,
         }
-        if get_cups_daemon_state()["scheduler_up"] and probe.has_bin("cupsctl"):
-            ok, out, _ = _run_c(["cupsctl"], timeout=1.2)
+        ctl_bin = _cups_bin("cupsctl")
+        if get_cups_daemon_state()["scheduler_up"] and ctl_bin:
+            ok, out, _ = _run_c([ctl_bin], timeout=1.2)
             if ok and out:
                 for ln in out.splitlines():
                     if "=" in ln:
@@ -1029,1210 +1049,9 @@ def dismiss_cups_logs_view() -> None:
     _CACHE.pop("cups_logs", None)
 
 
-# =====================================================================
-# DISCOVERY, DRIVER CATALOG & TCP PORT PROBE
-# =====================================================================
-
-def get_discovered_devices() -> list[dict]:
-    res = STATE.get("printers", "discovered", [])
-    return res if isinstance(res, list) else []
-
-
-def is_discovery_running() -> bool:
-    return bool(_DISC_LOCK)
-
-
-def trigger_device_discovery(cc_panel) -> None:
-    global _DISC_LOCK
-    if _DISC_LOCK:
-        return
-    _DISC_LOCK = True
-    _set_fb(True, t("cc_printers.fb_scanning"))
-
-    def _scan() -> list[dict]:
-        seen: set[str] = set()
-        items: list[dict] = []
-        avahi_up = get_cups_daemon_state()["avahi_active"]
-
-        def _add(uri: str, label: str, source: str) -> None:
-            u = uri.strip()
-            if not u or u in seen or "://" not in u:
-                return
-            if u.endswith("://") and u != "usb://":
-                return
-            seen.add(u)
-            items.append({
-                "uri": u,
-                "proto": _classify_uri(u),
-                "label": label.strip() or u,
-                "source": source,
-            })
-
-        if avahi_up and probe.has_bin("driverless"):
-            ok, out, _ = _run_c(["driverless"], timeout=3.5)
-            if ok and out:
-                for ln in out.splitlines():
-                    u = ln.strip()
-                    if "://" in u:
-                        _add(u, u.split("/")[-1] or "IPP Everywhere Printer", "driverless")
-
-        if get_cups_daemon_state()["scheduler_up"] and probe.has_bin("lpinfo"):
-            cmd_v = ["lpinfo", "-v"] if avahi_up else ["lpinfo", "--exclude-schemes", "dnssd,driverless", "-v"]
-            ok, out, _ = _run_c(cmd_v, timeout=4.0)
-            if ok and out:
-                for ln in out.splitlines():
-                    parts = ln.strip().split(None, 1)
-                    if len(parts) == 2 and "://" in parts[1]:
-                        cls_kind, u = parts
-                        if u in ("ipp", "ipps", "http", "https", "socket", "lpd", "smb", "beh"):
-                            continue
-                        _add(u, f"{cls_kind.upper()} · {u.split('://', 1)[-1][:42]}", "lpinfo")
-
-        if avahi_up and probe.has_bin("avahi-browse"):
-            for svc in ("_ipp._tcp", "_ipps._tcp", "_pdl-datastream._tcp"):
-                ok, out, _ = _run_c(["avahi-browse", "-rtpk", svc], timeout=2.5)
-                if not ok or not out:
-                    continue
-                for ln in out.splitlines():
-                    if not ln.startswith("="):
-                        continue
-                    cols = ln.split(";")
-                    if len(cols) < 9:
-                        continue
-                    name = cols[3].replace("\\032", " ").replace("\\064", "@")
-                    host = cols[7].strip()
-                    port = cols[8].strip() or "631"
-                    txt_blob = cols[9] if len(cols) > 9 else ""
-                    rp_m = re.search(r'"rp=([^"]+)"', txt_blob)
-                    rp = rp_m.group(1).lstrip("/") if rp_m else "ipp/print"
-                    if svc == "_pdl-datastream._tcp":
-                        u = f"socket://{host}:{port}"
-                    elif svc == "_ipps._tcp":
-                        u = f"ipps://{host}:{port}/{rp}"
-                    else:
-                        u = f"ipp://{host}:{port}/{rp}"
-                    _add(u, f"{name} ({host})", "mDNS")
-
-        return items
-
-    def _done(found: list[dict]) -> bool:
-        global _DISC_LOCK
-        _DISC_LOCK = False
-        STATE.set("printers", "discovered", found)
-        _set_fb(True, t("cc_printers.fb_scan_done", p0=len(found)))
-        if cc_panel and cc_panel.shell:
-            cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_scan, _done)
-
-
-def _local_ipv4_info() -> tuple[list[str], set[str]]:
-    """Rileva le subnet IPv4 locali (/24) dalle interfacce UP global (cached 15s)."""
-    def _load() -> tuple[list[str], set[str]]:
-        primary: list[str] = []
-        secondary: list[str] = []
-        local_ips: set[str] = set()
-        ok, out, _ = _run_c(["ip", "-j", "-4", "addr", "show", "up", "scope", "global"], timeout=1.5)
-        if ok and out:
-            try:
-                ifaces = json.loads(out)
-            except Exception:
-                ifaces = []
-            skip_pfx = ("lo", "docker", "virbr", "veth", "br-", "tun", "tap", "wg", "tailscale")
-            for iface in ifaces:
-                ifname = str(iface.get("ifname", "") or "")
-                is_virt = ifname.startswith(skip_pfx)
-                for ai in iface.get("addr_info", ()):
-                    if ai.get("family") != "inet" or not ai.get("local"):
-                        continue
-                    ip_s = str(ai["local"])
-                    local_ips.add(ip_s)
-                    try:
-                        pfx = min(32, max(24, int(ai.get("prefixlen", 24))))
-                        net_s = str(ipaddress.ip_interface(f"{ip_s}/{pfx}").network)
-                    except ValueError:
-                        continue
-                    dst = secondary if is_virt else primary
-                    if net_s not in primary and net_s not in secondary:
-                        dst.append(net_s)
-        return (primary or secondary or ["10.10.0.0/24"]), local_ips
-
-    return _cached("local_ipv4_info", 15.0, _load)
-
-
-def get_local_ipv4_subnets() -> list[str]:
-    return _local_ipv4_info()[0]
-
-
-def parse_tcp_scan_targets(spec: str) -> tuple[bool, str, list[str]]:
-    """Valida e converte CIDR (/24../32), range (A.B.C.1-254) o singolo IPv4."""
-    s = str(spec or "").strip()
-    if not s:
-        return False, "", []
-    try:
-        if "/" in s:
-            net = ipaddress.ip_network(s, strict=False)
-            if net.version != 4 or net.prefixlen < 24:
-                return False, "", []
-            ips = [str(ip) for ip in net.hosts()] or [str(net.network_address)]
-            return True, net.with_prefixlen, ips
-        if "-" in s:
-            left, _, right = s.partition("-")
-            start_ip = ipaddress.IPv4Address(left.strip())
-            r_s = right.strip()
-            if r_s.isdigit():
-                end_oct = int(r_s)
-                if not 0 <= end_oct <= 255:
-                    return False, "", []
-                end_int = (int(start_ip) & 0xFFFFFF00) | end_oct
-            else:
-                end_int = int(ipaddress.IPv4Address(r_s))
-            start_int = int(start_ip)
-            if end_int < start_int or (end_int - start_int + 1) > 256:
-                return False, "", []
-            ips = [str(ipaddress.IPv4Address(x)) for x in range(start_int, end_int + 1)]
-            return True, f"{start_ip}-{r_s}", ips
-        ip = ipaddress.IPv4Address(s)
-        return True, str(ip), [str(ip)]
-    except ValueError:
-        return False, "", []
-
-
-def build_tcp_uri(host: str, tcp_port: int = 9100) -> str:
-    h = str(host or "").strip()
-    if not h:
-        return ""
-    p = int(tcp_port or 9100)
-    if p == 631:
-        return f"ipp://{h}:631/ipp/print"
-    if p == 515:
-        return f"lpd://{h}/BINARY_P1"
-    return f"socket://{h}:9100"
-
-
-def _normalize_tcp_device(dv: dict) -> dict:
-    raw_ports = [int(p) for p in dv.get("open_ports", ()) if int(p) in (9100, 631, 515)]
-    open_ports = [p for p in (9100, 631, 515) if p in raw_ports] or [9100]
-    pref_port = int(dv.get("tcp_port") or 0)
-    best_port = pref_port if pref_port in open_ports else open_ports[0]
-    ip = str(dv.get("ip", "") or "").strip()
-    label = str(dv.get("label", "") or f"Network Printer ({ip})").strip()
-    return {
-        "ip": ip,
-        "ports": " ".join(f":{p}" for p in open_ports),
-        "open_ports": open_ports,
-        "tcp_port": best_port,
-        "uri": build_tcp_uri(ip, best_port),
-        "proto": f"TCP/IP :{best_port}",
-        "proto_key": "socket",
-        "drv_mode": "auto",
-        "label": label,
-        "source": "TCP/IP LAN",
-    }
-
-
-def _sanitized_queue_name(label: str, fallback: str = "Printer") -> str:
-    raw_lbl = re.sub(r"[^A-Za-z0-9_-]+", "_", str(label or "").split("(")[0].strip()).strip("_")[:32]
-    if not raw_lbl or raw_lbl.lower().startswith("network_printer"):
-        raw_lbl = re.sub(r"[^A-Za-z0-9_-]+", "_", fallback).strip("_")[:32] or "Printer"
-    return raw_lbl
-
-
-def apply_tcp_device_to_draft(dv: dict, force_port: int = 0) -> dict:
-    nd = _normalize_tcp_device(dv)
-    port = force_port if force_port in (9100, 631, 515) else int(nd["tcp_port"])
-    ip = nd["ip"]
-    return update_add_draft(
-        uri=build_tcp_uri(ip, port),
-        host=ip,
-        proto="socket",
-        tcp_port=port,
-        name=_sanitized_queue_name(nd["label"], f"Printer_{ip.replace('.', '_')}"),
-        desc=nd["label"][:48],
-        drv_mode="auto",
-    )
-
-
-def apply_disc_device_to_draft(dv: dict) -> dict:
-    uri = str(dv.get("uri", "") or "")
-    parsed = urlparse(uri) if "://" in uri else None
-    host_s = (parsed.hostname or "") if parsed else ""
-    p_map = {"IPP": "ipp", "IPPS": "ipps", "TCP:9100": "socket", "RAW:9100": "socket", "LPD": "lpd", "SMB": "smb", "USB": "usb"}
-    proto_id = p_map.get(dv.get("proto", ""), "ipp")
-    tcp_p = int(parsed.port or (9100 if proto_id == "socket" else (515 if proto_id == "lpd" else 631))) if parsed else 9100
-    return update_add_draft(
-        uri=uri,
-        host=host_s,
-        proto=proto_id,
-        tcp_port=tcp_p if tcp_p in (9100, 631, 515) else 9100,
-        name=_sanitized_queue_name(dv.get("label", ""), f"Printer_{host_s.replace('.', '_')}" if host_s else "USB_Printer"),
-        desc=str(dv.get("label", "") or "")[:48],
-        drv_mode="auto",
-    )
-
-
-def get_tcp_scan_state() -> dict:
-    subnets, _ = _local_ipv4_info()
-    cur = str(STATE.get("printers", "tcp_scan_subnet", "") or "").strip()
-    if not cur:
-        cur = subnets[0]
-        STATE.set("printers", "tcp_scan_subnet", cur)
-    raw_devs = STATE.get("printers", "tcp_discovered", [])
-    devs = [_normalize_tcp_device(x) for x in raw_devs if isinstance(x, dict) and x.get("ip")] if isinstance(raw_devs, list) else []
-    return {
-        "subnets": subnets,
-        "active_subnet": cur,
-        "is_custom": cur not in subnets,
-        "scanning": bool(_TCP_SCAN_RUNNING),
-        "devices": devs,
-        "scanned_once": bool(STATE.get("printers", "tcp_scanned_once", False)),
-    }
-
-
-def is_tcp_scan_running() -> bool:
-    return bool(_TCP_SCAN_RUNNING)
-
-
-def _enrich_tcp_printer(ip: str, open_ports: list[int]) -> str:
-    """Identifica marca/modello tramite ipptool (:631), snmpget, PJL (:9100) o rDNS."""
-    test_spec = "/usr/share/cups/ipptool/get-printer-attributes.test"
-    if 631 in open_ports and probe.has_bin("ipptool") and os.path.isfile(test_spec):
-        ok, out, _ = _run_c(["ipptool", "-T", "1", "-t", f"ipp://{ip}:631/ipp/print", test_spec], timeout=1.3)
-        if ok and out:
-            for key in ("printer-make-and-model", "printer-info", "printer-name"):
-                m = re.search(rf"{key}\s*\([^)]+\)\s*=\s*(.+)", out)
-                if m and m.group(1).strip():
-                    return m.group(1).strip().strip('"')[:44]
-
-    if probe.has_bin("snmpget"):
-        ok, out, _ = _run_c(
-            ["snmpget", "-v1", "-c", "public", "-t", "1", "-r", "0", "-Oqv", ip, "1.3.6.1.2.1.25.3.2.1.3.1", "1.3.6.1.2.1.1.1.0"],
-            timeout=1.3,
-        )
-        if ok and out:
-            for ln in out.splitlines():
-                clean = ln.strip().strip('"')
-                if clean and "No Such" not in clean and "Timeout" not in clean:
-                    return clean[:44]
-
-    if 9100 in open_ports:
-        try:
-            with socket.create_connection((ip, 9100), timeout=0.35) as sock:
-                sock.settimeout(0.35)
-                sock.sendall(b"\x1b%-12345X@PJL INFO ID\r\n\x1b%-12345X")
-                raw = sock.recv(512).decode("utf-8", errors="ignore")
-                m = re.search(r'@PJL\s+INFO\s+ID\s*[\r\n]+"?([^"\r\n]+)"?', raw)
-                if m and m.group(1).strip():
-                    return m.group(1).strip()[:44]
-        except OSError:
-            pass
-
-    try:
-        host_n, _, _ = socket.gethostbyaddr(ip)
-        if host_n and host_n != ip:
-            return host_n.split(".", 1)[0][:44]
-    except OSError:
-        pass
-    return f"Network Printer ({ip})"
-
-
-def _probe_tcp_printer_host(ip: str, timeout: float = 0.32) -> dict | None:
-    found: set[int] = set()
-    for port in (9100, 631, 515):
-        try:
-            with socket.create_connection((ip, port), timeout=timeout):
-                found.add(port)
-        except OSError:
-            pass
-    if not found:
-        return None
-    if len(found) < 3:
-        for port in (9100, 631, 515):
-            if port in found:
-                continue
-            try:
-                with socket.create_connection((ip, port), timeout=0.85):
-                    found.add(port)
-            except OSError:
-                pass
-    open_ports = [p for p in (9100, 631, 515) if p in found]
-    return _normalize_tcp_device({
-        "ip": ip,
-        "open_ports": open_ports,
-        "tcp_port": open_ports[0],
-        "label": _enrich_tcp_printer(ip, open_ports),
-    })
-
-
-def trigger_tcp_lan_scan(cc_panel, subnet_spec: str = "") -> None:
-    global _TCP_SCAN_RUNNING
-    spec = (subnet_spec or get_tcp_scan_state()["active_subnet"]).strip()
-    ok, norm_spec, targets = parse_tcp_scan_targets(spec)
-    if not ok or not targets:
-        _set_fb(False, t("cc_printers.err_bad_subnet"))
-        return
-
-    with _TCP_SCAN_LOCK:
-        if _TCP_SCAN_RUNNING:
-            return
-        _TCP_SCAN_RUNNING = True
-
-    STATE.set("printers", "tcp_scan_subnet", norm_spec)
-    _set_fb(True, t("cc_printers.fb_tcp_scanning", p0=norm_spec))
-    _, local_ips = _local_ipv4_info()
-    scan_ips = targets if len(targets) == 1 else [ip for ip in targets if ip not in local_ips]
-
-    def _scan() -> list[dict]:
-        found: list[dict] = []
-        workers = min(64, max(1, len(scan_ips)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_probe_tcp_printer_host, ip) for ip in scan_ips]
-            for fut in concurrent.futures.as_completed(futs):
-                try:
-                    res = fut.result()
-                    if res:
-                        found.append(res)
-                except Exception:
-                    continue
-        found.sort(key=lambda d: int(ipaddress.IPv4Address(d["ip"])))
-        return found
-
-    def _done(found: list[dict]) -> bool:
-        global _TCP_SCAN_RUNNING
-        with _TCP_SCAN_LOCK:
-            _TCP_SCAN_RUNNING = False
-        STATE.set("printers", "tcp_discovered", found)
-        STATE.set("printers", "tcp_scanned_once", True)
-        _set_fb(True, t("cc_printers.fb_tcp_scan_done", p0=len(found), p1=norm_spec))
-        if cc_panel and cc_panel.shell:
-            cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_scan, _done)
-
-
-def _load_drivers_blocking() -> list[tuple[str, str]]:
-    seen: set[str] = set()
-    out: list[tuple[str, str]] = []
-    for drv_id, lbl in _BUILTIN_DRIVERS:
-        seen.add(drv_id)
-        out.append((drv_id, lbl))
-    ok_sched, out_sched, _ = _run_c(["lpstat", "-r"], timeout=0.7) if probe.has_bin("lpstat") else (False, "", "")
-    if ok_sched and "is running" in (out_sched or "").lower() and probe.has_bin("lpinfo"):
-        avahi_up = os.path.exists("/run/avahi-daemon/socket")
-        cmd_m = ["lpinfo", "-m"] if avahi_up else ["lpinfo", "--exclude-schemes", "dnssd,driverless", "-m"]
-        ok, raw, _ = _run_c(cmd_m, timeout=4.0)
-        if ok and raw:
-            for ln in raw.splitlines():
-                parts = ln.strip().split(None, 1)
-                if len(parts) == 2 and parts[0] not in seen:
-                    seen.add(parts[0])
-                    out.append((parts[0], parts[1].strip()))
-    return out
-
-
-def is_drivers_loading() -> bool:
-    return bool(_DRV_LOADING)
-
-
-def warm_cups_drivers_async(cc_panel=None) -> None:
-    global _DRV_LOADING
-    hit = _CACHE.get("drivers_list")
-    if hit is not None and (time.monotonic() - hit[0]) < 120.0:
-        return
-    with _DRV_LOCK:
-        if _DRV_LOADING:
-            return
-        _DRV_LOADING = True
-
-    def _done(res: list[tuple[str, str]]) -> bool:
-        global _DRV_LOADING
-        with _DRV_LOCK:
-            _DRV_LOADING = False
-        _CACHE["drivers_list"] = (time.monotonic(), res)
-        if cc_panel and getattr(cc_panel, "shell", None):
-            cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_load_drivers_blocking, _done)
-
-
-def get_cups_drivers(cc_panel=None) -> list[tuple[str, str]]:
-    hit = _CACHE.get("drivers_list")
-    if hit is not None and (time.monotonic() - hit[0]) < 120.0:
-        return hit[1]
-    warm_cups_drivers_async(cc_panel)
-    return list(_BUILTIN_DRIVERS)
-
-
-def search_cups_drivers(query: str, limit: int = 6, cc_panel=None) -> list[tuple[str, str]]:
-    items = [(drv, lbl, f"{drv} {lbl}".lower()) for drv, lbl in get_cups_drivers(cc_panel)]
-    return rank_candidates(items, query, limit=limit)
-
-
-def _match_vendor_driver(model_name: str, drivers: list[tuple[str, str]]) -> tuple[str, str] | None:
-    norm_txt = re.sub(r"[^a-z0-9]+", " ", str(model_name or "").lower()).strip()
-    if not norm_txt:
-        return None
-    toks = norm_txt.split()
-    model_codes = [tk for tk in toks if len(tk) >= 3 and any(c.isdigit() for c in tk)]
-    brands = [b for b in ("brother", "hewlett", "hp", "epson", "canon", "xerox", "kyocera", "samsung", "ricoh", "lexmark", "zebra") if b in toks]
-    if not model_codes:
-        return None
-    best = None
-    best_score = 0
-    for drv_id, lbl in drivers:
-        if drv_id in ("everywhere", "raw") or "sample.drv" in drv_id or "cupsfilters.drv" in drv_id:
-            continue
-        dl_norm = re.sub(r"[^a-z0-9]+", "", f"{drv_id} {lbl}".lower())
-        dl_words = f"{drv_id} {lbl}".lower()
-        score = 0
-        for code in model_codes:
-            if code in dl_norm:
-                score += len(code) * 3
-        if score == 0:
-            continue
-        if brands and any(b in dl_words for b in brands):
-            score += 10
-        if score > best_score:
-            best_score = score
-            best = (drv_id, lbl)
-    return best if best_score >= 9 else None
-
-
 def is_install_running() -> str:
     return str(_INSTALL_RUNNING or "")
 
-
-def get_smart_probe(host_or_uri: str) -> dict:
-    k = str(host_or_uri or "").strip()
-    return dict(_SMART_PROBE_CACHE.get(k, {}))
-
-
-def _synthesize_driverless_ppd(host_or_uri: str, queue_hint: str) -> str:
-    ipp_uri = host_or_uri if host_or_uri.startswith(("ipp://", "ipps://")) else f"ipp://{host_or_uri}:631/ipp/print"
-    if not probe.has_bin("driverless"):
-        return ""
-    ok_dl, ppd_raw, _ = _run_c(["driverless", ipp_uri], timeout=3.5)
-    if not ok_dl or "*PPD-Adobe" not in (ppd_raw or ""):
-        return ""
-    safe_k = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(queue_hint or "printer"))[:48]
-    os.makedirs(os.path.expanduser("~/.cache/nc-ui"), exist_ok=True)
-    ppd_path = os.path.expanduser(f"~/.cache/nc-ui/autogen_{safe_k}.ppd")
-    with open(ppd_path, "w", encoding="utf-8") as pf:
-        pf.write(ppd_raw)
-    return ppd_path
-
-
-def trigger_smart_probe_async(cc_panel, host: str, uri: str, label: str, open_ports: list[int] | None = None) -> None:
-    key = (host or uri).strip()
-    if not key:
-        return
-    existing = _SMART_PROBE_CACHE.get(key)
-    now_ts = time.monotonic()
-    if existing:
-        age = now_ts - float(existing.get("ts", 0.0))
-        if (existing.get("probing") and age < 8.0) or (not existing.get("probing") and age < 20.0):
-            return
-
-    _SMART_PROBE_CACHE[key] = {
-        "probing": True,
-        "ts": now_ts,
-        "ports_ms": {},
-        "open_ports": list(open_ports or []),
-        "formats": [],
-        "duplex": False,
-        "color": False,
-        "model": label,
-        "matched_drv": None,
-        "synth_ppd_path": "",
-    }
-
-    def _work() -> dict:
-        ports_ms: dict[int, int] = {}
-        found_ports: list[int] = list(open_ports or [])
-        formats: list[str] = []
-        duplex = False
-        color = False
-        model = str(label or "")
-        synth_ppd = ""
-        matched_drv = None
-        drvs = None
-        try:
-            if host and host != "localhost":
-                for port in (9100, 631, 515):
-                    t0 = time.monotonic()
-                    try:
-                        with socket.create_connection((host, port), timeout=0.65):
-                            ports_ms[port] = max(1, int(round((time.monotonic() - t0) * 1000.0)))
-                            if port not in found_ports:
-                                found_ports.append(port)
-                    except OSError:
-                        continue
-            found_ports = [p for p in (9100, 631, 515) if p in found_ports]
-
-            has_ipp = (631 in found_ports) or uri.startswith(("ipp://", "ipps://"))
-            ipp_target = uri if uri.startswith(("ipp://", "ipps://")) else (f"ipp://{host}:631/ipp/print" if host else "")
-            test_spec = "/usr/share/cups/ipptool/get-printer-attributes.test"
-            if has_ipp and ipp_target and probe.has_bin("ipptool") and os.path.isfile(test_spec):
-                ok_i, out_i, _ = _run_c(["ipptool", "-T", "2", "-t", ipp_target, test_spec], timeout=2.5)
-                if ok_i and out_i:
-                    m_mod = re.search(r"printer-make-and-model\s*\([^)]+\)\s*=\s*(.+)", out_i)
-                    if m_mod and m_mod.group(1).strip():
-                        model = m_mod.group(1).strip().strip('"')[:48]
-                    m_fmt = re.search(r"document-format-supported\s*\([^)]+\)\s*=\s*(.+)", out_i)
-                    if m_fmt:
-                        fblob = m_fmt.group(1).lower()
-                        for tok, name in (
-                            ("application/pdf", "PDF"),
-                            ("image/pwg-raster", "PWG-Raster"),
-                            ("image/urf", "Apple-URF"),
-                            ("pcl", "PCL"),
-                            ("postscript", "PostScript"),
-                        ):
-                            if tok in fblob and name not in formats:
-                                formats.append(name)
-                    m_sides = re.search(r"sides-supported\s*\([^)]+\)\s*=\s*(.+)", out_i)
-                    if m_sides and "two-sided" in m_sides.group(1).lower():
-                        duplex = True
-                    m_col = re.search(r"color-supported\s*\([^)]+\)\s*=\s*(.+)", out_i)
-                    if m_col and "true" in m_col.group(1).lower():
-                        color = True
-
-            if has_ipp and ipp_target:
-                synth_ppd = _synthesize_driverless_ppd(ipp_target, host or key)
-
-            drvs = _load_drivers_blocking()
-            matched_drv = _match_vendor_driver(model or label, drvs)
-        except Exception as e:
-            log.debug(f"trigger_smart_probe_async error: {e}")
-
-        return {
-            "probing": False,
-            "ts": time.monotonic(),
-            "ports_ms": ports_ms,
-            "open_ports": found_ports,
-            "formats": formats,
-            "duplex": duplex,
-            "color": color,
-            "model": model,
-            "matched_drv": matched_drv,
-            "synth_ppd_path": synth_ppd,
-            "drivers": drvs,
-        }
-
-    def _done(res: dict) -> bool:
-        drvs = res.pop("drivers", None)
-        if drvs:
-            _CACHE["drivers_list"] = (time.monotonic(), drvs)
-        _SMART_PROBE_CACHE[key] = res
-        if host and res.get("open_ports"):
-            raw_devs = STATE.get("printers", "tcp_discovered", [])
-            if isinstance(raw_devs, list):
-                changed = False
-                for x in raw_devs:
-                    if isinstance(x, dict) and x.get("ip") == host and set(x.get("open_ports", [])) != set(res["open_ports"]):
-                        x["open_ports"] = list(res["open_ports"])
-                        x["ports"] = " ".join(f":{p}" for p in res["open_ports"])
-                        changed = True
-                if changed:
-                    STATE.set("printers", "tcp_discovered", raw_devs)
-        if cc_panel and getattr(cc_panel, "shell", None):
-            cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_work, _done)
-
-
-def resolve_effective_driver(d: dict, smart: dict | None = None) -> tuple[str, list[str], str]:
-    sm = smart or get_smart_probe(d.get("host") or d.get("uri") or "")
-    mode = str(d.get("drv_mode", "auto") or "auto")
-    if mode == "ppd":
-        p = os.path.expanduser(str(d.get("ppd_path", "") or "").strip())
-        return ("ppd", ["-P", p] if p else [], os.path.basename(p) if p else t("common.unset"))
-    if mode == "raw":
-        return ("raw", ["-m", "raw"], t("cc_printers.drv_raw"))
-    if mode == "db":
-        drv_id = d.get("drv_id") or "drv:///cupsfilters.drv/pwgrast.ppd"
-        if drv_id in ("everywhere", "auto"):
-            drv_id = "drv:///cupsfilters.drv/pwgrast.ppd"
-        lbl = dict(get_cups_drivers()).get(drv_id, drv_id)
-        return ("db", ["-m", drv_id], lbl)
-
-    matched = sm.get("matched_drv")
-    if isinstance(matched, (tuple, list)) and len(matched) == 2:
-        return ("vendor_db", ["-m", matched[0]], str(matched[1]))
-    uri = str(d.get("uri", "") or "")
-    if uri.startswith(("ipp://", "ipps://", "dnssd://", "implicitclass://")):
-        return ("everywhere", ["-m", "everywhere"], t("cc_printers.auto_drv_everywhere"))
-    synth = str(sm.get("synth_ppd_path", "") or "")
-    if synth and os.path.isfile(synth):
-        m_lbl = str(sm.get("model") or d.get("desc") or d.get("host") or d.get("name") or "")
-        return ("synth_ppd", ["-P", synth], t("cc_printers.auto_drv_synth_ppd", p0=m_lbl[:34]))
-    fmts = sm.get("formats", ())
-    if "PWG-Raster" in fmts and os.path.isfile("/usr/share/cups/drv/cupsfilters.drv"):
-        return ("pwgrast", ["-m", "drv:///cupsfilters.drv/pwgrast.ppd"], "Generic PWG Raster (Driverless)")
-    if "PostScript" in fmts and "PCL" not in fmts:
-        return ("ps", ["-m", "drv:///sample.drv/generic.ppd"], "CUPS Generic PostScript")
-    if os.path.isfile("/usr/share/cups/drv/cupsfilters.drv") and (631 in sm.get("open_ports", ())):
-        return ("pwgrast", ["-m", "drv:///cupsfilters.drv/pwgrast.ppd"], "Generic PWG Raster / IPP (cupsfilters)")
-    return ("pcl", ["-m", "drv:///sample.drv/generpcl.ppd"], "CUPS Generic PCL Laser")
-
-
-_PRINTER_BRANDS = (
-    "brother", "hp", "hewlett", "epson", "canon", "samsung", "kyocera",
-    "ricoh", "lexmark", "xerox", "oki", "okidata", "zebra", "pantum", "konica", "sharp",
-)
-_BRAND_NORM = {"hewlett": "hp", "okidata": "oki"}
-_CURATED_BRAND_PKGS: dict[str, list[tuple[str, str, str]]] = {
-    "brother": [
-        ("brlaser", "aur", "CUPS driver for Brother laser & LED printers"),
-        ("brgenml1", "aur", "Brother generic ML1/LPR printer driver"),
-    ],
-    "hp": [
-        ("hplip", "extra", "HP Linux Imaging & Printing drivers"),
-        ("hplip-plugin", "aur", "Binary plugin for HPLIP scanners & lasers"),
-    ],
-    "epson": [
-        ("epson-inkjet-printer-escpr2", "aur", "Epson ESC/P-R 2 inkjet CUPS driver"),
-        ("epson-inkjet-printer-escpr", "aur", "Epson ESC/P-R inkjet CUPS driver"),
-    ],
-    "canon": [
-        ("cnijfilter2", "aur", "Canon IJ CUPS printer driver"),
-        ("cndrvcups-lb", "aur", "Canon UFR II / LIPSLX laser driver"),
-    ],
-    "samsung": [
-        ("splix", "aur", "CUPS driver for Samsung SPL printers"),
-        ("uld", "aur", "Samsung Unified Linux Driver"),
-    ],
-    "kyocera": [("kyocera-sane-cups", "aur", "Kyocera ECOSYS/TASKalfa PPD collection")],
-}
-
-
-def _parse_printer_signature(model_text: str, uri: str = "") -> dict:
-    raw = str(model_text or "").strip()
-    norm = re.sub(r"[^a-z0-9-]+", " ", raw.lower()).strip()
-    words = [w for w in norm.split() if w and w not in ("series", "printer", "network", "usb", "cups", "driver", "local", "mdp")]
-    brand = ""
-    for w in words:
-        w_base = w.split("-")[0]
-        if w_base in _PRINTER_BRANDS:
-            brand = _BRAND_NORM.get(w_base, w_base)
-            break
-
-    full_code = ""
-    sub_code = ""
-    digits = ""
-    tokens: list[str] = []
-    for w in words:
-        flat = w.replace("-", "")
-        if any(c.isdigit() for c in flat) and len(flat) >= 3:
-            tokens.append(flat)
-            if not full_code or len(flat) > len(full_code):
-                full_code = flat
-            if "-" in w:
-                sub = w.split("-")[-1]
-                if any(c.isdigit() for c in sub):
-                    sub_code = sub
-            d_m = re.search(r"\d{3,5}", flat)
-            if d_m and not digits:
-                digits = d_m.group(0)
-        elif w != brand and len(w) >= 2:
-            tokens.append(w)
-
-    blob_low = f"{raw} {uri}".lower()
-    is_laser = any(k in blob_low for k in ("laser", "dcp-l", "hl-l", "mfc-l", "laserjet", "cdw", "ecosys"))
-    key = f"{brand}:{full_code or '_'.join(tokens[:3]) or 'generic'}"
-    return {
-        "key": key,
-        "raw_model": raw,
-        "brand": brand,
-        "full_code": full_code,
-        "sub_code": sub_code,
-        "digits": digits,
-        "tokens": tokens,
-        "is_laser": is_laser,
-    }
-
-
-def _score_driver_candidate(
-    sig: dict,
-    item_id: str,
-    title: str,
-    desc: str = "",
-    is_pkg: bool = False,
-    open_ports: list[int] | None = None,
-    formats: list[str] | None = None,
-    is_color: bool = False,
-) -> int:
-    iid = str(item_id or "").lower()
-    blob_txt = f"{iid} {title} {desc}".lower()
-    blob_flat = re.sub(r"[^a-z0-9]+", "", blob_txt)
-    brand = sig["brand"]
-    ports = set(open_ports or ())
-    fmts = set(formats or ())
-
-    # Escludi tassativamente driver specifici di marche diverse dalla stampante rilevata
-    if brand:
-        foreign = set(_PRINTER_BRANDS) - {brand, *(k for k, v in _BRAND_NORM.items() if v == brand)}
-        if any(re.search(rf"(?<![a-z0-9]){re.escape(fb)}(?![a-z0-9])", blob_txt) for fb in foreign):
-            if "foomatic" not in iid and "gutenprint" not in iid:
-                return 0
-        if brand != "hp" and ("deskjet" in blob_txt or "laserjet" in blob_txt or "designjet" in blob_txt):
-            return 0
-        if brand != "zebra" and "zebra" in blob_txt:
-            return 0
-    else:
-        # Senza marca nota, escludi driver iperspecifici di marche casuali
-        if any(b in blob_txt for b in ("deskjet", "laserjet", "epson 9-pin", "epson 24-pin", "zebra ")):
-            return 0
-
-    if iid in ("raw", "drv:///cupsfilters.drv/textonly.ppd"):
-        return 0
-
-    def _cap_adjust(sc_val: int) -> int:
-        if is_color and re.search(r"\b(monochrome|mono only|black[- ]and[- ]white)\b", blob_txt):
-            return max(68, sc_val - 15)
-        return sc_val
-
-    # 1. Corrispondenza esatta modello (94..99)
-    fc = sig["full_code"]
-    sc = sig["sub_code"]
-    dig = sig["digits"]
-    if fc and fc in blob_flat:
-        return 99 if is_pkg else 96
-    if sc and sc in blob_flat and (not brand or brand in blob_txt):
-        return 96 if is_pkg else 94
-    if brand and brand in blob_txt and dig and dig in blob_txt:
-        return 94 if is_pkg else 92
-
-    # 2. Driver famiglia / serie dello stesso produttore (universale per marca, con penalità B/N su stampanti a colori)
-    if brand == "brother" and ("brlaser" in blob_txt or "brgenml1" in blob_txt):
-        base_f = 70 if (is_color and "brlaser" in blob_txt) else 89
-        return _cap_adjust(base_f)
-    if brand == "hp" and ("hplip" in blob_txt or "hp" in iid):
-        return _cap_adjust(88)
-    if brand == "epson" and ("escpr" in blob_txt or "epson-inkjet" in blob_txt):
-        return _cap_adjust(88)
-    if brand == "canon" and ("cnijfilter" in blob_txt or "cndrvcups" in blob_txt or "carps" in blob_txt):
-        return _cap_adjust(88)
-    if brand == "samsung" and ("splix" in blob_txt or "uld" in iid):
-        return _cap_adjust(88)
-    if brand and brand in blob_txt and any(k in blob_txt for k in ("cups", "driver", "ppd", "filter", "laser", "inkjet", "lpr")):
-        return _cap_adjust(88 if is_pkg else 82)
-
-    # 3. Protocollo driverless verificato su rete / PDL (72..79)
-    if iid == "everywhere":
-        return 78 if (631 in ports or "PWG-Raster" in fmts or "PDF" in fmts or not ports) else 58
-    if "pwgrast.ppd" in iid:
-        return 74 if (631 in ports or "PWG-Raster" in fmts or not ports) else 56
-
-    # 4. Suite PPD universali (58..68)
-    if is_pkg:
-        if "foomatic-db-nonfree-ppds" in iid:
-            return 66
-        if "foomatic-db-ppds" in iid or iid == "foomatic-db-engine":
-            return 65
-        if "gutenprint" in iid:
-            return 60
-        return 0
-
-    # 5. Driver generici compatibili PDL (48..55)
-    if "generpcl.ppd" in iid:
-        return 54 if (sig["is_laser"] or "PCL" in fmts or not fmts) else 45
-    if "generic.ppd" in iid:
-        if fmts and "PostScript" not in fmts and "PCL" in fmts:
-            return 0
-        return 50 if "PostScript" in fmts else 46
-    return 0
-
-
-def _describe_driver_reason(sig: dict, item_id: str, title: str, desc: str, score: int) -> tuple[str, dict]:
-    model = sig["raw_model"] or sig["full_code"].upper() or "this printer"
-    brand = (sig["brand"] or "printer").title()
-    if score >= 90:
-        return "exact", {"model": model, "brand": brand, "pkg": title}
-    if score >= 80:
-        return "family", {"model": model, "brand": brand, "pkg": title}
-    if score >= 60:
-        return "universal", {"model": model, "brand": brand, "pkg": title}
-    return "pdl", {"model": model, "brand": brand, "pkg": title}
-
-
-def _parse_pkg_search_lines(pm: str, out: str) -> list[dict]:
-    items: list[dict] = []
-    if not out:
-        return items
-    if pm in ("paru", "yay", "pikaur", "trizen", "pacman"):
-        lines = out.splitlines()
-        i = 0
-        while i < len(lines):
-            hdr = lines[i].rstrip()
-            if hdr and not hdr[0].isspace() and "/" in hdr:
-                m = re.match(r"^([^/\s]+)/([^\s]+)\s+([^\s]+)(.*)$", hdr.strip())
-                desc = ""
-                if i + 1 < len(lines) and lines[i + 1].startswith((" ", "\t")):
-                    desc = lines[i + 1].strip()
-                    i += 1
-                if m:
-                    repo, pkg, ver, tail = m.groups()
-                    items.append({
-                        "pkg": pkg.strip(),
-                        "repo": repo.strip(),
-                        "ver": ver.strip(),
-                        "installed": "[installed" in tail.lower(),
-                        "desc": desc,
-                    })
-            i += 1
-    else:
-        for ln in out.splitlines():
-            s = ln.strip()
-            if not s:
-                continue
-            if " - " in s:
-                pkg_p, desc = s.split(" - ", 1)
-                pkg = pkg_p.split()[0].strip()
-            elif " : " in s:
-                pkg_p, desc = s.split(" : ", 1)
-                pkg = pkg_p.split(".")[0].strip()
-            else:
-                continue
-            if pkg:
-                items.append({"pkg": pkg, "repo": pm, "ver": "", "installed": False, "desc": desc.strip()})
-    return items
-
-
-def _check_installed_pkgs(pm: str, pkg_names: list[str]) -> set[str]:
-    clean = sorted({p for p in pkg_names if p})
-    if not clean:
-        return set()
-    if pm in ("paru", "yay", "pikaur", "trizen", "pacman") and probe.has_bin("pacman"):
-        ok, out, _ = _run_c(["pacman", "-Qq"] + clean, timeout=1.2)
-        if out:
-            return {ln.strip() for ln in out.splitlines() if ln.strip()}
-        inst: set[str] = set()
-        for p in clean:
-            ok1, _, _ = _run_c(["pacman", "-Qq", p], timeout=0.6)
-            if ok1:
-                inst.add(p)
-        return inst
-    if pm == "apt" and probe.has_bin("dpkg-query"):
-        ok, out, _ = _run_c(["dpkg-query", "-W", "-f=${Package}\n"] + clean, timeout=1.2)
-        return {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
-    if pm in ("dnf", "zypper") and probe.has_bin("rpm"):
-        ok, out, _ = _run_c(["rpm", "-q", "--qf", "%{NAME}\n"] + clean, timeout=1.2)
-        return {ln.strip() for ln in (out or "").splitlines() if ln.strip() and "not installed" not in ln.lower()}
-    return set()
-
-
-def _search_pkg_drivers_blocking(sig: dict) -> list[dict]:
-    pm = probe.get_preferred_pkg_manager()
-    raw_pkgs: dict[str, dict] = {}
-
-    def _add_raw(it: dict) -> None:
-        pk = it["pkg"]
-        if pk not in raw_pkgs:
-            raw_pkgs[pk] = dict(it)
-
-    queries: list[str] = []
-    if sig["full_code"]:
-        queries.append(sig["full_code"])
-    if sig["brand"]:
-        queries.append({"brother": "brlaser", "hp": "hplip", "epson": "escpr", "canon": "cnijfilter", "samsung": "splix"}.get(sig["brand"], sig["brand"]))
-    queries.append("foomatic-db")
-
-    if pm in ("paru", "yay", "pikaur", "trizen", "pacman"):
-        for idx, q in enumerate(queries):
-            if not q:
-                continue
-            tool = "pacman" if (q == "foomatic-db" and probe.has_bin("pacman")) else pm
-            ok_s, out_s, _ = _run_c([tool, "-Ss", q], timeout=3.8 if idx == 0 else 3.0)
-            if ok_s and out_s:
-                for it in _parse_pkg_search_lines(tool, out_s):
-                    _add_raw(it)
-            elif tool != "pacman" and probe.has_bin("pacman"):
-                ok_p, out_p, _ = _run_c(["pacman", "-Ss", q], timeout=1.8)
-                if ok_p and out_p:
-                    for it in _parse_pkg_search_lines("pacman", out_p):
-                        _add_raw(it)
-    elif pm == "apt" and probe.has_bin("apt-cache"):
-        for q in (sig["brand"] or "printer-driver", "printer-driver-all"):
-            ok_a, out_a, _ = _run_c(["apt-cache", "search", q], timeout=2.5)
-            if ok_a and out_a:
-                for it in _parse_pkg_search_lines("apt", out_a):
-                    _add_raw(it)
-    elif pm in ("dnf", "zypper"):
-        for q in (sig["brand"] or "cups", "foomatic"):
-            ok_d, out_d, _ = _run_c([pm, "search", q], timeout=3.5)
-            if ok_d and out_d:
-                for it in _parse_pkg_search_lines(pm, out_d):
-                    _add_raw(it)
-
-    # Fallback/Integrazione deterministica per Arch/AUR (se offline o in sandbox)
-    if sig["brand"] == "brother" and sig["full_code"]:
-        _add_raw({"pkg": f"brother-{sig['full_code']}", "repo": "aur", "ver": "", "installed": False, "desc": f"LPR & CUPS driver for {sig['raw_model']}"})
-    for pk, rp, ds in _CURATED_BRAND_PKGS.get(sig["brand"], ()):
-        _add_raw({"pkg": pk, "repo": rp, "ver": "", "installed": False, "desc": ds})
-    if not raw_pkgs or len(raw_pkgs) < 3:
-        for pk, rp, ds in (
-            ("foomatic-db-ppds", "extra", "Foomatic manufacturer PPD files"),
-            ("foomatic-db-nonfree-ppds", "extra", "Foomatic non-free printer PPDs"),
-            ("gutenprint", "extra", "Top quality CUPS printer drivers"),
-        ):
-            _add_raw({"pkg": pk, "repo": rp, "ver": "", "installed": False, "desc": ds})
-
-    inst_set = _check_installed_pkgs(pm, list(raw_pkgs.keys()))
-    for pk, it in raw_pkgs.items():
-        if pk in inst_set:
-            it["installed"] = True
-    return list(raw_pkgs.values())
-
-
-def trigger_auto_driver_search_async(cc_panel, model_text: str, uri: str = "", force: bool = False) -> None:
-    sig = _parse_printer_signature(model_text, uri)
-    skey = sig["key"]
-    hit = _AUTO_DRV_PKG_CACHE.get(skey)
-    if not force and hit is not None and (time.monotonic() - hit[0]) < 90.0:
-        return
-    with _AUTO_DRV_LOCK:
-        if skey in _AUTO_DRV_LOADING:
-            return
-        _AUTO_DRV_LOADING.add(skey)
-
-    def _work() -> list[dict]:
-        return _search_pkg_drivers_blocking(sig)
-
-    def _done(pkgs: list[dict]) -> bool:
-        with _AUTO_DRV_LOCK:
-            _AUTO_DRV_LOADING.discard(skey)
-        _AUTO_DRV_PKG_CACHE[skey] = (time.monotonic(), pkgs)
-        if cc_panel and getattr(cc_panel, "shell", None):
-            cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_work, _done)
-
-
-def get_auto_found_drivers(cc_panel, d: dict, smart: dict | None = None) -> dict:
-    sm = smart or get_smart_probe(d.get("host") or d.get("uri") or "")
-    model_txt = str(sm.get("model") or d.get("desc") or d.get("name") or "").strip()
-    sig = _parse_printer_signature(model_txt, d.get("uri", ""))
-    skey = sig["key"]
-    pm = probe.get_preferred_pkg_manager() or "pacman"
-
-    hit = _AUTO_DRV_PKG_CACHE.get(skey)
-    if hit is None or (time.monotonic() - hit[0]) >= 90.0:
-        trigger_auto_driver_search_async(cc_panel, model_txt, d.get("uri", ""))
-    pkgs = hit[1] if hit is not None else []
-    searching = skey in _AUTO_DRV_LOADING
-
-    open_ports = sm.get("open_ports") or []
-    formats = sm.get("formats") or []
-    is_color = bool(sm.get("color")) or bool(re.search(r"\b(color|colour|[a-z]+-\d+[a-z]*c[a-z]*)\b", model_txt.lower()))
-
-    strat, _args, res_lbl = resolve_effective_driver(d, sm)
-    if str(d.get("drv_mode", "auto") or "auto") == "db":
-        local_id = d.get("drv_id") or "drv:///cupsfilters.drv/pwgrast.ppd"
-        local_lbl = dict(get_cups_drivers(cc_panel)).get(local_id, local_id)
-        local_score = _score_driver_candidate(sig, local_id, local_lbl, is_pkg=False, open_ports=open_ports, formats=formats, is_color=is_color) or 54
-    else:
-        local_lbl = res_lbl
-        if strat == "vendor_db":
-            local_score = 96
-        elif strat == "synth_ppd":
-            local_score = 82
-        elif strat == "everywhere":
-            local_score = _score_driver_candidate(sig, "everywhere", res_lbl, is_pkg=False, open_ports=open_ports, formats=formats, is_color=is_color) or 78
-        elif strat == "pwgrast":
-            local_score = _score_driver_candidate(sig, "drv:///cupsfilters.drv/pwgrast.ppd", res_lbl, is_pkg=False, open_ports=open_ports, formats=formats, is_color=is_color) or 74
-        else:
-            local_score = 54
-
-    candidates: list[dict] = []
-
-    synth = str(sm.get("synth_ppd_path", "") or "")
-    if synth and os.path.isfile(synth) and strat != "synth_ppd":
-        rk, rp = _describe_driver_reason(sig, synth, synth, synth, 96)
-        candidates.append({
-            "kind": "cups",
-            "id": f"ppd:{synth}",
-            "pkg": "",
-            "label": f"Auto PPD ({sig['full_code'].upper() or sig['raw_model'][:18]})",
-            "desc": synth,
-            "score": 96,
-            "installed": True,
-            "tag": "AUTO",
-            "better_than_local": bool(96 > local_score),
-            "reason_kind": rk,
-            "reason_params": rp,
-        })
-
-    for drv_id, lbl in get_cups_drivers(cc_panel):
-        if "sample.drv" in drv_id or "cupsfilters.drv" in drv_id or drv_id in ("everywhere", "raw"):
-            continue
-        if lbl == local_lbl:
-            continue
-        sc = _score_driver_candidate(sig, drv_id, lbl, is_pkg=False, open_ports=open_ports, formats=formats, is_color=is_color)
-        if sc >= 80:
-            rk, rp = _describe_driver_reason(sig, drv_id, lbl, drv_id, sc)
-            candidates.append({
-                "kind": "cups",
-                "id": drv_id,
-                "pkg": "",
-                "label": lbl,
-                "desc": drv_id,
-                "score": sc,
-                "installed": True,
-                "tag": "CUPS",
-                "better_than_local": bool(sc > local_score),
-                "reason_kind": rk,
-                "reason_params": rp,
-            })
-
-    for it in pkgs:
-        sc = _score_driver_candidate(sig, it["pkg"], it["pkg"], desc=it.get("desc", ""), is_pkg=True, open_ports=open_ports, formats=formats, is_color=is_color)
-        if sc >= 45:
-            rk, rp = _describe_driver_reason(sig, it["pkg"], it["pkg"], it.get("desc", ""), sc)
-            candidates.append({
-                "kind": "pkg",
-                "id": f"pkg:{it['pkg']}",
-                "pkg": it["pkg"],
-                "repo": it.get("repo", pm),
-                "label": it["pkg"],
-                "desc": it.get("desc", ""),
-                "score": sc,
-                "installed": bool(it.get("installed")),
-                "tag": "PKG OK" if it.get("installed") else it.get("repo", "pkg").upper(),
-                "better_than_local": bool(sc > local_score),
-                "reason_kind": rk,
-                "reason_params": rp,
-            })
-
-    candidates.sort(key=lambda c: (-c["score"], 0 if c["installed"] else 1, c["label"].lower()))
-
-    best_pkg_score = max((c["score"] for c in candidates if c["kind"] == "pkg" and not c["installed"]), default=0)
-    score_gap = best_pkg_score - local_score
-    if score_gap <= 0 or local_score >= 92:
-        gap_advice = "local_optimal"
-    elif local_score >= 74 and score_gap <= 25:
-        gap_advice = "test_local_first"
-    elif local_score < 74 and score_gap >= 20:
-        gap_advice = "install_pkg_first"
-    else:
-        gap_advice = "local_optimal"
-
-    raw_q = str(d.get("drv_query", "") or "").strip().lower()
-    if raw_q:
-        filtered = [c for c in candidates if raw_q in f"{c['label']} {c['desc']} {c['id']} {c.get('repo', '')}".lower()]
-    else:
-        filtered = candidates
-
-    win_size = 5
-    max_off = max(0, len(filtered) - win_size)
-    raw_off = int(cc_panel.get_state("prn_drv_scroll", 0) or 0)
-    off = max(0, min(max_off, raw_off))
-    if off != raw_off:
-        cc_panel.set_state("prn_drv_scroll", off)
-
-    return {
-        "items": filtered,
-        "window": filtered[off : off + win_size],
-        "total": len(filtered),
-        "total_unfiltered": len(candidates),
-        "offset": off,
-        "win_size": win_size,
-        "searching": searching,
-        "pkg_mgr": pm,
-        "sig_key": skey,
-        "gap_advice": gap_advice,
-        "local_driver": {"label": local_lbl, "score": local_score, "strategy": strat},
-    }
-
-
-def _watch_pkg_install_async(cc_panel, pkg_name: str) -> None:
-    pm = probe.get_preferred_pkg_manager() or "pacman"
-
-    def _work() -> tuple[bool, list[tuple[str, str]]]:
-        for _ in range(60):
-            time.sleep(1.5)
-            if pkg_name in _check_installed_pkgs(pm, [pkg_name]):
-                return True, _load_drivers_blocking()
-        return False, []
-
-    def _done(res: tuple[bool, list[tuple[str, str]]]) -> bool:
-        installed, drvs = res
-        if installed:
-            if drvs:
-                _CACHE["drivers_list"] = (time.monotonic(), drvs)
-            else:
-                _CACHE.pop("drivers_list", None)
-                drvs = _load_drivers_blocking()
-                _CACHE["drivers_list"] = (time.monotonic(), drvs)
-            for entry in _SMART_PROBE_CACHE.values():
-                if isinstance(entry, dict) and entry.get("model"):
-                    entry["matched_drv"] = _match_vendor_driver(entry["model"], drvs)
-            _AUTO_DRV_PKG_CACHE.clear()
-            _set_fb(True, t("cc_printers.fb_pkg_installed_ready", p0=pkg_name))
-            if cc_panel and getattr(cc_panel, "shell", None):
-                cc_panel.shell.refresh_view()
-        return False
-
-    probe.run_async(_work, _done)
-
-
-def probe_printer_host(target: str) -> tuple[bool, str]:
-    raw = str(target or "").strip()
-    if not raw or raw == "usb://":
-        return False, t("cc_printers.err_empty_host")
-    host = raw
-    ports = [631, 9100, 515]
-    if "://" in raw:
-        parsed = urlparse(raw)
-        host = parsed.hostname or ""
-        if parsed.port:
-            ports = [parsed.port]
-        elif parsed.scheme == "socket":
-            ports = [9100]
-        elif parsed.scheme in ("ipp", "ipps", "http", "https"):
-            ports = [631]
-        elif parsed.scheme == "lpd":
-            ports = [515]
-        elif parsed.scheme == "smb":
-            ports = [445, 139]
-    elif ":" in raw and not raw.startswith("["):
-        h_p, p_s = raw.rsplit(":", 1)
-        if p_s.isdigit():
-            host, ports = h_p, [int(p_s)]
-
-    if not host:
-        return False, t("cc_printers.err_empty_host")
-
-    open_res = []
-    for port in ports:
-        t0 = time.monotonic()
-        try:
-            with socket.create_connection((host, int(port)), timeout=0.9):
-                ms = int(round((time.monotonic() - t0) * 1000.0))
-                open_res.append(f":{port} ({ms} ms)")
-        except OSError:
-            continue
-    if open_res:
-        return True, t("cc_printers.fb_probe_ok", p0=host, p1=", ".join(open_res))
-    return False, t("cc_printers.fb_probe_fail", p0=host, p1="/".join(str(p) for p in ports))
-
-
-def validate_ppd_file(path: str) -> tuple[bool, str]:
-    exp = os.path.expanduser(str(path or "").strip())
-    if not exp or not os.path.isfile(exp):
-        return False, t("cc_printers.err_file_not_found", p0=path)
-    if not probe.has_bin("cupstestppd"):
-        return True, exp
-    ok, out, err = _run_c(["cupstestppd", "-q", exp], timeout=2.5)
-    if ok:
-        return True, t("cc_printers.fb_ppd_valid", p0=os.path.basename(exp))
-    detail = (err or out or "invalid PPD").splitlines()[0][:72]
-    return False, t("cc_printers.err_ppd_invalid", p0=detail)
 
 
 # =====================================================================
@@ -2256,55 +1075,34 @@ def _needs_elevation(stderr_txt: str, stdout_txt: str) -> bool:
     )
 
 
+def _resolve_exec_cmd(cmd: list[str]) -> list[str] | None:
+    if not cmd:
+        return None
+    exe = cmd[0]
+    if os.path.isabs(exe):
+        return list(cmd) if (os.path.isfile(exe) and os.access(exe, os.X_OK)) else None
+    found = _cups_bin(exe)
+    return ([found] + list(cmd[1:])) if found else None
+
+
 def _exec_admin(cc_panel, cmd: list[str], ok_msg: str, try_direct: bool = True, after_fn=None) -> None:
-    if try_direct:
-        ok, out, err = _run_c(cmd, timeout=5.0)
-        if ok:
-            invalidate_printers_cache()
-            if callable(after_fn):
-                after_fn()
-            _set_fb(True, ok_msg)
-            if cc_panel and cc_panel.shell:
-                cc_panel.shell.refresh_view()
-            return
-        if not _needs_elevation(err, out):
-            _set_fb(False, (err or out or t("cc_printers.err_cmd_failed"))[:110])
-            if cc_panel and cc_panel.shell:
-                cc_panel.shell.refresh_view()
-            return
-
-    ok_s, out_s, err_s = _run_c(["sudo", "-n"] + list(cmd), timeout=5.0)
-    if ok_s:
-        invalidate_printers_cache()
-        if callable(after_fn):
-            after_fn()
-        _set_fb(True, ok_msg)
-        if cc_panel and cc_panel.shell:
-            cc_panel.shell.refresh_view()
-        return
-
-    _PENDING_SUDO.clear()
-    _PENDING_SUDO["cmds"] = [list(cmd)]
-    _PENDING_SUDO["ok_msg"] = ok_msg
-    _PENDING_SUDO["after_fn"] = after_fn
-    cc_panel.request_prompt(
-        "cc_prn_sudo",
-        t("cc_printers.prompt_sudo_pwd", p0=" ".join(cmd[:3])),
-        "",
-        secret=True,
-        title=t("cc_printers.prompt_sudo_title"),
-        required=True,
-    )
+    _exec_admin_batch(cc_panel, [cmd], ok_msg, try_direct=try_direct, after_fn=after_fn)
 
 
 def _exec_admin_batch(cc_panel, cmds: list[list[str]], ok_msg: str, try_direct: bool = True, after_fn=None) -> None:
     if not cmds:
         return
-    if len(cmds) == 1:
-        _exec_admin(cc_panel, cmds[0], ok_msg, try_direct=try_direct, after_fn=after_fn)
-        return
+    resolved: list[list[str]] = []
+    for c in cmds:
+        rc = _resolve_exec_cmd(c)
+        if not rc:
+            _set_fb(False, t("cc_printers.err_missing_bin", p0=os.path.basename(c[0]) if c else "?"))
+            if cc_panel and cc_panel.shell:
+                cc_panel.shell.refresh_view()
+            return
+        resolved.append(rc)
 
-    remaining = [list(c) for c in cmds]
+    remaining = resolved
     while remaining:
         cmd = remaining[0]
         if try_direct:
@@ -2392,20 +1190,21 @@ showpage
 
 
 def print_test_page(cc_panel, printer_name: str) -> None:
+    lp_bin = _cups_bin("lp")
+    if not lp_bin:
+        _set_fb(False, t("cc_printers.err_missing_bin", p0="lp"))
+        if cc_panel and cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return
     cups_tp = "/usr/share/cups/data/testprint"
     if os.path.isfile(cups_tp):
-        ok, out, err = _run_c(["lp", "-d", printer_name, "-t", "NC-UI Test Page", cups_tp], timeout=4.0)
+        ok, out, err = _run_c([lp_bin, "-d", printer_name, "-t", "NC-UI Test Page", cups_tp], timeout=4.0)
     else:
-        fd, tmp_ps = tempfile.mkstemp(prefix="nc_testpage_", suffix=".ps", dir="/tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(_build_diagnostic_ps(printer_name))
-            ok, out, err = _run_c(["lp", "-d", printer_name, "-t", "NC-UI Calibration Page", tmp_ps], timeout=4.0)
-        finally:
-            try:
-                os.unlink(tmp_ps)
-            except OSError:
-                pass
+        ok, out, err = _run_c(
+            [lp_bin, "-d", printer_name, "-t", "NC-UI Calibration Page"],
+            timeout=4.0,
+            input_data=_build_diagnostic_ps(printer_name),
+        )
     invalidate_printers_cache()
     _set_fb(ok, t("cc_printers.fb_test_page_sent", p0=printer_name) if ok else (err or out or t("cc_printers.err_cmd_failed"))[:110])
     if cc_panel and cc_panel.shell:
@@ -2413,9 +1212,15 @@ def print_test_page(cc_panel, printer_name: str) -> None:
 
 
 def send_cups_maintenance_cmd(cc_panel, printer_name: str, command_line: str, label: str) -> None:
+    lp_bin = _cups_bin("lp")
+    if not lp_bin:
+        _set_fb(False, t("cc_printers.err_missing_bin", p0="lp"))
+        if cc_panel and cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return
     payload = f"#CUPS-COMMAND\n{command_line}\n".encode("utf-8")
     ok, out, err = _run_c(
-        ["lp", "-d", printer_name, "-t", f"CUPS {label}", "-o", "document-format=application/vnd.cups-command"],
+        [lp_bin, "-d", printer_name, "-t", f"CUPS {label}", "-o", "document-format=application/vnd.cups-command"],
         timeout=4.0,
         input_data=payload,
     )
@@ -2461,6 +1266,7 @@ def get_add_draft() -> dict:
         "drv_id": str(d.get("drv_id", "drv:///cupsfilters.drv/pwgrast.ppd") or "drv:///cupsfilters.drv/pwgrast.ppd"),
         "drv_query": str(d.get("drv_query", "") or ""),
         "ppd_path": str(d.get("ppd_path", "") or ""),
+        "selected_pkg": str(d.get("selected_pkg", "") or ""),
         "make_default": bool(d.get("make_default", True)),
         "shared": bool(d.get("shared", False)),
     }
@@ -2530,7 +1336,13 @@ def submit_quick_print(cc_panel, printer_name: str, file_override: str = "") -> 
             cc_panel.shell.refresh_view()
         return
 
-    cmd = ["lp", "-d", printer_name, "-t", os.path.basename(exp)]
+    lp_bin = _cups_bin("lp")
+    if not lp_bin:
+        _set_fb(False, t("cc_printers.err_missing_bin", p0="lp"))
+        if cc_panel and cc_panel.shell:
+            cc_panel.shell.refresh_view()
+        return
+    cmd = [lp_bin, "-d", printer_name, "-t", os.path.basename(exp)]
     if qp["copies"] > 1:
         cmd += ["-n", str(qp["copies"])]
     if qp["pages"]:
@@ -2556,7 +1368,8 @@ def submit_quick_print(cc_panel, printer_name: str, file_override: str = "") -> 
 
 
 def get_proto_presets() -> list[tuple[str, str, str]]:
-    return list(_PROTO_PRESETS)
+    lbl_map = {"smb": t("cc_printers.proto_smb"), "usb": t("cc_printers.proto_usb")}
+    return [(pid, lbl_map.get(pid, lbl), tpl) for pid, lbl, tpl in _PROTO_PRESETS]
 
 
 def _start_install_flow(
@@ -2580,14 +1393,14 @@ def _start_install_flow(
             shell.refresh_view()
         return
     if d.get("drv_mode") == "ppd":
-        v_ok, v_msg = validate_ppd_file(d.get("ppd_path", ""))
+        v_ok, v_msg = _disc.validate_ppd_file(d.get("ppd_path", ""))
         if not v_ok:
             _set_fb(False, v_msg)
             if shell:
                 shell.refresh_view()
             return
 
-    smart = dict(smart_override or get_smart_probe(d.get("host") or d.get("uri") or ""))
+    smart = dict(smart_override or _disc.get_smart_probe(d.get("host") or d.get("uri") or ""))
     with _INSTALL_LOCK:
         if _INSTALL_RUNNING:
             return
@@ -2621,28 +1434,36 @@ def _start_install_flow(
             return "NEED_AUTH", out_n, err_n
 
         # 1. Auto-start CUPS scheduler if down
-        sched_ok, sched_out, _ = _run_c(["lpstat", "-r"], timeout=0.8) if probe.has_bin("lpstat") else (False, "", "")
+        lpstat_bin = _cups_bin("lpstat")
+        lpadmin_bin = _cups_bin("lpadmin")
+        if not lpadmin_bin:
+            return "ERR", t("cc_printers.err_missing_bin", p0="lpadmin")
+        sched_ok, sched_out, _ = _run_c([lpstat_bin, "-r"], timeout=0.8) if lpstat_bin else (False, "", "")
         if not (sched_ok and "is running" in (sched_out or "").lower()):
-            res_s, out_s, err_s = _priv_exec(["/usr/bin/systemctl", "start", "cups.service"], timeout=6.0)
+            sc_bin = _cups_bin("systemctl")
+            if not sc_bin:
+                return "ERR", t("cc_printers.err_missing_bin", p0="systemctl")
+            res_s, out_s, err_s = _priv_exec([sc_bin, "start", "cups.service"], timeout=6.0)
             if res_s == "NEED_AUTH":
                 return "NEED_SUDO", "systemctl start cups.service"
             if not res_s:
                 return "ERR", (err_s or out_s or t("cc_printers.err_spooler_down"))[:140]
-            for _ in range(12):
-                time.sleep(0.2)
-                s_ok, s_out, _ = _run_c(["lpstat", "-r"], timeout=0.6)
-                if s_ok and "is running" in (s_out or "").lower():
-                    break
+            if lpstat_bin:
+                for _ in range(12):
+                    time.sleep(0.2)
+                    s_ok, s_out, _ = _run_c([lpstat_bin, "-r"], timeout=0.6)
+                    if s_ok and "is running" in (s_out or "").lower():
+                        break
 
         # 2. Resolve effective driver & synthesize PPD if TCP/IP + Auto
-        strategy, drv_args, _ = resolve_effective_driver(d, smart)
+        strategy, drv_args, _ = _disc.resolve_effective_driver(d, smart)
         host_ipp = d.get("host") or (urlparse(d["uri"]).hostname or "")
         if d.get("drv_mode") == "auto" and d["uri"].startswith(("socket://", "lpd://")) and strategy in ("pcl", "pwgrast", "ps") and host_ipp:
-            synth = _synthesize_driverless_ppd(host_ipp, d["name"])
+            synth = _disc._synthesize_driverless_ppd(host_ipp, d["name"])
             if synth:
                 drv_args = ["-P", synth]
 
-        base = ["/usr/bin/lpadmin", "-p", d["name"], "-E", "-v", d["uri"]]
+        base = [lpadmin_bin, "-p", d["name"], "-E", "-v", d["uri"]]
         meta: list[str] = []
         if d.get("desc"):
             meta += ["-D", d["desc"]]
@@ -2660,7 +1481,7 @@ def _start_install_flow(
         if ok_inst == "NEED_AUTH":
             return "NEED_SUDO", f"lpadmin -p {d['name']}"
         if not ok_inst and drv_args == ["-m", "everywhere"]:
-            synth2 = _synthesize_driverless_ppd(d["uri"], d["name"])
+            synth2 = _disc._synthesize_driverless_ppd(d["uri"], d["name"])
             if synth2:
                 ok_inst, out_i, err_i = _priv_exec(base + ["-P", synth2] + meta, timeout=10.0)
             if not ok_inst:
@@ -2671,32 +1492,31 @@ def _start_install_flow(
             return "ERR", (err_i or out_i or t("cc_printers.err_cmd_failed"))[:140]
 
         # 4. Force enable, accept jobs & apply system default
-        _priv_exec(["/usr/bin/cupsenable", d["name"]], timeout=4.0)
-        _priv_exec(["/usr/bin/cupsaccept", d["name"]], timeout=4.0)
+        if _cups_bin("cupsenable"):
+            _priv_exec([_cups_bin("cupsenable"), d["name"]], timeout=4.0)
+        if _cups_bin("cupsaccept"):
+            _priv_exec([_cups_bin("cupsaccept"), d["name"]], timeout=4.0)
         if d.get("make_default"):
-            _run_c(["lpoptions", "-d", d["name"]], timeout=1.5)
-            _priv_exec(["/usr/bin/lpadmin", "-d", d["name"]], timeout=3.0)
+            if probe.has_bin("lpoptions"):
+                _run_c(["lpoptions", "-d", d["name"]], timeout=1.5)
+            _priv_exec([lpadmin_bin, "-d", d["name"]], timeout=3.0)
 
         # 5. Verify queue registration on CUPS
-        ok_v, out_v, err_v = _run_c(["lpstat", "-p", d["name"]], timeout=2.0)
-        if not ok_v:
-            return "ERR", (err_v or out_v or t("cc_printers.err_cmd_failed"))[:140]
+        if lpstat_bin:
+            ok_v, out_v, err_v = _run_c([lpstat_bin, "-p", d["name"]], timeout=2.0)
+            if not ok_v:
+                return "ERR", (err_v or out_v or t("cc_printers.err_cmd_failed"))[:140]
 
         # 6. Optional calibration test page
         if print_test:
-            tmp_ps = ""
+            lp_bin = _cups_bin("lp")
             ok_lp = False
-            try:
-                with tempfile.NamedTemporaryFile(prefix="ncui_test_", suffix=".ps", delete=False) as tf:
-                    tmp_ps = tf.name
-                    tf.write(_build_diagnostic_ps(d["name"]))
-                ok_lp, _o, _e = _run_c(["lp", "-d", d["name"], "-t", "NC-UI Calibration Page", tmp_ps], timeout=4.0)
-            finally:
-                if tmp_ps:
-                    try:
-                        os.unlink(tmp_ps)
-                    except OSError:
-                        pass
+            if lp_bin:
+                ok_lp, _o, _e = _run_c(
+                    [lp_bin, "-d", d["name"], "-t", "NC-UI Calibration Page"],
+                    timeout=4.0,
+                    input_data=_build_diagnostic_ps(d["name"]),
+                )
             return ("OK_TEST" if ok_lp else "OK"), d["name"]
         return "OK", d["name"]
 
@@ -2739,1355 +1559,99 @@ def _start_install_flow(
 
 
 # =====================================================================
-# LINK & PROMPT DISPATCHERS (COLON-SAFE DETERMINISTIC ROUTING)
+# SHARED UI HELPERS & LINK / PROMPT DISPATCHERS
 # =====================================================================
 
-def handle_cc_printers_link(cc_panel, uri: str) -> bool:
-    if not uri.startswith("cc_prn:"):
-        return False
-
-    rest = uri[len("cc_prn:") :]
-    act, _, tail = rest.partition(":")
-    arg1, _, arg2 = tail.partition(":")
-    shell = getattr(cc_panel, "shell", None)
-
-    if act not in ("ask_confirm", "delete_prn", "purge_queue", "class_delete"):
-        set_pending_confirm(cc_panel, "")
-
-    if act == "refresh":
-        invalidate_printers_cache(keep_drivers=False)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "ask_confirm" and tail:
-        set_pending_confirm(cc_panel, tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "cancel_confirm":
-        set_pending_confirm(cc_panel, "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "select_prn" and tail:
-        cc_panel.set_state("prn_selected", tail)
-        update_drv_edit_state(printer="")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "dev_filter_open":
-        cur_q = str(cc_panel.get_state("prn_dev_filter", "") or "")
-        start_inline_input(
-            "prn_dev_filter_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=cur_q,
-            max_len=40,
-            strip_leading_hash=False,
-            uppercase=False,
-            on_change=lambda v: cc_panel.set_state("prn_dev_filter", v),
-            on_commit=lambda v: cc_panel.set_state("prn_dev_filter", v),
-        )
-        return True
-
-    if act == "dev_filter_clear":
-        cc_panel.set_state("prn_dev_filter", "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "select_job" and tail:
-        cc_panel.set_state("prn_selected_job", tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "select_class" and tail:
-        cc_panel.set_state("prn_selected_class", tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "goto_subtab" and tail:
-        cc_panel.set_subtab(tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    # --- Services, Privileges & Web UI ---
-    if act == "webui":
-        probe.spawn_bg(["xdg-open", "http://localhost:631"])
-        _set_fb(True, t("cc_printers.fb_opened_webui"))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "svc" and arg1 in ("start", "stop", "restart", "enable", "disable"):
-        unit = arg2 or "cups.service"
-        cmd = ["/usr/bin/systemctl", arg1, unit]
-        _exec_admin(cc_panel, cmd, t("cc_printers.fb_svc_done", p0=unit, p1=arg1), try_direct=False)
-        return True
-
-    if act == "priv_modal" and tail:
-        request_privilege_modal(cc_panel, tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "clear_logs":
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/truncate", "-s", "0", "/var/log/cups/error_log"],
-            t("cc_printers.fb_logs_cleared"),
-            try_direct=False,
-        )
-        return True
-
-    if act == "dismiss_logs_view":
-        dismiss_cups_logs_view()
-        if shell:
-            shell.refresh_view()
-        return True
-
-    # --- Printer Lifecycle, In-Place Edit & Cloning ---
-    if act == "set_default" and tail:
-        _run_c(["lpoptions", "-d", tail], timeout=1.5)
-        _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-d", tail], t("cc_printers.fb_default_set", p0=tail))
-        return True
-
-    if act == "enable_prn" and tail:
-        _exec_admin(cc_panel, ["/usr/bin/cupsenable", tail], t("cc_printers.fb_prn_resumed", p0=tail))
-        return True
-
-    if act == "pause_prn" and tail:
-        _exec_admin(cc_panel, ["/usr/bin/cupsdisable", tail], t("cc_printers.fb_prn_paused", p0=tail))
-        return True
-
-    if act == "accept_prn" and arg1:
-        is_on = (arg2 == "1")
-        bin_p = "/usr/bin/cupsaccept" if is_on else "/usr/bin/cupsreject"
-        msg = t("cc_printers.fb_accept_on", p0=arg1) if is_on else t("cc_printers.fb_accept_off", p0=arg1)
-        _exec_admin(cc_panel, [bin_p, arg1], msg)
-        return True
-
-    if act == "share_prn" and arg1:
-        val = "true" if arg2 == "1" else "false"
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/lpadmin", "-p", arg1, "-o", f"printer-is-shared={val}"],
-            t("cc_printers.fb_share_updated", p0=arg1, p1=val),
-        )
-        return True
-
-    if act == "err_policy" and arg1 and arg2 in ("retry-job", "abort-job", "stop-printer"):
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/lpadmin", "-p", arg1, "-o", f"printer-error-policy={arg2}"],
-            t("cc_printers.fb_policy_set", p0=arg1, p1=arg2),
-        )
-        return True
-
-    if act == "delete_prn" and tail:
-        set_pending_confirm(cc_panel, "")
-        _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-x", tail], t("cc_printers.fb_prn_deleted", p0=tail))
-        return True
-
-    if act == "restart_prn" and tail and _QUEUE_NAME_RE.match(tail):
-        _exec_admin_batch(
-            cc_panel,
-            [["/usr/bin/cupsenable", tail], ["/usr/bin/cupsaccept", tail]],
-            t("cc_printers.fb_prn_restarted", p0=tail),
-        )
-        return True
-
-    if act == "open_addr" and tail:
-        snap = get_printers_snapshot()
-        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
-        u = str(prn["uri"] if prn else "").strip()
-        parsed = urlparse(u) if "://" in u else None
-        host = (parsed.hostname or "").strip() if parsed else ""
-        if not host:
-            _set_fb(False, t("cc_printers.err_no_prn_addr"))
-        else:
-            scheme = "https" if (parsed and parsed.scheme in ("ipps", "https")) else "http"
-            web_url = f"{scheme}://{host}"
-            probe.spawn_bg(["xdg-open", web_url])
-            _set_fb(True, t("cc_printers.fb_opened_prn_web", p0=web_url))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "edit_uri" and tail and _QUEUE_NAME_RE.match(tail):
-        snap = get_printers_snapshot()
-        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
-        cur_u = prn["uri"] if prn else "ipp://"
-
-        def _commit_uri(v: str, p_name=tail):
-            nv = v.strip()
-            _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-p", p_name, "-E", "-v", nv], t("cc_printers.fb_uri_updated", p0=p_name))
-
-        start_inline_input(
-            f"prn_edit_uri_{tail}",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=cur_u,
-            max_len=128,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=lambda v: (("://" in v.strip() and len(v.strip()) >= 6), t("cc_printers.err_bad_uri")),
-            on_commit=_commit_uri,
-        )
-        return True
-
-    if act == "rename_prn" and tail and _QUEUE_NAME_RE.match(tail):
-        snap = get_printers_snapshot()
-        existing = {p["name"] for p in snap["printers"]}
-
-        def _val_rename(v: str, old_name=tail, names=existing):
-            nv = v.strip()
-            if not _QUEUE_NAME_RE.match(nv):
-                return (False, t("cc_printers.err_bad_queue_name"))
-            if nv != old_name and nv in names:
-                return (False, t("cc_printers.err_queue_exists", p0=nv))
-            return (True, "")
-
-        def _commit_rename(v: str, old_name=tail):
-            new_name = v.strip()
-            if not new_name or new_name == old_name:
-                return
-            cur_snap = get_printers_snapshot()
-            src = next((p for p in cur_snap["printers"] if p["name"] == old_name), None)
-            if not src or not src["uri"]:
-                _set_fb(False, t("cc_printers.err_cmd_failed"))
-                if shell:
-                    shell.refresh_view()
-                return
-            src_ppd = f"/etc/cups/ppd/{old_name}.ppd"
-            drv_args = ["-P", src_ppd] if os.path.isfile(src_ppd) else (["-m", "raw"] if src["proto"] == "LOCAL" else ["-m", "everywhere"])
-            add_cmd = ["/usr/bin/lpadmin", "-p", new_name, "-E", "-v", src["uri"]] + drv_args
-            if src["description"]:
-                add_cmd += ["-D", src["description"]]
-            if src["location"]:
-                add_cmd += ["-L", src["location"]]
-            add_cmd += [
-                "-o",
-                f"printer-is-shared={'true' if src['shared'] else 'false'}",
-                "-o",
-                f"printer-error-policy={src['error_policy'] or 'retry-job'}",
-            ]
-            cmds = [add_cmd]
-            if src["accepting"]:
-                cmds.append(["/usr/bin/cupsaccept", new_name])
-            else:
-                cmds.append(["/usr/bin/cupsreject", new_name])
-            if not src["enabled"]:
-                cmds.append(["/usr/bin/cupsdisable", new_name])
-            if get_print_jobs("not-completed", printer=old_name):
-                cmds.append(["/usr/bin/lpmove", old_name, new_name])
-            if src["is_default"]:
-                cmds.append(["/usr/bin/lpadmin", "-d", new_name])
-            cmds.append(["/usr/bin/lpadmin", "-x", old_name])
-
-            def _after_rename():
-                if src["is_default"]:
-                    _run_c(["lpoptions", "-d", new_name], timeout=1.5)
-                cc_panel.set_state("prn_selected", new_name)
-
-            _exec_admin_batch(
-                cc_panel,
-                cmds,
-                t("cc_printers.fb_prn_renamed", p0=old_name, p1=new_name),
-                after_fn=_after_rename,
-            )
-
-        start_inline_input(
-            f"prn_edit_name_{tail}",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=tail,
-            max_len=64,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=_val_rename,
-            on_commit=_commit_rename,
-        )
-        return True
-
-    if act == "edit_uri_prompt" and tail:
-        snap = get_printers_snapshot()
-        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
-        cur_u = prn["uri"] if prn else "ipp://"
-        cc_panel.request_prompt(
-            f"cc_prn_uri|{tail}",
-            t("cc_printers.prompt_edit_uri", p0=tail),
-            cur_u,
-            secret=False,
-            title=t("cc_printers.prompt_edit_uri_title"),
-            required=True,
-        )
-        return True
-
-    if act == "clone_prompt" and tail:
-        cc_panel.request_prompt(
-            f"cc_prn_clone|{tail}",
-            t("cc_printers.prompt_clone_name", p0=tail),
-            f"{tail}_Profile",
-            secret=False,
-            title=t("cc_printers.prompt_clone_title"),
-            required=True,
-        )
-        return True
-
-    if act == "toggle_drv_edit" and tail:
-        cur_e = get_drv_edit_state()
-        if cur_e["printer"] == tail:
-            update_drv_edit_state(printer="")
-        else:
-            update_drv_edit_state(printer=tail, mode="everywhere", drv_id="everywhere", query="", ppd_path="")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_edit_mode" and arg1 in ("everywhere", "db", "raw", "ppd"):
-        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
-        kw = {"mode": arg1}
-        if sel_p:
-            kw["printer"] = sel_p
-        if arg1 == "everywhere":
-            kw["drv_id"] = "everywhere"
-        elif arg1 == "raw":
-            kw["drv_id"] = "raw"
-        elif arg1 == "db" and get_drv_edit_state()["drv_id"] in ("everywhere", "raw"):
-            kw["drv_id"] = "drv:///sample.drv/generic.ppd"
-        update_drv_edit_state(**kw)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_edit_search":
-        de = get_drv_edit_state()
-        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
-        if sel_p and not de["printer"]:
-            update_drv_edit_state(printer=sel_p)
-        start_inline_input(
-            "prn_drv_edit_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=de["query"],
-            max_len=48,
-            strip_leading_hash=False,
-            uppercase=False,
-            on_change=lambda v: update_drv_edit_state(query=v),
-            on_commit=lambda v: update_drv_edit_state(query=v),
-        )
-        return True
-
-    if act == "drv_edit_clear":
-        update_drv_edit_state(query="")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_edit_pick" and tail:
-        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
-        kw = {"mode": "db", "drv_id": tail}
-        if sel_p:
-            kw["printer"] = sel_p
-        update_drv_edit_state(**kw)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_edit_ppd":
-        de = get_drv_edit_state()
-        sel_p = str(cc_panel.get_state("prn_selected", "") or "")
-        if sel_p and not de["printer"]:
-            update_drv_edit_state(printer=sel_p)
-        cc_panel.request_prompt(
-            "cc_prn_edit_ppd",
-            t("cc_printers.prompt_ppd_path"),
-            de["ppd_path"] or "/usr/share/cups/model/",
-            secret=False,
-            title=t("cc_printers.prompt_ppd_title"),
-            required=True,
-            completion=("path_ext", _PPD_EXTS),
-        )
-        return True
-
-    if act == "drv_edit_apply" and tail:
-        de = get_drv_edit_state()
-        if de["mode"] == "ppd":
-            v_ok, v_msg = validate_ppd_file(de["ppd_path"])
-            if not v_ok:
-                _set_fb(False, v_msg)
-                if shell:
-                    shell.refresh_view()
-                return True
-            cmd = ["/usr/bin/lpadmin", "-p", tail, "-E", "-P", os.path.expanduser(de["ppd_path"])]
-        else:
-            model = "everywhere" if de["mode"] == "everywhere" else ("raw" if de["mode"] == "raw" else de["drv_id"])
-            cmd = ["/usr/bin/lpadmin", "-p", tail, "-E", "-m", model]
-        _exec_admin(
-            cc_panel,
-            cmd,
-            t("cc_printers.fb_drv_updated", p0=tail),
-            after_fn=lambda: update_drv_edit_state(printer=""),
-        )
-        return True
-
-    if act == "test_page" and tail:
-        print_test_page(cc_panel, tail)
-        return True
-
-    if act == "identify_prn" and tail:
-        identify_printer(cc_panel, tail)
-        return True
-
-    if act == "maint" and arg1 and arg2:
-        cmd_map = {
-            "clean": ("Clean all", t("cc_printers.maint_clean")),
-            "selftest": ("PrintSelfTestPage", t("cc_printers.maint_selftest")),
-            "levels": ("ReportLevels", t("cc_printers.maint_levels")),
-        }
-        if arg2 in cmd_map:
-            c_str, lbl = cmd_map[arg2]
-            send_cups_maintenance_cmd(cc_panel, arg1, c_str, lbl)
-        return True
-
-    # --- Quick Print Job Composer ---
-    if act == "print_file" and tail:
-        # Open composer on devices & prompt for file
-        cc_panel.set_state("prn_sec_qprint", True)
-        qp = get_quick_print_draft()
-        cc_panel.request_prompt(
-            f"cc_prn_file|{tail}",
-            t("cc_printers.prompt_print_file", p0=tail),
-            qp["file"] or "~/",
-            secret=False,
-            title=t("cc_printers.prompt_print_file_title"),
-            required=True,
-            completion=("path_ext", _PRINTABLE_EXTS),
-        )
-        return True
-
-    if act == "qp_pick_file":
-        qp = get_quick_print_draft()
-        cc_panel.request_prompt(
-            "cc_prn_qp_setfile",
-            t("cc_printers.prompt_qp_file"),
-            qp["file"] or "~/",
-            secret=False,
-            title=t("cc_printers.prompt_print_file_title"),
-            required=True,
-            completion=("path_ext", _PRINTABLE_EXTS),
-        )
-        return True
-
-    if act == "qp_copies" and tail:
-        if tail.isdigit():
-            update_quick_print_draft(copies=int(tail))
-            if shell:
-                from panels.base import BasePanel
-                if isinstance(getattr(shell, "panel", None), BasePanel):
-                    shell.panel.request_throttled_refresh()
-                else:
-                    shell.refresh_view()
-        return True
-
-    if act == "qp_copies_edit":
-        qp = get_quick_print_draft()
-        start_inline_input(
-            "prn_qp_copies_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=str(qp["copies"]),
-            max_len=2,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=lambda v: (v.strip().isdigit() and 1 <= int(v.strip()) <= 99, t("cc_printers.err_bad_copies")),
-            on_commit=lambda v: update_quick_print_draft(copies=int(v.strip())),
-        )
-        return True
-
-    if act == "qp_pages_all":
-        update_quick_print_draft(pages="")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "qp_pages_edit":
-        qp = get_quick_print_draft()
-        start_inline_input(
-            "prn_qp_pages_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=qp["pages"],
-            max_len=24,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=lambda v: (not v.strip() or bool(_PAGE_RANGE_RE.match(v.strip())), t("cc_printers.err_bad_pages")),
-            on_commit=lambda v: update_quick_print_draft(pages=v.strip()),
-        )
-        return True
-
-    if act == "qp_fit" and tail in ("0", "1"):
-        update_quick_print_draft(fit=(tail == "1"))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "qp_sides" and tail in ("default", "one-sided", "two-sided-long-edge", "two-sided-short-edge"):
-        update_quick_print_draft(sides=tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "qp_color" and tail in ("default", "color", "monochrome"):
-        update_quick_print_draft(color=tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "qp_submit" and tail:
-        submit_quick_print(cc_panel, tail)
-        return True
-
-    # --- Inline Edit Description / Location ---
-    if act in ("edit_desc", "edit_loc") and tail:
-        snap = get_printers_snapshot()
-        prn = next((p for p in snap["printers"] if p["name"] == tail), None)
-        cur_val = (prn["description"] if act == "edit_desc" else prn["location"]) if prn else ""
-        flag = "-D" if act == "edit_desc" else "-L"
-        eid = f"prn_{act}_{tail}"
-
-        def _commit_meta(val: str, p_name=tail, fl=flag):
-            _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-p", p_name, fl, val.strip()], t("cc_printers.fb_meta_saved", p0=p_name))
-
-        start_inline_input(
-            eid,
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=cur_val,
-            max_len=64,
-            strip_leading_hash=False,
-            uppercase=False,
-            on_commit=_commit_meta,
-        )
-        return True
-
-    # --- Printing Preferences & PPD / IPP System + User Sync ---
-    if act == "ppd_grp" and tail:
-        cc_panel.set_state("prn_ppd_group", tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "cycle_opt" and arg1 and arg2:
-        opt_k = arg2.strip()
-        if not _QUEUE_NAME_RE.match(arg1) or not _OPT_TOKEN_RE.match(opt_k):
-            _set_fb(False, t("cc_printers.err_cmd_failed"))
-            if shell:
-                shell.refresh_view()
-            return True
-        opts = get_printer_options(arg1)
-        meta = opts["ppd"].get(opt_k)
-        if not meta or not meta.get("choices"):
-            return True
-        ch_list = meta["choices"]
-        cur = meta.get("current", ch_list[0])
-        nxt = ch_list[(ch_list.index(cur) + 1) % len(ch_list)] if cur in ch_list else ch_list[0]
-        if not _OPT_TOKEN_RE.match(nxt):
-            _set_fb(False, t("cc_printers.err_cmd_failed"))
-            if shell:
-                shell.refresh_view()
-            return True
-        _run_c(["lpoptions", "-p", arg1, "-o", f"{opt_k}={nxt}"], timeout=1.5)
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/lpadmin", "-p", arg1, "-o", f"{opt_k}-default={nxt}"],
-            t("cc_printers.fb_opt_saved", p0=opt_k, p1=humanize_ppd_choice(opt_k, nxt)),
-        )
-        return True
-
-    if act == "set_opt" and arg1 and "=" in arg2:
-        opt_k, opt_v = arg2.split("=", 1)
-        if not _QUEUE_NAME_RE.match(arg1) or not _OPT_TOKEN_RE.match(opt_k) or not _OPT_TOKEN_RE.match(opt_v):
-            _set_fb(False, t("cc_printers.err_cmd_failed"))
-            if shell:
-                shell.refresh_view()
-            return True
-        _run_c(["lpoptions", "-p", arg1, "-o", f"{opt_k}={opt_v}"], timeout=1.5)
-        if opt_k in _LPADMIN_DEFAULT_KEYS or not opt_k.startswith("job-"):
-            _exec_admin(
-                cc_panel,
-                ["/usr/bin/lpadmin", "-p", arg1, "-o", f"{opt_k}-default={opt_v}"],
-                t("cc_printers.fb_opt_saved", p0=opt_k, p1=humanize_ppd_choice(opt_k, opt_v)),
-            )
-        else:
-            invalidate_printers_cache()
-            _set_fb(True, t("cc_printers.fb_opt_saved", p0=opt_k, p1=humanize_ppd_choice(opt_k, opt_v)))
-            if shell:
-                shell.refresh_view()
-        return True
-
-    if act == "reset_user_opts" and tail:
-        _run_c(["lpoptions", "-x", tail], timeout=1.5)
-        invalidate_printers_cache()
-        _set_fb(True, t("cc_printers.fb_user_opts_reset", p0=tail))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    # --- Spooler Queue & Jobs ---
-    if act == "q_mode" and tail in ("not-completed", "completed"):
-        cc_panel.set_state("prn_q_mode", tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "q_cycle_prn":
-        snap = get_printers_snapshot()
-        names = [""] + [p["name"] for p in snap["printers"]]
-        cur_p = str(cc_panel.get_state("prn_q_printer", "") or "")
-        nxt = names[(names.index(cur_p) + 1) % len(names)] if cur_p in names else ""
-        cc_panel.set_state("prn_q_printer", nxt)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "q_filter_open":
-        cur_q = str(cc_panel.get_state("prn_q_filter", "") or "")
-        start_inline_input(
-            "prn_q_filter_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=cur_q,
-            max_len=40,
-            strip_leading_hash=False,
-            uppercase=False,
-            on_change=lambda v: cc_panel.set_state("prn_q_filter", v),
-            on_commit=lambda v: cc_panel.set_state("prn_q_filter", v),
-        )
-        return True
-
-    if act == "q_filter_clear":
-        cc_panel.set_state("prn_q_filter", "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "job_cancel" and tail:
-        _exec_admin(cc_panel, ["/usr/bin/cancel", tail], t("cc_printers.fb_job_cancelled", p0=tail))
-        return True
-
-    if act == "job_hold" and arg1:
-        mode = "hold" if arg2 == "1" else "resume"
-        _exec_admin(cc_panel, ["/usr/bin/lp", "-i", arg1, "-H", mode], t("cc_printers.fb_job_hold_state", p0=arg1, p1=mode))
-        return True
-
-    if act == "job_reprint" and tail:
-        _exec_admin(cc_panel, ["/usr/bin/lp", "-i", tail, "-H", "restart"], t("cc_printers.fb_job_reprinted", p0=tail))
-        return True
-
-    if act == "job_prio" and arg1 and arg2.isdigit():
-        _exec_admin(cc_panel, ["/usr/bin/lp", "-i", arg1, "-q", arg2], t("cc_printers.fb_job_prio_set", p0=arg1, p1=arg2))
-        return True
-
-    if act == "job_move" and arg1 and arg2:
-        _exec_admin(cc_panel, ["/usr/bin/lpmove", arg1, arg2], t("cc_printers.fb_job_moved", p0=arg1, p1=arg2))
-        return True
-
-    if act == "job_auth" and tail and _JOB_ID_RE.match(tail):
-        cc_panel.request_prompt(
-            f"cc_prn_job_auth_user|{tail}",
-            t("cc_printers.prompt_job_auth_user", p0=tail),
-            _current_user(),
-            secret=False,
-            title=t("cc_printers.prompt_job_auth_user_title", p0=tail),
-            required=True,
-        )
-        return True
-
-    if act == "smb_auth_prompt":
-        d = get_add_draft()
-        host_hint = d["host"] or (urlparse(d["uri"]).hostname or "") if "://" in d["uri"] else d["host"]
-        cc_panel.request_prompt(
-            f"cc_prn_smb_user|{host_hint or 'SMB'}",
-            t("cc_printers.prompt_smb_user", p0=host_hint or "SMB"),
-            _current_user(),
-            secret=False,
-            title=t("cc_printers.prompt_smb_user_title"),
-            required=True,
-        )
-        return True
-
-    if act == "purge_queue":
-        set_pending_confirm(cc_panel, "")
-        cmd = ["/usr/bin/cancel", "-a"] + ([tail] if tail and tail != "ALL" else [])
-        _exec_admin(cc_panel, cmd, t("cc_printers.fb_queue_purged", p0=tail or "ALL"))
-        return True
-
-    # --- Discovery, Add Printer Wizard, Virtual PDF & Classes ---
-    if act == "scan_devices":
-        trigger_device_discovery(cc_panel)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "scan_all":
-        trigger_tcp_lan_scan(cc_panel)
-        trigger_device_discovery(cc_panel)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "wiz_open_manual":
-        update_add_draft(name="", desc="", loc="", proto="socket", tcp_port=9100, host="", uri="", drv_mode="auto", drv_query="", ppd_path="")
-        cc_panel.set_state("prn_pkg_confirm", "")
-        cc_panel.set_state("prn_wiz_target", "manual")
-        warm_cups_drivers_async(cc_panel)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "wiz_close":
-        cc_panel.set_state("prn_wiz_target", "")
-        cc_panel.set_state("prn_pkg_confirm", "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "open_installed" and tail:
-        cc_panel.set_state("prn_selected", tail)
-        cc_panel.set_state("prn_wiz_target", "")
-        cc_panel.set_state("prn_pkg_confirm", "")
-        cc_panel.set_subtab("devices")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act in ("pick_disc", "wiz_open_disc") and tail.isdigit():
-        devs = get_discovered_devices()
-        idx = int(tail)
-        if 0 <= idx < len(devs):
-            dv = devs[idx]
-            nd = apply_disc_device_to_draft(dv)
-            cc_panel.set_state("prn_disc_sel", nd["uri"])
-            cc_panel.set_state("prn_wiz_target", f"disc:{idx}")
-            cc_panel.set_state("prn_pkg_confirm", "")
-            warm_cups_drivers_async(cc_panel)
-            trigger_smart_probe_async(cc_panel, nd["host"], nd["uri"], dv["label"])
-            trigger_auto_driver_search_async(cc_panel, dv["label"], nd["uri"])
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "tcp_scan_run":
-        trigger_tcp_lan_scan(cc_panel)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "tcp_subnet_pick" and tail:
-        ok_s, norm, _ = parse_tcp_scan_targets(tail)
-        if ok_s:
-            trigger_tcp_lan_scan(cc_panel, norm)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "tcp_subnet_custom":
-        cur_sub = get_tcp_scan_state()["active_subnet"]
-
-        def _val_sub(v: str):
-            s = v.strip()
-            if not s:
-                return (True, "")
-            ok_s, _, _ = parse_tcp_scan_targets(s)
-            return (ok_s, "" if ok_s else t("cc_printers.err_bad_subnet"))
-
-        def _commit_sub(v: str):
-            s = v.strip()
-            if not s:
-                STATE.set("printers", "tcp_scan_subnet", get_local_ipv4_subnets()[0])
-                return
-            ok_s, norm, _ = parse_tcp_scan_targets(s)
-            if ok_s:
-                trigger_tcp_lan_scan(cc_panel, norm)
-
-        start_inline_input(
-            "prn_tcp_subnet_in",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=cur_sub,
-            max_len=36,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=_val_sub,
-            on_commit=_commit_sub,
-        )
-        return True
-
-    if act in ("pick_tcp_disc", "wiz_open_tcp") and tail.isdigit():
-        devs = get_tcp_scan_state()["devices"]
-        idx = int(tail)
-        if 0 <= idx < len(devs):
-            dv = devs[idx]
-            cc_panel.set_state("prn_tcp_sel_idx", idx)
-            cc_panel.set_state("prn_wiz_target", f"tcp:{idx}")
-            cc_panel.set_state("prn_pkg_confirm", "")
-            nd = apply_tcp_device_to_draft(dv)
-            cc_panel.set_state("prn_disc_sel", nd["uri"])
-            warm_cups_drivers_async(cc_panel)
-            trigger_smart_probe_async(cc_panel, dv["ip"], nd["uri"], dv["label"], dv.get("open_ports"))
-            trigger_auto_driver_search_async(cc_panel, dv["label"], nd["uri"])
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "pick_tcp_port" and arg1.isdigit() and arg2.isdigit():
-        devs = get_tcp_scan_state()["devices"]
-        idx, port = int(arg1), int(arg2)
-        if 0 <= idx < len(devs):
-            dv = devs[idx]
-            cc_panel.set_state("prn_tcp_sel_idx", idx)
-            nd = apply_tcp_device_to_draft(dv, force_port=port)
-            cc_panel.set_state("prn_disc_sel", nd["uri"])
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "create_pdf_queue":
-        ppd_cand = "/usr/share/cups/model/CUPS-PDF_opt.ppd"
-        model_args = ["-P", ppd_cand] if os.path.isfile(ppd_cand) else ["-m", "drv:///sample.drv/generic.ppd"]
-        cmd = ["/usr/bin/lpadmin", "-p", "Print_to_PDF", "-E", "-v", "cups-pdf:/", "-D", "Virtual PDF Printer"] + model_args
-        _exec_admin(cc_panel, cmd, t("cc_printers.fb_pdf_created"))
-        return True
-
-    if act == "draft_tcp_port" and tail.isdigit():
-        p_val = int(tail)
-        if p_val in (9100, 631, 515):
-            d = get_add_draft()
-            kw = {"proto": "socket", "tcp_port": p_val}
-            if d["host"]:
-                kw["uri"] = build_tcp_uri(d["host"], p_val)
-            if p_val == 631 and d["drv_mode"] == "db" and d["drv_id"] == "everywhere":
-                kw["drv_mode"] = "everywhere"
-            update_add_draft(**kw)
-            if kw.get("uri"):
-                cc_panel.set_state("prn_disc_sel", kw["uri"])
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "draft_proto" and tail:
-        d = get_add_draft()
-        if tail == "socket":
-            tcp_devs = get_tcp_scan_state()["devices"]
-            if not d["host"] and tcp_devs:
-                nd = apply_tcp_device_to_draft(tcp_devs[0])
-                cc_panel.set_state("prn_disc_sel", nd["uri"])
-            else:
-                new_uri = build_tcp_uri(d["host"], d["tcp_port"]) if d["host"] else ""
-                update_add_draft(proto="socket", uri=new_uri)
-        else:
-            tpl = next((tp for pid, _l, tp in _PROTO_PRESETS if pid == tail), "ipp://{host}:631/ipp/print")
-            if tail == "usb":
-                new_uri = "usb://"
-            elif d["host"] and "{host}" in tpl:
-                new_uri = tpl.format(host=d["host"])
-            else:
-                new_uri = ""
-            update_add_draft(proto=tail, uri=new_uri)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "draft_field" and tail in ("name", "desc", "loc", "host", "uri"):
-        d = get_add_draft()
-        eid = f"prn_draft_{tail}"
-
-        def _validate_draft(v: str, fld=tail):
-            s = v.strip()
-            if fld == "name":
-                return (bool(_QUEUE_NAME_RE.match(s)), t("cc_printers.err_bad_queue_name"))
-            if fld == "uri":
-                return (("://" in s and len(s) >= 6), t("cc_printers.err_bad_uri"))
-            return (True, "")
-
-        def _commit_draft(v: str, fld=tail):
-            s = v.strip()
-            cur = get_add_draft()
-            kw = {fld: s}
-            if fld == "host" and s:
-                if cur["proto"] == "socket":
-                    kw["uri"] = build_tcp_uri(s, cur["tcp_port"])
-                else:
-                    tpl = next((tp for pid, _l, tp in _PROTO_PRESETS if pid == cur["proto"]), "")
-                    if "{host}" in tpl:
-                        kw["uri"] = tpl.format(host=s)
-            update_add_draft(**kw)
-
-        start_inline_input(
-            eid,
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=d[tail],
-            max_len=96 if tail == "uri" else 48,
-            strip_leading_hash=False,
-            uppercase=False,
-            validator=_validate_draft,
-            on_commit=_commit_draft,
-        )
-        return True
-
-    if act == "draft_drv_mode" and tail in ("auto", "everywhere", "db", "raw", "ppd"):
-        kw = {"drv_mode": tail}
-        if tail == "everywhere":
-            kw["drv_id"] = "everywhere"
-        elif tail == "raw":
-            kw["drv_id"] = "raw"
-        elif tail == "db":
-            cur_d = get_add_draft()
-            warm_cups_drivers_async(cc_panel)
-            trigger_auto_driver_search_async(cc_panel, cur_d.get("desc") or cur_d.get("name") or "", cur_d.get("uri", ""))
-            cc_panel.set_state("prn_drv_scroll", 0)
-            if cur_d["drv_id"] in ("everywhere", "raw", "auto", ""):
-                kw["drv_id"] = "drv:///cupsfilters.drv/pwgrast.ppd"
-        update_add_draft(**kw)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_search_open":
-        d = get_add_draft()
-
-        def _on_q(v: str):
-            cc_panel.set_state("prn_drv_scroll", 0)
-            update_add_draft(drv_query=v)
-
-        start_inline_input(
-            "prn_drv_picker",
-            shell=shell,
-            trigger_uri=uri,
-            initial_text=d["drv_query"],
-            max_len=48,
-            strip_leading_hash=False,
-            uppercase=False,
-            on_change=_on_q,
-            on_commit=_on_q,
-        )
-        return True
-
-    if act == "drv_search_clear":
-        cc_panel.set_state("prn_drv_scroll", 0)
-        update_add_draft(drv_query="")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_box_scroll" and tail:
-        cur_d = get_add_draft()
-        cur_sm = get_smart_probe(cur_d.get("host") or cur_d.get("uri") or "")
-        cur_off = int(cc_panel.get_state("prn_drv_scroll", 0) or 0)
-        delta = -1 if tail == "up" else (1 if tail == "down" else (-999 if tail == "top" else 999))
-        cc_panel.set_state("prn_drv_scroll", max(0, cur_off + delta))
-        get_auto_found_drivers(cc_panel, cur_d, cur_sm)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "drv_pkg_rescan":
-        cur_d = get_add_draft()
-        cur_sm = get_smart_probe(cur_d.get("host") or cur_d.get("uri") or "")
-        m_txt = str(cur_sm.get("model") or cur_d.get("desc") or cur_d.get("name") or "")
-        trigger_auto_driver_search_async(cc_panel, m_txt, cur_d.get("uri", ""), force=True)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "pick_drv" and tail:
-        if tail.startswith("ppd:"):
-            update_add_draft(drv_mode="ppd", ppd_path=tail[4:])
-        else:
-            update_add_draft(drv_mode="db", drv_id=tail)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "pick_pkg_drv" and tail:
-        cur_d = get_add_draft()
-        cur_sm = get_smart_probe(cur_d.get("host") or cur_d.get("uri") or "")
-        _CACHE.pop("drivers_list", None)
-        drvs = _load_drivers_blocking()
-        _CACHE["drivers_list"] = (time.monotonic(), drvs)
-        sig = _parse_printer_signature(f"{cur_sm.get('model') or cur_d.get('desc')} {tail}")
-        matched = _match_vendor_driver(f"{tail} {sig['raw_model']}", drvs)
-        if matched:
-            update_add_draft(drv_mode="db", drv_id=matched[0])
-            _set_fb(True, t("cc_printers.fb_pkg_drv_selected", p0=tail, p1=matched[1][:42]))
-        else:
-            update_add_draft(drv_mode="auto")
-            _set_fb(True, t("cc_printers.fb_pkg_installed_ready", p0=tail))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "cancel_pkg_confirm":
-        cc_panel.set_state("prn_pkg_confirm", "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act in ("install_drv_pkg", "install_drv_pkg_force") and tail:
-        pkg = tail.strip()
-        cached_pkgs = {
-            c.get("pkg")
-            for _ts, pkg_list in _AUTO_DRV_PKG_CACHE.values()
-            for c in (pkg_list or ())
-            if isinstance(c, dict) and c.get("pkg")
-        }
-        if not _PKG_NAME_RE.match(pkg) or pkg not in cached_pkgs:
-            _set_fb(False, t("cc_printers.err_invalid_pkg", p0=pkg))
-            if shell:
-                shell.refresh_view()
-            return True
-        if act == "install_drv_pkg":
-            auto_items = get_auto_found_drivers(cc_panel, get_add_draft()).get("items", ())
-            matched_it = next((c for c in auto_items if c.get("pkg") == pkg), None)
-            if matched_it and int(matched_it.get("score", 0)) < 90 and cc_panel.get_state("prn_pkg_confirm", "") != pkg:
-                cc_panel.set_state("prn_pkg_confirm", pkg)
-                if shell:
-                    shell.refresh_view()
-                return True
-        cc_panel.set_state("prn_pkg_confirm", "")
-        pm = probe.get_preferred_pkg_manager() or "pacman"
-        qpkg = shlex.quote(pkg)
-        if pm in ("paru", "yay", "pikaur", "trizen"):
-            cmd_line = f"{pm} -S --needed {qpkg}"
-        elif pm == "pacman":
-            cmd_line = f"sudo pacman -S --needed {qpkg}"
-        elif pm == "apt":
-            cmd_line = f"sudo apt install {qpkg}"
-        elif pm in ("dnf", "zypper"):
-            cmd_line = f"sudo {pm} install {qpkg}"
-        else:
-            cmd_line = f"sudo {pm} add {qpkg}"
-        probe.open_terminal(["bash", "-c", f"echo '=== NC-UI Printer Driver Install ({pm}) ==='; {cmd_line}; echo; read -p 'Press Enter to close...'"])
-        _watch_pkg_install_async(cc_panel, pkg)
-        _set_fb(True, t("cc_printers.fb_pkg_install_launched", p0=pkg, p1=pm))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "browse_ppd":
-        d = get_add_draft()
-        cc_panel.request_prompt(
-            "cc_prn_ppd",
-            t("cc_printers.prompt_ppd_path"),
-            d["ppd_path"] or "/usr/share/cups/model/",
-            secret=False,
-            title=t("cc_printers.prompt_ppd_title"),
-            required=True,
-            completion=("path_ext", _PPD_EXTS),
-        )
-        return True
-
-    if act == "draft_toggle" and tail in ("make_default", "shared"):
-        d = get_add_draft()
-        update_add_draft(**{tail: not d[tail]})
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "draft_reset":
-        reset_add_draft()
-        cc_panel.set_state("prn_disc_sel", "")
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act == "probe_uri":
-        target = tail or get_add_draft()["uri"] or get_add_draft()["host"]
-        ok, msg = probe_printer_host(target)
-        _set_fb(ok, msg)
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if act in ("install_printer", "install_printer_test"):
-        _start_install_flow(cc_panel, print_test=(act == "install_printer_test"))
-        return True
-
-    # --- Classes / Pools (Master-Detail + Toggle Membership) ---
-    if act == "class_new_prompt":
-        snap = get_printers_snapshot()
-        if not snap["printers"]:
-            _set_fb(False, t("cc_printers.no_printers_hint"))
-            if shell:
-                shell.refresh_view()
-            return True
-        first_p = snap["default"] or snap["printers"][0]["name"]
-        cc_panel.request_prompt(
-            f"cc_prn_cls|{first_p}",
-            t("cc_printers.prompt_new_class", p0=first_p),
-            "Office_Pool",
-            secret=False,
-            title=t("cc_printers.prompt_class_title"),
-            required=True,
-        )
-        return True
-
-    if act == "class_toggle_member" and arg1 and arg2:
-        classes = get_printer_classes()
-        cl = next((c for c in classes if c["name"] == arg1), None)
-        in_cls = bool(cl and arg2 in cl["members"])
-        flag = "-r" if in_cls else "-c"
-        _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-p", arg2, flag, arg1], t("cc_printers.fb_class_updated", p0=arg1))
-        return True
-
-    if act == "class_delete" and tail:
-        set_pending_confirm(cc_panel, "")
-        _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-x", tail], t("cc_printers.fb_class_deleted", p0=tail))
-        return True
-
-    # --- Global CUPS Server Policies (`cupsctl`) ---
-    if act == "cupsctl" and arg1 in ("share-printers", "remote-any", "remote-admin", "user-cancel-any", "debug-logging"):
-        if not get_cups_daemon_state()["scheduler_up"]:
-            _set_fb(False, t("cc_printers.err_spooler_down"))
-            if shell:
-                shell.refresh_view()
-            return True
-        flag = f"--{arg1}" if arg2 == "1" else f"--no-{arg1}"
-        _exec_admin(cc_panel, ["/usr/bin/cupsctl", flag], t("cc_printers.fb_cupsctl_saved", p0=flag))
-        return True
-
-    return False
-
-
-def handle_cc_printers_prompt(cc_panel, action_id: str, text: str) -> bool:
-    if not action_id.startswith("cc_prn_"):
-        return False
-    val = str(text or "").strip()
-    shell = getattr(cc_panel, "shell", None)
-
-    if action_id == "cc_prn_sudo":
-        cmds = _PENDING_SUDO.get("cmds") or ([_PENDING_SUDO["cmd"]] if _PENDING_SUDO.get("cmd") else [])
-        ok_msg = str(_PENDING_SUDO.get("ok_msg", t("common.ok")))
-        after_fn = _PENDING_SUDO.get("after_fn")
-        _PENDING_SUDO.clear()
-        if not cmds or not val:
-            return True
-        ok = True
-        out = ""
-        for cmd in cmds:
-            try:
-                res = subprocess.run(
-                    ["sudo", "-k", "-S", "-p", ""] + list(cmd),
-                    input=f"{val}\n",
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    timeout=12.0,
-                )
-                ok = res.returncode == 0
-                out = (res.stdout or "").strip()
-            except Exception as e:
-                ok, out = False, str(e)
-            if not ok:
-                break
-        invalidate_printers_cache()
-        if ok and callable(after_fn):
-            after_fn()
-        _set_fb(ok, ok_msg if ok else (out or t("cc_printers.err_cmd_failed"))[:110])
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if action_id.startswith("cc_prn_job_auth_user|"):
-        jid = action_id.split("|", 1)[1]
-        if not _JOB_ID_RE.match(jid) or not val:
-            return True
-        cc_panel.request_prompt(
-            f"cc_prn_job_auth_pass|{jid}|{val}",
-            t("cc_printers.prompt_job_auth_pass", p0=val, p1=jid),
-            "",
-            secret=True,
-            title=t("cc_printers.prompt_job_auth_pass_title", p0=jid),
-            required=True,
-        )
-        return True
-
-    if action_id.startswith("cc_prn_job_auth_pass|"):
-        parts = action_id.split("|", 2)
-        if len(parts) != 3 or not val:
-            return True
-        jid, auth_user = parts[1], parts[2]
-        if not _JOB_ID_RE.match(jid):
-            return True
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/lp", "-i", jid, "-H", "resume", "-o", f"auth-info={auth_user},{val}"],
-            t("cc_printers.fb_job_authenticated", p0=jid),
-        )
-        return True
-
-    if action_id.startswith("cc_prn_smb_user|"):
-        host_hint = action_id.split("|", 1)[1]
-        if not val:
-            return True
-        cc_panel.request_prompt(
-            f"cc_prn_smb_pass|{host_hint}|{val}",
-            t("cc_printers.prompt_smb_pass", p0=val, p1=host_hint),
-            "",
-            secret=True,
-            title=t("cc_printers.prompt_smb_pass_title"),
-            required=True,
-        )
-        return True
-
-    if action_id.startswith("cc_prn_smb_pass|"):
-        parts = action_id.split("|", 2)
-        if len(parts) != 3 or not val:
-            return True
-        host_hint, smb_user = parts[1], parts[2]
-        d = get_add_draft()
-        if host_hint and host_hint != "SMB" and probe.has_bin("smbclient"):
-            auth_fd, auth_path = tempfile.mkstemp(prefix="ncui_smb_", dir=os.path.dirname(_IPP_JOBS_TEST_PATH) if os.path.isdir(os.path.dirname(_IPP_JOBS_TEST_PATH)) else None)
-            shares: list[str] = []
-            try:
-                os.fchmod(auth_fd, 0o600)
-                with os.fdopen(auth_fd, "w", encoding="utf-8") as af:
-                    if "\\" in smb_user:
-                        dom, usr = smb_user.split("\\", 1)
-                        af.write(f"username={usr}\npassword={val}\ndomain={dom}\n")
-                    else:
-                        af.write(f"username={smb_user}\npassword={val}\n")
-                ok_l, out_l, err_l = _run_c(["smbclient", "-L", host_hint, "-A", auth_path, "-g"], timeout=3.5)
-                if ok_l and out_l:
-                    for ln in out_l.splitlines():
-                        cols = ln.split("|")
-                        if len(cols) >= 2 and cols[0].strip().lower() == "printer":
-                            shares.append(cols[1].strip())
-            finally:
-                try:
-                    os.unlink(auth_path)
-                except OSError:
-                    pass
-            if shares:
-                first_u = f"smb://{smb_user}:{val}@{host_hint}/{shares[0]}"
-                update_add_draft(proto="smb", host=host_hint, uri=first_u, name=_sanitized_queue_name(shares[0], f"SMB_{host_hint}"))
-                _set_fb(True, t("cc_printers.fb_smb_shares_found", p0=host_hint, p1=len(shares)))
-                if shell:
-                    shell.refresh_view()
-                return True
-        if d["uri"].startswith("smb://"):
-            raw_rest = d["uri"][len("smb://") :].split("@", 1)[-1]
-            update_add_draft(uri=f"smb://{smb_user}:{val}@{raw_rest}")
-        else:
-            update_add_draft(proto="smb", uri=f"smb://{smb_user}:{val}@{host_hint}/Printer")
-        _set_fb(True, t("cc_printers.fb_smb_auth_saved", p0=host_hint))
-        if shell:
-            shell.refresh_view()
-        return True
-
-    if action_id == "cc_prn_sudo_install":
-        info = dict(_PENDING_INSTALL_SUDO)
-        _PENDING_INSTALL_SUDO.clear()
-        if not info or not val:
-            return True
-        _start_install_flow(
-            cc_panel,
-            print_test=bool(info.get("print_test", False)),
-            sudo_pass=val,
-            draft_override=info.get("d"),
-            smart_override=info.get("smart"),
-        )
-        return True
-
-    if action_id.startswith("cc_prn_file|"):
-        prn = action_id.split("|", 1)[1]
-        exp = os.path.expanduser(val)
-        if not os.path.isfile(exp):
-            _set_fb(False, t("cc_printers.err_file_not_found", p0=val))
-            return True
-        update_quick_print_draft(file=val)
-        if getattr(cc_panel, "active_subtab", "") == "queue":
-            submit_quick_print(cc_panel, prn, file_override=val)
-        else:
-            cc_panel.set_state("prn_sec_qprint", True)
-            _set_fb(True, t("cc_printers.fb_qp_file_ready", p0=os.path.basename(exp)))
-        return True
-
-    if action_id == "cc_prn_qp_setfile":
-        exp = os.path.expanduser(val)
-        if not os.path.isfile(exp):
-            _set_fb(False, t("cc_printers.err_file_not_found", p0=val))
-            return True
-        update_quick_print_draft(file=val)
-        _set_fb(True, t("cc_printers.fb_qp_file_ready", p0=os.path.basename(exp)))
-        return True
-
-    if action_id.startswith("cc_prn_uri|"):
-        prn = action_id.split("|", 1)[1]
-        if "://" not in val or len(val) < 6:
-            _set_fb(False, t("cc_printers.err_bad_uri"))
-            return True
-        _exec_admin(cc_panel, ["/usr/bin/lpadmin", "-p", prn, "-E", "-v", val], t("cc_printers.fb_uri_updated", p0=prn))
-        return True
-
-    if action_id.startswith("cc_prn_clone|"):
-        src_prn = action_id.split("|", 1)[1]
-        if not _QUEUE_NAME_RE.match(val):
-            _set_fb(False, t("cc_printers.err_bad_queue_name"))
-            return True
-        snap = get_printers_snapshot()
-        src = next((p for p in snap["printers"] if p["name"] == src_prn), None)
-        if not src or not src["uri"]:
-            _set_fb(False, t("cc_printers.err_cmd_failed"))
-            return True
-        src_ppd = f"/etc/cups/ppd/{src_prn}.ppd"
-        drv_args = ["-P", src_ppd] if os.path.isfile(src_ppd) else ["-m", "everywhere"]
-        cmd = ["/usr/bin/lpadmin", "-p", val, "-E", "-v", src["uri"]] + drv_args
-        if src["description"]:
-            cmd += ["-D", f"{src['description']} (Clone)"]
-        if src["location"]:
-            cmd += ["-L", src["location"]]
-        _exec_admin(
-            cc_panel,
-            cmd,
-            t("cc_printers.fb_prn_cloned", p0=src_prn, p1=val),
-            after_fn=lambda: cc_panel.set_state("prn_selected", val),
-        )
-        return True
-
-    if action_id == "cc_prn_ppd":
-        v_ok, v_msg = validate_ppd_file(val)
-        update_add_draft(drv_mode="ppd", ppd_path=val)
-        _set_fb(v_ok, v_msg)
-        return True
-
-    if action_id == "cc_prn_edit_ppd":
-        v_ok, v_msg = validate_ppd_file(val)
-        update_drv_edit_state(mode="ppd", ppd_path=val)
-        _set_fb(v_ok, v_msg)
-        return True
-
-    if action_id.startswith("cc_prn_cls|"):
-        prn = action_id.split("|", 1)[1]
-        if not _QUEUE_NAME_RE.match(val):
-            _set_fb(False, t("cc_printers.err_bad_queue_name"))
-            return True
-        _exec_admin(
-            cc_panel,
-            ["/usr/bin/lpadmin", "-p", prn, "-c", val],
-            t("cc_printers.fb_class_updated", p0=val),
-            after_fn=lambda: cc_panel.set_state("prn_selected_class", val),
-        )
-        return True
-
-    return False
+def render_scalar_kv(
+    bx: Box,
+    canvas,
+    label: str,
+    entry_id: str,
+    trigger_uri: str,
+    current_val: str,
+    placeholder: str,
+    empty_btn_lbl: str = "",
+    width: int = 40,
+    extra_right: str = "",
+) -> None:
+    if get_active_inline_entry() == entry_id:
+        fld = InlineField(entry_id, trigger_uri, value=current_val, placeholder=placeholder, width=width)
+        bx.add_kv(label, fld, right_markup=extra_right)
+        return
+    val_m = (
+        Txt(canvas.truncate_plain(current_val, 44 if extra_right else 50), role="val")
+        if current_val
+        else Txt(placeholder if empty_btn_lbl else t("common.unset"), role="inactive")
+    )
+    btn_lbl = t("cc_printers.edit_dots_btn") if (current_val or not empty_btn_lbl) else empty_btn_lbl
+    r_m = " ".join(x for x in (ActionBtn(btn_lbl, trigger_uri, tone="neutral"), extra_right) if x)
+    bx.add_kv(label, val_m, right_markup=r_m)
+
+
+def add_ppd_picker_kv(bx: Box, ppd_path: str, browse_uri: str) -> None:
+    ppd_btn = ActionBtn(t("cc_printers.browse_ppd_btn"), browse_uri, tone="neutral")
+    if ppd_path:
+        v_ok, _ = _disc.validate_ppd_file(ppd_path)
+        st_b = StateBadge(True, t("cc_printers.ppd_valid_badge")) if v_ok else Badge(t("cc_printers.ppd_invalid_badge"), style="crit")
+        bx.add_kv(t("cc_printers.kv_ppd_file"), f"{Txt(os.path.basename(ppd_path), role='val')}  {st_b}", right_markup=ppd_btn)
+    else:
+        bx.add_kv(t("cc_printers.kv_ppd_file"), Txt(t("common.unset"), role="inactive"), right_markup=ppd_btn)
+
+
+
+# --- Re-exports for backward compatibility with cc_printers_* and wp_printers ---
+import panels.cc_engine_printers_discovery as _disc
+from panels.cc_engine_printers_discovery import (  # noqa: F401,E402
+    _AUTO_DRV_LOADING,
+    _AUTO_DRV_LOCK,
+    _AUTO_DRV_PKG_CACHE,
+    _BRAND_NORM,
+    _DISC_LOCK,
+    _DRV_LOADING,
+    _DRV_LOCK,
+    _PRINTER_BRANDS,
+    _SMART_PROBE_CACHE,
+    _TCP_SCAN_LOCK,
+    _TCP_SCAN_RUNNING,
+    _check_installed_pkgs,
+    _describe_driver_reason,
+    _enrich_tcp_printer,
+    _load_drivers_blocking,
+    _local_ipv4_info,
+    _match_vendor_driver,
+    _normalize_tcp_device,
+    _parse_pkg_search_lines,
+    _parse_printer_signature,
+    _probe_tcp_printer_host,
+    _sanitized_queue_name,
+    _score_driver_candidate,
+    _search_pkg_drivers_blocking,
+    _synthesize_driverless_ppd,
+    _watch_pkg_install_async,
+    apply_disc_device_to_draft,
+    apply_tcp_device_to_draft,
+    build_tcp_uri,
+    get_auto_found_drivers,
+    get_cups_drivers,
+    get_discovered_devices,
+    get_local_ipv4_subnets,
+    get_smart_probe,
+    get_tcp_scan_state,
+    is_discovery_running,
+    is_drivers_loading,
+    is_tcp_scan_running,
+    parse_tcp_scan_targets,
+    probe_printer_host,
+    resolve_effective_driver,
+    search_cups_drivers,
+    trigger_auto_driver_search_async,
+    trigger_device_discovery,
+    trigger_smart_probe_async,
+    trigger_tcp_lan_scan,
+    validate_ppd_file,
+    warm_cups_drivers_async,
+)
+from panels.cc_engine_printers_actions import (  # noqa: F401,E402
+    handle_cc_printers_link,
+    handle_cc_printers_prompt,
+)

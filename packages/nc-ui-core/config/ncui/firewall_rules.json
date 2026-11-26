@@ -1,5 +1,5 @@
 {
-  "lan_net": "10.10.0.0/24",
+  "lan_net": "",
   "policies": {
     "input": "drop",
     "forward": "drop",

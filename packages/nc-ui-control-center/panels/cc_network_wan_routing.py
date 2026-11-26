@@ -6,21 +6,23 @@ from core.i18n import t
 from core import probe
 from ui.canvas import Canvas
 from ui.kit import (
-    Box,
-    ProgressBar,
-    Divider,
-    Txt,
     ActionBtn,
+    Badge,
+    Box,
+    Divider,
     InlineField,
+    ProgressBar,
     StateBadge,
-    FoldToggle,
+    Txt,
+    make_feedback_cards,
 )
 from panels.cc_engine_network import (
     _NET_LOCK,
     _NET_STATE,
+    _read_sysfs_str,
     _spaced_rows,
-    get_net_tab_feedback_cards,
     get_watchdog_targets,
+    is_resolved_wan_ip,
 )
 
 
@@ -43,6 +45,8 @@ def _read_resolv_conf() -> tuple[list[str], str]:
 
 def _read_listening_sockets(limit: int = 10) -> list[tuple[str, str, str]]:
     """Legge i socket TCP/UDP in ascolto tramite `ss -tulnp` (standard iproute2)."""
+    if not probe.has_bin("ss"):
+        return []
     rows = []
     ok, out = probe.run_cmd(["ss", "-tulnp"], timeout=1.2)
     if not ok or not out:
@@ -80,8 +84,11 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
     # =========================================================================
     wan_actions = []
     if wan.get("badge"):
-        is_primary_line = (wan.get("badge_style") == "accent")
-        wan_actions.append(StateBadge(True, wan["badge"], "", on_tone="ok" if is_primary_line else "warn"))
+        if wan.get("badge_style") == "crit":
+            wan_actions.append(Badge(wan["badge"], style="crit"))
+        else:
+            is_primary_line = (wan.get("badge_style") == "accent")
+            wan_actions.append(StateBadge(True, wan["badge"], "", on_tone="ok" if is_primary_line else "warn"))
     wan_actions.append(ActionBtn(t("cc_net_wan.check_wan"), "net:refresh_wan", tone="neutral"))
 
     wan_box = Box(
@@ -89,26 +96,28 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
         icon="\uf0ac",
         actions=wan_actions,
     )
-    wan_box.add_row(" ")
 
     active_gws = [(i["name"], i["gw"], i["ip"]) for i in ifaces if i["up"] and i["gw"]]
     if active_gws:
         ifname_gw, gw_ip, local_ip = active_gws[0]
         gw_markup = f"{Txt(gw_ip, role='focus')}   {Txt(t('cc_net_wan.via'), role='schema')} {Txt(f'{ifname_gw} ({local_ip})', role='val')}"
     else:
-        gw_markup = StateBadge(True, t("cc_net_wan.no_active_default_gateway"), on_tone="crit")
+        gw_markup = Badge(t("cc_net_wan.no_active_default_gateway"), style="crit")
 
     nameservers, search_dom = _read_resolv_conf()
-    ns_str = ", ".join(nameservers) if nameservers else (t("cc_net_wan.no_nameserver"))
-    ip_fwd = "ON (Router)" if os.path.exists("/proc/sys/net/ipv4/ip_forward") and open("/proc/sys/net/ipv4/ip_forward").read().strip() == "1" else "OFF (Host)"
-    tcp_cc = open("/proc/sys/net/ipv4/tcp_congestion_control").read().strip() if os.path.exists("/proc/sys/net/ipv4/tcp_congestion_control") else "cubic"
+    ns_str = ", ".join(nameservers) if nameservers else t("cc_net_wan.no_nameserver")
+    ip_fwd_raw = _read_sysfs_str("/proc/sys/net/ipv4/ip_forward", "0")
+    ip_fwd = t("cc_net_wan.fwd_router") if ip_fwd_raw == "1" else t("cc_net_wan.fwd_host")
+    tcp_cc = _read_sysfs_str("/proc/sys/net/ipv4/tcp_congestion_control", "cubic") or "cubic"
 
+    wan_resolved = is_resolved_wan_ip(wan.get("ip", ""))
+    wan_copy_btn = ActionBtn(t("cc_net_wan.copy_ip"), "ui:copy:" + wan["ip"], tone="neutral") if wan_resolved else ""
     dns_cell = Txt(ns_str, role="val") + (f" {Txt(f'({search_dom})', role='inactive')}" if search_dom else "")
     wan_rows = [
         [
             Txt(t("cc_net_wan.public_exit_ipv4"), role="schema"),
-            Txt(wan["ip"], role="focus"),
-            ActionBtn(t("cc_net_wan.copy_ip"), "ui:copy:" + wan["ip"], tone="neutral"),
+            Txt(wan["ip"], role="focus" if wan_resolved else "inactive"),
+            wan_copy_btn,
         ],
         [
             Txt(t("cc_net_wan.default_gateway"), role="schema"),
@@ -118,11 +127,11 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
         [
             Txt(t("cc_net_wan.active_system_dns"), role="schema"),
             dns_cell,
-            ActionBtn(t("cc_net_wan.flush_dns"), "net:flush_dns", tone="neutral"),
+            ActionBtn(t("cc_net_wan.flush_dns"), "net:flush_dns", tone="warn"),
         ],
         [
             Txt(t("cc_net_wan.kernel_net_stack"), role="schema"),
-            f"{Txt(t('cc_net_wan.forwarding'), role='inactive')} {Txt(ip_fwd, role='val')}   {Txt('TCP:', role='inactive')} {Txt(tcp_cc.upper(), role='val')}",
+            f"{Txt(t('cc_net_wan.forwarding'), role='inactive')} {Txt(ip_fwd, role='val')}   {Txt(t('cc_net_wan.tcp_lbl'), role='inactive')} {Txt(tcp_cc.upper(), role='val')}",
             "",
         ],
     ]
@@ -133,40 +142,43 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
         aligns=["left", "left", "right"],
         show_headers=False,
     )
-    wan_box.add_row(" ")
     cards.append(wan_box)
 
     # =========================================================================
     # CARD 2: INFRASTRUCTURE ICMP WATCHDOG
     # =========================================================================
+    has_ping = probe.has_bin("ping")
     targets = get_watchdog_targets(ifaces)
+    wd_actions = [
+        InlineField(
+            "net_add_ping",
+            "net:inline_add_ping",
+            value="",
+            empty_label=t("cc_net_wan.host"),
+            placeholder=t("cc_net_wan.ping_placeholder"),
+            width=18,
+            icon="",
+            tone="neutral",
+        ),
+        ActionBtn(t("cc_net_wan.ping_test"), "net:refresh_ping", tone="neutral") if has_ping else Badge(t("ui.missing", p0="ping"), style="warn"),
+    ]
     wd_box = Box(
         t("cc_net_wan.infrastructure_icmp_watchdog_ping"),
         icon="\uf201",
-        actions=[
-            InlineField(
-                "net_add_ping",
-                "net:inline_add_ping",
-                value="",
-                empty_label=t("cc_net_wan.host"),
-                placeholder="NAS | 10.10.0.20",
-                width=18,
-                icon="",
-                tone="neutral",
-            ),
-            ActionBtn(t("cc_net_wan.ping_test"), "net:refresh_ping", tone="neutral"),
-        ],
+        actions=wd_actions,
     )
-    wd_box.add_row(" ")
 
     wd_rows = []
     for tgt in targets:
         host = tgt["host"]
         name = canvas.truncate_plain(tgt["name"], 22)
         p_info = pings.get(host)
-        if p_info is None:
+        if not has_ping or (p_info and p_info.get("missing")):
             bar_m = ProgressBar(0, width=16)
-            status_m = Txt("\u22ef " + (t("cc_net_wan.checking")), role="inactive")
+            status_m = Badge(t("ui.missing", p0="ping"), style="warn")
+        elif p_info is None:
+            bar_m = ProgressBar(0, width=16)
+            status_m = Txt("\u22ef " + t("cc_net_wan.checking"), role="inactive")
         elif p_info.get("ok"):
             ms = float(p_info.get("ms", 0.0))
             role_ms = "ok_soft" if ms < 15.0 else ("attention" if ms < 60.0 else "fault")
@@ -175,7 +187,7 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
             status_m = Txt(f"\u25cf\u00a0{ms:5.1f}\u00a0ms", role=role_ms)
         else:
             bar_m = ProgressBar(100, width=16, color_by_threshold=True)
-            status_m = StateBadge(True, t("cc_net_wan.timeout"), on_tone="crit")
+            status_m = Badge(t("cc_net_wan.timeout"), style="crit")
 
         rm_btn = ActionBtn("x", f"net:del_ping:{host}", tone="danger_soft") if len(targets) > 1 else ""
         wd_rows.append([
@@ -194,11 +206,10 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
             t("cc_net_wan.latency"),
             t("cc_net_wan.actions"),
         ],
-        widths=[22, 16, 18, 12, "flex"],
+        widths=[22, 16, 18, 14, "flex"],
         rows=_spaced_rows(wd_rows),
         aligns=["left", "left", "left", "left", "right"],
     )
-    wd_box.add_row(" ")
     cards.append(wd_box)
 
     # =========================================================================
@@ -206,51 +217,52 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
     # =========================================================================
     cards.append(Divider(t("cc_net_wan.kernel_diagnostics_sockets_arp_exp"), icon="\uf0e8"))
 
-    rt_open, rt_toggle = FoldToggle(panel, "wan_routes", default=False)
+    has_ip = probe.has_bin("ip")
+    rt_open, rt_toggle = panel._fold("wan_routes", default=False)
     rt_box = Box(
         t("cc_net_wan.kernel_ip_routing_table_ip_route", p0=len(routes)),
         icon="\uf0e8",
-        actions=[rt_toggle],
+        actions=[rt_toggle] if has_ip else [Badge(t("ui.missing", p0="ip"), style="warn")],
     )
-    rt_box.add_row(" ")
-    if not rt_open:
-        def_rt = next((r for r in routes if r.startswith("default")), routes[0] if routes else "none")
+    if not has_ip:
+        rt_box.add_row(f"  {Txt(t('cc_net_wan.ip_missing'), role='inactive')}")
+    elif not rt_open:
+        def_rt = next((r for r in routes if r.startswith("default")), routes[0] if routes else t("common.none"))
         rt_box.add_row(f"  {Txt(t('cc_net_wan.default'), role='inactive')} {Txt(def_rt[:58], role='val')}")
     else:
         if not routes:
-            msg = t("cc_net_wan.no_active_routes_in_kernel")
-            rt_box.add_row(f"  {Txt(msg, role='inactive')}")
+            rt_box.add_row(f"  {Txt(t('cc_net_wan.no_active_routes_in_kernel'), role='inactive')}")
         else:
             for r_line in routes[:10]:
                 r_role = "focus" if r_line.startswith("default") else "val"
                 rt_box.add_row(f"  {Txt(canvas.truncate_plain(r_line, canvas.inner_cols - 4), role=r_role)}")
-    rt_box.add_row(" ")
     cards.append(rt_box)
 
     # =========================================================================
     # CARD 4: PORTE E SERVIZI IN ASCOLTO (A Comparsa / Scomparsa)
     # =========================================================================
+    has_ss = probe.has_bin("ss")
     socks = _read_listening_sockets(limit=10)
-    sk_open, sk_toggle = FoldToggle(panel, "wan_sockets", default=False)
+    sk_open, sk_toggle = panel._fold("wan_sockets", default=False)
     sk_box = Box(
         t("cc_net_wan.listening_local_ports_services_ss", p0=len(socks)),
         icon="\uf132",
-        actions=[sk_toggle],
+        actions=[sk_toggle] if has_ss else [Badge(t("ui.missing", p0="ss"), style="warn")],
     )
-    sk_box.add_row(" ")
-    if not sk_open:
-        procs_sum = ", ".join(sorted(set(pr for _, _, pr in socks if pr != "-"))[:5]) or "none"
+    if not has_ss:
+        sk_box.add_row(f"  {Txt(t('cc_net_wan.ss_missing'), role='inactive')}")
+    elif not sk_open:
+        procs_sum = ", ".join(sorted(set(pr for _, _, pr in socks if pr != "-"))[:5]) or t("common.none")
         sk_box.add_row(f"  {Txt(t('cc_net_wan.active_listeners'), role='inactive')} {Txt(procs_sum, role='val')}")
     else:
         if not socks:
-            msg = t("cc_net_wan.no_listening_sockets_detected")
-            sk_box.add_row(f"  {Txt(msg, role='inactive')}")
+            sk_box.add_row(f"  {Txt(t('cc_net_wan.no_listening_sockets_detected'), role='inactive')}")
         else:
             sk_rows = [
                 [
                     Txt(proto, role="val"),
                     Txt(laddr, role="val"),
-                    Txt(proc, role="ok_soft"),
+                    Txt(proc, role="val"),
                 ]
                 for proto, laddr, proc in socks
             ]
@@ -263,27 +275,27 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
                 widths=[8, 34, "flex"],
                 rows=_spaced_rows(sk_rows),
             )
-    sk_box.add_row(" ")
     cards.append(sk_box)
 
     # =========================================================================
     # CARD 5: TABELLA ARP / NEIGHBOR LAN (A Comparsa / Scomparsa)
     # =========================================================================
-    ok_arp, out_arp = probe.run_cmd(["ip", "neigh", "show"], timeout=1.0)
+    ok_arp, out_arp = probe.run_cmd(["ip", "neigh", "show"], timeout=1.0) if has_ip else (False, "")
     arp_lines = [l.strip() for l in out_arp.splitlines() if l.strip() and "FAILED" not in l] if (ok_arp and out_arp) else []
-    arp_open, arp_toggle = FoldToggle(panel, "wan_arp", default=False)
+    arp_open, arp_toggle = panel._fold("wan_arp", default=False)
+    arp_actions = [ActionBtn(t("cc_net_wan.flush_stale_arp"), "net:flush_arp", tone="warn"), arp_toggle] if has_ip else [Badge(t("ui.missing", p0="ip"), style="warn")]
     arp_box = Box(
         t("cc_net_wan.lan_arp_neighbor_table_ip_neigh", p0=len(arp_lines)),
         icon="\uf0c0",
-        actions=[ActionBtn(t("cc_net_wan.flush_stale_arp"), "net:flush_arp", tone="neutral"), arp_toggle],
+        actions=arp_actions,
     )
-    arp_box.add_row(" ")
-    if not arp_open:
-        arp_box.add_row(f"  {Txt(t("cc_net_wan.neighbors_in_cache"), role='inactive')} {Txt(t("cc_net_wan.hosts", p0=len(arp_lines)), role='val')}")
+    if not has_ip:
+        arp_box.add_row(f"  {Txt(t('cc_net_wan.ip_missing'), role='inactive')}")
+    elif not arp_open:
+        arp_box.add_row(f"  {Txt(t('cc_net_wan.neighbors_in_cache'), role='inactive')} {Txt(t('cc_net_wan.hosts', p0=len(arp_lines)), role='val')}")
     else:
         if not arp_lines:
-            msg = t("cc_net_wan.no_active_arp_neighbors_in_cache")
-            arp_box.add_row(f"  {Txt(msg, role='inactive')}")
+            arp_box.add_row(f"  {Txt(t('cc_net_wan.no_active_arp_neighbors_in_cache'), role='inactive')}")
         else:
             arp_rows = []
             for al in arp_lines[:10]:
@@ -313,9 +325,8 @@ def build_wan_tab_cards(panel, canvas: Canvas, ifaces: list[dict]) -> list:
                 rows=_spaced_rows(arp_rows),
                 aligns=["left", "left", "left", "left", "right"],
             )
-    arp_box.add_row(" ")
     cards.append(arp_box)
-    cards.extend(get_net_tab_feedback_cards("wan_routing"))
+    cards.extend(make_feedback_cards("network", title_key="cc_net_wired.networkmanager_operation_status", key="fb_wan_routing"))
 
     return cards
 

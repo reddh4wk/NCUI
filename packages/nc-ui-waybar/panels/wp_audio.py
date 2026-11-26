@@ -3,7 +3,7 @@ from urllib.parse import quote
 from core.config import THEME
 from core.i18n import t
 from ui.canvas import Canvas
-from ui.kit import Box, Divider, Slider, Txt, ActionBtn, StateBadge
+from ui.kit import Box, Divider, Slider, Txt, ActionBtn, Badge, StateBadge
 from panels.base import BasePanel
 from panels.cc_engine_sound import (
     speaker_icon,
@@ -57,7 +57,9 @@ class AudioPanel(BasePanel):
                 max_cols=target_cols,
             )
             msg = t("audio.no_input_detected") if is_input else t("audio.no_output_detected")
+            empty_box.add_row(" ")
             empty_box.add_row(f"  {Txt(msg, role='inactive')}")
+            empty_box.add_row(" ")
             return [empty_box]
         for d in devices:
             q_name = quote(d["name"], safe="")
@@ -81,14 +83,16 @@ class AudioPanel(BasePanel):
             )
             slider_m = Slider(d["vol"], f"aud:{prefix}:vol:{q_name}", min_val=0, max_val=max_vol, width=15, show_pct=True, scroll_prefix=f"aud:{prefix}:scroll:{q_name}", enabled=not d["mute"])
             st_badge = StateBadge(d["state"] == "RUNNING", d["state"], d["state"])
-            mute_badge = f"  {StateBadge(False, '', t('audio.mute_2'))}" if d["mute"] else ""
+            mute_badge = f"  {Badge(t('audio.mute_2'), style='warn')}" if d["mute"] else ""
             vol_lbl = f"{t('audio.vol_label'):<6}"
             st_lbl = f"{t('audio.state_label'):<6}"
+            box.add_row(" ")
             box.add_row(f"  {Txt(vol_lbl, role='schema')} {slider_m}")
             box.add_row(
                 f"  {Txt(st_lbl, role='schema')} {st_badge}{mute_badge}",
                 right_markup=mute_btn,
             )
+            box.add_row(" ")
             from ui.widgets import AsciiCard
             cards.append(
                 AsciiCard(
@@ -129,7 +133,9 @@ class AudioPanel(BasePanel):
                 min_cols=target_cols,
                 max_cols=target_cols,
             )
+            empty_mixer.add_row(" ")
             empty_mixer.add_row(f"  {Txt(t('audio.no_active_apps'), role='inactive')}")
+            empty_mixer.add_row(" ")
             cards.append(empty_mixer)
         else:
             for app, sc, act_ic in apps:
@@ -148,10 +154,12 @@ class AudioPanel(BasePanel):
                     max_cols=target_cols,
                 )
                 app_slider = Slider(app["vol"], f"aud:{sc}:vol:{app['index']}", min_val=0, max_val=max_vol, width=14, show_pct=True, scroll_prefix=f"aud:{sc}:scroll:{app['index']}", enabled=not app["mute"])
+                app_box.add_row(" ")
                 app_box.add_row(
                     f"  {Txt(t('audio.mixer_label'), role='schema')} {app_slider}",
                     right_markup=app_mute,
                 )
+                app_box.add_row(" ")
                 cards.append(app_box)
         return cards
 

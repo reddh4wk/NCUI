@@ -39,9 +39,18 @@ pacman_hook_auto = true
 protocol = "smb"
 host = ""
 mountpoint = "/nas"
+# Supported visibility modes: "symlink" (~/NAS) | "filemanager" (x-gvfs-show) | "both" | "none"
+mount_visibility = "symlink"
+user_symlink_dir = "~/NAS"
 ssh_user = ""
 remote_path = ""
+# Use "/etc/samba/nas-cred" or "guest" for anonymous SMB shares
 smb_creds_file = "/etc/samba/nas-cred"
+# SMB protocol version: "auto" (negotiate) | "3.1.1" | "3.0" | "2.1" | "2.0" | "1.0"
+smb_version = "auto"
+port = ""
+mount_opts = ""
+# Shares accept "share_name" (under mountpoint) or "share_name:/custom/mount/$USER"
 shares = []
 backup_root_subdir = ""
 sync_paths = []

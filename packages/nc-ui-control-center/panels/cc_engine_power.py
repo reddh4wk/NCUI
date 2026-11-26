@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -15,6 +16,7 @@ import time
 from core import probe
 from core.config import (
     CONFIG,
+    get_config_dir,
     get_screen_lock_cmd,
 )
 from core.i18n import t
@@ -25,26 +27,30 @@ from ui.kit import (
     ActionBtn,
     Badge,
     Box,
-    FeedbackBox,
     InlineField,
     ProgressBar,
     SelectPill,
     StateBadge,
     Txt,
     cancel_inline_entry,
+    feedback_cards,
+    set_feedback,
     start_inline_input,
 )
+from panels.cc_engine_resources import get_gpu_telemetry, has_nvidia_gpu
 
 
 
 _CACHE_LOCK = threading.Lock()
 _GPU_CACHE = {"ts": 0.0, "info": "", "data": None, "pending": False}
 _PSU_CACHE = {"ts": 0.0, "data": None}
-_PSU_CACHE = {"ts": 0.0, "data": None}
 _PPD_CACHE = {"ts": 0.0, "cur": "", "avail": []}
 _UPOWER_CACHE = {"ts": 0.0, "peripherals": [], "pending": False}
 _EPP_STD_TOKENS = frozenset({"default", "performance", "balance_performance", "balance_power", "power"})
-_FAN_PROFILES_PATH = os.path.expanduser("~/.config/nc-ui/fan_profiles.json")
+
+
+def _fan_profiles_path() -> str:
+    return os.path.join(get_config_dir(), "fan_profiles.json")
 _FACTORY_FAN_PRESETS: dict[str, list[tuple[int, int]]] = {
     "silent":   [(35, 25), (62, 38), (74, 58), (82, 82), (88, 100)],
     "balanced": [(30, 35), (55, 50), (70, 72), (78, 90), (85, 100)],
@@ -79,8 +85,9 @@ def _load_fan_profiles() -> dict:
         "custom": {},
     }
     try:
-        if os.path.isfile(_FAN_PROFILES_PATH):
-            with open(_FAN_PROFILES_PATH, "r", encoding="utf-8") as f:
+        fan_path = _fan_profiles_path()
+        if os.path.isfile(fan_path):
+            with open(fan_path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             if isinstance(raw, dict):
                 raw_p = raw.get("presets")
@@ -123,8 +130,9 @@ def _save_fan_profiles(data: dict) -> None:
         },
     }
     try:
-        os.makedirs(os.path.dirname(_FAN_PROFILES_PATH), exist_ok=True)
-        with open(_FAN_PROFILES_PATH, "w", encoding="utf-8") as f:
+        fan_path = _fan_profiles_path()
+        os.makedirs(os.path.dirname(fan_path), exist_ok=True)
+        with open(fan_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
     except Exception:
         pass
@@ -246,21 +254,11 @@ def _probe_gaming_mode() -> dict:
 
 
 def _set_pwr_fb(ok: bool, msg: str) -> None:
-    STATE.set("power", "cc_fb", {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
-
-
-def _get_pwr_fb() -> dict:
-    fb = STATE.get("power", "cc_fb", {})
-    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < 15.0:
-        return fb
-    return {}
+    set_feedback("power", ok, msg)
 
 
 def _feedback_cards() -> list:
-    fb = _get_pwr_fb()
-    if not fb:
-        return []
-    return [FeedbackBox(t("cc_power.power_ups_status"), bool(fb["ok"]), fb["msg"])]
+    return feedback_cards("power", "cc_power.power_ups_status")
 
 
 def _read_file_str(path: str, default: str = "") -> str:
@@ -270,267 +268,38 @@ def _read_file_str(path: str, default: str = "") -> str:
         return default
 
 
-_PCI_NAME_CACHE: dict[str, str] = {}
-
-
-def _lookup_pci_gpu_name(pci_slot: str) -> str:
-    """Resolve human-readable GPU model name via lspci once per PCI slot."""
-    slot = str(pci_slot or "").strip()
-    if not slot:
-        return ""
-    if slot in _PCI_NAME_CACHE:
-        return _PCI_NAME_CACHE[slot]
-
-    name = ""
-    if probe.has_bin("lspci"):
-        ok, out = probe.run_cmd(["lspci", "-mm", "-s", slot], timeout=1.0)
-        if ok and out:
-            import shlex
-            try:
-                toks = shlex.split(out.splitlines()[0])
-                # Format: Slot Class Vendor Device [SVendor] [SDevice] ...
-                raw_dev = toks[3] if len(toks) > 3 else (toks[2] if len(toks) > 2 else "")
-                m = re.search(r"\[([^\]]+)\]", raw_dev)
-                name = m.group(1).strip() if m else raw_dev.strip()
-            except Exception:
-                name = ""
-        if not name:
-            ok2, out2 = probe.run_cmd(["lspci", "-s", slot], timeout=1.0)
-            if ok2 and out2 and ":" in out2:
-                tail = out2.splitlines()[0].split(":", 2)[-1].strip()
-                tail = re.sub(r"\s*\(rev [^)]+\)\s*$", "", tail).strip()
-                name = tail
-    if len(_PCI_NAME_CACHE) < 16:
-        _PCI_NAME_CACHE[slot] = name
-    return name
-
-
-def _classify_drm_gpu(
-    card_dev: str,
-    vendor_hex: str,
-    pci_slot: str,
-    name: str,
-    has_fan: bool,
-    vram_bytes: int,
-    power_cap_w: float | None,
-) -> tuple[str, str]:
-    """Classify a DRM device into `(category, vendor)` for blueprint rendering."""
-    vhex = str(vendor_hex or "").strip().lower()
-    low = str(name or "").lower()
-    slot_low = str(pci_slot or "").strip().lower()
-
-    if vhex == "0x10de":
-        return "nvidia_dgpu", "nvidia"
-
-    if vhex == "0x8086":
-        if slot_low.startswith("0000:00:02."):
-            return "igpu", "intel"
-        return "intel_dgpu", "intel"
-
-    if vhex == "0x1002":
-        apu_tokens = (
-            "raphael", "phoenix", "rembrandt", "cezanne", "renoir", "picasso",
-            "raven", "granite ridge", "strix", "hawk point",
-            "780m", "680m", "880m", "890m", "760m", "740m",
-        )
-        dgpu_tokens = ("radeon rx", "radeon pro", "radeon vii", "firepro", "instinct")
-        is_apu_name = any(tok in low for tok in apu_tokens)
-        if not is_apu_name and "vega" in low and not any(x in low for x in ("56", "64", "vii", "frontier")):
-            is_apu_name = True
-        if not is_apu_name and "radeon graphics" in low and not any(x in low for x in ("rx", "pro")):
-            is_apu_name = True
-
-        is_dgpu = any(tok in low for tok in dgpu_tokens) or (
-            has_fan and (vram_bytes >= 3 * (1024 ** 3) or (power_cap_w or 0.0) >= 75.0)
-        )
-        if is_dgpu and not is_apu_name:
-            return "amd_dgpu", "amd"
-        return "igpu", "amd"
-
-    return "igpu", "generic"
-
-
-def _read_sysfs_gpu_card(card_dev: str) -> tuple[str, dict] | None:
-    """Collect multi-vendor sysfs + hwmon GPU telemetry for one `/sys/class/drm/card*/device`."""
-    vendor_hex = _read_file_str(os.path.join(card_dev, "vendor"), "").lower()
-    if not vendor_hex:
-        return None
-    try:
-        pci_slot = os.path.basename(os.path.realpath(card_dev))
-    except Exception:
-        pci_slot = ""
-
-    temp_c = None
-    draw_w = None
-    limit_w = None
-    fan_pct = None
-    fan_rpm = None
-    clk_mhz = None
-    has_fan = False
-
-    for hm in sorted(glob.glob(os.path.join(card_dev, "hwmon", "hwmon*"))):
-        if temp_c is None:
-            for tname in ("temp1_input", "temp2_input"):
-                raw_t = _read_file_str(os.path.join(hm, tname), "")
-                if raw_t.lstrip("-").isdigit():
-                    temp_c = round(float(raw_t) / 1000.0, 1)
-                    break
-        if draw_w is None:
-            for pname in ("power1_average", "power1_input"):
-                raw_p = _read_file_str(os.path.join(hm, pname), "")
-                if raw_p.isdigit():
-                    draw_w = round(float(raw_p) / 1_000_000.0, 1)
-                    break
-        if limit_w is None:
-            for lname in ("power1_cap", "power1_cap_max"):
-                raw_l = _read_file_str(os.path.join(hm, lname), "")
-                if raw_l.isdigit() and int(raw_l) > 0:
-                    limit_w = round(float(raw_l) / 1_000_000.0, 0)
-                    break
-        if fan_rpm is None:
-            raw_rpm = _read_file_str(os.path.join(hm, "fan1_input"), "")
-            if raw_rpm.isdigit():
-                fan_rpm = int(raw_rpm)
-                has_fan = True
-        if fan_pct is None:
-            raw_pwm = _read_file_str(os.path.join(hm, "pwm1"), "")
-            if raw_pwm.isdigit():
-                pwm_max = _read_file_str(os.path.join(hm, "pwm1_max"), "255")
-                denom = float(pwm_max) if pwm_max.isdigit() and int(pwm_max) > 0 else 255.0
-                fan_pct = round(max(0.0, min(100.0, (float(raw_pwm) / denom) * 100.0)), 1)
-                has_fan = True
-        if clk_mhz is None:
-            raw_f = _read_file_str(os.path.join(hm, "freq1_input"), "")
-            if raw_f.isdigit() and int(raw_f) > 0:
-                clk_mhz = round(float(raw_f) / 1_000_000.0, 0)
-
-    if clk_mhz is None:
-        sclk = _read_file_str(os.path.join(card_dev, "pp_dpm_sclk"), "")
-        for ln in sclk.splitlines():
-            if "*" in ln:
-                m = re.search(r"(\d+)\s*MHz", ln, re.IGNORECASE)
-                if m:
-                    clk_mhz = float(m.group(1))
-                    break
-    if clk_mhz is None:
-        drm_dir = os.path.dirname(card_dev)
-        for cpath in (
-            os.path.join(drm_dir, "gt_act_freq_mhz"),
-            os.path.join(drm_dir, "gt_cur_freq_mhz"),
-            os.path.join(card_dev, "tile0", "gt0", "freq0", "act_freq"),
-        ):
-            raw_c = _read_file_str(cpath, "")
-            if raw_c.isdigit():
-                clk_mhz = float(raw_c)
-                break
-
-    util_pct = _opt_float(_read_file_str(os.path.join(card_dev, "gpu_busy_percent"), ""))
-    vram_s = _read_file_str(os.path.join(card_dev, "mem_info_vram_total"), "")
-    vram_b = int(vram_s) if vram_s.isdigit() else 0
-    dpm = _read_file_str(os.path.join(card_dev, "power_dpm_force_performance_level"), "")
-
-    name = _lookup_pci_gpu_name(pci_slot)
-    category, vendor = _classify_drm_gpu(card_dev, vendor_hex, pci_slot, name, has_fan, vram_b, limit_w)
-    if not name:
-        name = {
-            ("amd_dgpu", "amd"): "AMD Radeon GPU",
-            ("intel_dgpu", "intel"): "Intel Arc GPU",
-            ("igpu", "intel"): "Intel Integrated GPU",
-            ("igpu", "amd"): "AMD Integrated GPU",
-            ("nvidia_dgpu", "nvidia"): "NVIDIA GPU",
-        }.get((category, vendor), "Integrated GPU")
-
-    pstate = dpm.upper() if dpm else ("iGPU" if category == "igpu" else "AUTO")
+def _fetch_gpu_info_sync() -> tuple[str, dict | None]:
+    g = get_gpu_telemetry(include_procs=False)
+    if not g.get("available"):
+        return "", None
+    temp = g.get("temp_c_opt")
+    draw = g.get("power_w_opt")
+    limit = g.get("power_limit_w_opt")
+    dpm = g.get("dpm") or ""
     gpu_data = {
-        "name": name,
-        "category": category,
-        "vendor": vendor,
-        "temp": temp_c,
-        "draw": draw_w,
-        "limit": limit_w,
-        "pstate": pstate,
-        "clock_gr": clk_mhz,
-        "fan": fan_pct,
-        "fan_rpm": fan_rpm,
-        "util": util_pct,
+        "name": g["model"],
+        "category": g.get("category") or "nvidia_dgpu",
+        "vendor": g.get("vendor") or "generic",
+        "temp": temp,
+        "draw": draw,
+        "limit": limit,
+        "pstate": g.get("pstate") or "",
+        "clock_gr": float(g["gfx_mhz"]) if g.get("gfx_mhz") else None,
+        "fan": float(g["fan_pct"]) if g.get("fan_pct") is not None else None,
+        "fan_rpm": g.get("fan_rpm"),
+        "util": g.get("util_pct"),
     }
-    if temp_c is not None and draw_w is not None and limit_w is not None:
-        info_str = t("cc_power.gpu_draw_fmt", temp=f"{temp_c:.0f}", draw=f"{draw_w:.1f}", limit=f"{limit_w:.0f}")
-    elif temp_c is not None and dpm:
-        info_str = t("cc_power.gpu_dpm_fmt", temp=int(round(temp_c)), level=dpm)
+    if temp is not None and draw is not None and limit is not None:
+        info_str = t("cc_power.gpu_draw_fmt", temp=f"{temp:.0f}", draw=f"{draw:.1f}", limit=f"{limit:.0f}")
+    elif temp is not None and dpm:
+        info_str = t("cc_power.gpu_dpm_fmt", temp=int(round(temp)), level=dpm)
     elif dpm:
         info_str = t("cc_power.gpu_sysfs_fmt", level=dpm)
-    elif temp_c is not None:
-        info_str = f"{name} · {temp_c:.0f}°C"
+    elif temp is not None:
+        info_str = f"{g['model']} · {temp:.0f}°C"
     else:
-        info_str = name
+        info_str = g["model"]
     return info_str, gpu_data
-
-
-def _collect_sysfs_gpu_data() -> tuple[str, dict | None]:
-    """Collect telemetry for AMD, Intel, or integrated GPUs via `/sys/class/drm`, preferring dGPUs."""
-    fallback_pair: tuple[str, dict] | None = None
-    for card_dev in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
-        pair = _read_sysfs_gpu_card(card_dev)
-        if pair is None:
-            continue
-        if pair[1].get("category") != "igpu":
-            return pair
-        if fallback_pair is None:
-            fallback_pair = pair
-    if fallback_pair is not None:
-        return fallback_pair
-    return "", None
-
-
-def _collect_sysfs_gpu_info() -> str:
-    return _collect_sysfs_gpu_data()[0]
-
-
-def _opt_float(val: str) -> float | None:
-    try:
-        s = str(val or "").strip()
-        if not s or "n/a" in s.lower() or "not supported" in s.lower():
-            return None
-        return float(s)
-    except Exception:
-        return None
-
-
-def _fetch_gpu_info_sync() -> tuple[str, dict | None]:
-    if probe.has_bin("nvidia-smi"):
-        ok, out = probe.run_cmd(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,temperature.gpu,power.draw,power.limit,pstate,clocks.gr,fan.speed,utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            timeout=1.2,
-        )
-        if ok and out:
-            line = out.splitlines()[0].strip()
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 4:
-                temp = _opt_float(parts[1])
-                draw = _opt_float(parts[2])
-                limit = _opt_float(parts[3])
-                gpu_data = {
-                    "name": parts[0],
-                    "category": "nvidia_dgpu",
-                    "vendor": "nvidia",
-                    "temp": temp,
-                    "draw": draw,
-                    "limit": limit,
-                    "pstate": parts[4] if len(parts) > 4 and "N/A" not in parts[4] else "",
-                    "clock_gr": _opt_float(parts[5]) if len(parts) > 5 else None,
-                    "fan": _opt_float(parts[6]) if len(parts) > 6 else None,
-                    "fan_rpm": None,
-                    "util": _opt_float(parts[7]) if len(parts) > 7 else None,
-                }
-                info_str = t("cc_power.gpu_draw_fmt", temp=parts[1], draw=parts[2], limit=parts[3])
-                return info_str, gpu_data
-            return line, None
-    return _collect_sysfs_gpu_data()
 
 
 def _collect_cpu_telemetry() -> dict:
@@ -556,25 +325,31 @@ def _collect_cpu_telemetry() -> dict:
 
     temp_c = None
     ccd_temps: list[tuple[str, float]] = []
-    for hw in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
-        hw_name = _read_file_str(os.path.join(hw, "name"), "").lower()
-        if hw_name not in ("k10temp", "coretemp", "zenpower"):
-            continue
-        fallback_t = None
-        for tp in sorted(glob.glob(os.path.join(hw, "temp*_input"))):
-            raw_t = _read_file_str(tp, "")
-            if not raw_t.lstrip("-").isdigit():
+    hw_dirs = sorted(glob.glob("/sys/class/hwmon/hwmon*"))
+    for prio_names in (("k10temp", "coretemp", "zenpower"), ("thinkpad", "dell_smm", "asus-ec-sensors", "asusec", "acpitz")):
+        for hw in hw_dirs:
+            hw_name = _read_file_str(os.path.join(hw, "name"), "").lower()
+            if hw_name not in prio_names:
                 continue
-            val_c = int(raw_t) / 1000.0
-            lbl = _read_file_str(tp[:-6] + "_label", "")
-            if fallback_t is None:
-                fallback_t = val_c
-            if lbl in ("Tctl", "Package id 0", "Tdie"):
-                temp_c = val_c
-            elif lbl.startswith(("Tccd", "Core")):
-                ccd_temps.append((lbl, val_c))
-        if temp_c is None:
-            temp_c = fallback_t
+            fallback_t = None
+            for tp in sorted(glob.glob(os.path.join(hw, "temp*_input"))):
+                raw_t = _read_file_str(tp, "")
+                if not raw_t.lstrip("-").isdigit():
+                    continue
+                val_c = int(raw_t) / 1000.0
+                if not (1.0 < val_c < 115.0):
+                    continue
+                lbl = _read_file_str(tp[:-6] + "_label", "")
+                if fallback_t is None:
+                    fallback_t = val_c
+                if lbl in ("Tctl", "Package id 0", "Tdie", "CPU"):
+                    temp_c = val_c
+                elif lbl.startswith(("Tccd", "Core")):
+                    ccd_temps.append((lbl, val_c))
+            if temp_c is None:
+                temp_c = fallback_t
+            if temp_c is not None:
+                break
         if temp_c is not None:
             break
 
@@ -693,6 +468,7 @@ def _collect_fan_telemetry() -> dict | None:
         pwm5_pct = max(0, min(100, int(round((int(pwm5_s) / 255.0) * 100)))) if pwm5_s.isdigit() else 0
         fan_priv = get_privileged_action("power_fan_profile")
         return {
+            "mode": "smart_fan",
             "hwmon_name": hw_name.upper(),
             "profile": active_id,
             "smart_fan": (en2 == "5"),
@@ -710,6 +486,31 @@ def _collect_fan_telemetry() -> dict | None:
             "is_custom_prof": is_custom_prof,
             "presets": prof_cfg["presets"],
             "custom": prof_cfg["custom"],
+        }
+
+    # Read-only fallback for laptops / desktops without nct67* Smart Fan IV
+    ro_fans: list[dict] = []
+    for hw in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        hw_name = _read_file_str(os.path.join(hw, "name"), "").lower()
+        if not hw_name or hw_name in ("amdgpu", "nouveau", "i915", "xe") or "psu" in hw_name:
+            continue
+        for fp in sorted(glob.glob(os.path.join(hw, "fan*_input"))):
+            rpm_s = _read_file_str(fp, "")
+            if not rpm_s.isdigit():
+                continue
+            idx_s = os.path.basename(fp)[3:-6]
+            lbl = _read_file_str(fp[:-6] + "_label", "") or f"Fan {idx_s}"
+            pwm_s = _read_file_str(os.path.join(hw, f"pwm{idx_s}"), "")
+            pwm_pct = max(0, min(100, int(round((int(pwm_s) / 255.0) * 100)))) if pwm_s.isdigit() else None
+            ro_fans.append({"hwmon": hw_name, "label": lbl, "rpm": int(rpm_s), "pwm_pct": pwm_pct})
+    if ro_fans:
+        return {
+            "mode": "readonly",
+            "hwmon_name": ro_fans[0]["hwmon"].upper(),
+            "fans": ro_fans[:6],
+            "smart_fan": False,
+            "is_dirty": False,
+            "fan_priv_ok": True,
         }
     return None
 
@@ -808,7 +609,7 @@ def _discover_thermal_sensors() -> list[dict]:
                 if not gpu_added and lbl_low in ("edge", "temp1", "junction"):
                     _add("gpu", "GPU", tp, "sysfs", 20)
                     gpu_added = True
-            elif hw_name == "asusec":
+            elif hw_name in ("asusec", "asus-ec-sensors"):
                 if lbl_low == "vrm":
                     _add("mb_vrm", "MB VRM", tp, "sysfs", 30)
                 elif lbl_low == "chipset":
@@ -823,6 +624,13 @@ def _discover_thermal_sensors() -> list[dict]:
                 else:
                     slug = re.sub(r"[^a-z0-9]+", "_", lbl_low).strip("_") or "aux"
                     _add(f"mb_{slug}", raw_lbl[:12], tp, "sysfs", 35)
+            elif hw_name in ("thinkpad", "dell_smm"):
+                if (lbl_low == "cpu" or lbl_low == "temp1") and not has_cpu_hwmon and "cpu_pkg" not in seen_ids:
+                    _add("cpu_pkg", "CPU", tp, "sysfs", 10)
+                else:
+                    slug = re.sub(r"[^a-z0-9]+", "_", f"{hw_name}_{lbl_low}").strip("_")
+                    short = raw_lbl if raw_lbl and not lbl_low.startswith("temp") else hw_name
+                    _add(f"hw_{slug}", short[:12], tp, "sysfs", 33)
             elif hw_name.startswith(("nct67", "it87")):
                 if lbl_low == "systin":
                     _add("mb_board", "Board", tp, "sysfs", 32)
@@ -843,9 +651,10 @@ def _discover_thermal_sensors() -> list[dict]:
                     nvme_done = True
             elif hw_name.startswith("r8169"):
                 _add("nic", "NIC", tp, "sysfs", 60)
+            elif hw_name == "acpitz":
+                if not has_cpu_hwmon and "acpi_tz" not in seen_ids:
+                    _add("acpi_tz", "ACPI", tp, "sysfs", 36)
             else:
-                if hw_name == "acpitz":
-                    continue
                 slug = re.sub(r"[^a-z0-9]+", "_", f"{hw_name}_{lbl_low}").strip("_")
                 short = raw_lbl if raw_lbl and not lbl_low.startswith("temp") else hw_name
                 _add(f"hw_{slug}", short[:12], tp, "sysfs", 70)
@@ -979,12 +788,16 @@ def get_power_profiles_tick_sig() -> tuple:
 
 def _collect_cpu_power(async_refresh: bool = False, cc_panel=None) -> dict:
     base = "/sys/devices/system/cpu/cpu0/cpufreq"
-    gov = _read_file_str(f"{base}/scaling_governor", "unknown")
-    avail_gov = _read_file_str(f"{base}/scaling_available_governors", "performance schedutil powersave").split()
+    gov = _read_file_str(f"{base}/scaling_governor", "")
+    avail_gov = _read_file_str(f"{base}/scaling_available_governors", "").split()
     epp = _read_file_str(f"{base}/energy_performance_preference", "")
     avail_epp = _read_file_str(f"{base}/energy_performance_available_preferences", "").split()
     boost = _read_file_str("/sys/devices/system/cpu/cpufreq/boost", "")
     ppd_active, ppd_avail = _collect_power_profiles()
+    tlp_active = False
+    if probe.has_bin("tlp"):
+        ok_tlp, out_tlp = probe.run_cmd(["systemctl", "is-active", "tlp"], timeout=0.6)
+        tlp_active = bool(ok_tlp and out_tlp.strip() == "active")
     cpu_tele = _collect_cpu_telemetry()
 
     with _CACHE_LOCK:
@@ -1017,6 +830,8 @@ def _collect_cpu_power(async_refresh: bool = False, cc_panel=None) -> dict:
     return {
         "ppd_active": ppd_active,
         "ppd_avail": ppd_avail,
+        "tlp_active": tlp_active,
+        "has_nvidia": has_nvidia_gpu(),
         "gov": gov,
         "avail_gov": avail_gov,
         "epp": epp,
@@ -1047,29 +862,85 @@ def get_cached_psu_data() -> dict | None:
         return dict(_PSU_CACHE["data"]) if isinstance(_PSU_CACHE.get("data"), dict) else None
 
 
-def _collect_sysfs_batteries() -> list[dict]:
-    bats = []
-    for path in sorted(glob.glob("/sys/class/power_supply/BAT*")):
+def _collect_sysfs_batteries() -> tuple[list[dict], bool | None, list[dict]]:
+    bats: list[dict] = []
+    ac_supplies: list[dict] = []
+    ac_online: bool | None = None
+    for path in sorted(glob.glob("/sys/class/power_supply/*")):
         name = os.path.basename(path)
+        stype = _read_file_str(os.path.join(path, "type"), "")
+        if stype == "Mains":
+            on_s = _read_file_str(os.path.join(path, "online"), "")
+            if on_s in ("0", "1"):
+                is_on = (on_s == "1")
+                ac_supplies.append({"name": name, "online": is_on})
+                ac_online = True if is_on else (False if ac_online is None else ac_online)
+            continue
+        if stype != "Battery" or _read_file_str(os.path.join(path, "scope"), "") == "Device":
+            continue
         cap_s = _read_file_str(os.path.join(path, "capacity"), "")
         if not cap_s.isdigit():
             continue
         cap = max(0, min(100, int(cap_s)))
         status = _read_file_str(os.path.join(path, "status"), "Unknown")
         pwr_uw = _read_file_str(os.path.join(path, "power_now"), "")
+        cur_ua = _read_file_str(os.path.join(path, "current_now"), "")
+        volt_uv = _read_file_str(os.path.join(path, "voltage_now"), "")
         watts = None
         if pwr_uw.isdigit() and int(pwr_uw) > 0:
             watts = round(int(pwr_uw) / 1_000_000.0, 1)
+        elif cur_ua.isdigit() and volt_uv.isdigit() and int(cur_ua) > 0 and int(volt_uv) > 0:
+            watts = round((int(cur_ua) * int(volt_uv)) / 1_000_000_000_000.0, 1)
+
+        def _int_attr(attr: str) -> int | None:
+            v = _read_file_str(os.path.join(path, attr), "")
+            return int(v) if v.isdigit() else None
+
+        e_full = _int_attr("energy_full")
+        e_des = _int_attr("energy_full_design")
+        e_now = _int_attr("energy_now")
+        c_full = _int_attr("charge_full")
+        c_des = _int_attr("charge_full_design")
+        c_now = _int_attr("charge_now")
+        health_pct = None
+        if e_full and e_des and e_des > 0:
+            health_pct = max(1, min(100, int(round((e_full / float(e_des)) * 100.0))))
+        elif c_full and c_des and c_des > 0:
+            health_pct = max(1, min(100, int(round((c_full / float(c_des)) * 100.0))))
+
+        cyc = _int_attr("cycle_count")
+        cycle_count = cyc if (cyc is not None and cyc > 0) else None
+
+        est_time_str = ""
+        rate = int(pwr_uw) if pwr_uw.isdigit() and int(pwr_uw) > 0 else (int(cur_ua) if cur_ua.isdigit() and int(cur_ua) > 0 else 0)
+        now_val = e_now if (pwr_uw.isdigit() and e_now is not None) else c_now
+        full_val = e_full if (pwr_uw.isdigit() and e_full is not None) else c_full
+        if rate > 0 and now_val is not None:
+            hrs = None
+            if status.lower() == "discharging" and now_val > 0:
+                hrs = now_val / float(rate)
+            elif status.lower() == "charging" and full_val is not None and full_val > now_val:
+                hrs = (full_val - now_val) / float(rate)
+            if hrs is not None and 0.02 <= hrs <= 48.0:
+                mins = int(round(hrs * 60.0))
+                est_time_str = f"{mins // 60}h {mins % 60:02d}m"
+
         end_thr = _read_file_str(os.path.join(path, "charge_control_end_threshold"), "")
+        start_thr = _read_file_str(os.path.join(path, "charge_control_start_threshold"), "")
         bats.append({
             "name": name,
             "capacity": cap,
             "status": status,
             "watts": watts,
+            "health_pct": health_pct,
+            "cycle_count": cycle_count,
+            "est_time_str": est_time_str,
             "end_threshold": int(end_thr) if end_thr.isdigit() else None,
             "has_threshold": os.path.exists(os.path.join(path, "charge_control_end_threshold")),
+            "start_threshold": int(start_thr) if start_thr.isdigit() else None,
+            "has_start_threshold": os.path.exists(os.path.join(path, "charge_control_start_threshold")),
         })
-    return bats
+    return bats, ac_online, ac_supplies
 
 
 def _fetch_upower_peripherals_sync() -> list[dict]:
@@ -1107,7 +978,7 @@ def _fetch_upower_peripherals_sync() -> list[dict]:
 
 
 def _collect_batteries_and_devices(cc_panel=None) -> dict:
-    bats = _collect_sysfs_batteries()
+    bats, ac_online, ac_supplies = _collect_sysfs_batteries()
     now = time.monotonic()
     need_fetch = False
     with _CACHE_LOCK:
@@ -1124,7 +995,7 @@ def _collect_batteries_and_devices(cc_panel=None) -> dict:
                 _UPOWER_CACHE["pending"] = False
             _schedule_ui_refresh(cc_panel)
         threading.Thread(target=_upower_worker, daemon=True).start()
-    return {"batteries": bats, "peripherals": peripherals}
+    return {"batteries": bats, "peripherals": peripherals, "ac_online": ac_online, "ac_supplies": ac_supplies}
 
 
 def _read_logind_power_key() -> str:
@@ -1184,7 +1055,8 @@ def _apply_idle_daemon() -> tuple[bool, str]:
     has_sway = probe.has_bin("swayidle")
     hypr_running = probe.run_cmd(["pgrep", "-x", "hypridle"], timeout=0.4)[0]
     sway_running = probe.run_cmd(["pgrep", "-x", "swayidle"], timeout=0.4)[0]
-    hypr_conf = os.path.expanduser("~/.config/hypr/hypridle.conf")
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    hypr_conf = os.path.join(xdg_cfg, "hypr", "hypridle.conf")
 
     if idle_min == 0 and dpms_min == 0 and not dim_idle and susp_ac == 0 and susp_bat == 0:
         probe.run_cmd(["pkill", "-x", "swayidle"], timeout=0.6)
@@ -1272,7 +1144,10 @@ def _run_cpu_priv(cc_panel, argv: list[str], stdin_text: str | None = None) -> t
         return ok, err, False
 
     if has_polkit_agent() and probe.has_bin("pkexec"):
-        cmd = ["pkexec"] + argv
+        pk_argv = list(argv)
+        if pk_argv and pk_argv[0] == "/usr/bin/cpupower":
+            pk_argv[0] = shutil.which("cpupower") or "/usr/bin/cpupower"
+        cmd = ["pkexec"] + pk_argv
         if stdin_text is not None:
             try:
                 res = subprocess.run(cmd, input=stdin_text, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=12.0)
@@ -1688,30 +1563,34 @@ def handle_cc_power_link(cc_panel, uri: str) -> bool:
             if (key == "vm.swappiness" and val in ("10", "60", "100")) or (key == "vm.dirty_ratio" and val in ("5", "8", "10", "20")):
                 ok, _o, err = probe.run_cmd_full(["pkexec", "sysctl", "-w", f"{key}={val}"], timeout=8.0)
                 _set_pwr_fb(ok, f"{key}={val}" if ok else (err or "sysctl failed"))
-    elif act.startswith("bat_thr:"):
+    elif act.startswith("bat_thr:") or act.startswith("bat_start:"):
+        is_start = act.startswith("bat_start:")
         rest = act.split(":", 1)[1]
         if ":" in rest:
             bat_name, thr = rest.split(":", 1)
-            if re.fullmatch(r"BAT[0-9]+", bat_name) and thr in ("80", "100"):
-                thr_path = f"/sys/class/power_supply/{bat_name}/charge_control_end_threshold"
-                ok, err = True, ""
-                try:
-                    with open(thr_path, "w", encoding="utf-8") as f:
-                        f.write(thr)
-                except PermissionError:
-                    if has_polkit_agent() and probe.has_bin("pkexec"):
-                        try:
-                            res = subprocess.run(["pkexec", "/usr/bin/tee", thr_path], input=thr, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=12.0)
-                            ok = res.returncode == 0
-                            err = (res.stdout or "").strip()
-                        except Exception as e:
-                            ok, err = False, str(e)
-                    else:
-                        ok, err = False, t("cc_power.priv_required")
-                except Exception as e:
-                    ok, err = False, str(e)
-                ok = ok and (_read_file_str(thr_path, "") == thr)
-                _set_pwr_fb(ok, t("cc_power.fb_charge_limit_set", p0=bat_name, p1=thr) if ok else t("cc_power.fb_charge_limit_err", p0=err or t("cc_power.priv_required")))
+            valid_vals = ("40", "60", "75") if is_start else ("80", "100")
+            attr = "charge_control_start_threshold" if is_start else "charge_control_end_threshold"
+            if re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", bat_name) and ".." not in bat_name and thr in valid_vals:
+                thr_path = f"/sys/class/power_supply/{bat_name}/{attr}"
+                if os.path.exists(thr_path):
+                    ok, err = True, ""
+                    try:
+                        with open(thr_path, "w", encoding="utf-8") as f:
+                            f.write(thr)
+                    except PermissionError:
+                        if has_polkit_agent() and probe.has_bin("pkexec"):
+                            try:
+                                res = subprocess.run(["pkexec", "/usr/bin/tee", thr_path], input=thr, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=12.0)
+                                ok = res.returncode == 0
+                                err = (res.stdout or "").strip()
+                            except Exception as e:
+                                ok, err = False, str(e)
+                        else:
+                            ok, err = False, t("cc_power.priv_required")
+                    except Exception as e:
+                        ok, err = False, str(e)
+                    ok = ok and (_read_file_str(thr_path, "") == thr)
+                    _set_pwr_fb(ok, t("cc_power.fb_charge_limit_set", p0=bat_name, p1=thr) if ok else t("cc_power.fb_charge_limit_err", p0=err or t("cc_power.priv_required")))
     elif act.startswith("idle_min:"):
         STATE.set("power", "idle_lock_min", int(act.split(":", 1)[1]))
         ok, msg = _apply_idle_daemon()

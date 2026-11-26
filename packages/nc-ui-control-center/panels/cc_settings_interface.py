@@ -7,7 +7,7 @@ from core.config import (
     get_hover_tooltip_delay,
     get_hover_tooltips_enabled,
 )
-from core.i18n import get_active_language, t
+from core.i18n import get_active_language, list_available_languages, t
 from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Box, SelectPill, Slider, Txt, get_semantic_palette
@@ -29,7 +29,7 @@ def _build_hero_banner_box(canvas: Canvas) -> Box:
     b_hero = Box("", highlighted=False)
     b_hero.add_row(" ")
     pills_line = (
-        f"{SelectPill(t('cc_settings.hero_online'), 'cc:section:sysinfo', selected=True)}  "
+        f"{ActionBtn(t('cc_settings.hero_online'), 'cc:section:sysinfo', tone='neutral')}  "
         f"{ActionBtn(t('cc_settings.hero_deterministic'), 'cc:section:personalization', tone='apply')}"
     )
     right_lines = (
@@ -53,7 +53,8 @@ def _build_hero_banner_box(canvas: Canvas) -> Box:
 def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     hide_unavail = get_hide_unavailable_settings()
     gen = CONFIG.get("general", {})
-    side = str(gen.get("side", "right"))
+    cc_cfg = CONFIG.get("control_center", {})
+    side = str(cc_cfg.get("side", gen.get("side", "right")))
     log_lvl = int(gen.get("log_level", 3))
     lang = get_active_language()
     cards = _feedback_cards()
@@ -72,7 +73,8 @@ def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     sd_pills = f"{SelectPill(t('cc_settings.left'), 'cc_set:side:left', selected=(side == 'left'))} {SelectPill(t('cc_settings.right'), 'cc_set:side:right', selected=(side == 'right'))}"
     b.add_kv(t("cc_settings.window_anchor_side"), sd_pills)
 
-    lg_pills = f"{SelectPill('English', 'cc_set:lang:en', selected=(lang == 'en'))} {SelectPill('Italiano', 'cc_set:lang:it', selected=(lang == 'it'))}"
+    lang_names = {"en": "English", "it": "Italiano"}
+    lg_pills = " ".join(SelectPill(lang_names.get(lg, lg.upper()), f"cc_set:lang:{lg}", selected=(lang == lg)) for lg in list_available_languages())
     b.add_kv(t("cc_settings.interface_language"), lg_pills)
 
     lv_pills = " ".join(SelectPill(str(lvl), f"cc_set:loglevel:{lvl}", selected=(log_lvl == lvl)) for lvl in (0, 1, 2, 3, 4))
@@ -127,7 +129,7 @@ def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     cur_off = int(STATE.get("settings", "log_scroll_offset", 0) or 0)
     log_path, win_lines, total, clamped_off = _read_log_window(cur_off, window_size=win_size)
     if clamped_off != cur_off:
-        STATE.set("settings", "log_scroll_offset", clamped_off)
+        STATE.set("settings", "log_scroll_offset", clamped_off, immediate=False)
 
     range_lbl = f"L{win_lines[0][0]}-{win_lines[-1][0]}/{total}" if win_lines else t("cc_settings.zero_lines")
     log_box = Box(
@@ -146,6 +148,8 @@ def _build_interface_standard(cc_panel, canvas: Canvas) -> list:
     )
     log_box.add_row(" ")
     max_off = max(0, total - win_size)
+    log_box.scroll_can_up = (clamped_off < max_off)
+    log_box.scroll_can_down = (clamped_off > 0)
     thumb_row = int(round((1.0 - (clamped_off / float(max(1, max_off)))) * (win_size - 1))) if total > win_size else (win_size - 1)
     max_txt_cols = max(40, canvas.inner_cols - 12)
     for row_i in range(win_size):

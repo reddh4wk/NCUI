@@ -5,7 +5,7 @@ import os
 import sys
 import traceback
 from gi.repository import GLib
-from core import log
+from core import log, probe
 from core.config import (
     apply_waybar_transparency,
     get_ui_transparency_pct,
@@ -38,22 +38,32 @@ _ALL_SECTION_BLUEPRINTS = {
     "datetime":        {"icon": "\uf017", "tabs": ["time", "calendar"]},
     "updates":         {"icon": "\uf0aa", "tabs": ["pacman", "aur", "flatpak", "orphans"]},
     "auth":            {"icon": "\uf023", "tabs": ["tpm", "keys", "polkit", "usbguard", "sudoers"]},
-    "telemetry":       {"icon": "\uf0ad", "tabs": ["boot", "recovery", "snapshots", "backups", "disks"]},
+    "telemetry":       {"icon": "\uf0ad", "tabs": ["boot", "recovery", "snapshots", "vault", "backups", "disks"]},
     "settings":        {"icon": "\uf013", "tabs": ["interface", "notifications"]},
 }
 
 
 def discover_section_blueprints() -> dict[str, dict]:
     """Discover installed Control Center sections and subtabs via package availability."""
+    is_arch = (probe.get_os_release().get("family") == "arch") or probe.has_bin("pacman")
     out: dict[str, dict] = {}
     for sec, bp in _ALL_SECTION_BLUEPRINTS.items():
         avail_tabs = [
             sub for sub in bp["tabs"]
-            if importlib.util.find_spec(f"panels.cc_{sec}_{sub}") is not None
+            if not (sec == "updates" and sub == "aur" and not is_arch)
+            and importlib.util.find_spec(f"panels.cc_{sec}_{sub}") is not None
         ]
         if avail_tabs:
             out[sec] = {"icon": bp["icon"], "tabs": avail_tabs}
     return out
+
+
+def get_tab_title(sec_id: str, sub_id: str) -> str:
+    if sec_id == "updates" and sub_id == "pacman":
+        if probe.get_os_release().get("family") != "arch" and not probe.has_bin("pacman"):
+            pm = probe.get_preferred_pkg_manager()
+            return t("control_center.tabs.updates.system_pkg", p0=pm.upper() if pm else t("common.system"))
+    return t(f"control_center.tabs.{sec_id}.{sub_id}", sub_id.title())
 
 
 SECTION_BLUEPRINTS = discover_section_blueprints()
@@ -95,7 +105,7 @@ _ENGINES = [
     ("notifications", "handle_cc_notifications_link", "handle_cc_notifications_prompt"),
     ("settings", "handle_cc_settings_link", "handle_cc_settings_prompt"),
     ("sysinfo", "handle_cc_sysinfo_link", None),
-    ("firewall", "handle_cc_firewall_link", "handle_cc_firewall_prompt"),
+    ("firewall", "handle_cc_firewall_link", None),
     ("personalization", "handle_cc_personalization_link", "handle_cc_personalization_prompt"),
     ("display", "handle_cc_display_link", "handle_cc_display_prompt"),
     ("network", "handle_cc_network_link", "handle_cc_network_prompt"),
@@ -388,7 +398,7 @@ class ControlCenterPanel(BasePanel):
             highlighted=True,
         )
 
-        localized_tabs = [(tid, t(f"control_center.tabs.{self.section}.{tid}", tid.title())) for tid in tabs]
+        localized_tabs = [(tid, get_tab_title(self.section, tid)) for tid in tabs]
         n_tabs = max(1, len(localized_tabs))
         avail_tab_cols = max(14, (canvas.inner_cols - 4 - (n_tabs - 1) * 2) // n_tabs - 2)
         min_tab_w = min(26, max(14, avail_tab_cols))
@@ -449,36 +459,50 @@ class ControlCenterPanel(BasePanel):
                     self.set_section(sec_id)
                     break
 
-    def on_link(self, uri: str) -> None:
+    def on_link(self, uri: str) -> bool:
+        if not isinstance(uri, str) or not uri:
+            return False
         if uri == "cc_term:close":
             from ui.embedded_tui import close_panel_terminal
 
             close_panel_terminal(self)
-            return
+            return True
         if handle_privilege_link(self, uri):
-            return
+            return True
         for sec, lnk_fn, _prm_fn in _ENGINES:
             mod = _import_engine(sec)
             if mod is not None and hasattr(mod, lnk_fn):
                 if getattr(mod, lnk_fn)(self, uri):
-                    return
+                    return True
         if uri == "cc:trans_apply":
             if self.shell:
                 self.shell.bump_leave_guard(1.5)
             apply_waybar_transparency()
-            return
+            return True
         if uri.startswith("cc:section:"):
-            self.set_section(uri.split(":", 2)[2])
+            sec = uri.split(":", 2)[2].strip()
+            if not sec or sec not in discover_section_blueprints():
+                return False
+            self.set_section(sec)
             if self.shell:
                 self.shell.refresh_view()
+            return True
         elif uri.startswith("cc:subtab:"):
-            self.set_subtab(uri.split(":", 2)[2])
+            sub = uri.split(":", 2)[2].strip()
+            if not sub:
+                return False
+            self.set_subtab(sub)
             if self.shell:
                 self.shell.refresh_view()
+            return True
         elif uri.startswith("cc:lang:"):
-            set_language(uri.split(":", 2)[2])
+            lang = uri.split(":", 2)[2].strip()
+            if not lang:
+                return False
+            set_language(lang)
             if self.shell:
                 self.shell.refresh_view()
+            return True
         elif uri.startswith("cc:trans:"):
             try:
                 val = int(round(float(uri.split(":", 2)[2])))
@@ -486,8 +510,9 @@ class ControlCenterPanel(BasePanel):
                 if self.shell:
                     self.shell._apply_css()
                 self.request_throttled_refresh()
+                return True
             except Exception:
-                pass
+                return False
         elif uri.startswith("cc:trans_scroll:"):
             cur = get_ui_transparency_pct()
             step = 5 if uri.rsplit(":", 1)[1] == "up" else -5
@@ -495,6 +520,8 @@ class ControlCenterPanel(BasePanel):
             if self.shell:
                 self.shell._apply_css()
             self.request_throttled_refresh()
+            return True
+        return False
 
     def on_key_press(self, event) -> bool:
         if STATE.get("desktop", "yazi_open", False):

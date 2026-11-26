@@ -3,9 +3,11 @@ import glob
 import json
 import os
 import re
-from core.config import estimate_waybar_free_chars_budget
+from core.config import THEME, estimate_waybar_free_chars_budget
+from core.i18n import t
 from core import probe
-from ui.kit import Txt
+from ui.canvas import Canvas
+from ui.kit import Box, Txt
 from panels.base import BasePanel
 
 DEDICATED_MUSIC_PLAYERS = (
@@ -151,27 +153,24 @@ def _read_pactl_sink_inputs() -> list[dict]:
 
 
 def _snss_session_files(player: str) -> list[str]:
+    cfg_base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    cfg_base = os.path.expanduser(cfg_base) if cfg_base else os.path.expanduser("~/.config")
     p_low = (player or "").lower()
-    roots = []
     if "brave" in p_low:
-        roots.append("~/.config/BraveSoftware/Brave-Browser")
+        rels = ["BraveSoftware/Brave-Browser"]
     elif "chrome" in p_low:
-        roots.append("~/.config/google-chrome")
+        rels = ["google-chrome"]
     elif "chromium" in p_low:
-        roots.append("~/.config/chromium")
+        rels = ["chromium"]
     elif "vivaldi" in p_low:
-        roots.append("~/.config/vivaldi")
+        rels = ["vivaldi"]
     elif "edge" in p_low:
-        roots.append("~/.config/microsoft-edge")
+        rels = ["microsoft-edge"]
     else:
-        roots.extend([
-            "~/.config/BraveSoftware/Brave-Browser",
-            "~/.config/google-chrome",
-            "~/.config/chromium",
-        ])
+        rels = ["BraveSoftware/Brave-Browser", "google-chrome", "chromium"]
     cand = []
-    for root in roots:
-        base = os.path.expanduser(root)
+    for rel in rels:
+        base = os.path.join(cfg_base, rel)
         if not os.path.isdir(base):
             continue
         for pat in ("*/Sessions/Session_*", "*/Sessions/Tabs_*"):
@@ -389,8 +388,15 @@ def get_playing_music_metadata(max_chars: int = None) -> str:
 
 class Panel(BasePanel):
     id = "media"
-    title = "Media"
     icon = "\uf001"
+    supports_expand = False
+
+    def __init__(self, shell=None):
+        self.title = t("cc_waybar.p_custom_media_lbl") if shell is not None else self.id
+        super().__init__(shell)
+
+    def get_cols(self, force_expanded: bool = False) -> int:
+        return int(THEME["geometry"]["compact_cols"])
 
     def get_bar_pill(self) -> dict:
         markup = get_playing_music_metadata()
@@ -399,6 +405,23 @@ class Panel(BasePanel):
             "tooltip": "",
             "class": "module-nc-media" if markup else "module-nc-media-empty",
         }
+
+    def build_cards(self, canvas: Canvas, force_expanded: bool = False) -> list:
+        target_cols = self.get_cols()
+        canvas.set_cols(target_cols)
+        box = Box(
+            t("cc_waybar.p_custom_media_lbl"),
+            icon=self.icon,
+            highlighted=False,
+            fixed_width=True,
+            min_cols=target_cols,
+            max_cols=target_cols,
+        )
+        box.add_row(" ")
+        now_m = get_playing_music_metadata(max_chars=target_cols - 6)
+        box.add_row(f"  {now_m or Txt(t('media.idle'), role='inactive')}")
+        box.add_row(" ")
+        return [box]
 
 
 def create_panel(panel_id: str, shell=None) -> BasePanel:

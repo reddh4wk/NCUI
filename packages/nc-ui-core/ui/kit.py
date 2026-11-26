@@ -3,9 +3,10 @@ import json
 import math
 import os
 import re
-from core.config import THEME, color_for_pct, get_hide_unavailable_settings
+import time
+from core.config import THEME, color_for_pct, get_hide_unavailable_settings, hex_to_rgba_f, strip_jsonc_comments
 from core.i18n import t
-from ui.canvas import Canvas, _ATOMIC_WIDGET_RE
+from ui.canvas import Canvas, _ATOMIC_WIDGET_RE, rounded_rect_path
 
 DEFAULT_KEY_WIDTH = 20
 COMPACT_KEY_WIDTH = 12
@@ -538,39 +539,6 @@ def FoldToggle(panel, sec_key: str, default: bool = False, is_it: bool = True, d
     return opened, FoldIconBtn(opened, uri, label=lbl, dirty=dirty)
 
 
-# --- Alias legacy mantenuti solo per retrocompatibilità; usare i nomi canonici sopra ---
-ui_pill = SelectPill
-ui_act_btn = ActionBtn
-ui_status_badge = StateBadge
-ui_fold_toggle = FoldToggle
-
-
-def Btn(label: str, action: str, style: str = "accent", active: bool = False, brackets: bool = True) -> str:
-    """Wrapper legacy deprecato -> instrada su `ActionBtn` bloccando sfondi e ciano impropri."""
-    style_to_tone = {
-        "accent":    "apply",
-        "info":      "neutral",
-        "primary":   "primary",
-        "secondary": "neutral",
-        "muted":     "muted",
-        "warn":      "warn",
-        "alert":     "danger_soft",
-        "crit":      "danger_soft",
-    }
-    return ActionBtn(label, action, tone=style_to_tone.get(style, "neutral"), brackets=brackets)
-
-
-def ToggleExpandBtn(is_expanded: bool) -> str:
-    """Pulsante di espansione/compressione popup Waybar: sempre `neutral` senza sfondo (§3.2.1)."""
-    return ActionBtn("-" if is_expanded else "+", "ui:toggle_expand", tone="neutral")
-
-
-def StateToggleBtn(label_on: str, label_off: str, state_key: str, current_val: bool, style: str = "secondary") -> str:
-    next_val = "false" if current_val else "true"
-    lbl = label_on if current_val else label_off
-    return SelectPill(lbl, f"ui:state:{state_key}:{next_val}", selected=current_val)
-
-
 def Badge(text: str, style: str = "warn", min_chars: int = 0) -> str:
     """
     Capsula passiva di allerta/verdetto operativo (Golden Standard §2.1.2 / §3.1.3 / §3.2.2):
@@ -601,10 +569,6 @@ def Badge(text: str, style: str = "warn", min_chars: int = 0) -> str:
     if style in ("muted", "inactive"):
         return f"<span color='{p['inactive']}'>{clean}</span>"
     return f"<span color='{p['schema']}'>{clean}</span>"
-
-
-def StatusDot(active: bool, label_on: str = "ON", label_off: str = "OFF") -> str:
-    return StateBadge(active, label_on, label_off, on_tone="ok")
 
 
 def ColorSwatch(hex_color: str, width: int = 4) -> str:
@@ -970,28 +934,6 @@ def InlineFilter(
     return box_markup
 
 
-def SearchBox(
-    query: str,
-    placeholder: str,
-    trigger_uri: str,
-    clear_uri: str = "",
-    active: bool = False,
-    width: int = 34,
-    entry_id: str = "",
-) -> str:
-    """Alias standardizzato verso `InlineFilter` (mantiene firma retrocompatibile)."""
-    return InlineFilter(
-        entry_id=entry_id,
-        query=query,
-        placeholder=placeholder,
-        trigger_uri=trigger_uri,
-        clear_uri=clear_uri,
-        width=width,
-        compact=False,
-        active=active,
-    )
-
-
 _INLINE_ACTIVE_ID: str = ""
 _INLINE_ACTIVE_URI: str = ""
 _INLINE_BUFFER: str = ""
@@ -1246,33 +1188,6 @@ def start_inline_input(
             _INLINE_TIMER_ID = None
     if target_shell is not None:
         target_shell.refresh_view()
-
-
-def start_inline_entry(
-    entry_id: str,
-    shell=None,
-    max_len: int = 6,
-    validator=None,
-    on_commit=None,
-    on_invalid=None,
-    strip_leading_hash: bool = True,
-    uppercase: bool = True,
-    initial_text: str = "",
-    trigger_uri: str = "",
-) -> None:
-    """Wrapper retrocompatibile su `start_inline_input` (commit solo con Invio)."""
-    start_inline_input(
-        entry_id=entry_id,
-        shell=shell,
-        trigger_uri=trigger_uri,
-        initial_text=initial_text,
-        max_len=max_len,
-        validator=validator,
-        on_commit=on_commit,
-        on_invalid=on_invalid,
-        strip_leading_hash=strip_leading_hash,
-        uppercase=uppercase,
-    )
 
 
 def sync_inline_from_gtk_entry(raw_text: str, cursor_pos: int, shell=None) -> None:
@@ -1549,34 +1464,6 @@ def InlineField(
     )
 
 
-def InlineEntry(
-    entry_id: str,
-    uri: str,
-    label: str = "Custom",
-    placeholder: str = "custom",
-    max_len: int = 6,
-    active_value: str = "",
-    selected: bool = False,
-    dirty: bool = False,
-    is_hex_color: bool = True,
-) -> str:
-    """Wrapper retrocompatibile su `InlineField`."""
-    return InlineField(
-        entry_id=entry_id,
-        uri=uri,
-        value=active_value if (selected and active_value) else "",
-        placeholder=placeholder,
-        empty_label=label,
-        width=max(8, int(max_len) + 2),
-        icon="",
-        tone="neutral",
-        active=False,
-        dirty=dirty,
-        is_hex_color=is_hex_color,
-        selected=selected,
-    )
-
-
 class Divider:
     is_divider = True
 
@@ -1637,6 +1524,8 @@ class Box:
         self.highlighted = bool(highlighted)
         self.selected = bool(selected)
         self.scroll_action = scroll_action
+        self.scroll_can_up = True
+        self.scroll_can_down = True
         self.title_is_markup = title_is_markup
         self.width_mode = "fixed" if fixed_width else width_mode
         self.min_cols = min_cols
@@ -2463,6 +2352,40 @@ def FeedbackBox(title: str, ok: bool, msg: str) -> Box:
     b._toast_meta = {"title": str(title), "ok": bool(ok), "msg": str(msg)}
     b.add_kv(t("common.status"), Txt(str(msg), role="val" if ok else "fault"))
     return b
+
+
+def set_feedback(ns: str, ok: bool, msg: str, key: str = "cc_fb") -> None:
+    from core.state import STATE
+    STATE.set(ns, key, {"ok": bool(ok), "msg": str(msg), "ts": time.time()})
+
+
+def feedback_cards(ns: str, title_key: str, key: str = "cc_fb", ttl: float = 15.0) -> list:
+    from core.state import STATE
+    fb = STATE.get(ns, key, {})
+    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < ttl:
+        return [FeedbackBox(t(title_key), bool(fb.get("ok", True)), str(fb["msg"]))]
+    return []
+
+
+def make_feedback_cards(ns: str, state=None, title_key: str = "", key: str = "cc_fb", ttl: float = 15.0) -> list:
+    tk = title_key or (state if isinstance(state, str) else "common.status")
+    fb = state.get(ns, key, {}) if hasattr(state, "get") else None
+    if fb is None:
+        return feedback_cards(ns, tk, key=key, ttl=ttl)
+    if isinstance(fb, dict) and fb.get("msg") and (time.time() - float(fb.get("ts", 0))) < ttl:
+        return [FeedbackBox(t(tk), bool(fb.get("ok", True)), str(fb["msg"]))]
+    return []
+
+
+def temp_role(temp_c: float | None, warn_c: float = 75.0, fault_c: float = 85.0, ok_role: str = "val") -> str:
+    if temp_c is None:
+        return "inactive"
+    t_val = float(temp_c)
+    if t_val >= fault_c:
+        return "fault"
+    if t_val >= warn_c:
+        return "attention"
+    return ok_role
 
 
 def sync_boxes_width(items: list, canvas: Canvas, base_cols: int = None) -> int:

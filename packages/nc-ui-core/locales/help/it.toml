@@ -6,7 +6,7 @@
 # ==============================================================================
 ["cc:section:sysinfo"]
 title = "Panoramica Sistema"
-short = "Apre la vista generale della workstation Nightcity con SO, kernel, inventario hardware e power tools."
+short = "Apre la vista generale del sistema con SO, kernel, inventario hardware e strumenti rapidi."
 verbose = "Mostra identità dell'host, kernel attivo (`linux-cachyos` / `linux-cachyos-hardened`), stack Limine/Wayland, telemetria termica CPU/RAM/GPU e scorciatoie dirette agli script in `/usr/lib/ncui/sbin/`."
 
 ["cc:section:display"]
@@ -77,7 +77,7 @@ verbose = "Gestisce Secure Boot (`sbctl`), sblocco automatico TPM2 su PCR, porta
 ["cc:section:telemetry"]
 title = "Telemetria, Boot & Recovery"
 short = "Apre monitor live di sistema, editor Limine, Golden Image recovery, snapshot LVM, backup Vault e ispettore dischi."
-verbose = "Centralizza l'ingegneria di Nightcity: monitor `btop`/`nvtop`, boot UKI `limine.conf`, `nc-rescue`/`nc-golden`, `nc-snap`, `nc-hanoi` e diagnostica dischi `nc-disks`."
+verbose = "Centralizza gli strumenti di ingegneria NC-UI: monitor `btop`/`nvtop`, boot UKI `limine.conf`, `nc-rescue`/`nc-golden`, `nc-snap`, `nc-hanoi` e diagnostica dischi `nc-disks`."
 
 ["cc:section:settings"]
 title = "Impostazioni Interfaccia & Notifiche"
@@ -95,12 +95,12 @@ short = "Passa a questa sottoscheda all'interno della sezione attiva del Control
 ["cc:lang:en"]
 title = "Lingua Interfaccia: English"
 short = "Imposta immediatamente tutta l'interfaccia NC-UI, gli stati e le descrizioni di aiuto in inglese."
-verbose = "Salva `language = \"en\"` in `~/.config/nc-ui/config.toml` e ricarica a caldo i dizionari `locales/en.toml`, `locales/help/en.toml` e `locales/help/en/*.toml` senza riavviare la finestra."
+verbose = "Salva `language = \"en\"` in `~/.config/ncui/config.toml` e ricarica a caldo i dizionari `locales/en.toml`, `locales/help/en.toml` e `locales/help/en/*.toml` senza riavviare la finestra."
 
 ["cc:lang:it"]
 title = "Lingua Interfaccia: Italiano"
 short = "Imposta immediatamente tutta l'interfaccia NC-UI, gli stati e le descrizioni di aiuto in italiano."
-verbose = "Salva `language = \"it\"` in `~/.config/nc-ui/config.toml` e ricarica a caldo i dizionari `locales/it.toml`, `locales/help/it.toml` e `locales/help/it/*.toml` senza riavviare la finestra."
+verbose = "Salva `language = \"it\"` in `~/.config/ncui/config.toml` e ricarica a caldo i dizionari `locales/it.toml`, `locales/help/it.toml` e `locales/help/it/*.toml` senza riavviare la finestra."
 
 ["cc:global_search_open"]
 title = "Ricerca Globale (Ctrl+F)"
@@ -453,6 +453,66 @@ short = "Apre modifica inline per l'alias breve (`nc`, `dc`, `wsl`) che identifi
 ["cc_sys:vault_folder_open"]
 title = "Modifica Cartella Sistema nel Vault.."
 short = "Apre modifica inline per il nome della cartella dedicata a questo host dentro il Vault."
+
+["cc_sys:vault_port_open"]
+title = "Modifica Porta Personalizzata.."
+short = "Imposta una porta TCP opzionale per SMB (445), NFS (2049) o SSH (22); lascia vuoto per il valore predefinito."
+
+["cc_sys:vault_cfg:mount_visibility:*"]
+title = "Seleziona Visibilità Mount"
+short = "Sceglie se creare symlink in `~/NAS`, esporre i dischi nei file manager (`x-gvfs-show` per Thunar/Nautilus/Dolphin), entrambi o solo mount di sistema."
+
+["cc_sys:vault_symdir_open"]
+title = "Modifica Cartella Symlink Utente.."
+short = "Imposta la directory in cui creare i collegamenti simbolici alle share (supporta `~/` e `$USER`, default `~/NAS`)."
+
+["cc_sys:vault_cfg:smb_version:*"]
+title = "Seleziona Versione SMB"
+short = "Forza un dialetto CIFS specifico (`3.1.1`, `3.0`, `2.1`) oppure usa `AUTO` per la negoziazione automatica del kernel."
+
+["cc_sys:vault_mopts_open"]
+title = "Modifica Opzioni Mount Extra.."
+short = "Aggiunge flag separati da virgola passati al comando `mount` (es. `noperm`, `sec=ntlmssp`)."
+
+["cc_sys:vault_share_add"]
+title = "Aggiungi Share / Mountpoint.."
+short = "Aggiunge una nuova share o mappatura `<share>:</percorso/locale>` (supporta `$USER`) in `resilience.toml`."
+
+["cc_sys:vault_share_sel:*"]
+title = "Ispeziona Share"
+short = "Seleziona la share nell'ispettore sottostante per vedere origine remota, occupazione o personalizzarne il mountpoint."
+
+["cc_sys:vault_share_edit_mp:*"]
+title = "Personalizza Mountpoint Share.."
+short = "Imposta un punto di montaggio dedicato per questa specifica share (svuota per tornare al percorso base)."
+
+["cc_sys:vault_share_reset_mp:*"]
+title = "Ripristina Mountpoint Default"
+short = "Riporta la share al montaggio standard sotto `<mountpoint_base>/<share>`."
+
+["cc_sys:vault_share_rm_*"]
+title = "Rimuovi Share dal Vault"
+short = "Conferma in due passaggi per rimuovere questa share da `[vault].shares` in `resilience.toml`."
+
+["cc_sys:vault_open_*"]
+title = "Apri Cartella Montata"
+short = "Apre il punto di montaggio attivo nel file manager tramite `xdg-open`."
+
+["cc_sys:vault_creds_mode:*"]
+title = "Cambia Modalità Autenticazione SMB"
+short = "Alterna tra file credenziali protetto (`/etc/samba/nas-cred`) e montaggio anonimo `guest`."
+
+["cc_sys:vault_creds_auth"]
+title = "Autorizza Credenziali SMB.."
+short = "Richiede utente e password SMB, verifica l'accesso al NAS, salva le credenziali in sicurezza (`0600 root:root`) e monta gli share."
+
+["cc_sys:vault_ssh_push"]
+title = "Push Staging SSH"
+short = "Sincronizza immediatamente verso il server remoto le modifiche locali nello staging SSH Vault."
+
+["cc_sys:vault_goto_tab"]
+title = "Apri Scheda NAS & Vault"
+short = "Passa alla scheda dedicata `NAS & Vault` per gestire mountpoint, share, protocolli e visibilità nei file manager."
 
 ["cc_sys:hanoi_check"]
 title = "Scansiona Drift (Controllo Sync)"

@@ -17,26 +17,42 @@ import urllib.parse
 import urllib.request
 import uuid
 from core import log, probe
-from core.config import CONFIG_DIR
+from core.config import get_cache_dir, get_config_dir
 from core.i18n import t
 from core.paths import find_bin, resolve_script_path
 from core.state import STATE
-from ui.kit import FeedbackBox
+from ui.kit import feedback_cards, set_feedback, start_inline_input
 
-DB_PATH = os.path.join(CONFIG_DIR, "calendar.db")
-ICAL_FEEDS_FILE = os.path.join(CONFIG_DIR, "ical_feeds.json")
-CLOUD_CACHE_DIR = os.path.expanduser("~/.cache/nc-ui")
-REMINDER_STATE_FILE = os.path.join(CLOUD_CACHE_DIR, "calendar_reminded.json")
-NOTIF_HIST_FILE = os.path.expanduser("~/.cache/nc_notifications.json")
 _ICAL_SYNC_LOCK = threading.Lock()
 _ICAL_LOCK_FILE = "/tmp/nc_ical_sync.lock"
 
 
-_CAL_FB = None
+def _db_path() -> str:
+    return os.path.join(get_config_dir(), "calendar.db")
+
+
+def _ical_feeds_file() -> str:
+    return os.path.join(get_config_dir(), "ical_feeds.json")
+
+
+def _cloud_cache_dir() -> str:
+    return get_cache_dir()
+
+
+def _reminder_state_file() -> str:
+    return os.path.join(_cloud_cache_dir(), "calendar_reminded.json")
+
+
+def _notif_hist_file() -> str:
+    return os.path.join(_cloud_cache_dir(), "nc_notifications.json")
+
+
+def _feedback_cards() -> list:
+    return feedback_cards("calendar", "cc_datetime.status_title")
 
 
 def init_db(db_path: str = None) -> bool:
-    target_db = db_path or DB_PATH
+    target_db = db_path or _db_path()
     try:
         os.makedirs(os.path.dirname(target_db), exist_ok=True)
         with sqlite3.connect(target_db, timeout=5.0) as conn:
@@ -92,7 +108,7 @@ def set_calendar_mode(mode: str) -> None:
     STATE.set("calendar", "mode", norm)
     STATE.set("calendar", "initialized", True)
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             conn.execute("DELETE FROM events WHERE source = 'google'")
             conn.commit()
     except Exception:
@@ -113,7 +129,11 @@ def set_reminder_minutes(mins: int) -> int:
 
 
 def _resolve_notify_script() -> str:
-    return find_bin("nc-notify", fallback_aliases=("nc_util_notify.sh",)) or resolve_script_path("nc-notify", fallback_alias="nc_util_notify.sh")
+    cand = find_bin("nc-notify")
+    if cand and os.path.isfile(cand):
+        return cand
+    sp = resolve_script_path("nc-notify")
+    return sp if (sp and os.path.isfile(sp)) else ""
 
 
 def dispatch_nc_notification(title: str, body: str) -> None:
@@ -121,10 +141,13 @@ def dispatch_nc_notification(title: str, body: str) -> None:
     if script:
         probe.spawn_bg(["bash", script, "--title", str(title), "--body", str(body)])
         return
+    notif_hist = _notif_hist_file()
+    legacy_hist = os.path.join(os.path.dirname(_cloud_cache_dir()), "nc_notifications.json")
+    read_hist = notif_hist if os.path.exists(notif_hist) else legacy_hist
     try:
         notifs = []
-        if os.path.exists(NOTIF_HIST_FILE):
-            with open(NOTIF_HIST_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(read_hist):
+            with open(read_hist, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 if isinstance(loaded, list):
                     notifs = loaded
@@ -134,8 +157,8 @@ def dispatch_nc_notification(title: str, body: str) -> None:
             "body": str(body),
             "deleted": False,
         })
-        os.makedirs(os.path.dirname(NOTIF_HIST_FILE), exist_ok=True)
-        with open(NOTIF_HIST_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(notif_hist), exist_ok=True)
+        with open(notif_hist, "w", encoding="utf-8") as f:
             json.dump(notifs[:50], f)
     except Exception as e:
         log.error(f"Fallback notification write error: {e}")
@@ -149,11 +172,12 @@ def check_and_trigger_reminders() -> None:
         return
 
     now_ts = time.time()
-    os.makedirs(CLOUD_CACHE_DIR, exist_ok=True)
+    os.makedirs(_cloud_cache_dir(), exist_ok=True)
     rem_state = {"last_check": 0.0, "date": "", "notified": []}
-    if os.path.exists(REMINDER_STATE_FILE):
+    rem_file = _reminder_state_file()
+    if os.path.exists(rem_file):
         try:
-            with open(REMINDER_STATE_FILE, "r", encoding="utf-8") as f:
+            with open(rem_file, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
                 if isinstance(loaded, dict):
                     rem_state.update(loaded)
@@ -195,25 +219,26 @@ def check_and_trigger_reminders() -> None:
     rem_state["last_check"] = now_ts
     rem_state["notified"] = list(notified_set)
     try:
-        with open(REMINDER_STATE_FILE, "w", encoding="utf-8") as f:
+        with open(rem_file, "w", encoding="utf-8") as f:
             json.dump(rem_state, f)
     except Exception:
         pass
 
 
 def get_db_stats() -> dict:
-    stats = {"total": 0, "local": 0, "ical": 0, "size_kb": 0.0, "path": DB_PATH}
+    db_p = _db_path()
+    stats = {"total": 0, "local": 0, "ical": 0, "size_kb": 0.0, "path": db_p}
     if not is_calendar_initialized():
-        if os.path.exists(DB_PATH):
+        if os.path.exists(db_p):
             try:
-                with sqlite3.connect(DB_PATH, timeout=2.0) as conn:
+                with sqlite3.connect(db_p, timeout=2.0) as conn:
                     cnt = int(conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] or 0)
                 if cnt == 0:
-                    os.remove(DB_PATH)
+                    os.remove(db_p)
                     for ext in ("-wal", "-shm"):
-                        if os.path.exists(DB_PATH + ext):
+                        if os.path.exists(db_p + ext):
                             try:
-                                os.remove(DB_PATH + ext)
+                                os.remove(db_p + ext)
                             except Exception:
                                 pass
                     return stats
@@ -221,12 +246,12 @@ def get_db_stats() -> dict:
                 pass
         return stats
 
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(db_p):
         init_db()
-    if os.path.exists(DB_PATH):
+    if os.path.exists(db_p):
         try:
-            stats["size_kb"] = os.path.getsize(DB_PATH) / 1024.0
-            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+            stats["size_kb"] = os.path.getsize(db_p) / 1024.0
+            with sqlite3.connect(db_p, timeout=5.0) as conn:
                 stats["total"] = int(conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] or 0)
                 stats["local"] = int(conn.execute("SELECT COUNT(*) FROM events WHERE source = 'local'").fetchone()[0] or 0)
                 stats["ical"] = int(conn.execute("SELECT COUNT(*) FROM events WHERE source != 'local'").fetchone()[0] or 0)
@@ -321,7 +346,7 @@ def add_local_event(
     ev_uid = uid or f"nc-{uuid.uuid4().hex}@nc-ui"
     now = time.time()
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -360,7 +385,7 @@ def delete_event_by_id(event_id) -> bool:
     init_db()
     s_id = str(event_id)
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             if s_id.isdigit():
                 conn.execute("DELETE FROM events WHERE id = ?", (int(s_id),))
             else:
@@ -375,7 +400,7 @@ def delete_event_by_id(event_id) -> bool:
 def clear_local_events() -> None:
     init_db()
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             conn.execute("DELETE FROM events WHERE source = 'local'")
             conn.commit()
     except Exception:
@@ -383,11 +408,12 @@ def clear_local_events() -> None:
 
 
 def _query_db_range(start_iso: str, end_iso: str, include_ical: bool = True) -> list[dict]:
-    if not is_calendar_initialized() or not os.path.exists(DB_PATH):
+    db_p = _db_path()
+    if not is_calendar_initialized() or not os.path.exists(db_p):
         return []
     out = []
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(db_p, timeout=5.0) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             sql = (
@@ -430,10 +456,11 @@ _ICS_WD = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 
 
 def get_ical_feeds() -> list[dict]:
-    if not os.path.exists(ICAL_FEEDS_FILE):
+    feeds_p = _ical_feeds_file()
+    if not os.path.exists(feeds_p):
         return []
     try:
-        with open(ICAL_FEEDS_FILE, "r", encoding="utf-8") as f:
+        with open(feeds_p, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return [d for d in data if isinstance(d, dict) and d.get("url")]
@@ -443,12 +470,13 @@ def get_ical_feeds() -> list[dict]:
 
 
 def save_ical_feeds(feeds: list[dict]) -> None:
-    os.makedirs(os.path.dirname(ICAL_FEEDS_FILE), exist_ok=True)
-    tmp = f"{ICAL_FEEDS_FILE}.tmp.{os.getpid()}"
+    feeds_p = _ical_feeds_file()
+    os.makedirs(os.path.dirname(feeds_p), exist_ok=True)
+    tmp = f"{feeds_p}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(feeds, f, indent=2)
     os.chmod(tmp, 0o600)
-    os.replace(tmp, ICAL_FEEDS_FILE)
+    os.replace(tmp, feeds_p)
 
 
 def get_ical_feed_names() -> dict[str, str]:
@@ -523,7 +551,7 @@ def remove_ical_feed(feed_id: str) -> None:
     save_ical_feeds(feeds)
     init_db()
     try:
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             conn.execute("DELETE FROM events WHERE source = ?", (f"ical:{feed_id}",))
             conn.commit()
     except Exception:
@@ -539,9 +567,10 @@ def toggle_ical_feed(feed_id: str) -> bool:
             f["enabled"] = new_en
             break
     save_ical_feeds(feeds)
-    if not new_en and os.path.exists(DB_PATH):
+    db_p = _db_path()
+    if not new_en and os.path.exists(db_p):
         try:
-            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+            with sqlite3.connect(db_p, timeout=5.0) as conn:
                 conn.execute("DELETE FROM events WHERE source = ?", (f"ical:{feed_id}",))
                 conn.commit()
         except Exception:
@@ -990,16 +1019,16 @@ def sync_all_ical_feeds_blocking(force: bool = False) -> bool:
                 with urllib.request.urlopen(req, timeout=10.0, context=ssl_ctx) as resp:
                     raw_bytes = resp.read(8 * 1024 * 1024 + 1)
                     if len(raw_bytes) > 8 * 1024 * 1024:
-                        feed["last_err"] = "Feed > 8 MiB"
+                        feed["last_err"] = t("cc_calendar.feed_too_large")
                         continue
                     text = raw_bytes.decode("utf-8", errors="replace")
                     if "BEGIN:VCALENDAR" not in text:
-                        feed["last_err"] = "Not a valid .ics calendar"
+                        feed["last_err"] = t("cc_calendar.feed_invalid_ics")
                         continue
                     src_tag = f"ical:{feed['id']}"
                     parsed = parse_ics_content(text, source_tag=src_tag, window_start=w_start, window_end=w_end)
                     ts_now = time.time()
-                    with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+                    with sqlite3.connect(_db_path(), timeout=5.0) as conn:
                         conn.execute("DELETE FROM events WHERE source = ?", (src_tag,))
                         conn.executemany(
                             """
@@ -1076,22 +1105,22 @@ def export_db_file(dest_path: str) -> tuple[bool, str]:
     init_db()
     target = os.path.expanduser(str(dest_path or "").strip())
     if not target:
-        return False, "Invalid destination path"
+        return False, t("cc_calendar.invalid_dest_path")
     try:
         os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
-        with sqlite3.connect(DB_PATH, timeout=5.0) as src_conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as src_conn:
             with sqlite3.connect(target, timeout=5.0) as dst_conn:
                 src_conn.backup(dst_conn)
-        return True, f"Exported SQLite DB to {target}"
+        return True, t("cc_calendar.db_exported", p0=target)
     except Exception as e:
-        return False, f"DB export failed: {e}"
+        return False, t("cc_calendar.db_export_err", p0=e)
 
 
 def import_db_file(src_path: str) -> tuple[bool, str]:
     init_db()
     source = os.path.expanduser(str(src_path or "").strip())
     if not source or not os.path.exists(source):
-        return False, f"File not found: {source}"
+        return False, t("cc_calendar.file_not_found", p0=source)
     try:
         count = 0
         with sqlite3.connect(source, timeout=5.0) as src_conn:
@@ -1113,9 +1142,9 @@ def import_db_file(src_path: str) -> tuple[bool, str]:
             )
             count += 1
         set_calendar_initialized(True)
-        return True, f"Imported {count} events from {os.path.basename(source)}"
+        return True, t("cc_calendar.ev_imported", p0=count, p1=os.path.basename(source))
     except Exception as e:
-        return False, f"DB import failed: {e}"
+        return False, t("cc_calendar.db_import_err", p0=e)
 
 
 def _ics_escape(text: str) -> str:
@@ -1144,10 +1173,10 @@ def export_ics_file(dest_path: str) -> tuple[bool, str]:
     init_db()
     target = os.path.expanduser(str(dest_path or "").strip())
     if not target:
-        return False, "Invalid destination path"
+        return False, t("cc_calendar.invalid_dest_path")
     try:
         os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT * FROM events ORDER BY date_iso ASC, start_time ASC")
@@ -1186,22 +1215,22 @@ def export_ics_file(dest_path: str) -> tuple[bool, str]:
 
         with open(target, "w", encoding="utf-8", newline="\r\n") as f:
             f.write("\r\n".join(lines) + "\r\n")
-        return True, f"Exported {len(rows)} events to {target}"
+        return True, t("cc_calendar.ics_exported", p0=len(rows), p1=target)
     except Exception as e:
-        return False, f"ICS export failed: {e}"
+        return False, t("cc_calendar.ics_export_err", p0=e)
 
 
 def import_ics_file(src_path: str) -> tuple[bool, str]:
     init_db()
     source = os.path.expanduser(str(src_path or "").strip())
     if not source or not os.path.exists(source):
-        return False, f"File not found: {source}"
+        return False, t("cc_calendar.file_not_found", p0=source)
     try:
         with open(source, "r", encoding="utf-8", errors="replace") as f:
             raw_text = f.read()
         parsed = parse_ics_content(raw_text, source_tag="local")
         now = time.time()
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+        with sqlite3.connect(_db_path(), timeout=5.0) as conn:
             conn.executemany(
                 """
                 INSERT INTO events (uid, date_iso, start_time, end_time, title, location, description, source, updated_at)
@@ -1226,41 +1255,46 @@ def import_ics_file(src_path: str) -> tuple[bool, str]:
             )
             conn.commit()
         set_calendar_initialized(True)
-        return True, f"Imported {len(parsed)} events from {os.path.basename(source)}"
+        return True, t("cc_calendar.ev_imported", p0=len(parsed), p1=os.path.basename(source))
     except Exception as e:
-        return False, f"ICS import failed: {e}"
+        return False, t("cc_calendar.ics_import_err", p0=e)
 
 
 def _set_cal_fb(ok: bool, msg: str) -> None:
-    STATE.set("calendar", "cc_status_ok", bool(ok))
-    STATE.set("calendar", "cc_status_msg", str(msg or ""))
+    set_feedback("calendar", ok, msg)
 
 
 def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
-    if not uri.startswith("cc_cal:"):
+    if not isinstance(uri, str) or not uri.startswith("cc_cal:"):
         return False
     act = uri[len("cc_cal:"):]
 
     if act.startswith("mode:"):
         m_id = act.split(":", 1)[1]
+        if m_id not in ("ical", "local", "google_local", "google_cloud"):
+            return False
         set_calendar_mode(m_id)
         _set_cal_fb(True, t("cc_calendar.fb_mode_set", p0=m_id))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act.startswith("rem_set:"):
         try:
             mins = int(act.split(":", 1)[1])
-            set_reminder_minutes(mins)
-            _set_cal_fb(True, t("cc_calendar.fb_rem_set", p0=mins))
-        except Exception:
-            pass
-        if cc_panel.shell:
+        except (ValueError, TypeError):
+            return False
+        if not (0 <= mins <= 1440):
+            return False
+        set_reminder_minutes(mins)
+        _set_cal_fb(True, t("cc_calendar.fb_rem_set", p0=mins))
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act == "rem_inline":
+        if not cc_panel or not cc_panel.shell:
+            return False
         cur = str(get_reminder_minutes())
         start_inline_input(
             entry_id="cc_cal_rem_inline",
@@ -1279,18 +1313,20 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
         body = t("cc_calendar.nc_ui_reminder_test_min_lead_time", p0=mins)
         dispatch_nc_notification(hdr, body)
         _set_cal_fb(True, t("cc_calendar.fb_rem_test"))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act == "clear_local":
         clear_local_events()
         _set_cal_fb(True, t("cc_calendar.fb_local_cleared"))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act == "ical_add":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt(
             "cc_cal_ical_url",
             t("cc_calendar.ical_url_placeholder"),
@@ -1302,33 +1338,39 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
 
     if act.startswith("ical_toggle:"):
         fid = act.split(":", 1)[1]
+        if not fid or not any(f.get("id") == fid for f in get_ical_feeds()):
+            return False
         now_en = toggle_ical_feed(fid)
         _set_cal_fb(True, t("cc_calendar.fb_feed_toggled"))
         if now_en and get_calendar_mode() == "ical":
             probe.run_async(
                 lambda: sync_all_ical_feeds_blocking(force=True),
-                on_done=lambda _: cc_panel.shell.refresh_view() if cc_panel.shell else None,
+                on_done=lambda _: cc_panel.shell.refresh_view() if (cc_panel and cc_panel.shell) else None,
             )
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act.startswith("ical_del:"):
         fid = act.split(":", 1)[1]
+        if not fid or not any(f.get("id") == fid for f in get_ical_feeds()):
+            return False
         remove_ical_feed(fid)
         _set_cal_fb(True, t("cc_calendar.fb_feed_removed"))
-        if cc_panel.shell:
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
     if act.startswith("ical_sync_interval:"):
         try:
             mins = int(act.split(":", 1)[1])
-            set_ical_sync_interval_min(mins)
-            _set_cal_fb(True, t("cc_calendar.fb_sync_interval", p0=mins))
-        except Exception:
-            pass
-        if cc_panel.shell:
+        except (ValueError, TypeError):
+            return False
+        if mins not in (0, 15, 30, 60):
+            return False
+        set_ical_sync_interval_min(mins)
+        _set_cal_fb(True, t("cc_calendar.fb_sync_interval", p0=mins))
+        if cc_panel and cc_panel.shell:
             cc_panel.shell.refresh_view()
         return True
 
@@ -1338,11 +1380,13 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
             _set_cal_fb(True, t("cc_calendar.ical_sync_done"))
         probe.run_async(
             _do_sync,
-            on_done=lambda _: cc_panel.shell.refresh_view() if cc_panel.shell else None,
+            on_done=lambda _: cc_panel.shell.refresh_view() if (cc_panel and cc_panel.shell) else None,
         )
         return True
 
     if act == "export_ics":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt(
             "cc_cal_exp_ics",
             t("cc_calendar.destination_ics_path"),
@@ -1354,6 +1398,8 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
         return True
 
     if act == "export_db":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt(
             "cc_cal_exp_db",
             t("cc_calendar.destination_db_path"),
@@ -1365,6 +1411,8 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
         return True
 
     if act == "import_ics":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt(
             "cc_cal_imp_ics",
             t("cc_calendar.source_ics_file_path"),
@@ -1376,6 +1424,8 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
         return True
 
     if act == "import_db":
+        if not cc_panel:
+            return False
         cc_panel.request_prompt(
             "cc_cal_imp_db",
             t("cc_calendar.source_db_file_path"),
@@ -1390,17 +1440,12 @@ def handle_cc_calendar_link(cc_panel, uri: str) -> bool:
 
 
 def handle_cc_calendar_prompt(cc_panel, action_id: str, text: str) -> bool:
-    if not action_id.startswith("cc_cal_"):
+    if not isinstance(action_id, str) or not action_id.startswith("cc_cal_"):
         return False
     val = str(text or "").strip()
-    if action_id == "cc_cal_rem_mins":
-        try:
-            mins = int(val)
-            set_reminder_minutes(mins)
-            _set_cal_fb(True, t("cc_calendar.fb_rem_set", p0=mins))
-        except ValueError:
-            pass
-    elif action_id == "cc_cal_ical_url":
+    if action_id == "cc_cal_ical_url":
+        if not cc_panel:
+            return False
         norm_url = ("https://" + val[9:]) if val.lower().startswith("webcal://") else val
         parsed = urllib.parse.urlparse(norm_url)
         if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
@@ -1425,7 +1470,7 @@ def handle_cc_calendar_prompt(cc_panel, action_id: str, text: str) -> bool:
                 _set_cal_fb(True, t("cc_calendar.ical_added_syncing"))
                 probe.run_async(
                     lambda: sync_all_ical_feeds_blocking(force=True),
-                    on_done=lambda _: cc_panel.shell.refresh_view() if cc_panel.shell else None,
+                    on_done=lambda _: cc_panel.shell.refresh_view() if (cc_panel and cc_panel.shell) else None,
                 )
     elif action_id == "cc_cal_exp_ics":
         ok, msg = export_ics_file(val)
@@ -1439,6 +1484,8 @@ def handle_cc_calendar_prompt(cc_panel, action_id: str, text: str) -> bool:
     elif action_id == "cc_cal_imp_db":
         ok, msg = import_db_file(val)
         _set_cal_fb(ok, msg)
+    else:
+        return False
     return True
 
 

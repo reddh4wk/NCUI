@@ -3,17 +3,17 @@ set -euo pipefail
 
 # ==============================================================================
 # /usr/lib/ncui/sbin/nc-chroot
-# Generalized LUKS + LVM/Btrfs/Ext4 Chroot Engine (NC-UI / Duskcity)
+# Generalized LUKS + LVM/Btrfs/Ext4 Chroot Engine (NC-UI)
 # ==============================================================================
 
 CONF_FILE="${NC_RESILIENCE_CONF:-/etc/ncui/resilience.toml}"
 RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
 VG_NAME="${NC_VG_NAME:-}"
 BTRFS_SUBVOL="@"
-MAPPER_NAME="nightcity_crypt"
-MNT_BASE="${DC_CHROOT_MNT_BASE:-/run/nightcity-chroot}"
-STATE_FILE="${DC_CHROOT_STATE_FILE:-/run/dc-arch-chroot.state}"
-LOCK_FILE="${DC_CHROOT_LOCK_FILE:-/run/dc-arch-chroot.lock}"
+MAPPER_NAME="ncui_crypt"
+MNT_BASE="${NC_CHROOT_MNT_BASE:-${DC_CHROOT_MNT_BASE:-/run/ncui-chroot}}"
+STATE_FILE="${NC_CHROOT_STATE_FILE:-${DC_CHROOT_STATE_FILE:-/run/nc-chroot.state}}"
+LOCK_FILE="${NC_CHROOT_LOCK_FILE:-${DC_CHROOT_LOCK_FILE:-/run/nc-chroot.lock}}"
 
 load_chroot_resilience_config() {
     if [[ -r "$CONF_FILE" ]]; then
@@ -60,7 +60,7 @@ ${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
   ${bin_name} [OPZIONI] [COMANDO [ARGOMENTI...]]
 
 ${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
-  Gestore per ambiente chroot su Nightcity / Duskcity. Rileva dinamicamente
+  Gestore per ambiente chroot NC-UI. Rileva dinamicamente
   le partizioni LUKS, la relativa ESP e il nome del Volume Group LVM ospitato
   (es. vg0, vg1), gestendo lo sblocco crittografico (no-keyring) e l'albero di mount.
 
@@ -431,14 +431,35 @@ if [[ "$DO_CANDS_TSV" -eq 1 ]]; then
     exit 0
 fi
 
-REQUIRED_TOOLS=(cryptsetup vgchange lvs vgs pvs mount umount findmnt arch-chroot lsblk blkid dmsetup)
+REQUIRED_TOOLS=(cryptsetup vgchange lvs vgs pvs mount umount findmnt chroot lsblk blkid dmsetup)
 for tool in "${REQUIRED_TOOLS[@]}"; do
     if ! command -v "$tool" &>/dev/null; then
         log_err "Tool necessario assente: '$tool'."
-        [[ "$tool" == "arch-chroot" ]] && echo -e "  Installa con: ${C_BOLD}sudo pacman -S --needed arch-install-scripts${C_RESET}" >&2
         exit 1
     fi
 done
+
+run_chroot_exec() {
+    local root_dir="$1"
+    shift
+    if command -v arch-chroot &>/dev/null; then
+        arch-chroot "$root_dir" "$@"
+        return $?
+    fi
+    mkdir -p "${root_dir}/dev" "${root_dir}/dev/pts" "${root_dir}/proc" "${root_dir}/sys" "${root_dir}/run"
+    mountpoint -q "${root_dir}/proc" || mount -t proc proc "${root_dir}/proc"
+    mountpoint -q "${root_dir}/sys" || mount -t sysfs sysfs "${root_dir}/sys"
+    if [[ -d /sys/firmware/efi/efivars ]] && [[ -d "${root_dir}/sys/firmware/efi/efivars" ]] && ! mountpoint -q "${root_dir}/sys/firmware/efi/efivars"; then
+        mount --bind /sys/firmware/efi/efivars "${root_dir}/sys/firmware/efi/efivars" 2>/dev/null || true
+    fi
+    mountpoint -q "${root_dir}/dev" || mount --rbind /dev "${root_dir}/dev"
+    mount --make-rslave "${root_dir}/dev" 2>/dev/null || true
+    mountpoint -q "${root_dir}/run" || mount --bind /run "${root_dir}/run"
+    if [[ -f /etc/resolv.conf && ! -L "${root_dir}/etc/resolv.conf" ]]; then
+        cp -L /etc/resolv.conf "${root_dir}/etc/resolv.conf" 2>/dev/null || true
+    fi
+    chroot "$root_dir" "$@"
+}
 
 CLEANUP_ON_EXIT=0
 cleanup_handler() {
@@ -616,7 +637,7 @@ fi
 LUKS_DEV="$SELECTED_LUKS"
 if is_live_host_target "$LUKS_DEV" "$VG_NAME"; then
     log_err "Il dispositivo ${LUKS_DEV} appartiene al sistema host attualmente in esecuzione!"
-    log_err "Impossibile aprire un arch-chroot/teardown su volumi montati su / o /var."
+    log_err "Impossibile aprire un chroot/teardown su volumi montati su / o /var."
     exit 1
 fi
 
@@ -697,6 +718,22 @@ else
     fi
 fi
 
+detect_target_esp_rel() {
+    local mnt="$1" fstab_esp=""
+    if [[ -r "${mnt}/etc/fstab" ]]; then
+        fstab_esp="$(awk '!/^[[:space:]]*#/ && NF>=2 && ($2=="/efi" || $2=="/boot/efi" || $2=="/boot") {print $2; exit}' "${mnt}/etc/fstab" 2>/dev/null || true)"
+    fi
+    if [[ -n "$fstab_esp" ]]; then
+        printf '%s' "${fstab_esp#/}"
+    elif [[ -d "${mnt}/efi/EFI" ]]; then
+        printf 'efi'
+    elif [[ -d "${mnt}/boot/efi/EFI" ]]; then
+        printf 'boot/efi'
+    else
+        printf 'boot'
+    fi
+}
+
 if [[ "$FS_LAYOUT" == "lvm" ]]; then
     if is_live_host_target "$LUKS_DEV" "$VG_NAME"; then
         log_err "Il Volume Group '${VG_NAME}' è quello del sistema host in esecuzione. Operazione bloccata."
@@ -725,18 +762,20 @@ if [[ "$FS_LAYOUT" == "lvm" ]]; then
         log_ok "Montato root: /dev/${VG_NAME}/root -> ${MNT_BASE}"
     fi
 
+    esp_rel="$(detect_target_esp_rel "$MNT_BASE")"
     declare -A LV_MOUNTS=(
-        ["boot"]="$ESP_DEV"
+        ["$esp_rel"]="$ESP_DEV"
         ["var"]="/dev/${VG_NAME}/var"
         ["home"]="/dev/${VG_NAME}/home"
         ["tmp"]="/dev/${VG_NAME}/tmp"
     )
 
-    for rel_path in var home tmp boot; do
+    for rel_path in var home tmp "$esp_rel"; do
+        dev_src="${LV_MOUNTS[$rel_path]}"
+        [[ -b "$dev_src" ]] || continue
         target_dir="${MNT_BASE}/${rel_path}"
         mkdir -p "$target_dir"
-        dev_src="${LV_MOUNTS[$rel_path]}"
-        if [[ -b "$dev_src" ]] && ! mountpoint -q "$target_dir"; then
+        if ! mountpoint -q "$target_dir"; then
             mount "$dev_src" "$target_dir"
             log_ok "Montato: ${dev_src} -> ${target_dir}"
         fi
@@ -750,10 +789,11 @@ if [[ "$FS_LAYOUT" == "lvm" ]]; then
     )
 
     for rel_path in "var/log" "var/log/audit" "var/tmp" "var/cache/pacman"; do
+        dev_src="${VAR_SUB_LVS[$rel_path]}"
+        [[ -b "$dev_src" ]] || continue
         target_dir="${MNT_BASE}/${rel_path}"
         mkdir -p "$target_dir"
-        dev_src="${VAR_SUB_LVS[$rel_path]}"
-        if [[ -b "$dev_src" ]] && ! mountpoint -q "$target_dir"; then
+        if ! mountpoint -q "$target_dir"; then
             mount "$dev_src" "$target_dir"
             log_ok "Montato: ${dev_src} -> ${target_dir}"
         fi
@@ -772,35 +812,36 @@ else
         fi
         log_ok "Montato ${FS_LAYOUT} root: /dev/mapper/${MAPPER_NAME} -> ${MNT_BASE}"
     fi
-    if [[ -b "$ESP_DEV" ]] && ! mountpoint -q "${MNT_BASE}/boot"; then
-        mkdir -p "${MNT_BASE}/boot"
-        mount "$ESP_DEV" "${MNT_BASE}/boot"
-        log_ok "Montato boot: ${ESP_DEV} -> ${MNT_BASE}/boot"
+    esp_rel="$(detect_target_esp_rel "$MNT_BASE")"
+    if [[ -b "$ESP_DEV" ]] && ! mountpoint -q "${MNT_BASE}/${esp_rel}"; then
+        mkdir -p "${MNT_BASE}/${esp_rel}"
+        mount "$ESP_DEV" "${MNT_BASE}/${esp_rel}"
+        log_ok "Montato ESP: ${ESP_DEV} -> ${MNT_BASE}/${esp_rel}"
     fi
 fi
 
 if [[ "$MOUNT_ONLY" -eq 1 ]]; then
     CLEANUP_ON_EXIT=0
     log_ok "Ambiente montato con successo [VG: ${C_BOLD}${VG_NAME}${C_RESET}] su: ${C_BOLD}${MNT_BASE}${C_RESET}"
-    log_info "Per accedere manualmente: ${C_BOLD}arch-chroot ${MNT_BASE}${C_RESET}"
+    log_info "Per accedere manualmente: ${C_BOLD}$(command -v arch-chroot &>/dev/null && echo arch-chroot || echo chroot) ${MNT_BASE}${C_RESET}"
     log_info "Per smontare e chiudere il mapper: ${C_BOLD}${0##*/} -u${C_RESET}"
     exit 0
 fi
 
 # ------------------------------------------------------------------------------
-# Fase 5: Ingresso in Arch-Chroot
+# Fase 5: Ingresso in Chroot
 # ------------------------------------------------------------------------------
 echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
-echo -e "${C_BOLD}${C_MINT} INGRESSO IN ARCH-CHROOT [VG: ${VG_NAME} | Dev: ${LUKS_DEV}] ${C_RESET}"
+echo -e "${C_BOLD}${C_MINT} INGRESSO IN CHROOT [VG: ${VG_NAME} | Dev: ${LUKS_DEV}] ${C_RESET}"
 echo -e "${C_SLATE}==============================================================================${C_RESET}"
 log_info "Digita 'exit' o premi Ctrl+D per uscire e avviare il cleanup automatico.\n"
 
 if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
-    arch-chroot "$MNT_BASE" "${POSITIONAL_ARGS[@]}"
+    run_chroot_exec "$MNT_BASE" "${POSITIONAL_ARGS[@]}"
 else
     CHROOT_SHELL="/bin/bash"
     [[ -x "${MNT_BASE}/bin/zsh" ]] && CHROOT_SHELL="/bin/zsh"
-    arch-chroot "$MNT_BASE" "$CHROOT_SHELL"
+    run_chroot_exec "$MNT_BASE" "$CHROOT_SHELL"
 fi
 
 echo -e "\n${C_SLATE}==============================================================================${C_RESET}"

@@ -19,13 +19,13 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     ram = get_ram_telemetry()
     cards = _feedback_cards()
 
-    ab_box = Box(t("cc_system.nightcity_workstation_about_this_p"), icon="\uf129", highlighted=False)
+    ab_box = Box(t("cc_system.about_this_pc_host", p0=ab["host"]), icon="\uf129", highlighted=False)
     ab_box.add_row(" ")
     ab_box.add_kv(t("cc_system.hostname"), Txt(ab["host"], role="val"))
     ab_box.add_kv(t("cc_system.operating_system"), Txt(ab["os_name"], role="val"))
     ab_box.add_kv(t("cc_system.active_kernel"), Txt(ab["kernel_rel"], role="val"))
-    ab_box.add_kv(t("cc_system.dual_kernels"), Txt(" | ".join(ab["kernels"]) or "linux-cachyos / hardened", role="val"))
-    ab_box.add_kv(t("cc_system.bootloader_wm"), Txt(f"{ab['limine']}  |  {ab['niri']}", role="schema"))
+    ab_box.add_kv(t("cc_system.installed_kernels"), Txt(" | ".join(ab["kernels"]) or ab["kernel_rel"], role="val"))
+    ab_box.add_kv(t("cc_system.bootloader_wm"), Txt(f"{ab['limine']}  |  {ab['niri']}", role="val"))
     ab_box.add_kv(t("cc_system.cpu_ram_uptime"), Txt(f"{cpu['model']}  |  {ram['total']//(1024**3)} GiB  |  {ab['uptime']}", role="val"))
     ab_box.add_row(" ")
     if ab.get("os_icon"):
@@ -59,17 +59,18 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         usr_box.add_kv(t("cc_accounts.login_shell"), Txt(p["shell"], role="val"))
 
     usr_box.add_section(t("cc_accounts.system_privilege_groups", p0=p["user"]))
+    act_mc = max(len(t("cc_accounts.remove")), len(t("cc_accounts.add_user")))
     grp_rows = []
     for g in grps:
         gn = g["name"]
         grp_rows.append([
             Txt(gn, role="focus"),
             Txt(g["gid"], role="schema"),
-            Txt(g["desc"], role="val"),
+            Txt(g["desc"], role="schema"),
             StateBadge(g["member"], t("cc_accounts.member"), t("cc_accounts.absent") if not g["exists"] else t("cc_accounts.none")),
-            ActionBtn(t("cc_accounts.remove"), f"cc_acc:gdel:{gn}", tone="danger_soft")
+            ActionBtn(t("cc_accounts.remove"), f"cc_acc:gdel:{gn}", tone="danger_soft", min_chars=act_mc)
             if g["member"]
-            else ActionBtn(t("cc_accounts.add_user"), f"cc_acc:gadd:{gn}", tone="apply" if g["exists"] else "inactive"),
+            else ActionBtn(t("cc_accounts.add_user"), f"cc_acc:gadd:{gn}", tone="apply" if g["exists"] else "inactive", min_chars=act_mc),
         ])
     usr_box.add_table(
         headers=[t("cc_accounts.group"), t("cc_accounts.gid"), t("cc_accounts.scope"), t("cc_accounts.state"), t("cc_accounts.action")],
@@ -89,7 +90,9 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
                 Txt(s["user"], role="val"),
                 Txt(s["seat"], role="schema"),
                 Txt(s["tty"], role="val"),
-                ActionBtn(t("cc_accounts.terminate"), f"cc_acc:kill_sess:{sid}", tone="danger_soft" if not is_cur else "inactive"),
+                Txt(t("cc_accounts.active_session"), role="inactive")
+                if is_cur
+                else ActionBtn(t("cc_accounts.terminate"), f"cc_acc:kill_sess:{sid}", tone="danger_soft"),
             ])
         usr_box.add_table(
             headers=[t("cc_accounts.session"), t("cc_accounts.user"), t("cc_accounts.seat"), t("cc_accounts.tty"), t("cc_accounts.action")],
