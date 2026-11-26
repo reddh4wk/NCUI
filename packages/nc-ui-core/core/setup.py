@@ -316,6 +316,25 @@ def _setup_waybar(sess: dict, force: bool = False) -> tuple[bool, str]:
     return True, ""
 
 
+def _setup_ncui_cursor() -> None:
+    try:
+        from core.config import THEME
+        from panels.cc_engine_personalization_cursors import NCUI_CURSOR_NAME, _apply_cursor_cfg
+    except ImportError:
+        return
+    try:
+        typo = THEME.get("typography") or {}
+        cur_t = str(typo.get("cursor_theme") or NCUI_CURSOR_NAME)
+        cur_sz = max(16, min(64, int(typo.get("cursor_size") or 24)))
+        ok_c, msg_c = _apply_cursor_cfg(cur_t, cur_sz)
+        if ok_c:
+            msg_ok(f"Cursor theme active: {c_focus(cur_t)} ({cur_sz}px)")
+        elif msg_c:
+            msg_warn(f"Cursor setup warning: {msg_c}")
+    except Exception as e:
+        msg_warn(f"Cursor setup skipped: {e}")
+
+
 def run_setup(dry_run: bool = False, force: bool = False, do_niri: bool = True, do_waybar: bool = True) -> int:
     """Provision NC-UI configs for Niri and Waybar with automatic timestamped backups."""
     if os.geteuid() == 0:
@@ -334,6 +353,8 @@ def run_setup(dry_run: bool = False, force: bool = False, do_niri: bool = True, 
         if not ok:
             msg_err(err)
             return 1
+        if not dry_run:
+            _setup_ncui_cursor()
     if do_waybar:
         ui_section("03", "Waybar Integration")
         ok, err = _setup_waybar(sess, force=force)

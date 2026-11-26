@@ -1736,18 +1736,20 @@ _ncui_pkg_list() {
 
 _find_local_ncui_pkg() {
     local pkg_name="$1" src_dir="${2:-}" d cand best=""
-    for d in "${NCUI_PKG_DIR:-}" "/var/cache/pacman/pkg" "$src_dir"; do
+    for d in "${NCUI_PKG_DIR:-}" "$src_dir" "/var/cache/pacman/pkg"; do
         [[ -n "$d" && -d "$d" ]] || continue
         for cand in "$d/${pkg_name}-"[0-9]*.pkg.tar*; do
             [[ -f "$cand" ]] || continue
             [[ "$cand" == *.sig ]] && continue
-            best="$cand"
+            if [[ -z "$best" || "$cand" -nt "$best" ]]; then
+                best="$cand"
+            fi
         done
-        if [[ -n "$best" ]]; then
-            printf '%s' "$best"
-            return 0
-        fi
     done
+    if [[ -n "$best" ]]; then
+        printf '%s' "$best"
+        return 0
+    fi
     return 1
 }
 
@@ -2140,7 +2142,7 @@ EOF_HID
 }
 
 _configure_recovery_accounts() {
-    local root_dir="$1" pass_str="$2" want_desktop="${3:-1}" rec_user="${4:-rescue}"
+    local root_dir="$1" pass_str="$2" want_desktop="${3:-1}" rec_user="${4:-rescue}" rec_kb="${5:-}"
     msg_step "Configuring '${rec_user}' & 'root' accounts, sudo/wheel groups and console locale..."
     chroot "$root_dir" groupadd -f sudo
     chroot "$root_dir" groupadd -f wheel
@@ -2183,16 +2185,53 @@ EOF_SUD
         chroot "$root_dir" visudo -cf /etc/sudoers.d/ncui-recovery >/dev/null
     fi
 
-    [[ -f /etc/vconsole.conf ]] && install -m 0644 /etc/vconsole.conf "${root_dir}/etc/vconsole.conf"
+    if [[ -f /etc/vconsole.conf ]]; then
+        install -m 0644 /etc/vconsole.conf "${root_dir}/etc/vconsole.conf"
+    elif [[ -n "$rec_kb" ]]; then
+        local tty_km="${rec_kb%%,*}"
+        printf 'KEYMAP=%s\n' "$tty_km" > "${root_dir}/etc/vconsole.conf"
+        chmod 0644 "${root_dir}/etc/vconsole.conf"
+    fi
+
+    if [[ -f /etc/X11/xorg.conf.d/00-keyboard.conf ]]; then
+        install -D -m 0644 /etc/X11/xorg.conf.d/00-keyboard.conf "${root_dir}/etc/X11/xorg.conf.d/00-keyboard.conf"
+    elif [[ -n "$rec_kb" ]]; then
+        mkdir -p "${root_dir}/etc/X11/xorg.conf.d"
+        cat <<EOF_XKB > "${root_dir}/etc/X11/xorg.conf.d/00-keyboard.conf"
+Section "InputClass"
+        Identifier "system-keyboard"
+        MatchIsKeyboard "on"
+        Option "XkbLayout" "${rec_kb}"
+EndSection
+EOF_XKB
+        chmod 0644 "${root_dir}/etc/X11/xorg.conf.d/00-keyboard.conf"
+    fi
+
     [[ -f /etc/locale.conf ]] && install -m 0644 /etc/locale.conf "${root_dir}/etc/locale.conf"
     if [[ -f "${root_dir}/etc/locale.gen" ]]; then
-        local host_lang=""
-        [[ -r /etc/locale.conf ]] && host_lang="$(awk -F'=' '/^LANG=/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' /etc/locale.conf 2>/dev/null || true)"
         sed -i 's/^#en_US\.UTF-8/en_US.UTF-8/' "${root_dir}/etc/locale.gen"
-        if [[ -n "$host_lang" ]]; then
-            sed -i "s/^#${host_lang//./\\.}/${host_lang}/" "${root_dir}/etc/locale.gen" || true
+        if [[ -r /etc/locale.conf ]]; then
+            local loc_tok
+            while IFS= read -r loc_tok; do
+                [[ -n "$loc_tok" ]] || continue
+                sed -i "s/^#${loc_tok//./\\.}/${loc_tok}/" "${root_dir}/etc/locale.gen" || true
+            done < <(awk -F'=' '/^(LANG|LC_[A-Z]+)=/ {gsub(/["[:space:]]/, "", $2); if ($2 != "" && $2 != "C" && $2 != "POSIX") print $2}' /etc/locale.conf 2>/dev/null | sort -u)
         fi
         chroot "$root_dir" locale-gen >/dev/null 2>&1 || true
+    fi
+
+    if [[ -L /etc/localtime ]]; then
+        ln -sfn "$(readlink /etc/localtime)" "${root_dir}/etc/localtime"
+    elif [[ -f /etc/localtime ]]; then
+        install -m 0644 /etc/localtime "${root_dir}/etc/localtime"
+    fi
+    [[ -f /etc/timezone ]] && install -m 0644 /etc/timezone "${root_dir}/etc/timezone"
+    [[ -f /etc/adjtime ]] && install -m 0644 /etc/adjtime "${root_dir}/etc/adjtime"
+    if [[ -f /etc/systemd/timesyncd.conf ]]; then
+        install -D -m 0644 /etc/systemd/timesyncd.conf "${root_dir}/etc/systemd/timesyncd.conf"
+    fi
+    if systemctl is-enabled systemd-timesyncd.service >/dev/null 2>&1 || [[ "$(timedatectl show -p NTP --value 2>/dev/null || true)" == "yes" ]]; then
+        systemctl --root="$root_dir" enable systemd-timesyncd.service >/dev/null 2>&1 || chroot "$root_dir" systemctl enable systemd-timesyncd.service >/dev/null 2>&1 || true
     fi
 }
 
@@ -2211,8 +2250,139 @@ _resolve_host_desktop_user() {
     return 1
 }
 
+_detect_host_kb_layout() {
+    local host_user="${1:-}" host_home="" lay=""
+    if [[ -n "$host_user" ]]; then
+        host_home="$(getent passwd "$host_user" 2>/dev/null | cut -d: -f6 || true)"
+    fi
+    if [[ -n "$host_home" && -r "${host_home}/.config/niri/config.kdl" ]]; then
+        lay="$(python3 - "${host_home}/.config/niri/config.kdl" <<'PY_KB' 2>/dev/null || true
+import re, sys
+txt = open(sys.argv[1], "r", encoding="utf-8", errors="ignore").read()
+m = re.search(r'\bxkb\s*\{[^}]*\blayout\s+"([^"]+)"', txt, flags=re.S)
+if m:
+    print(m.group(1).strip())
+PY_KB
+)"
+    fi
+    if [[ -z "$lay" && -r /etc/vconsole.conf ]]; then
+        lay="$(awk -F'=' '/^KEYMAP=/ {gsub(/["[:space:]]/, "", $2); print $2; exit}' /etc/vconsole.conf 2>/dev/null || true)"
+    fi
+    printf '%s' "${lay:-us}"
+}
+
+_sync_recovery_user_themes() {
+    local root_dir="$1" rec_user="${2:-rescue}" want_desktop="${3:-1}"
+    local r_home="/home/${rec_user}"
+    [[ -d "${root_dir}${r_home}" ]] || return 0
+    msg_step "Syncing Zsh, Ghostty, Niri & Cursor themes for '${rec_user}' inside recovery rootfs..."
+    chroot "$root_dir" env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY \
+        HOME="${r_home}" \
+        XDG_CONFIG_HOME="${r_home}/.config" \
+        XDG_DATA_HOME="${r_home}/.local/share" \
+        XDG_CACHE_HOME="${r_home}/.cache" \
+        USER="${rec_user}" \
+        python3 - "${want_desktop}" "${r_home}" <<'PY_SYNC_ROOTFS' || true
+import os, re, sys
+want_desktop = sys.argv[1] == "1"
+r_home = sys.argv[2]
+for p in ("/usr/lib/ncui", "/opt/ncui/packages/nc-ui-core", "/opt/ncui/packages/nc-ui-control-center"):
+    if os.path.isdir(p) and p not in sys.path:
+        sys.path.insert(0, p)
+try:
+    from panels.cc_engine_zsh import apply_zsh_config, load_saved_zsh_config
+    ok_z, msg_z = apply_zsh_config(load_saved_zsh_config())
+    if not ok_z:
+        print(f"zsh sync warning: {msg_z}", file=sys.stderr)
+except Exception as e:
+    print(f"zsh sync skipped: {e}", file=sys.stderr)
+if want_desktop:
+    try:
+        from panels.cc_engine_ecosystem import (
+            apply_ghostty_config,
+            apply_niri_config,
+            ghostty_main_config_path,
+            ghostty_theme_conf_path,
+            load_saved_ecosystem_config,
+            niri_main_config_path,
+            niri_theme_kdl_path,
+            render_ghostty_theme_conf,
+            render_niri_theme_kdl,
+        )
+        eco = load_saved_ecosystem_config()
+        ok_g, msg_g = apply_ghostty_config(eco["ghostty"])
+        if not ok_g:
+            print(f"ghostty validate skipped in chroot ({msg_g}); writing theme config directly", file=sys.stderr)
+            g_inc = ghostty_theme_conf_path()
+            g_main = ghostty_main_config_path()
+            os.makedirs(os.path.dirname(g_inc), exist_ok=True)
+            with open(g_inc, "w", encoding="utf-8") as gf:
+                gf.write(render_ghostty_theme_conf(eco["ghostty"]))
+            os.makedirs(os.path.dirname(g_main), exist_ok=True)
+            m_txt = open(g_main, "r", encoding="utf-8", errors="replace").read() if os.path.isfile(g_main) else ""
+            inc_line = f"config-file = ?{g_inc}"
+            if os.path.basename(g_inc) not in m_txt and g_inc not in m_txt:
+                with open(g_main, "w", encoding="utf-8") as mf:
+                    mf.write((m_txt.rstrip("\n") + "\n\n" + inc_line + "\n").lstrip("\n"))
+        ok_n, msg_n = apply_niri_config(eco["niri"])
+        if not ok_n:
+            print(f"niri validate skipped in chroot ({msg_n}); writing theme kdl directly", file=sys.stderr)
+            n_inc = niri_theme_kdl_path()
+            n_main = niri_main_config_path()
+            os.makedirs(os.path.dirname(n_inc), exist_ok=True)
+            with open(n_inc, "w", encoding="utf-8") as nf:
+                nf.write(render_niri_theme_kdl(eco["niri"]))
+            if os.path.isfile(n_main):
+                m_txt = open(n_main, "r", encoding="utf-8", errors="replace").read()
+                inc_line = f'include "{n_inc}"'
+                if os.path.basename(n_inc) not in m_txt and n_inc not in m_txt:
+                    with open(n_main, "w", encoding="utf-8") as mf:
+                        mf.write((m_txt.rstrip("\n") + "\n\n" + inc_line + "\n").lstrip("\n"))
+    except Exception as e:
+        print(f"ecosystem sync skipped: {e}", file=sys.stderr)
+    try:
+        from core.config import THEME
+        from panels.cc_engine_personalization_cursors import (
+            NCUI_CURSOR_NAME,
+            _apply_cursor_cfg,
+            ensure_ncui_cursor_installed,
+            is_ncui_cursor_name,
+        )
+        typo = THEME.get("typography") or {}
+        cur_t = str(typo.get("cursor_theme") or NCUI_CURSOR_NAME)
+        cur_sz = max(16, min(64, int(typo.get("cursor_size") or 24)))
+        ok_c, msg_c = _apply_cursor_cfg(cur_t, cur_sz)
+        if not ok_c:
+            print(f"cursor niri validate skipped in chroot ({msg_c}); updating cursor block directly", file=sys.stderr)
+            disk_t = ensure_ncui_cursor_installed() if is_ncui_cursor_name(cur_t) else cur_t
+            niri_cfg = os.path.join(r_home, ".config", "niri", "config.kdl")
+            if os.path.isfile(niri_cfg):
+                txt = open(niri_cfg, "r", encoding="utf-8", errors="replace").read()
+                c_blk = f'cursor {{\n    xcursor-theme "{disk_t}"\n    xcursor-size {cur_sz}\n}}'
+                m_blk = re.search(r"(?ms)^[ \t]*cursor\s*\{[^\}]*\}", txt)
+                if m_blk:
+                    blk = m_blk.group(0)
+                    if re.search(r'xcursor-theme\s+"[^"]*"', blk):
+                        blk = re.sub(r'xcursor-theme\s+"[^"]*"', f'xcursor-theme "{disk_t}"', blk)
+                    else:
+                        blk = blk.rstrip("}") + f'    xcursor-theme "{disk_t}"\n}}'
+                    if re.search(r"xcursor-size\s+\d+", blk):
+                        blk = re.sub(r"xcursor-size\s+\d+", f"xcursor-size {cur_sz}", blk)
+                    else:
+                        blk = blk.rstrip("}") + f"    xcursor-size {cur_sz}\n}}"
+                    txt = txt[:m_blk.start()] + blk + txt[m_blk.end():]
+                else:
+                    txt = txt.rstrip() + f"\n\n{c_blk}\n"
+                with open(niri_cfg, "w", encoding="utf-8") as nf:
+                    nf.write(txt)
+    except Exception as e:
+        print(f"cursor sync skipped: {e}", file=sys.stderr)
+PY_SYNC_ROOTFS
+    chroot "$root_dir" chown -R "${rec_user}:${rec_user}" "${r_home}" 2>/dev/null || true
+}
+
 _import_host_settings_into_rootfs() {
-    local root_dir="$1" host_user="${2:-}" import_ui="${3:-1}" import_nm="${4:-0}" want_desktop="${5:-1}" rec_user="${6:-rescue}"
+    local root_dir="$1" host_user="${2:-}" import_ui="${3:-1}" import_nm="${4:-0}" want_desktop="${5:-1}" rec_user="${6:-rescue}" rec_kb="${7:-}"
     local host_home=""
     if [[ -n "$host_user" ]]; then
         host_home="$(getent passwd "$host_user" 2>/dev/null | cut -d: -f6 || true)"
@@ -2220,19 +2390,30 @@ _import_host_settings_into_rootfs() {
 
     local r_home="/home/${rec_user}"
     local r_cfg="${root_dir}${r_home}/.config"
-    mkdir -p "${r_cfg}/ncui" "${r_cfg}/waybar" "${r_cfg}/niri"
+    mkdir -p "${r_cfg}/ncui/zsh" "${r_cfg}/waybar" "${r_cfg}/niri" "${r_cfg}/ghostty"
 
     if (( import_ui == 1 )) && [[ -n "$host_home" && -d "$host_home" ]]; then
-        msg_step "Importing NC-UI, Waybar & Niri settings from ${host_user}..."
+        msg_step "Importing NC-UI, Waybar, Ghostty, Zsh & Niri settings from ${host_user}..."
         local f
-        for f in config.toml theme.toml firewall_rules.json notifications_rules.json shortcuts_store.json; do
+        for f in config.toml theme.toml ecosystem.toml zsh.toml niri-theme.kdl ghostty-theme.conf firewall_rules.json notifications_rules.json shortcuts_store.json; do
             [[ -f "${host_home}/.config/ncui/${f}" ]] && install -m 0644 "${host_home}/.config/ncui/${f}" "${r_cfg}/ncui/${f}"
         done
+        if [[ -f "${host_home}/.config/ghostty/config" ]]; then
+            python3 - "$host_home" "${host_home}/.config/ghostty/config" "${r_cfg}/ghostty/config" "$r_home" <<'PY_GH'
+import sys
+h_home, src, dst, r_home = sys.argv[1:5]
+raw = open(src, "r", encoding="utf-8", errors="replace").read()
+with open(dst, "w", encoding="utf-8") as f:
+    f.write(raw.replace(h_home, r_home))
+PY_GH
+            chmod 0644 "${r_cfg}/ghostty/config"
+        fi
         if [[ -f "${host_home}/.config/waybar/config.jsonc" ]]; then
             python3 - "${host_home}/.config/waybar/config.jsonc" "${r_cfg}/waybar/config.jsonc" <<'PY_WB' || install -m 0644 "${host_home}/.config/waybar/config.jsonc" "${r_cfg}/waybar/config.jsonc"
 import json, re, sys
 src, dst = sys.argv[1:3]
 BUILTIN = {
+    "custom/nc-spacer-l", "custom/nc-spacer-r",
     "custom/media", "custom/settings", "custom/calendar", "custom/desktop",
     "custom/cliphist", "custom/screenshot", "custom/printers", "custom/audio",
     "custom/netcycle", "custom/cpu", "custom/ram", "custom/gpu", "custom/ups",
@@ -2268,6 +2449,14 @@ def bin_exists(cmd):
             return True
     return False
 
+def inc_exists(inc_path):
+    p = inc_path
+    if p.startswith("~/"):
+        p = os.path.join(r_home, p[2:])
+    elif not p.startswith("/"):
+        p = os.path.join(r_home, ".config/niri", p)
+    return os.path.exists(rdir + p)
+
 out = []
 for ln in lines:
     s = ln.strip()
@@ -2279,7 +2468,12 @@ for ln in lines:
                 continue
         except Exception:
             pass
-    out.append(ln.replace(h_home, r_home))
+    rewritten = ln.replace(h_home, r_home)
+    m_inc = re.match(r'^include\s+"([^"]+)"', rewritten.strip())
+    if m_inc and not inc_exists(m_inc.group(1)):
+        out.append(f"// [recovery-skipped-missing-include] {rewritten}")
+        continue
+    out.append(rewritten)
 with open(dst, "w", encoding="utf-8") as f:
     f.writelines(out)
 PY_NIRI
@@ -2311,9 +2505,17 @@ PY_NIRI
     fi
 
     if (( want_desktop == 1 )) && [[ ! -f "${r_cfg}/niri/config.kdl" ]]; then
-        cat <<'EOF_NIRI' > "${r_cfg}/niri/config.kdl"
+        cat <<EOF_NIRI > "${r_cfg}/niri/config.kdl"
+input {
+    keyboard {
+        xkb {
+            layout "${rec_kb:-us}"
+        }
+    }
+}
 spawn-at-startup "waybar"
 spawn-at-startup "nc-ctl" "wallpaper" "restore"
+spawn-at-startup "nc-ctl" "popup" "hotkeys"
 binds {
     Mod+Return { spawn "ghostty"; }
     Mod+S { spawn "nc-ctl" "settings"; }
@@ -2322,25 +2524,92 @@ binds {
 }
 EOF_NIRI
         chmod 0644 "${r_cfg}/niri/config.kdl"
+    elif (( want_desktop == 1 )) && [[ -n "$rec_kb" && -f "${r_cfg}/niri/config.kdl" ]]; then
+        python3 - "${r_cfg}/niri/config.kdl" "$rec_kb" <<'PY_SET_KB'
+import re, sys
+p, lay = sys.argv[1:3]
+txt = open(p, "r", encoding="utf-8", errors="replace").read()
+if re.search(r'\bxkb\s*\{[^}]*\blayout\s+"[^"]*"', txt, flags=re.S):
+    txt = re.sub(r'(\bxkb\s*\{[^}]*\blayout\s+)"[^"]*"', rf'\1"{lay}"', txt, count=1, flags=re.S)
+elif re.search(r'\bxkb\s*\{', txt):
+    txt = re.sub(r'(\bxkb\s*\{)', rf'\1\n            layout "{lay}"', txt, count=1)
+else:
+    txt = f'input {{\n    keyboard {{\n        xkb {{\n            layout "{lay}"\n        }}\n    }}\n}}\n\n' + txt
+with open(p, "w", encoding="utf-8") as f:
+    f.write(txt)
+PY_SET_KB
+        chmod 0644 "${r_cfg}/niri/config.kdl"
     fi
 
-    chroot "$root_dir" chown -R "${rec_user}:${rec_user}" "${r_home}/.config" 2>/dev/null || true
+    if [[ ! -f "${r_cfg}/ncui/zsh.toml" ]]; then
+        cat <<'EOF_ZSH_TOML' > "${r_cfg}/ncui/zsh.toml"
+# Managed by NC-UI Personalization -> Zsh
+[zsh]
+preset = "powerline_tonal"
+accent_mode = "pure_mono"
+show_git = true
+show_exit = true
+show_duration = true
+show_clock = true
+show_context = true
+auto_sync_theme = true
+hist_size = 10000
+share_history = true
+hist_ignore_dups = true
+completion_menu = true
+fix_keybindings = true
+auto_cd = false
+plugin_autosuggestions = true
+plugin_syntax_highlighting = true
+EOF_ZSH_TOML
+        chmod 0644 "${r_cfg}/ncui/zsh.toml"
+    fi
+
+    chroot "$root_dir" chown -R "${rec_user}:${rec_user}" "${r_home}" 2>/dev/null || true
+
+    _sync_recovery_user_themes "$root_dir" "$rec_user" "$want_desktop"
 
     if (( import_nm == 1 )) && [[ -d /etc/NetworkManager/system-connections ]]; then
         msg_step "Importing NetworkManager profiles (0600 root:root, host-active profiles take precedence)..."
-        mkdir -p "${root_dir}/etc/NetworkManager/system-connections"
-        local nm_f nm_dst nm_uuid
-        local -a nm_active=()
+        install -d -m 0700 -o root -g root "${root_dir}/etc/NetworkManager/system-connections"
+        if [[ -f /etc/NetworkManager/NetworkManager.conf ]]; then
+            install -m 0644 -o root -g root /etc/NetworkManager/NetworkManager.conf "${root_dir}/etc/NetworkManager/NetworkManager.conf"
+        fi
+        if [[ -d /etc/NetworkManager/conf.d ]]; then
+            install -d -m 0755 -o root -g root "${root_dir}/etc/NetworkManager/conf.d"
+            local nm_c
+            for nm_c in /etc/NetworkManager/conf.d/*; do
+                [[ -f "$nm_c" ]] || continue
+                install -m 0644 -o root -g root "$nm_c" "${root_dir}/etc/NetworkManager/conf.d/$(basename "$nm_c")"
+            done
+        fi
+        local nm_f nm_dst nm_uuid nm_cnt=0
+        local -a nm_active=() nm_files=()
+        local -A nm_seen=()
         mapfile -t nm_active < <(nmcli -t -f UUID connection show --active 2>/dev/null || true)
         for nm_f in /etc/NetworkManager/system-connections/*; do
             [[ -f "$nm_f" ]] || continue
-            install -m 0600 -o root -g root "$nm_f" "${root_dir}/etc/NetworkManager/system-connections/$(basename "$nm_f")"
+            nm_files+=("$nm_f")
+            nm_seen["$nm_f"]=1
+        done
+        while IFS= read -r nm_f; do
+            [[ -n "$nm_f" && "$nm_f" != /run/* && -f "$nm_f" && -z "${nm_seen[$nm_f]:-}" ]] || continue
+            nm_files+=("$nm_f")
+            nm_seen["$nm_f"]=1
+        done < <(nmcli -t -f FILENAME connection show 2>/dev/null || true)
+        for nm_f in "${nm_files[@]}"; do
             nm_dst="${root_dir}/etc/NetworkManager/system-connections/$(basename "$nm_f")"
+            install -m 0600 -o root -g root "$nm_f" "$nm_dst"
             nm_uuid="$(sed -n 's/^uuid=//p' "$nm_f" | head -n1)"
             if [[ -n "$nm_uuid" ]] && printf '%s\n' "${nm_active[@]}" | grep -qxF "$nm_uuid" && ! grep -q '^autoconnect-priority=' "$nm_dst"; then
                 sed -i '/^\[connection\]/a autoconnect-priority=100' "$nm_dst"
+                chmod 0600 "$nm_dst"
+                chown root:root "$nm_dst"
             fi
+            msg_info "Imported NM profile: $(basename "$nm_f")"
+            nm_cnt=$(( nm_cnt + 1 ))
         done
+        (( nm_cnt == 0 )) && msg_warn "No persistent NetworkManager profiles found to import."
         [[ -f /var/lib/NetworkManager/timestamps ]] && install -D -m 0600 /var/lib/NetworkManager/timestamps "${root_dir}/var/lib/NetworkManager/timestamps"
     fi
 }
@@ -2383,11 +2652,19 @@ do_sync_ncui_squashfs() {
     fi
     _install_ncui_into_rootfs "$work_dir" "auto" "$src_dir"
     local -a sync_extra=()
-    mapfile -t sync_extra < <(_filter_repo_pkgs swaync cpupower alsa-utils ttf-dejavu otf-font-awesome otf-ipafont)
+    mapfile -t sync_extra < <(_filter_repo_pkgs swaync cpupower alsa-utils ttf-dejavu otf-font-awesome otf-ipafont zsh-autosuggestions zsh-syntax-highlighting)
     if (( ${#sync_extra[@]} > 0 )); then
         msg_step "Syncing optional/runtime dependencies inside recovery rootfs (${#sync_extra[@]} pkgs)..."
         _arch_pacman_root_S "$work_dir" "${sync_extra[@]}" || true
     fi
+    local sync_desktop=0 u_dir u_name
+    [[ -x "${work_dir}/usr/bin/niri" ]] && sync_desktop=1
+    for u_dir in "${work_dir}/home"/*; do
+        [[ -d "$u_dir" ]] || continue
+        u_name="$(basename "$u_dir")"
+        [[ "$u_name" == "lost+found" ]] && continue
+        _sync_recovery_user_themes "$work_dir" "$u_name" "$sync_desktop"
+    done
     write_recovery_hook_files_into "$work_dir"
 
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
@@ -2716,6 +2993,9 @@ do_build_recovery_squashfs() {
     done
     ui_kv "Hostname" "${rec_host}"
 
+    local rec_kb=""
+    rec_kb="$(_detect_host_kb_layout "$host_user")"
+
     local pw1="" pw2=""
     while true; do
         IFS= read -r -s -p "  ${CLR_INTENT}›${CLR_RESET} ${CLR_FOCUS}Password for '${rec_user}' and 'root':${CLR_RESET} " pw1 </dev/tty
@@ -2747,7 +3027,7 @@ do_build_recovery_squashfs() {
     local req_esp_h
     req_esp_h="$(numfmt --to=iec-i --suffix=B "$req_esp_b" 2>/dev/null || echo "${req_esp_b}B")"
     ui_section "07" "Pre-Flight & Build Summary"
-    ui_kv "Profile" "$ncui_profile" "(kernel=${kern_pkg}, user=${rec_user}, host=${rec_host})"
+    ui_kv "Profile" "$ncui_profile" "(kernel=${kern_pkg}, user=${rec_user}, host=${rec_host}, kb=${rec_kb})"
     ui_kv "ESP Space" "free=${esp_free_h}" "(estimated needed=${req_esp_h})"
     if (( esp_free_b < req_esp_b )); then
         unset pw1
@@ -2786,6 +3066,7 @@ do_build_recovery_squashfs() {
     )
     local -a opt_pkgs=()
     mapfile -t opt_pkgs < <(_filter_repo_pkgs \
+        zsh-autosuggestions zsh-syntax-highlighting \
         hdparm ddrescue testdisk iwd iproute2 iputils bind curl wget ethtool tcpdump \
         lsof pciutils usbutils strace tmux vim less jq git nvtop \
         nftables pipewire wireplumber pipewire-pulse wl-clipboard grim slurp cpupower alsa-utils \
@@ -2797,7 +3078,7 @@ do_build_recovery_squashfs() {
         mapfile -t full_opt_pkgs < <(_filter_repo_pkgs \
             ffmpeg python-pillow libnotify satty playerctl wireguard-tools lm_sensors \
             bluez-utils cups cups-filters nut evtest brightnessctl usbguard \
-            pacman-contrib flatpak awww yt-dlp \
+            pacman-contrib flatpak awww yt-dlp yazi \
         )
         (( ${#full_opt_pkgs[@]} > 0 )) && pkgs+=("${full_opt_pkgs[@]}")
     fi
@@ -2837,14 +3118,14 @@ do_build_recovery_squashfs() {
         chroot "$build_dir" systemctl enable NetworkManager.service >/dev/null 2>&1 || true
     fi
     _install_ncui_into_rootfs "$build_dir" "$ncui_profile" "$src_dir"
-    _configure_recovery_accounts "$build_dir" "$pw1" "$want_desktop" "$rec_user"
+    _configure_recovery_accounts "$build_dir" "$pw1" "$want_desktop" "$rec_user" "$rec_kb"
     unset pw1
     _write_recovery_issue "$build_dir" "$rec_user" "$want_desktop"
     (( want_desktop == 1 )) && _write_recovery_hid_rebind "$build_dir"
     if [[ -n "$aur_helper" ]] && (( aur_in_repo == 0 )); then
         _install_aur_helper_into_rootfs "$build_dir" "$aur_helper" "$rec_user"
     fi
-    _import_host_settings_into_rootfs "$build_dir" "$host_user" "$import_ui" "$import_nm" "$want_desktop" "$rec_user"
+    _import_host_settings_into_rootfs "$build_dir" "$host_user" "$import_ui" "$import_nm" "$want_desktop" "$rec_user" "$rec_kb"
     rm -rf "${build_dir}/var/cache/pacman/pkg"/* "${build_dir}/var/log/journal"/* 2>/dev/null || true
 
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"

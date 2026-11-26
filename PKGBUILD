@@ -145,6 +145,7 @@ package_nc-ui-control-center() {
         'lm_sensors: hardware thermal and fan sensors'
         'btop: embedded system resource monitor TUI'
         'nvtop: embedded GPU monitor TUI'
+        'yazi: embedded file browser for wallpaper and media selection'
         'polkit-gnome: PolicyKit authentication agent'
         'cpupower: CPU governor/EPP control'
         'alsa-utils: speaker-test channel test'

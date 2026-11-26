@@ -635,7 +635,7 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         cr.set_source_rgb(0x05 / 255.0, 0x06 / 255.0, 0x09 / 255.0)
         cr.paint()
 
-        col_raw = str(st.get("color", "green") or "green").strip().lower()
+        col_raw = str(st.get("color", "theme") or "theme").strip().lower()
         is_rainbow = (col_raw == "rainbow")
         if is_rainbow:
             rgb = _MATRIX_RGB["green"]
@@ -647,42 +647,42 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             rgb = _MATRIX_RGB.get(col_raw, _MATRIX_RGB["green"])
         charset = str(st.get("charset", "katakana"))
         try:
-            spd = max(1, min(10, int(st.get("speed", "5"))))
+            spd = max(1, min(10, int(st.get("speed", "3"))))
         except ValueError:
-            spd = 5
+            spd = 3
         raw_sr = st.get("spawn_rate")
         try:
-            spawn_rate = max(0.0, min(3.0, float("1.5" if raw_sr is None else raw_sr)))
+            spawn_rate = max(0.0, min(3.0, float("0.7" if raw_sr is None else raw_sr)))
         except (TypeError, ValueError):
-            spawn_rate = 1.5
+            spawn_rate = 0.7
         if spawn_rate <= 0.001:
             return
         head_mode = str(st.get("head_color", "blend") or "blend").strip().lower()
         if head_mode not in ("white", "match", "blend"):
             head_mode = "blend"
         try:
-            spd_var = max(0.0, min(10.0, float(st.get("speed_variance", "5.0") or 5.0)))
+            spd_var = max(0.0, min(10.0, float(st.get("speed_variance", "6.0") or 6.0)))
         except (TypeError, ValueError):
-            spd_var = 5.0
+            spd_var = 6.0
         overlap_m = str(st.get("overlap_mode", "hybrid") or "hybrid").strip().lower()
         try:
-            parallax_str = max(0.0, min(1.0, float(_fmt_cm_parallax(st.get("depth_parallax", "0.50")))))
+            parallax_str = max(0.0, min(1.0, float(_fmt_cm_parallax(st.get("depth_parallax", "0.40")))))
         except (TypeError, ValueError):
-            parallax_str = 0.50
+            parallax_str = 0.40
         try:
-            glow_v = max(0.0, min(1.0, float(st.get("glow", "0.60") or 0.60)))
+            glow_v = max(0.0, min(1.0, float(st.get("glow", "0.80") or 0.80)))
         except (TypeError, ValueError):
-            glow_v = 0.60
+            glow_v = 0.80
         decay_m = str(st.get("decay_mode", "exponential") or "exponential").strip().lower()
         shimmer_m = str(st.get("shimmer", "insane") or "insane").strip().lower()
         mirror_m = str(st.get("mirror", "random") or "random").strip().lower()
-        tail_m = str(st.get("tail_length", "long") or "long").strip().lower()
+        tail_m = str(st.get("tail_length", "normal") or "normal").strip().lower()
         is_dense = str(st.get("col_density", "dense") or "dense").strip().lower() == "dense"
 
         try:
-            fsize = max(5, min(32, int(st.get("size", "9") or 9)))
+            fsize = max(5, min(32, int(st.get("size", "6") or 6)))
         except ValueError:
-            fsize = 9
+            fsize = 6
 
         atlas = _get_ncm_glyph_atlas(charset, fsize)
         cw = atlas["cell_w"]
@@ -896,15 +896,15 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             tag_rgb = (0.0, 0.94, 1.0)
         elif mode in ("ncmatrix", "cmatrix"):
             cs = st.get("charset", "katakana").upper()[:4]
-            col_s = str(st.get("color", "green") or "green").strip()
+            col_s = str(st.get("color", "theme") or "theme").strip()
             col_low = col_s.lower()
             raw_hud_sr = st.get("spawn_rate")
             try:
-                hud_sr = max(0.0, min(5.0, float("1.0" if raw_hud_sr is None else raw_hud_sr)))
+                hud_sr = max(0.0, min(5.0, float("0.7" if raw_hud_sr is None else raw_hud_sr)))
             except (TypeError, ValueError):
-                hud_sr = 1.0
+                hud_sr = 0.7
             sr_suf = f"·{hud_sr:.1f}X" if abs(hud_sr - 1.0) > 0.05 else ""
-            tag = t("cc_personalization.desktop_mode_matrix", p0=f"{cs}·{col_s.upper()}·{st.get('size', '9')}PT{sr_suf}")
+            tag = t("cc_personalization.desktop_mode_matrix", p0=f"{cs}·{col_s.upper()}·{st.get('size', '6')}PT{sr_suf}")
             if col_low == "rainbow":
                 tag_rgb = (0.0, 0.94, 1.0)
             elif col_low == "theme":
@@ -1711,8 +1711,8 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
 
     elif ncm_avail:
         cm_cs = str(STATE.get("desktop", "cm_charset", "katakana") or "katakana")
-        cm_spd = str(STATE.get("desktop", "cm_speed", "5") or "5")
-        cm_sz = str(STATE.get("desktop", "cm_size", "9") or "9")
+        cm_spd = str(STATE.get("desktop", "cm_speed", "3") or "3")
+        cm_sz = str(STATE.get("desktop", "cm_size", "6") or "6")
         cm_tr = str(STATE.get("desktop", "cm_trans", "flow") or "flow")
 
         cfg_box.add_section(t("cc_personalization.ncmatrix_native_wayland_shader_asci"))
@@ -1734,7 +1734,7 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         cs_warn = Badge(t("ui.missing", p0="otf-ipafont"), style="warn") if not kata_ok else ""
         cfg_box.add_kv(t("cc_personalization.charset_mode"), cs_pills, right_markup=cs_warn)
 
-        cm_col = str(STATE.get("desktop", "cm_color", "green") or "green").strip()
+        cm_col = str(STATE.get("desktop", "cm_color", "theme") or "theme").strip()
         cm_col_low = cm_col.lower()
         is_custom_hex = bool(re.match(r"^#[0-9A-Fa-f]{6}$", cm_col))
         col_pills = " ".join(
@@ -1780,11 +1780,11 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         )
         cfg_box.add_kv(t("cc_personalization.speed_level"), spd_pills)
 
-        raw_cm_spawn = STATE.get("desktop", "cm_spawn_rate", "1.5")
+        raw_cm_spawn = STATE.get("desktop", "cm_spawn_rate", "0.7")
         try:
-            cm_spawn = max(0.0, min(3.0, round(float("1.5" if raw_cm_spawn is None or str(raw_cm_spawn).strip() == "" else raw_cm_spawn), 1)))
+            cm_spawn = max(0.0, min(3.0, round(float("0.7" if raw_cm_spawn is None or str(raw_cm_spawn).strip() == "" else raw_cm_spawn), 1)))
         except (TypeError, ValueError):
-            cm_spawn = 1.5
+            cm_spawn = 0.7
         spawn_slider = Slider(
             cm_spawn,
             "cc_desk:cm_spawn",
@@ -1805,17 +1805,17 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         )
         cfg_box.add_kv(t("cc_personalization.wp_cm_font_size"), sz_pills)
 
-        cm_var_s = _fmt_cm_var(STATE.get("desktop", "cm_speed_variance", "5.0"))
+        cm_var_s = _fmt_cm_var(STATE.get("desktop", "cm_speed_variance", "6.0"))
         cm_var = float(cm_var_s)
         cm_ov = _norm_cm_overlap(STATE.get("desktop", "cm_overlap", "hybrid"))
-        cm_par_s = _fmt_cm_parallax(STATE.get("desktop", "cm_parallax", "0.50"))
+        cm_par_s = _fmt_cm_parallax(STATE.get("desktop", "cm_parallax", "0.40"))
         cm_par = float(cm_par_s)
-        cm_glow_s = _fmt_cm_glow(STATE.get("desktop", "cm_glow", "0.60"))
+        cm_glow_s = _fmt_cm_glow(STATE.get("desktop", "cm_glow", "0.80"))
         cm_glow = float(cm_glow_s)
         cm_dec = _norm_cm_decay(STATE.get("desktop", "cm_decay", "exponential"))
         cm_shim = _norm_cm_shimmer(STATE.get("desktop", "cm_shimmer", "insane"))
         cm_mir = _norm_cm_mirror(STATE.get("desktop", "cm_mirror", "random"))
-        cm_tail = _norm_cm_tail(STATE.get("desktop", "cm_tail_len", "long"))
+        cm_tail = _norm_cm_tail(STATE.get("desktop", "cm_tail_len", "normal"))
         cm_dens = _norm_cm_density(STATE.get("desktop", "cm_col_density", "dense"))
 
         def _build_cm_adv(b: Box) -> None:

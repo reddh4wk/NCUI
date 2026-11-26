@@ -97,6 +97,17 @@ def handle_cc_settings_link(cc_panel, uri: str) -> bool:
     elif cmd == "build_distro_pkg":
         ok_p, msg_p = build_distro_package()
         set_feedback("settings", ok_p, msg_p)
+    elif cmd == "term_restart":
+        from panels.cc_engine_resources import restart_tui_session
+        restart_tui_session("settings_terminal", cc_panel=cc_panel)
+        return True
+    elif cmd == "term_clear":
+        from panels.cc_engine_resources import get_tui_session, set_active_tui
+        sess = get_tui_session("settings_terminal")
+        if sess is not None and sess.alive:
+            sess.send_bytes(b"\x0c")
+            set_active_tui("settings_terminal", shell=getattr(cc_panel, "shell", None))
+        return True
     else:
         return False
 

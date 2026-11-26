@@ -44,8 +44,8 @@ ACCENT_MODES = ("pure_mono", "error_accent")
 HIST_SIZE_OPTIONS = (5000, 10000, 50000)
 
 _DEFAULT_ZSH_CFG: dict = {
-    "preset": "nightcity_classic",
-    "accent_mode": "error_accent",
+    "preset": "powerline_tonal",
+    "accent_mode": "pure_mono",
     "show_git": True,
     "show_exit": True,
     "show_duration": True,
@@ -466,7 +466,12 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         "    [[ -n \"$_ncui_ctx_seg\" ]] && tail_segs+=(\"%F{${NCUI_C_INTSOFT}}${_ncui_ctx_seg}\")",
         "    (( NCUI_OPT_EXIT && rc != 0 )) && tail_segs+=(\"%F{${ec}}✗${rc}\")",
         "    if (( ${#tail_segs[@]} > 0 )); then",
-        "        p+=\"%K{${NCUI_C_STRBG}}%F{${prev_bg}} ${(j:%F{${NCUI_C_SCHEMA}} · :)tail_segs} \"",
+        "        local _ncui_tj=\"\" _ncui_ts",
+        "        for _ncui_ts in \"${tail_segs[@]}\"; do",
+        "            [[ -n \"$_ncui_tj\" ]] && _ncui_tj+=\"%F{${NCUI_C_SCHEMA}} · \"",
+        "            _ncui_tj+=\"${_ncui_ts}\"",
+        "        done",
+        "        p+=\"%K{${NCUI_C_STRBG}}%F{${prev_bg}} ${_ncui_tj} \"",
         "        prev_bg=\"${NCUI_C_STRBG}\"",
         "    fi",
         "    PROMPT=\"${p}%k%F{${prev_bg}}%f \"",

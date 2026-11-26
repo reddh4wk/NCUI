@@ -1158,7 +1158,13 @@ class AsciiCard(Gtk.ListBoxRow):
         cairo_close_bot = bool(getattr(self.box_model, "cairo_close_bottom", False))
         is_open_bot = getattr(self.box_model, "open_bottom", False) and (self.footer_lbl is None) and not cairo_close_bot
         if cairo_close_bot:
-            y_bot = max(y_top + 2.0, total_h - 1.0)
+            toplevel = self.get_toplevel()
+            bot_inset = (
+                float(toplevel.get_cairo_bottom_inset_px())
+                if hasattr(toplevel, "get_cairo_bottom_inset_px")
+                else float(last_line_h * 0.5)
+            )
+            y_bot = max(y_top + 2.0, total_h - 1.0 - bot_inset)
         elif is_open_bot:
             y_bot = total_h
         else:

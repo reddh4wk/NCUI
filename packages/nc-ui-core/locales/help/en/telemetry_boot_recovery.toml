@@ -209,9 +209,16 @@ short = "Cancels the pending `.old` ESP recovery rollback."
 title = "Scan Disks for Chroot Targets"
 short = "Runs `nc-chroot candidates-tsv` to enumerate host and external disks with LUKS2/LVM/ESP partitions."
 
-["cc_sys:dc_chroot"]
+["cc_sys:dc_chroot_mount"]
+title = "Mount Host Filesystem (Chroot-Ready)"
+short = "Runs `sudo nc-chroot --onlymount` in the embedded terminal to unlock LUKS2, activate LVM, and mount `/run/ncui-chroot` ready for manual `arch-chroot` or inspection without entering a shell."
+verbose = "Mounts root, `/var`, `/home`, `/tmp`, and the target ESP into `/run/ncui-chroot` so you can repair files directly or enter via `sudo arch-chroot /run/ncui-chroot`."
+diagram = "boot_recovery"
+diagram_focus = "chroot"
+
+["cc_sys:dc_chroot_ext"]
 title = "Open Encrypted Chroot Terminal"
-short = "Launches `sudo nc-chroot` in a terminal to unlock LUKS2, activate LVM, mount `/run/ncui-chroot`, and enter shell."
+short = "Launches `sudo nc-chroot` in an external terminal window to unlock LUKS2, activate LVM, mount `/run/ncui-chroot`, and enter an interactive shell."
 verbose = "Automatically binds `/dev`, `/proc`, `/sys`, `/run`, and the target ESP so you can repair kernels, `mkinitcpio`, `sbctl`, or `limine.conf` offline."
 diagram = "boot_recovery"
 diagram_focus = "chroot"

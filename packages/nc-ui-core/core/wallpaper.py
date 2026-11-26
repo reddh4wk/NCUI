@@ -826,7 +826,7 @@ def apply_ncmatrix(
     spec: dict,
     outputs_data: dict | None = None,
     prev_is_ncm: bool = False,
-    prev_size: str = "9",
+    prev_size: str = "6",
     defer_json: bool = False,
     sync_cleanup: bool = False,
     save: bool = True,
@@ -837,26 +837,26 @@ def apply_ncmatrix(
 
     jp_raw = spec.get("japanese")
     cs = str(spec.get("charset") or ("ascii" if jp_raw in (False, "false", "0") else "katakana"))
-    col = str(spec.get("color") or "green")
+    col = str(spec.get("color") or "theme")
     resolved_col = resolve_ncmatrix_color(col)
-    spd = str(spec.get("speed") or "5")
-    sz = str(spec.get("size") or "9")
-    sp_rate = _norm_cm_float(spec.get("spawn_rate", "1.5"), 0.0, 3.0, 1.5, 0.1)
+    spd = str(spec.get("speed") or "3")
+    sz = str(spec.get("size") or "6")
+    sp_rate = _norm_cm_float(spec.get("spawn_rate", "0.7"), 0.0, 3.0, 0.7, 0.1)
     hc_raw = str(spec.get("head_color") or "blend").strip().lower()
     head_col = "white" if hc_raw in ("white", "1", "on", "true") else ("match" if hc_raw in ("match", "color", "trail", "shader", "0", "false", "off") else "blend")
-    spd_var = _norm_cm_float(spec.get("speed_variance", "5.0"), 0.0, 10.0, 5.0, 0.1)
+    spd_var = _norm_cm_float(spec.get("speed_variance", "6.0"), 0.0, 10.0, 6.0, 0.1)
     ov_raw = str(spec.get("overlap_mode") or "hybrid").strip().lower()
     overlap_m = "parallax" if ov_raw in ("parallax", "overwrite", "cover", "1") else ("additive" if ov_raw in ("additive", "screen", "boost", "2") else "hybrid")
-    parallax_m = _norm_cm_float(spec.get("depth_parallax", "0.50"), 0.0, 1.0, 0.50, 0.05)
-    glow_v = _norm_cm_float(spec.get("glow", "0.60"), 0.0, 1.0, 0.60, 0.05)
+    parallax_m = _norm_cm_float(spec.get("depth_parallax", "0.40"), 0.0, 1.0, 0.40, 0.05)
+    glow_v = _norm_cm_float(spec.get("glow", "0.80"), 0.0, 1.0, 0.80, 0.05)
     dec_raw = str(spec.get("decay_mode") or "exponential").strip().lower()
     decay_m = "linear" if dec_raw in ("linear", "classic", "1") else "exponential"
     shm_raw = str(spec.get("shimmer") or "insane").strip().lower()
     shimmer_m = {"off": "off", "none": "off", "0": "off", "false": "off", "low": "low", "1": "low", "med": "med", "medium": "med", "2": "med", "high": "high", "3": "high", "on": "high", "true": "high"}.get(shm_raw, "insane")
     mir_raw = str(spec.get("mirror") or "random").strip().lower()
     mirror_m = "off" if mir_raw in ("off", "normal", "0", "false") else ("on" if mir_raw in ("on", "all", "mirror", "1", "true") else "random")
-    tl_raw = str(spec.get("tail_length") or "long").strip().lower()
-    tail_m = "short" if tl_raw in ("short", "0") else ("normal" if tl_raw in ("normal", "medium", "1") else "long")
+    tl_raw = str(spec.get("tail_length") or "normal").strip().lower()
+    tail_m = "short" if tl_raw in ("short", "0") else ("long" if tl_raw in ("long", "2") else "normal")
     den_raw = str(spec.get("col_density") or "dense").strip().lower()
     density_m = "classic" if den_raw in ("classic", "0", "off", "false", "no") else "dense"
     cm_trans = str(spec.get("cm_trans") or spec.get("transition") or "flow")
@@ -975,7 +975,7 @@ def sync_ncmatrix_theme_wallpapers() -> int:
             and str(st.get("color") or "").strip().lower() == "theme"
             and get_running_ncmatrix_pid(mon) > 0
         ):
-            ok, _ = apply_ncmatrix(mon, st, prev_is_ncm=True, prev_size=str(st.get("size") or "9"), save=False)
+            ok, _ = apply_ncmatrix(mon, st, prev_is_ncm=True, prev_size=str(st.get("size") or "6"), save=False)
             if ok:
                 synced += 1
     return synced
@@ -1007,9 +1007,21 @@ def default_ncmatrix_state() -> dict:
     return {
         "mode": "ncmatrix",
         "charset": "katakana" if has_katakana_font() else "ascii",
-        "color": "green",
-        "speed": "5",
-        "size": "9",
+        "color": "theme",
+        "speed": "3",
+        "size": "6",
+        "spawn_rate": "0.7",
+        "head_color": "blend",
+        "speed_variance": "6.0",
+        "overlap_mode": "hybrid",
+        "depth_parallax": "0.40",
+        "glow": "0.80",
+        "decay_mode": "exponential",
+        "shimmer": "insane",
+        "mirror": "random",
+        "tail_length": "normal",
+        "col_density": "dense",
+        "cm_trans": "flow",
     }
 
 

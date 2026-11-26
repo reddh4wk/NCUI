@@ -303,6 +303,15 @@ class ShellWindow(Gtk.Window):
         hbox_gap = max(0, inner_pad - s_right - s_left)
         return m_left, m_right, m_top, m_bot, hbox_gap
 
+    def get_cairo_bottom_inset_px(self) -> int:
+        """Bottom inset (px) below the visible bottom stroke of any direct-Cairo surface
+        (Sidebar, flush EmbeddedTuiWidget, AsciiCard with cairo_close_bottom) so it aligns
+        pixel-for-pixel with Pango NC-Boxes and respects `inner_pad`."""
+        _ml, _mr, _mt, m_bot, _gap = self._get_inner_box_margins()
+        inner_pad, _ = get_layout_margins()
+        bw = int(self.geom.get("window_border_width", 1))
+        return max(0, bw + inner_pad - m_bot)
+
     def _get_popup_margins(self) -> tuple[int, int, int, int]:
         pad = int(self.geom.get("panel_padding", 10))
         bw = int(self.geom.get("window_border_width", 1))
@@ -2583,7 +2592,7 @@ class ShellWindow(Gtk.Window):
         x0 = float(s_left) + 0.5
         x1 = float(nav_w_px - 1 - s_right) + 0.5
         y0 = float(max(0, bw + inner_pad - m_top)) + 0.5
-        y1 = float(grid_h_px - 1 - max(0, bw + inner_pad - m_bot)) + 0.5
+        y1 = float(grid_h_px - 1 - self.get_cairo_bottom_inset_px()) + 0.5
         br_r, br_g, br_b, _ = _parse_rgba_components(c_brd)
 
         bg_da = Gtk.DrawingArea()

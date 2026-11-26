@@ -79,6 +79,7 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         show_cursor: bool = False,
         font_size_pt: float = 9.0,
         flush: bool = False,
+        bot_inset_px: int = 0,
     ):
         super().__init__()
         self.set_visible_window(False)
@@ -91,6 +92,7 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         self.show_cursor = bool(show_cursor)
         self.font_size_pt = max(7.0, float(font_size_pt or 9.0))
         self.flush = bool(flush)
+        self._bot_inset_px = max(0, int(bot_inset_px or 0)) if self.flush else 0
         self._last_discrete_scroll_ts = 0.0
         self._no_liga_attrs = Pango.AttrList()
         self._no_liga_attrs.insert(Pango.AttrFontFeatures.new("liga=0, clig=0, dlig=0, hlig=0"))
@@ -101,7 +103,7 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         self._desc_bold = None
         self._target_height_px = int(target_height_px or 0)
         self._update_metrics(self.map_width)
-        vert_chrome = TUI_FLUSH_VERT_CHROME_PX if self.flush else TUI_VERT_CHROME_PX
+        vert_chrome = (TUI_FLUSH_VERT_CHROME_PX + self._bot_inset_px) if self.flush else TUI_VERT_CHROME_PX
         self._ch_draw = (
             max(float(self._ch), (float(target_height_px) - vert_chrome) / float(max(1, self.session.rows)))
             if target_height_px > 0
@@ -173,13 +175,14 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         self.show_cursor = other.show_cursor
         self.font_size_pt = other.font_size_pt
         self.flush = other.flush
+        self._bot_inset_px = other._bot_inset_px
         self.map_width = other.map_width
         self.char_w = other.char_w
         self._ch_draw = other._ch_draw
         self._target_height_px = other._target_height_px
         self._metrics_sig = None
         self._update_metrics(self.map_width)
-        vert_chrome = TUI_FLUSH_VERT_CHROME_PX if self.flush else TUI_VERT_CHROME_PX
+        vert_chrome = (TUI_FLUSH_VERT_CHROME_PX + self._bot_inset_px) if self.flush else TUI_VERT_CHROME_PX
         total_h = max(
             int(round(vert_chrome + self.session.rows * self._ch)),
             int(self._target_height_px),
@@ -413,13 +416,22 @@ class EmbeddedTuiWidget(Gtk.EventBox):
         def_bg = _hex_to_rgb_f(p["structure_bg"], (0.10, 0.11, 0.14))
 
         if self.flush:
+            toplevel = self.get_toplevel()
+            bot_inset = (
+                float(toplevel.get_cairo_bottom_inset_px())
+                if hasattr(toplevel, "get_cairo_bottom_inset_px")
+                else float(self._bot_inset_px)
+            )
             pad_x = max(10.0, self.char_w * 1.25)
             pad_y = 6.5
             vx0 = math.floor(x_left) + 0.5
             vx1 = math.floor(x_right) + 0.5
             fw = max(40.0, vx1 - vx0)
             fy0 = 0.5
-            y_bot = max(20.0, math.floor(max(float(alloc.height), term_h + TUI_FLUSH_VERT_CHROME_PX)) - 0.5)
+            y_bot = max(
+                20.0,
+                math.floor(max(float(alloc.height), term_h + TUI_FLUSH_VERT_CHROME_PX + bot_inset)) - 0.5 - bot_inset,
+            )
             fh = max(20.0, y_bot - fy0)
             bs = str(THEME.get("ascii", {}).get("box_style", "rounded"))
             rad = (
@@ -595,6 +607,8 @@ def _build_tui_ncbox(
     sess = get_or_start_tui_session(tui_id, cmd, rows=rows, cols=cols, cc_panel=cc_panel)
     if sess.rows != rows or sess.cols != cols:
         sess.resize(rows, cols)
+    shell = getattr(cc_panel, "shell", None)
+    bot_inset = shell.get_cairo_bottom_inset_px() if (shell is not None and hasattr(shell, "get_cairo_bottom_inset_px")) else 0
     w = EmbeddedTuiWidget(
         tui_id,
         sess,
@@ -604,6 +618,7 @@ def _build_tui_ncbox(
         mouse_reporting=True,
         show_cursor=False,
         flush=True,
+        bot_inset_px=bot_inset,
     )
     box.open_bottom = True
     box.cairo_close_bottom = True
@@ -649,11 +664,16 @@ def _compute_single_tui_size(
     actions: list | None = None,
     has_footer: bool = True,
 ) -> tuple[int, int, int]:
-    vert_chrome = TUI_FLUSH_VERT_CHROME_PX if flush else TUI_VERT_CHROME_PX
+    shell = getattr(cc_panel, "shell", None)
+    bot_inset = (
+        shell.get_cairo_bottom_inset_px()
+        if (flush and shell is not None and hasattr(shell, "get_cairo_bottom_inset_px"))
+        else 0
+    )
+    vert_chrome = (TUI_FLUSH_VERT_CHROME_PX + bot_inset) if flush else TUI_VERT_CHROME_PX
     cols, _cw, ch, _dr, _db = _compute_tui_grid_metrics(
         int(round(canvas.total_px)), canvas.char_w, font_size_pt=font_size_pt, flush=flush
     )
-    shell = getattr(cc_panel, "shell", None)
     if shell is not None and hasattr(shell, "_get_cc_target_height_px"):
         _ml, _mr, m_top, m_bot, _gap = shell._get_inner_box_margins()
         bw = int(shell.geom.get("window_border_width", 1))
@@ -842,6 +862,8 @@ def build_panel_terminal_card(cc_panel, canvas: Canvas, cards_above: list):
         open_bottom=True,
     )
     box_top.cairo_close_bottom = True
+    shell = getattr(cc_panel, "shell", None)
+    bot_inset = shell.get_cairo_bottom_inset_px() if (shell is not None and hasattr(shell, "get_cairo_bottom_inset_px")) else 0
     term_w = EmbeddedTuiWidget(
         PANEL_TERM_ID,
         sess,
@@ -852,5 +874,6 @@ def build_panel_terminal_card(cc_panel, canvas: Canvas, cards_above: list):
         show_cursor=True,
         font_size_pt=term_pt,
         flush=True,
+        bot_inset_px=bot_inset,
     )
     return AsciiCard(box_top, canvas, embedded_widget=term_w, footer_box_model=None)

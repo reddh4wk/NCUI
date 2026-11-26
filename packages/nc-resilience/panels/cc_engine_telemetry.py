@@ -1578,9 +1578,9 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         arg = "commit-rebuild" if os.path.basename(rb) == "nc-rescue" else "--rebuild"
         _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_commit_rebuild", ["sudo", rb, arg])
         return True
-    elif act == "dc_chroot":
+    elif act in ("dc_chroot_mount", "dc_chroot"):
         cb = resolve_sbin_helper("nc-chroot")
-        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_chroot_term_btn", ["sudo", cb])
+        _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_chroot_mount_btn", ["sudo", cb, "--onlymount"])
         return True
     elif act == "dc_chroot_ext":
         cb = resolve_sbin_helper("nc-chroot")

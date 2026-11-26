@@ -39,7 +39,7 @@ _ALL_SECTION_BLUEPRINTS = {
     "updates":         {"icon": "\uf0aa", "tabs": ["pacman", "aur", "flatpak", "orphans"]},
     "auth":            {"icon": "\uf023", "tabs": ["tpm", "keys", "polkit", "usbguard", "sudoers"]},
     "telemetry":       {"icon": "\uf0ad", "tabs": ["boot", "recovery", "snapshots", "vault", "backups", "disks"]},
-    "settings":        {"icon": "\uf013", "tabs": ["interface", "notifications"]},
+    "settings":        {"icon": "\uf013", "tabs": ["interface", "notifications", "terminal"]},
 }
 
 
@@ -259,6 +259,8 @@ class ControlCenterPanel(BasePanel):
             return not bool(self.get_state("tui_btop_open", True))
         if (sec, sub) == ("power", "gpu"):
             return not bool(self.get_state("tui_nvtop_open", True))
+        if (sec, sub) == ("settings", "terminal"):
+            return False
         if (sec, sub) in (("input", "controllers"), ("display", "monitors"), ("input", "macros"), ("power", "profiles")):
             sig = self._compute_gated_tick_sig(sec, sub, force=True)
             changed = self._last_tick_sig is not None and sig != self._last_tick_sig

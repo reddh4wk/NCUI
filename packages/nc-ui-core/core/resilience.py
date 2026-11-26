@@ -595,7 +595,10 @@ def build_install_helpers_root_script(names: list[str] | None = None) -> str:
         src = find_libexec_helper(name)
         dst = os.path.join(SBIN_DST_DIR, name)
         if src and os.path.isfile(src):
-            cmds.append(f"/usr/bin/install -o root -g root -m 0755 {shlex.quote(src)} {shlex.quote(dst)}")
+            if os.path.exists(dst) and os.path.samefile(src, dst):
+                cmds.append(f"/usr/bin/chown root:root {shlex.quote(dst)} && /usr/bin/chmod 0755 {shlex.quote(dst)}")
+            else:
+                cmds.append(f"/usr/bin/install -o root -g root -m 0755 {shlex.quote(src)} {shlex.quote(dst)}")
     if not os.path.isfile(RESILIENCE_CONF_PATH):
         toml_body = render_resilience_toml(load_resilience_config())
         cmds.append(

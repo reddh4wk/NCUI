@@ -208,6 +208,18 @@ def invalidate_priv_cache() -> None:
     _SUDO_L_CACHE["ts"] = 0.0
 
 
+def _rule_in_sudo_l(txt: str, rule: str) -> bool:
+    if rule in txt:
+        return True
+    bin_path = rule.split()[0] if rule else ""
+    if not bin_path.startswith("/"):
+        return False
+    for seg in re.findall(r"NOPASSWD:\s*(.+?)(?=\s*\([^)]+\)|$)", txt):
+        if bin_path in (e.strip() for e in seg.split(",")):
+            return True
+    return False
+
+
 class PrivilegedAction:
     def __init__(
         self,
@@ -253,7 +265,7 @@ class PrivilegedAction:
             return False
         ok, txt = _get_sudo_list_cached()
         if ok and self.rules:
-            if all(r in txt for r in self.rules):
+            if all(_rule_in_sudo_l(txt, r) for r in self.rules):
                 return True
             if "(ALL) NOPASSWD: ALL" not in txt and os.path.exists(self.filename):
                 return False
@@ -452,6 +464,7 @@ PRIVILEGED_ACTIONS: dict[str, PrivilegedAction] = {
                 "/usr/lib/ncui/sbin/nc-rescue config-stdin",
                 "/usr/lib/ncui/sbin/nc-chroot status-env",
                 "/usr/lib/ncui/sbin/nc-chroot candidates-tsv",
+                "/usr/lib/ncui/sbin/nc-chroot --onlymount",
                 "/usr/lib/ncui/sbin/nc-chroot -u",
                 "/usr/lib/ncui/sbin/nc-golden list-tsv",
                 "/usr/lib/ncui/sbin/nc-golden verify-stdin",

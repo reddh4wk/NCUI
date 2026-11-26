@@ -832,19 +832,19 @@ def _get_editor_draft_spec() -> dict:
     return {
         "mode": "ncmatrix",
         "charset": str(STATE.get("desktop", "cm_charset", "katakana") or "katakana"),
-        "color": str(STATE.get("desktop", "cm_color", "green") or "green"),
-        "speed": str(STATE.get("desktop", "cm_speed", "5") or "5"),
-        "size": str(STATE.get("desktop", "cm_size", "9") or "9"),
-        "spawn_rate": _base()._fmt_cm_spawn(STATE.get("desktop", "cm_spawn_rate", "1.5")),
+        "color": str(STATE.get("desktop", "cm_color", "theme") or "theme"),
+        "speed": str(STATE.get("desktop", "cm_speed", "3") or "3"),
+        "size": str(STATE.get("desktop", "cm_size", "6") or "6"),
+        "spawn_rate": _base()._fmt_cm_spawn(STATE.get("desktop", "cm_spawn_rate", "0.7")),
         "head_color": _base()._norm_cm_head(STATE.get("desktop", "cm_head_color", "blend")),
-        "speed_variance": _base()._fmt_cm_var(STATE.get("desktop", "cm_speed_variance", "5.0")),
+        "speed_variance": _base()._fmt_cm_var(STATE.get("desktop", "cm_speed_variance", "6.0")),
         "overlap_mode": _base()._norm_cm_overlap(STATE.get("desktop", "cm_overlap", "hybrid")),
-        "depth_parallax": _base()._fmt_cm_parallax(STATE.get("desktop", "cm_parallax", "0.50")),
-        "glow": _base()._fmt_cm_glow(STATE.get("desktop", "cm_glow", "0.60")),
+        "depth_parallax": _base()._fmt_cm_parallax(STATE.get("desktop", "cm_parallax", "0.40")),
+        "glow": _base()._fmt_cm_glow(STATE.get("desktop", "cm_glow", "0.80")),
         "decay_mode": _base()._norm_cm_decay(STATE.get("desktop", "cm_decay", "exponential")),
         "shimmer": _base()._norm_cm_shimmer(STATE.get("desktop", "cm_shimmer", "insane")),
         "mirror": _base()._norm_cm_mirror(STATE.get("desktop", "cm_mirror", "random")),
-        "tail_length": _base()._norm_cm_tail(STATE.get("desktop", "cm_tail_len", "long")),
+        "tail_length": _base()._norm_cm_tail(STATE.get("desktop", "cm_tail_len", "normal")),
         "col_density": _base()._norm_cm_density(STATE.get("desktop", "cm_col_density", "dense")),
         "cm_trans": str(STATE.get("desktop", "cm_trans", "flow") or "flow"),
     }
@@ -900,19 +900,19 @@ def _norm_spec_for_diff(src: dict) -> tuple:
         return (
             "ncmatrix",
             charset,
-            str(src.get("color") or "green"),
-            str(src.get("speed") or "5"),
-            str(src.get("size") or "9"),
-            _base()._fmt_cm_spawn(src.get("spawn_rate", "1.5")),
+            str(src.get("color") or "theme"),
+            str(src.get("speed") or "3"),
+            str(src.get("size") or "6"),
+            _base()._fmt_cm_spawn(src.get("spawn_rate", "0.7")),
             _base()._norm_cm_head(src.get("head_color", "blend")),
-            _base()._fmt_cm_var(src.get("speed_variance", "5.0")),
+            _base()._fmt_cm_var(src.get("speed_variance", "6.0")),
             _base()._norm_cm_overlap(src.get("overlap_mode", "hybrid")),
-            _base()._fmt_cm_parallax(src.get("depth_parallax", "0.50")),
-            _base()._fmt_cm_glow(src.get("glow", "0.60")),
+            _base()._fmt_cm_parallax(src.get("depth_parallax", "0.40")),
+            _base()._fmt_cm_glow(src.get("glow", "0.80")),
             _base()._norm_cm_decay(src.get("decay_mode", "exponential")),
             _base()._norm_cm_shimmer(src.get("shimmer", "insane")),
             _base()._norm_cm_mirror(src.get("mirror", "random")),
-            _base()._norm_cm_tail(src.get("tail_length", "long")),
+            _base()._norm_cm_tail(src.get("tail_length", "normal")),
             _base()._norm_cm_density(src.get("col_density", "dense")),
             str(src.get("cm_trans") or src.get("transition") or "flow"),
         )
@@ -1071,19 +1071,19 @@ def get_desktop_preview_state(outputs_data: dict, cc_panel=None) -> dict:
             "video_loop": str(src.get("video_loop") or "loop"),
             "playlist_order": str(src.get("playlist_order") or "sequential"),
             "hex": hex_col,
-            "color": str(src.get("color") or "green"),
-            "speed": str(src.get("speed") or "5"),
-            "size": str(src.get("size") or "9"),
-            "spawn_rate": _base()._fmt_cm_spawn(src.get("spawn_rate", "1.5")),
+            "color": str(src.get("color") or "theme"),
+            "speed": str(src.get("speed") or "3"),
+            "size": str(src.get("size") or "6"),
+            "spawn_rate": _base()._fmt_cm_spawn(src.get("spawn_rate", "0.7")),
             "head_color": _base()._norm_cm_head(src.get("head_color", "blend")),
-            "speed_variance": _base()._fmt_cm_var(src.get("speed_variance", "5.0")),
+            "speed_variance": _base()._fmt_cm_var(src.get("speed_variance", "6.0")),
             "overlap_mode": _base()._norm_cm_overlap(src.get("overlap_mode", "hybrid")),
-            "depth_parallax": _base()._fmt_cm_parallax(src.get("depth_parallax", "0.50")),
-            "glow": _base()._fmt_cm_glow(src.get("glow", "0.60")),
+            "depth_parallax": _base()._fmt_cm_parallax(src.get("depth_parallax", "0.40")),
+            "glow": _base()._fmt_cm_glow(src.get("glow", "0.80")),
             "decay_mode": _base()._norm_cm_decay(src.get("decay_mode", "exponential")),
             "shimmer": _base()._norm_cm_shimmer(src.get("shimmer", "insane")),
             "mirror": _base()._norm_cm_mirror(src.get("mirror", "random")),
-            "tail_length": _base()._norm_cm_tail(src.get("tail_length", "long")),
+            "tail_length": _base()._norm_cm_tail(src.get("tail_length", "normal")),
             "col_density": _base()._norm_cm_density(src.get("col_density", "dense")),
             "cm_trans": str(src.get("cm_trans") or src.get("transition") or "flow"),
             "charset": charset,
@@ -1144,19 +1144,19 @@ def sync_editor_from_live_monitors(outputs_data: dict = None) -> None:
         updates["solid_hex"] = _resolve_solid_hex(st.get("hex") or st.get("target") or "#000000")
     elif m == "ncmatrix":
         updates["cm_charset"] = st.get("charset") or "katakana"
-        updates["cm_color"] = st.get("color") or "green"
-        updates["cm_speed"] = str(st.get("speed") or "5")
-        updates["cm_size"] = str(st.get("size") or "9")
-        updates["cm_spawn_rate"] = _base()._fmt_cm_spawn(st.get("spawn_rate", "1.5"))
+        updates["cm_color"] = st.get("color") or "theme"
+        updates["cm_speed"] = str(st.get("speed") or "3")
+        updates["cm_size"] = str(st.get("size") or "6")
+        updates["cm_spawn_rate"] = _base()._fmt_cm_spawn(st.get("spawn_rate", "0.7"))
         updates["cm_head_color"] = _base()._norm_cm_head(st.get("head_color", "blend"))
-        updates["cm_speed_variance"] = _base()._fmt_cm_var(st.get("speed_variance", "5.0"))
+        updates["cm_speed_variance"] = _base()._fmt_cm_var(st.get("speed_variance", "6.0"))
         updates["cm_overlap"] = _base()._norm_cm_overlap(st.get("overlap_mode", "hybrid"))
-        updates["cm_parallax"] = _base()._fmt_cm_parallax(st.get("depth_parallax", "0.50"))
-        updates["cm_glow"] = _base()._fmt_cm_glow(st.get("glow", "0.60"))
+        updates["cm_parallax"] = _base()._fmt_cm_parallax(st.get("depth_parallax", "0.40"))
+        updates["cm_glow"] = _base()._fmt_cm_glow(st.get("glow", "0.80"))
         updates["cm_decay"] = _base()._norm_cm_decay(st.get("decay_mode", "exponential"))
         updates["cm_shimmer"] = _base()._norm_cm_shimmer(st.get("shimmer", "insane"))
         updates["cm_mirror"] = _base()._norm_cm_mirror(st.get("mirror", "random"))
-        updates["cm_tail_len"] = _base()._norm_cm_tail(st.get("tail_length", "long"))
+        updates["cm_tail_len"] = _base()._norm_cm_tail(st.get("tail_length", "normal"))
         updates["cm_col_density"] = _base()._norm_cm_density(st.get("col_density", "dense"))
         updates["cm_trans"] = str(st.get("cm_trans") or "flow")
 

@@ -133,7 +133,7 @@ from ui.kit import (
     start_inline_input,
 )
 
-def _fmt_cm_spawn(raw, default: float = 1.5) -> str:
+def _fmt_cm_spawn(raw, default: float = 0.7) -> str:
     """Format ncmatrix trail spawn rate clamped to [0.0, 3.0] with 0.1 precision."""
     if raw is None or str(raw).strip() == "":
         return f"{default:.1f}"
@@ -157,7 +157,7 @@ def _norm_cm_head(raw) -> str:
     return "blend"
 
 
-def _fmt_cm_var(raw, default: float = 5.0) -> str:
+def _fmt_cm_var(raw, default: float = 6.0) -> str:
     """Format speed variance clamped to [0.0, 10.0] with 0.1 precision."""
     try:
         v = float(str(default if (raw is None or str(raw).strip() == "") else raw).strip().replace(",", "."))
@@ -167,7 +167,7 @@ def _fmt_cm_var(raw, default: float = 5.0) -> str:
     return "0.0" if v == 0.0 else f"{v:.1f}"
 
 
-def _fmt_cm_glow(raw, default: float = 0.60) -> str:
+def _fmt_cm_glow(raw, default: float = 0.80) -> str:
     """Format CRT phosphor glow clamped to [0.00, 1.00] in 0.05 steps."""
     try:
         v = float(str(default if (raw is None or str(raw).strip() == "") else raw).strip().replace(",", "."))
@@ -186,7 +186,7 @@ def _norm_cm_overlap(raw) -> str:
     return "hybrid"
 
 
-def _fmt_cm_parallax(raw, default: float = 0.50) -> str:
+def _fmt_cm_parallax(raw, default: float = 0.40) -> str:
     """Format speed-linked luminescence attenuation strength in [0.00, 1.00] (0.05 steps)."""
     s = str(default if (raw is None or str(raw).strip() == "") else raw).strip().lower().replace(",", ".")
     if s in ("on", "true", "yes"):
@@ -234,9 +234,9 @@ def _norm_cm_tail(raw) -> str:
     s = str(raw or "").strip().lower()
     if s in ("short", "0"):
         return "short"
-    if s in ("normal", "medium", "1"):
-        return "normal"
-    return "long"
+    if s in ("long", "2"):
+        return "long"
+    return "normal"
 
 
 def _norm_cm_density(raw) -> str:

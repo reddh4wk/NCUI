@@ -479,6 +479,7 @@ disks = "Disk Manager"
 [control_center.tabs.settings]
 interface = "UI Style & Behavior"
 notifications = "Notifications & Rules"
+terminal = "Terminal"
 
 [control_center.sections]
 sysinfo = "System Information"
@@ -3987,6 +3988,9 @@ distro_pkg_skeleton_msg = "Distro package builder skeleton invoked (implementati
 boot_default = "Default"
 boot_set_default = "Set Default"
 boot_entry = "BOOT ENTRY"
+term_title = "Interactive Terminal ({p0})"
+term_restart = "↻ Restart"
+term_clear = "Clear"
 
 [cc_system]
 about_this_pc_host = "{p0} — About This PC"
@@ -4317,6 +4321,7 @@ rescue_chroot_cands = "{p0} ext · {p1} host"
 rescue_chroot_none = "Not scanned"
 rescue_scan_disks_btn = "Scan LUKS"
 rescue_chroot_term_btn = "Chroot"
+rescue_chroot_mount_btn = "Mount Host"
 rescue_chroot_ext_btn = "Chroot (Ext)"
 rescue_chroot_ext_opened = "Opened Chroot in external terminal window."
 rescue_chroot_ext_no_term = "No supported terminal emulator found for external Chroot."

@@ -209,9 +209,16 @@ short = "Annulla il ripristino della versione precedente `.old` di Recovery sull
 title = "Scansiona Dischi per Chroot"
 short = "Esegue `nc-chroot candidates-tsv` per elencare dischi host ed esterni con partizioni LUKS2/LVM/ESP."
 
-["cc_sys:dc_chroot"]
+["cc_sys:dc_chroot_mount"]
+title = "Monta Filesystem Host (Pronto per Chroot)"
+short = "Esegue `sudo nc-chroot --onlymount` nel terminale integrato per sbloccare LUKS2, attivare LVM e montare `/run/ncui-chroot` pronto per `arch-chroot` manuale o ispezione senza aprire una shell."
+verbose = "Monta root, `/var`, `/home`, `/tmp` e la ESP target in `/run/ncui-chroot` così puoi modificare i file direttamente o entrare con `sudo arch-chroot /run/ncui-chroot`."
+diagram = "boot_recovery"
+diagram_focus = "chroot"
+
+["cc_sys:dc_chroot_ext"]
 title = "Apri Terminale Chroot Cifrato"
-short = "Avvia `sudo nc-chroot` in terminale per sbloccare LUKS2, attivare LVM, montare `/run/ncui-chroot` ed entrare in shell."
+short = "Avvia `sudo nc-chroot` in una finestra terminale esterna per sbloccare LUKS2, attivare LVM, montare `/run/ncui-chroot` ed entrare in shell interattiva."
 verbose = "Collega automaticamente `/dev`, `/proc`, `/sys`, `/run` e la ESP target così puoi riparare kernel, `mkinitcpio`, `sbctl` o `limine.conf` offline."
 diagram = "boot_recovery"
 diagram_focus = "chroot"

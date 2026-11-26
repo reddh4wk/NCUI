@@ -255,9 +255,9 @@ class Panel(BasePanel):
             cmd_k, out_name = act.split(":", 1)
             wp.control_slideshow(out_name, cmd_k)
         elif act.startswith("matrix:"):
-            wp.apply_ncmatrix(act.split(":", 1)[1], {"charset": "ascii", "color": "green"})
+            wp.apply_ncmatrix(act.split(":", 1)[1], {**wp.default_ncmatrix_state(), "charset": "ascii"})
         elif act.startswith("matrix_jp:"):
-            wp.apply_ncmatrix(act.split(":", 1)[1], {"charset": "katakana", "color": "green"})
+            wp.apply_ncmatrix(act.split(":", 1)[1], {**wp.default_ncmatrix_state(), "charset": "katakana"})
 
         if self.shell:
             from gi.repository import GLib

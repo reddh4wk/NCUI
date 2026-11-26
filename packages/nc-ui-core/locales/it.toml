@@ -479,6 +479,7 @@ disks = "Gestore Dischi"
 [control_center.tabs.settings]
 interface = "Stile UI & Comportamento"
 notifications = "Notifiche & Regole"
+terminal = "Terminale"
 
 [control_center.sections]
 sysinfo = "Informazioni di Sistema"
@@ -3987,6 +3988,9 @@ distro_pkg_skeleton_msg = "Scheletro creazione pacchetto distribuzione invocato 
 boot_default = "Predefinito"
 boot_set_default = "Imposta Predef."
 boot_entry = "VOCE AVVIO"
+term_title = "Terminale Interattivo ({p0})"
+term_restart = "↻ Riavvia"
+term_clear = "Pulisci"
 
 [cc_system]
 about_this_pc_host = "{p0} — Info di Sistema"
@@ -4317,6 +4321,7 @@ rescue_chroot_cands = "{p0} est · {p1} host"
 rescue_chroot_none = "Non scansionato"
 rescue_scan_disks_btn = "Scansiona"
 rescue_chroot_term_btn = "Chroot"
+rescue_chroot_mount_btn = "Monta Host"
 rescue_chroot_ext_btn = "Chroot (Est)"
 rescue_chroot_ext_opened = "Chroot avviato in una finestra terminale esterna."
 rescue_chroot_ext_no_term = "Nessun emulatore di terminale supportato trovato."
