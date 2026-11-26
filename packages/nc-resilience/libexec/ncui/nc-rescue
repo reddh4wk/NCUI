@@ -3053,6 +3053,9 @@ do_edit_recovery_squashfs() {
         [[ -f /etc/resolv.conf ]] && cp -L /etc/resolv.conf "${merged}/etc/resolv.conf" 2>/dev/null || true
         chroot "$merged" "$shell_bin" </dev/tty >/dev/tty 2>/dev/tty || chroot_rc=$?
     fi
+    if [[ -r /dev/tty ]] && command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import os, signal; signal.signal(signal.SIGTTOU, signal.SIG_IGN); fd = os.open("/dev/tty", os.O_RDWR); os.tcsetpgrp(fd, os.getpgrp()); os.close(fd)' 2>/dev/null || true
+    fi
     (( chroot_rc != 0 )) && msg_warn "Chroot shell exited with status ${chroot_rc}."
 
     local has_changes=""
