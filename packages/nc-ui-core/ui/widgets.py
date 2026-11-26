@@ -213,7 +213,7 @@ def _is_slider_segment_content(inner_markup: str) -> bool:
     asc = THEME["ascii"]
     s_fill = str(asc.get("slider_fill") or "#")[0]
     s_empty = str(asc.get("slider_empty") or "-")[0]
-    return len(plain) == 1 and plain in (s_fill, s_empty)
+    return len(plain) == 1 and plain in (s_fill, s_empty, "\u2502")
 
 
 def _is_focusable_anchor_content(inner_markup: str) -> bool:

@@ -2266,7 +2266,7 @@ _colorize_shadow_line() {
 }
 
 _write_recovery_issue() {
-    local root_dir="$1" rec_user="${2:-rescue}"
+    local root_dir="$1" rec_user="${2:-rescue}" want_desktop="${3:-1}"
     local c_rst=$'\033[0m'
     local c_blk=$'\033[1m'"$(_hex_to_fg "$THEME_HEX_FOCUS")"
     local c_shd="$(_hex_to_fg "$THEME_HEX_SCHEMA")"
@@ -2293,9 +2293,43 @@ _write_recovery_issue() {
         _repeat_char "$THEME_BOX_H" 67
         printf '%s\n' "$c_rst"
         printf '  %sYour username is "%s%s%s%s".%s\n' "$c_val" "$c_usr" "$rec_user" "$c_rst" "$c_val" "$c_rst"
-        printf '  %sUse the password you set when you created this image.%s\n\n' "$c_val" "$c_rst"
+        printf '  %sUse the password you set when you created this image.%s\n' "$c_val" "$c_rst"
+        if (( want_desktop == 1 )); then
+            printf '  %sRun "%s%s%s%s" after login to start the graphical desktop.%s\n' "$c_val" "$c_usr" "niri-session" "$c_rst" "$c_val" "$c_rst"
+        fi
+        printf '\n'
     } > "$issue_file"
     chmod 0644 "$issue_file"
+}
+
+_write_recovery_hid_rebind() {
+    local root_dir="$1"
+    install -d "${root_dir}/usr/local/sbin" "${root_dir}/etc/systemd/system"
+    cat > "${root_dir}/usr/local/sbin/ncui-hid-rebind" <<'EOF_HID'
+#!/bin/sh
+for d in /sys/bus/usb/devices/*; do
+    [ -f "$d/authorized" ] && [ -f "$d/idVendor" ] || continue
+    grep -qx 03 "$d"/*/bInterfaceClass 2>/dev/null || continue
+    echo 0 > "$d/authorized"; sleep 0.2; echo 1 > "$d/authorized"
+done
+udevadm settle --timeout=5 || true
+EOF_HID
+    chmod 0755 "${root_dir}/usr/local/sbin/ncui-hid-rebind"
+    cat > "${root_dir}/etc/systemd/system/ncui-hid-rebind.service" <<'EOF_HID'
+[Unit]
+Description=NC-UI Recovery: re-enumerate USB HID devices (emulate replug)
+After=systemd-udev-trigger.service systemd-udev-settle.service
+Before=getty@tty1.service display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ncui-hid-rebind
+
+[Install]
+WantedBy=multi-user.target
+EOF_HID
+    chmod 0644 "${root_dir}/etc/systemd/system/ncui-hid-rebind.service"
+    systemctl --root="$root_dir" enable ncui-hid-rebind.service >/dev/null 2>&1 || chroot "$root_dir" systemctl enable ncui-hid-rebind.service >/dev/null 2>&1 || true
 }
 
 _configure_recovery_accounts() {
@@ -2353,14 +2387,6 @@ EOF_SUD
         fi
         chroot "$root_dir" locale-gen >/dev/null 2>&1 || true
     fi
-
-    if (( want_desktop == 1 )); then
-        local login_hook='[[ -z "${WAYLAND_DISPLAY:-}" && "${XDG_VTNR:-}" == "1" ]] && command -v niri-session >/dev/null 2>&1 && exec niri-session'
-        printf '%s\n' "$login_hook" > "${root_dir}/home/${rec_user}/.zprofile"
-        printf '%s\n' "$login_hook" > "${root_dir}/home/${rec_user}/.bash_profile"
-        chmod 0644 "${root_dir}/home/${rec_user}/.zprofile" "${root_dir}/home/${rec_user}/.bash_profile"
-        chroot "$root_dir" chown "${rec_user}:${rec_user}" "/home/${rec_user}/.zprofile" "/home/${rec_user}/.bash_profile"
-    fi
 }
 
 _resolve_host_desktop_user() {
@@ -2395,9 +2421,31 @@ _import_host_settings_into_rootfs() {
         for f in config.toml theme.toml firewall_rules.json notifications_rules.json shortcuts_store.json; do
             [[ -f "${host_home}/.config/ncui/${f}" ]] && install -m 0644 "${host_home}/.config/ncui/${f}" "${r_cfg}/ncui/${f}"
         done
-        for f in config.jsonc style.css; do
-            [[ -f "${host_home}/.config/waybar/${f}" ]] && install -m 0644 "${host_home}/.config/waybar/${f}" "${r_cfg}/waybar/${f}"
-        done
+        if [[ -f "${host_home}/.config/waybar/config.jsonc" ]]; then
+            python3 - "${host_home}/.config/waybar/config.jsonc" "${r_cfg}/waybar/config.jsonc" <<'PY_WB' || install -m 0644 "${host_home}/.config/waybar/config.jsonc" "${r_cfg}/waybar/config.jsonc"
+import json, re, sys
+src, dst = sys.argv[1:3]
+BUILTIN = {
+    "custom/media", "custom/settings", "custom/calendar", "custom/desktop",
+    "custom/cliphist", "custom/screenshot", "custom/printers", "custom/audio",
+    "custom/netcycle", "custom/cpu", "custom/ram", "custom/gpu", "custom/ups",
+    "custom/kb_layout", "custom/telegram", "custom/notifications", "custom/session",
+}
+raw = open(src, "r", encoding="utf-8", errors="replace").read()
+clean = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', lambda m: m.group(1) or "", raw, flags=re.S)
+data = json.loads(clean)
+for sec in ("modules-left", "modules-center", "modules-right"):
+    if isinstance(data.get(sec), list):
+        data[sec] = [m for m in data[sec] if not (isinstance(m, str) and m.startswith("custom/") and m not in BUILTIN)]
+for k in [k for k in data if isinstance(k, str) and k.startswith("custom/") and k not in BUILTIN]:
+    data.pop(k, None)
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=4, ensure_ascii=False)
+    f.write("\n")
+PY_WB
+            chmod 0644 "${r_cfg}/waybar/config.jsonc"
+        fi
+        [[ -f "${host_home}/.config/waybar/style.css" ]] && install -m 0644 "${host_home}/.config/waybar/style.css" "${r_cfg}/waybar/style.css"
         if [[ -f "${host_home}/.config/niri/config.kdl" ]]; then
             python3 - "$host_home" "${host_home}/.config/niri/config.kdl" "${r_cfg}/niri/config.kdl" "$root_dir" "$r_home" <<'PY_NIRI'
 import os, re, shlex, sys
@@ -2458,6 +2506,7 @@ PY_NIRI
     if (( want_desktop == 1 )) && [[ ! -f "${r_cfg}/niri/config.kdl" ]]; then
         cat <<'EOF_NIRI' > "${r_cfg}/niri/config.kdl"
 spawn-at-startup "waybar"
+spawn-at-startup "nc-ctl" "wallpaper" "restore"
 binds {
     Mod+Return { spawn "ghostty"; }
     Mod+S { spawn "nc-ctl" "settings"; }
@@ -2471,13 +2520,21 @@ EOF_NIRI
     chroot "$root_dir" chown -R "${rec_user}:${rec_user}" "${r_home}/.config" 2>/dev/null || true
 
     if (( import_nm == 1 )) && [[ -d /etc/NetworkManager/system-connections ]]; then
-        msg_step "Importing NetworkManager profiles (0600 root:root)..."
+        msg_step "Importing NetworkManager profiles (0600 root:root, host-active profiles take precedence)..."
         mkdir -p "${root_dir}/etc/NetworkManager/system-connections"
-        local nm_f
+        local nm_f nm_dst nm_uuid
+        local -a nm_active=()
+        mapfile -t nm_active < <(nmcli -t -f UUID connection show --active 2>/dev/null || true)
         for nm_f in /etc/NetworkManager/system-connections/*; do
             [[ -f "$nm_f" ]] || continue
             install -m 0600 -o root -g root "$nm_f" "${root_dir}/etc/NetworkManager/system-connections/$(basename "$nm_f")"
+            nm_dst="${root_dir}/etc/NetworkManager/system-connections/$(basename "$nm_f")"
+            nm_uuid="$(sed -n 's/^uuid=//p' "$nm_f" | head -n1)"
+            if [[ -n "$nm_uuid" ]] && printf '%s\n' "${nm_active[@]}" | grep -qxF "$nm_uuid" && ! grep -q '^autoconnect-priority=' "$nm_dst"; then
+                sed -i '/^\[connection\]/a autoconnect-priority=100' "$nm_dst"
+            fi
         done
+        [[ -f /var/lib/NetworkManager/timestamps ]] && install -D -m 0600 /var/lib/NetworkManager/timestamps "${root_dir}/var/lib/NetworkManager/timestamps"
     fi
 }
 
@@ -2518,6 +2575,12 @@ do_sync_ncui_squashfs() {
         _arch_pacman_root_S "$work_dir" python python-gobject gtk3 gtk-layer-shell cairo pango gdk-pixbuf2 libvterm rsync || true
     fi
     _install_ncui_into_rootfs "$work_dir" "auto" "$src_dir"
+    local -a sync_extra=()
+    mapfile -t sync_extra < <(_filter_repo_pkgs swaync cpupower alsa-utils ttf-dejavu otf-font-awesome otf-ipafont)
+    if (( ${#sync_extra[@]} > 0 )); then
+        msg_step "Syncing optional/runtime dependencies inside recovery rootfs (${#sync_extra[@]} pkgs)..."
+        _arch_pacman_root_S "$work_dir" "${sync_extra[@]}" || true
+    fi
     write_recovery_hook_files_into "$work_dir"
 
     NEW_SQUASHFS="${TARGET_MNT}/recovery.squashfs.new"
@@ -2841,13 +2904,13 @@ do_build_recovery_squashfs() {
 
     local pw1="" pw2=""
     while true; do
-        read -r -s -p "  ${CLR_INTENT}›${CLR_RESET} ${CLR_FOCUS}Password for '${rec_user}' and 'root':${CLR_RESET} " pw1 </dev/tty
+        IFS= read -r -s -p "  ${CLR_INTENT}›${CLR_RESET} ${CLR_FOCUS}Password for '${rec_user}' and 'root':${CLR_RESET} " pw1 </dev/tty
         echo "" >/dev/tty
         if [[ -z "$pw1" ]]; then
             msg_warn "Password cannot be empty."
             continue
         fi
-        read -r -s -p "  ${CLR_INTENT}›${CLR_RESET} ${CLR_FOCUS}Confirm password:${CLR_RESET} " pw2 </dev/tty
+        IFS= read -r -s -p "  ${CLR_INTENT}›${CLR_RESET} ${CLR_FOCUS}Confirm password:${CLR_RESET} " pw2 </dev/tty
         echo "" >/dev/tty
         if [[ "$pw1" == "$pw2" ]]; then
             unset pw2
@@ -2912,7 +2975,7 @@ do_build_recovery_squashfs() {
     mapfile -t opt_pkgs < <(_filter_repo_pkgs \
         hdparm ddrescue testdisk iwd iproute2 iputils bind curl wget ethtool tcpdump \
         lsof pciutils usbutils strace tmux vim less jq git nvtop \
-        nftables pipewire wireplumber pipewire-pulse wl-clipboard grim slurp \
+        nftables pipewire wireplumber pipewire-pulse wl-clipboard grim slurp cpupower alsa-utils \
     )
     (( ${#opt_pkgs[@]} > 0 )) && pkgs+=("${opt_pkgs[@]}")
 
@@ -2930,6 +2993,7 @@ do_build_recovery_squashfs() {
         local -a desk_pkgs=()
         mapfile -t desk_pkgs < <(_filter_repo_pkgs \
             niri waybar ghostty fuzzel polkit-gnome ttf-jetbrains-mono-nerd noto-fonts xdg-utils \
+            swaync gsfonts ttf-dejavu otf-font-awesome ttf-nerd-fonts-symbols otf-ipafont \
             "${DETECTED_GPU_PKGS[@]}" \
         )
         (( ${#desk_pkgs[@]} > 0 )) && pkgs+=("${desk_pkgs[@]}")
@@ -2961,7 +3025,8 @@ do_build_recovery_squashfs() {
     _install_ncui_into_rootfs "$build_dir" "$ncui_profile" "$src_dir"
     _configure_recovery_accounts "$build_dir" "$pw1" "$want_desktop" "$rec_user"
     unset pw1
-    _write_recovery_issue "$build_dir" "$rec_user"
+    _write_recovery_issue "$build_dir" "$rec_user" "$want_desktop"
+    (( want_desktop == 1 )) && _write_recovery_hid_rebind "$build_dir"
     if [[ -n "$aur_helper" ]] && (( aur_in_repo == 0 )); then
         _install_aur_helper_into_rootfs "$build_dir" "$aur_helper" "$rec_user"
     fi

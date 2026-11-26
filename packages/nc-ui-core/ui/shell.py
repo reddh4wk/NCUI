@@ -292,11 +292,13 @@ class ShellWindow(Gtk.Window):
     def _get_inner_box_margins(self) -> tuple[int, int, int, int, int]:
         inner_pad, _ = get_layout_margins()
         bw = int(self.geom.get("window_border_width", 1))
-        s_left, s_right, s_top_hdr, s_bot = self._get_box_ink_insets()
+        s_left, s_right, s_top_hdr, _s_bot = self._get_box_ink_insets()
         m_left = max(bw, bw + inner_pad - s_left)
         m_right = max(bw, bw + inner_pad - s_right)
         m_top = max(bw, bw + inner_pad - s_top_hdr)
-        m_bot = max(bw, bw + inner_pad - s_bot)
+        # Keep physical bottom margin uncompensated by Pango descent so scrolled content
+        # and flush Cairo/TUI cards never intrude into the outer window border margin.
+        m_bot = bw + inner_pad
         hbox_gap = max(0, inner_pad - s_right - s_left)
         return m_left, m_right, m_top, m_bot, hbox_gap
 

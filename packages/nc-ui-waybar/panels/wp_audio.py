@@ -81,7 +81,7 @@ class AudioPanel(BasePanel):
                 min_cols=target_cols,
                 max_cols=target_cols,
             )
-            slider_m = Slider(d["vol"], f"aud:{prefix}:vol:{q_name}", min_val=0, max_val=max_vol, width=15, show_pct=True, scroll_prefix=f"aud:{prefix}:scroll:{q_name}", enabled=not d["mute"])
+            slider_m = Slider(d["vol"], f"aud:{prefix}:vol:{q_name}", min_val=0, max_val=max_vol, width=15, show_pct=True, scroll_prefix=f"aud:{prefix}:scroll:{q_name}", enabled=not d["mute"], overdrive_threshold=100)
             st_badge = StateBadge(d["state"] == "RUNNING", d["state"], d["state"])
             mute_badge = f"  {Badge(t('audio.mute_2'), style='warn')}" if d["mute"] else ""
             vol_lbl = f"{t('audio.vol_label'):<6}"
@@ -153,7 +153,7 @@ class AudioPanel(BasePanel):
                     min_cols=target_cols,
                     max_cols=target_cols,
                 )
-                app_slider = Slider(app["vol"], f"aud:{sc}:vol:{app['index']}", min_val=0, max_val=max_vol, width=14, show_pct=True, scroll_prefix=f"aud:{sc}:scroll:{app['index']}", enabled=not app["mute"])
+                app_slider = Slider(app["vol"], f"aud:{sc}:vol:{app['index']}", min_val=0, max_val=max_vol, width=14, show_pct=True, scroll_prefix=f"aud:{sc}:scroll:{app['index']}", enabled=not app["mute"], overdrive_threshold=100)
                 app_box.add_row(" ")
                 app_box.add_row(
                     f"  {Txt(t('audio.mixer_label'), role='schema')} {app_slider}",

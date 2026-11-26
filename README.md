@@ -155,11 +155,7 @@ NC-UI never guesses what you wanted to scroll or edit:
 
 ## 🧬 `nc-matrix`: Native C11 / OpenGL Wallpaper Engine
 
-Packaged as an optional standalone package under [`utils/nc-matrix/`](utils/nc-matrix/), **nc-matrix** renders customizable digital rain in TrueColor 24-bit TTYs or directly on Wayland outputs via `gtk-layer-shell`, `OpenGL/EGL` shaders, and pre-baked Pango/Cairo glyph atlases (`ASCII`, `Katakana JP`, `Binary`, `Hexadecimal`), with automatic software fallback.
-
-```bash
-cd utils/nc-matrix && makepkg -si
-```
+Built by the split [`PKGBUILD`](PKGBUILD) as the `nc-matrix` package (sources in [`packages/nc-wallpapers/nc-matrix/`](packages/nc-wallpapers/nc-matrix/)), **nc-matrix** renders customizable digital rain in TrueColor 24-bit TTYs or directly on Wayland outputs via `gtk-layer-shell`, `OpenGL/EGL` shaders, and pre-baked Pango/Cairo glyph atlases (`ASCII`, `Katakana JP`, `Binary`, `Hexadecimal`), with automatic software fallback.
 
 > Installs `/usr/bin/nc-matrix` (`nc-matrix` package; links against `gtk+-3.0`, `gtk-layer-shell-0`, `pangocairo`, `epoxy`, `ncursesw`, `gio-unix-2.0`, `wayland-client`, `wayland-egl`, `egl`).
 
@@ -176,11 +172,16 @@ NC-UI requires **zero external PyPI packages** — only standard OS system libra
 
 ### Clone & Launch
 ```bash
-git clone https://github.com/reddh4wk/ncui.git
-cd ncui
+git clone https://github.com/reddh4wk/ncui.git && cd ncui
 
-# Build & install optional standalone nc-matrix package
-(cd utils/nc-matrix && makepkg -si)
+# Build & install the full suite (split PKGBUILD, nc-matrix included)
+makepkg -si
+
+# Or: pick packages from the 'ncui' pacman group (Enter = all)
+./install.sh
+
+# First-run setup (as your normal user, not root)
+nc-ctl setup
 
 # Open Control Center
 ./bin/nc-ctl settings

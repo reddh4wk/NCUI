@@ -203,9 +203,38 @@ fi
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+_NC_CHROOT_LOCKED=0
+if flock -n 9; then
+    _NC_CHROOT_LOCKED=1
+fi
+
+_enter_existing_chroot() {
+    load_state_file
+    CLEANUP_ON_EXIT=0
+    trap - EXIT INT TERM HUP
+    echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
+    echo -e "${C_BOLD}${C_MINT} SESSIONE CHROOT SECONDARIA SU: ${MNT_BASE} ${C_RESET}"
+    echo -e "${C_SLATE}==============================================================================${C_RESET}"
+    log_info "Chroot già montato: apertura shell secondaria (exit chiude solo questa sessione).\n"
+    if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+        run_chroot_exec "$MNT_BASE" "${POSITIONAL_ARGS[@]}"
+    else
+        local sh_bin="/bin/bash"
+        [[ -x "${MNT_BASE}/bin/zsh" ]] && sh_bin="/bin/zsh"
+        run_chroot_exec "$MNT_BASE" "$sh_bin"
+    fi
+}
+
+if (( _NC_CHROOT_LOCKED == 0 )); then
+    if (( DO_TEARDOWN == 0 && MOUNT_ONLY == 0 && DO_STATUS_ENV == 0 && DO_CANDS_TSV == 0 )) && mountpoint -q "$MNT_BASE" 2>/dev/null && [[ -d "${MNT_BASE}/etc" ]]; then
+        _enter_existing_chroot
+        exit $?
+    fi
     log_err "Un'altra istanza di ${0##*/} è già in esecuzione."
     exit 1
+elif (( DO_TEARDOWN == 0 && MOUNT_ONLY == 0 && DO_STATUS_ENV == 0 && DO_CANDS_TSV == 0 )) && mountpoint -q "$MNT_BASE" 2>/dev/null && [[ -d "${MNT_BASE}/etc" ]]; then
+    _enter_existing_chroot
+    exit $?
 fi
 
 # ------------------------------------------------------------------------------
@@ -560,7 +589,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
     mapfile -t CANDIDATES < <(find_luks_candidates)
     TOTAL_CANDIDATES=${#CANDIDATES[@]}
 
-    local origin_real="" origin_c_desc=""
+    origin_real="" origin_c_desc=""
     [[ -n "$ORIGIN_LUKS_DEV" ]] && origin_real="$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")"
     if (( TOTAL_CANDIDATES > 1 )); then
         log_warn "Rilevati molteplici candidati LUKS:"
@@ -575,7 +604,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
             printf "   ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}%b\n" "$((i + 1))" "$c_dev" "$(get_device_desc "$c_dev")" "$origin_tag"
         done
         echo
-        local prompt_luks
+        prompt_luks=""
         if [[ -n "$origin_c_desc" ]]; then
             prompt_luks=" \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per il sistema di origine (${ORIGIN_HOSTNAME:-host}: ${origin_c_desc}), oppure seleziona indice/dispositivo: "
         else
@@ -597,7 +626,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
         fi
     elif (( TOTAL_CANDIDATES == 1 )); then
         SINGLE_DEV="${CANDIDATES[0]}"
-        local s_real s_origin_tag=""
+        s_real="" s_origin_tag=""
         s_real="$(readlink -f "$SINGLE_DEV" 2>/dev/null || printf '%s' "$SINGLE_DEV")"
         [[ -n "$origin_real" && "$s_real" == "$origin_real" ]] && s_origin_tag=" [Origin: ${ORIGIN_HOSTNAME:-host}]"
         log_ok "Candidato LUKS individuato: ${C_BOLD}${SINGLE_DEV}${C_RESET} ($(get_device_desc "$SINGLE_DEV"))${s_origin_tag}"

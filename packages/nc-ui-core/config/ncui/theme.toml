@@ -39,6 +39,7 @@ search_cursor = "│"
 sys_notif_style = "clean"
 toast_style = "tactical"
 hover_help_style = "cyberpunk"
+volume_overdrive_style = "reverse_sweep"
 
 [colors]
 surface_bg = "#080a0f"

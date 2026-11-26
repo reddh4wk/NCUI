@@ -28,7 +28,7 @@ def _build_stream_table_box(
         return box
 
     min_btn_chars = max(len(t("audio.mute")), len(t("audio.unmute")))
-    vol_w = 30 if max_vol > 100 else 20
+    vol_w = 24 if max_vol > 100 else 20
     rows = []
     for a in streams:
         sid = a["index"]
@@ -42,6 +42,7 @@ def _build_stream_table_box(
             step_buttons=True,
             scroll_prefix=f"cc_aud:{scope}:scroll:{sid}",
             enabled=not a["mute"],
+            overdrive_threshold=100,
         )
         mb = ActionBtn(
             t("audio.unmute") if a["mute"] else t("audio.mute"),

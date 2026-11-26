@@ -286,15 +286,27 @@ def link_custom_waybar_plugin(raw_path: str) -> tuple[bool, str]:
 
 
 def unlink_custom_waybar_plugin(mod_id: str, reload_if_active: bool = True) -> tuple[bool, str]:
-    """Remove a symlinked third-party plugin and clean its entries from Waybar config."""
-    meta = _discover_user_waybar_plugins().get(mod_id)
-    if not meta:
+    """Remove a symlinked third-party plugin (and/or orphaned custom/* Waybar entry)."""
+    if not mod_id.startswith("custom/") or mod_id in KNOWN_WAYBAR_PLUGINS:
         return False, t("cc_waybar.err_plugin_not_found", p0=mod_id)
-    fpath = str(meta.get("_path") or "")
-    if not fpath or not os.path.islink(fpath):
-        return False, t("cc_waybar.err_plugin_not_symlink", p0=fpath)
 
-    os.unlink(fpath)
+    removed_link = False
+    meta = _discover_user_waybar_plugins().get(mod_id)
+    if meta:
+        fpath = str(meta.get("_path") or "")
+        if fpath and os.path.islink(fpath):
+            os.unlink(fpath)
+            removed_link = True
+        elif fpath and os.path.isfile(fpath):
+            return False, t("cc_waybar.err_plugin_not_symlink", p0=fpath)
+
+    slug = mod_id[len("custom/"):]
+    for d in iter_user_plugin_dirs():
+        cand = os.path.join(d, f"wp_{slug}.py")
+        if os.path.islink(cand) and not os.path.exists(cand):
+            os.unlink(cand)
+            removed_link = True
+
     _USER_PLUGINS_CACHE = None
     data = _read_wb_config()
     changed = False
@@ -310,6 +322,8 @@ def unlink_custom_waybar_plugin(mod_id: str, reload_if_active: bool = True) -> t
         changed = True
     if changed:
         _write_wb_config(data, reload_bar=(reload_if_active and was_active))
+    if not removed_link and not changed:
+        return False, t("cc_waybar.err_plugin_not_found", p0=mod_id)
     return True, t("cc_waybar.fb_plugin_unlinked", p0=mod_id)
 
 

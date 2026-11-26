@@ -15,13 +15,14 @@ pkgname=(
     'nc-print'
     'nc-asciifier'
     'nc-video-wallpaper'
+    'nc-matrix'
 )
 pkgver=1.0.0
 pkgrel=5
-arch=('any')
+arch=('x86_64')
 url='https://github.com/reddh4wk/ncui'
 license=('MIT')
-makedepends=('python')
+makedepends=('python' 'gcc' 'pkgconf' 'gtk3' 'gtk-layer-shell' 'pango' 'cairo' 'libepoxy' 'ncurses' 'wayland' 'libglvnd')
 source=()
 
 _install_py_dir() {
@@ -35,6 +36,12 @@ _install_py_dir() {
     done
 }
 
+build() {
+    rm -rf "$srcdir/nc-matrix"
+    cp -r "$startdir/packages/nc-wallpapers/nc-matrix" "$srcdir/nc-matrix"
+    make -C "$srcdir/nc-matrix" OPT_FLAGS="" TARGET=nc-matrix
+}
+
 _compile_pkg_py() {
     if [[ -d "$pkgdir/usr/lib/ncui" ]]; then
         python -m compileall -q -f -d /usr/lib/ncui "$pkgdir/usr/lib/ncui"
@@ -42,6 +49,7 @@ _compile_pkg_py() {
 }
 
 package_nc-ui() {
+    arch=('any')
     pkgdesc='NC-UI complete desktop Control Center, Waybar popup and resilience suite (meta-package)'
     depends=(
         'nc-ui-core'
@@ -58,18 +66,25 @@ package_nc-ui() {
         'nc-asciifier'
         'nc-video-wallpaper'
         'nc-matrix'
+        'swaync'
+        'cpupower'
+        'alsa-utils'
     )
     :
 }
 
 package_nc-ui-core() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI core runtime, Cairo/Pango UI kit, locales and default schemas'
     install=nc-ui.install
-    depends=('python' 'python-gobject' 'python-cairo' 'gtk3' 'gtk-layer-shell' 'cairo' 'pango')
+    depends=('python' 'python-gobject' 'python-cairo' 'gtk3' 'gtk-layer-shell' 'cairo' 'pango' 'gsfonts' 'ttf-nerd-fonts-symbols')
     optdepends=(
         'awww: static/animated Wayland wallpaper daemon'
         'libvterm: embedded terminal TUI panel support'
         'xdg-utils: open directories and external URLs'
+        'otf-font-awesome: extra icon glyph coverage'
+        'ttf-dejavu: fallback sans/mono coverage'
     )
 
     local _src="$startdir/packages"
@@ -108,6 +123,8 @@ package_nc-ui-core() {
 }
 
 package_nc-ui-control-center() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI desktop Control Center panels, engines and privileged helpers'
     depends=('nc-ui-core')
     optdepends=(
@@ -129,6 +146,8 @@ package_nc-ui-control-center() {
         'btop: embedded system resource monitor TUI'
         'nvtop: embedded GPU monitor TUI'
         'polkit-gnome: PolicyKit authentication agent'
+        'cpupower: CPU governor/EPP control'
+        'alsa-utils: speaker-test channel test'
     )
 
     local _src="$startdir/packages"
@@ -148,6 +167,8 @@ package_nc-ui-control-center() {
 }
 
 package_nc-ui-waybar() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI Waybar bar agent, layer-shell popups and layout manager'
     depends=('nc-ui-core' 'waybar')
     optdepends=(
@@ -178,11 +199,14 @@ package_nc-ui-waybar() {
 }
 
 package_nc-ui-notification() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI notification daemon helper, popup host and history panel'
     depends=('nc-ui-core')
     optdepends=(
         'libnotify: desktop notifications via notify-send'
         'jq: fast notification history updates'
+        'swaync: SwayNotificationCenter integration (swaync-client)'
     )
 
     local _src="$startdir/packages"
@@ -199,6 +223,8 @@ package_nc-ui-notification() {
 }
 
 package_nc-ui-input-daemons() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI uinput macro player, controller mapper daemon and input panels'
     depends=('nc-ui-core')
     optdepends=('evtest: input device event inspection')
@@ -217,6 +243,8 @@ package_nc-ui-input-daemons() {
 }
 
 package_nc-resilience() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI system resilience suite: LVM snapshots, vault sync, golden images and recovery UKI'
     depends=('nc-ui-core' 'bash')
     optdepends=(
@@ -255,6 +283,8 @@ package_nc-resilience() {
 }
 
 package_nc-bootloader() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI bootloader, kernel cmdline and UKI management panels'
     depends=('nc-ui-core')
     optdepends=('limine: Limine bootloader management' 'sbctl: Secure Boot status')
@@ -265,6 +295,8 @@ package_nc-bootloader() {
 }
 
 package_nc-calendar() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI calendar panel and Waybar calendar popup'
     depends=('nc-ui-core')
 
@@ -274,6 +306,8 @@ package_nc-calendar() {
 }
 
 package_nc-nftables() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI nftables firewall rules, chains and connections panels'
     depends=('nc-ui-core' 'nftables')
 
@@ -283,6 +317,8 @@ package_nc-nftables() {
 }
 
 package_nc-nut() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI Network UPS Tools (NUT) monitoring panel and popup'
     depends=('nc-ui-core')
     optdepends=('nut: UPS monitoring via upsc')
@@ -293,6 +329,8 @@ package_nc-nut() {
 }
 
 package_nc-print() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI CUPS printer discovery, queue and server panels'
     depends=('nc-ui-core')
     optdepends=(
@@ -306,6 +344,8 @@ package_nc-print() {
 }
 
 package_nc-asciifier() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI image/frame ASCII art wallpaper renderer'
     depends=('nc-ui-core' 'python-pillow')
 
@@ -315,6 +355,8 @@ package_nc-asciifier() {
 }
 
 package_nc-video-wallpaper() {
+    arch=('any')
+    groups=('ncui')
     pkgdesc='NC-UI Wayland animated video wallpaper daemon'
     depends=('nc-ui-core' 'ffmpeg')
     optdepends=(
@@ -325,4 +367,18 @@ package_nc-video-wallpaper() {
     local _src="$startdir/packages"
     install -Dm755 "$_src/nc-wallpapers/nc-video-wallpaper/bin/nc-video-wallpaper" \
         "$pkgdir/usr/bin/nc-video-wallpaper"
+}
+
+package_nc-matrix() {
+    pkgdesc='High-performance C11/EGL/Wayland & TTY Matrix digital rain engine'
+    groups=('ncui')
+    depends=('gtk3' 'gtk-layer-shell' 'pango' 'cairo' 'libepoxy' 'ncurses' 'wayland' 'libglvnd' 'gcc-libs')
+    optdepends=(
+        'otf-ipafont: Japanese Katakana glyph support (lightweight)'
+        'noto-fonts-cjk: full CJK and Katakana glyph support'
+    )
+    conflicts=('ncmatrix')
+    replaces=('ncmatrix')
+
+    make -C "$srcdir/nc-matrix" DESTDIR="$pkgdir" PREFIX=/usr TARGET=nc-matrix install
 }

@@ -1582,6 +1582,13 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
         cb = resolve_sbin_helper("nc-chroot")
         _start_recovery_embedded_shell(cc_panel, "cc_system.rescue_chroot_term_btn", ["sudo", cb])
         return True
+    elif act == "dc_chroot_ext":
+        cb = resolve_sbin_helper("nc-chroot")
+        if probe.open_terminal(["sudo", cb]):
+            set_feedback("system", True, t("cc_system.rescue_chroot_ext_opened"))
+        else:
+            set_feedback("system", False, t("cc_system.rescue_chroot_ext_no_term"))
+        return True
     elif act == "dc_golden_save":
         gb = resolve_sbin_helper("nc-golden")
         _start_recovery_embedded_shell(cc_panel, "cc_system.btn_dc_save_img", ["sudo", gb, "--save"])

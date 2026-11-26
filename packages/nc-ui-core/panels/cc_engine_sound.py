@@ -102,7 +102,7 @@ def speaker_icon(vol: int, muted: bool) -> str:
 def get_max_volume() -> int:
     try:
         mv = int(CONFIG.get("audio", {}).get("max_volume", 100))
-        return mv if mv in (100, 150) else max(100, min(150, mv))
+        return mv if mv in (100, 150, 200) else max(100, min(200, mv))
     except Exception:
         return 100
 
@@ -540,7 +540,7 @@ def handle_cc_audio_link(cc_panel, uri: str) -> bool:
         raw_mv = act.split(":", 1)[1]
         try:
             mv = int(raw_mv)
-            if mv not in (100, 150):
+            if mv not in (100, 150, 200):
                 raise ValueError
         except ValueError:
             _fb(False, t("cc_audio.invalid_max_volume", p0=raw_mv))

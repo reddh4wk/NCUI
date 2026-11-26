@@ -129,6 +129,16 @@ def _build_plugin_guide_box(cc_panel, canvas: Canvas, prior_cards: list) -> Box:
     return guide_box
 
 
+def _display_mod_id(m_id: str) -> str:
+    if m_id in KNOWN_WAYBAR_PLUGINS and m_id.startswith("custom/"):
+        return "ncui/" + m_id[len("custom/"):]
+    return m_id
+
+
+def _is_removable_custom_mod(m_id: str, user_plugins: dict) -> bool:
+    return (m_id in user_plugins) or (m_id.startswith("custom/") and m_id not in KNOWN_WAYBAR_PLUGINS)
+
+
 def build_cards(cc_panel, canvas: Canvas) -> list:
     data = _read_wb_config()
     user_plugins = _discover_user_waybar_plugins()
@@ -166,8 +176,6 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
     meta_cache = {m: _wb_plugin_meta(m) for m in (left_mods + center_mods + right_mods + disabled_mods)}
     icon_col_w = 2 if any(canvas.measure_cols(Txt(mc[0], role="focus")) > 1 for mc in meta_cache.values()) else 1
 
-    custom_tag_plain = t("cc_waybar.custom_tag")
-    custom_tag = Txt(custom_tag_plain, role="schema")
     flex_cols = max(16, canvas.inner_cols - 3 - icon_col_w - 32 - 6)
 
     for sec_key, sec_title, mod_list in sections_spec:
@@ -185,15 +193,13 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
                 to_r = SelectPill("R", f"cc_wb:move:{m_id}:right", selected=(sec_key == "right"))
                 rm_b = ActionBtn("x", f"cc_wb:remove:{m_id}", tone="danger_soft")
 
-                is_custom = m_id in user_plugins
-                id_plain = f"({m_id})"
-                suffix_len = 2 + len(id_plain) + ((2 + len(custom_tag_plain)) if is_custom else 0)
+                id_plain = f"({_display_mod_id(m_id)})"
+                suffix_len = 2 + len(id_plain)
                 lbl_shown = canvas.truncate_plain(p_lbl, max(6, flex_cols - suffix_len))
-                c_sfx = f"  {custom_tag}" if is_custom else ""
                 sec_rows.append([
                     Txt(f"{idx + 1:02d}.", role="schema"),
                     Txt(p_icon, role="focus"),
-                    f"{Txt(lbl_shown, role='focus')}  {Txt(id_plain, role='schema')}{c_sfx}",
+                    f"{Txt(lbl_shown, role='focus')}  {Txt(id_plain, role='schema')}",
                     f"{up_b} {dn_b}  {to_l} {to_c} {to_r}  {rm_b}",
                 ])
             sec_box.add_table(
@@ -205,7 +211,7 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
             )
         cards.append(sec_box)
 
-    has_custom_in_pool = any(m in user_plugins for m in disabled_mods)
+    has_custom_in_pool = any(_is_removable_custom_mod(m, user_plugins) for m in disabled_mods)
     pool_acts_w = 40 if has_custom_in_pool else 30
     pool_flex_cols = max(16, canvas.inner_cols - icon_col_w - pool_acts_w - 4)
     pool_box = Box(
@@ -224,16 +230,15 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
             add_c = ActionBtn(t("cc_waybar.center"), f"cc_wb:add:{m_id}:center", tone="apply")
             add_r = ActionBtn(t("cc_waybar.right"), f"cc_wb:add:{m_id}:right", tone="apply")
             acts_m = f"{add_l} {add_c} {add_r}"
-            is_custom = m_id in user_plugins
-            c_sfx = ""
-            lbl_max = max(8, pool_flex_cols - ((2 + len(custom_tag_plain) + 10) if is_custom else 10))
+            is_custom = _is_removable_custom_mod(m_id, user_plugins)
+            id_plain = f"({_display_mod_id(m_id)})"
+            lbl_max = max(8, pool_flex_cols - len(id_plain) - 10)
             lbl_shown = canvas.truncate_plain(p_lbl, lbl_max)
-            desc_budget = max(0, pool_flex_cols - len(lbl_shown) - 2 - ((2 + len(custom_tag_plain)) if is_custom else 0))
+            desc_budget = max(0, pool_flex_cols - len(lbl_shown) - len(id_plain) - 3)
             if is_custom:
-                c_sfx = f"  {custom_tag}"
                 acts_m += f" {ActionBtn(t('cc_waybar.unlink_btn'), f'cc_wb:unlink:{m_id}', tone='danger_soft')}"
             desc_shown = canvas.truncate_plain(p_desc, desc_budget) if desc_budget >= 6 else ""
-            mid_cell = f"{Txt(lbl_shown, role='focus')}{c_sfx}"
+            mid_cell = f"{Txt(lbl_shown, role='focus')} {Txt(id_plain, role='schema')}"
             if desc_shown:
                 mid_cell += f"  {Txt(desc_shown, role='schema')}"
             pool_rows.append([

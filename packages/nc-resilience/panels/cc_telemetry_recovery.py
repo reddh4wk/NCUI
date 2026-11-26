@@ -186,6 +186,7 @@ def _build_recovery_chroot_card(canvas: Canvas, data: dict, rec_env: dict, origi
         StateBadge(ch_mounted, t("cc_system.rescue_chroot_mounted"), t("cc_system.rescue_chroot_idle")),
         ActionBtn(t("cc_system.rescue_scan_disks_btn"), "cc_sys:chroot_scan", tone="neutral"),
         ActionBtn(t("cc_system.rescue_chroot_term_btn"), "cc_sys:dc_chroot", tone="apply"),
+        ActionBtn(t("cc_system.rescue_chroot_ext_btn"), "cc_sys:dc_chroot_ext", tone="neutral"),
     ]
     if ch_mounted:
         hdr_acts.append(ActionBtn(t("cc_system.rescue_chroot_umount_btn"), "cc_sys:chroot_umount", tone="danger_soft"))

@@ -818,6 +818,7 @@ def apply_ncmatrix(
     prev_size: str = "9",
     defer_json: bool = False,
     sync_cleanup: bool = False,
+    save: bool = True,
 ) -> tuple[bool, str]:
     ncmatrix_bin = resolve_ncmatrix_bin()
     if not ncmatrix_bin:
@@ -937,11 +938,47 @@ def apply_ncmatrix(
         "cm_trans": cm_trans,
         "japanese": (cs == "katakana"),
     }
-    if defer_json and running_pid > 0:
-        probe.enqueue_latest(f"wp_json_save_{mon}", lambda m=mon, p=ncm_payload: save_output_state(m, p), debounce_ms=150)
-    else:
-        save_output_state(mon, ncm_payload)
+    if save:
+        if defer_json and running_pid > 0:
+            probe.enqueue_latest(f"wp_json_save_{mon}", lambda m=mon, p=ncm_payload: save_output_state(m, p), debounce_ms=150)
+        else:
+            save_output_state(mon, ncm_payload)
     return True, f"{mon}: nc-matrix applied"
+
+
+_KATAKANA_FONT_CACHE: bool | None = None
+
+
+def has_katakana_font() -> bool:
+    """Return True if a font covering halfwidth Katakana (U+FF71) is installed."""
+    global _KATAKANA_FONT_CACHE
+    if _KATAKANA_FONT_CACHE is not None:
+        return _KATAKANA_FONT_CACHE
+    found = False
+    if probe.has_bin("fc-list"):
+        ok, out = probe.run_cmd(["fc-list", ":charset=ff71", "file"], timeout=1.0)
+        found = bool(ok and out.strip())
+    else:
+        for base in ("/usr/share/fonts/noto-cjk", "/usr/share/fonts/OTF", "/usr/share/fonts/TTF"):
+            if os.path.isdir(base) and any(
+                any(k in fn.lower() for k in ("cjk", "ipa", "ipafont", "han", "katakana", "gothic", "mincho"))
+                for fn in os.listdir(base)
+            ):
+                found = True
+                break
+    _KATAKANA_FONT_CACHE = found
+    return found
+
+
+def default_ncmatrix_state() -> dict:
+    """Default nc-matrix state used on first startup when no wallpaper is configured."""
+    return {
+        "mode": "ncmatrix",
+        "charset": "katakana" if has_katakana_font() else "ascii",
+        "color": "green",
+        "speed": "5",
+        "size": "9",
+    }
 
 
 def _restore_ascii_meta(mon: str, st: dict) -> None:
@@ -970,6 +1007,12 @@ def restore_all(target_mon: str = "") -> tuple[bool, str]:
             continue
         st = read_output_state(mon)
         if not st:
+            if resolve_ncmatrix_bin():
+                ok, msg = apply_ncmatrix(mon, default_ncmatrix_state(), outputs_data=outputs, sync_cleanup=True, save=True)
+                if ok:
+                    restored.append(mon)
+                else:
+                    errors.append(f"{mon}: {msg}")
             continue
         mode = str(st.get("mode") or "").lower()
         target = str(st.get("target") or "").strip()
@@ -1001,6 +1044,12 @@ def restore_all(target_mon: str = "") -> tuple[bool, str]:
             else:
                 eff = rendered if (rendered and os.path.isfile(rendered)) else target
                 if not eff or not os.path.isfile(os.path.expanduser(eff)):
+                    if resolve_ncmatrix_bin():
+                        ok, msg = apply_ncmatrix(mon, default_ncmatrix_state(), outputs_data=outputs, sync_cleanup=True, save=False)
+                        if ok:
+                            restored.append(mon)
+                        else:
+                            errors.append(f"{mon}: {msg}")
                     continue
                 ok, msg = apply_image(mon, eff, fit=fit, transition=trans, bgcolor=bgcolor, align=align, save=(mode == "image"), sync_cleanup=True)
                 if ok and mode == "image":
@@ -1021,6 +1070,12 @@ def restore_all(target_mon: str = "") -> tuple[bool, str]:
         elif mode == "slideshow":
             eff = rendered if (rendered and os.path.isdir(rendered)) else target
             if not eff or not os.path.isdir(os.path.expanduser(eff)):
+                if resolve_ncmatrix_bin():
+                    ok, msg = apply_ncmatrix(mon, default_ncmatrix_state(), outputs_data=outputs, sync_cleanup=True, save=False)
+                    if ok:
+                        restored.append(mon)
+                    else:
+                        errors.append(f"{mon}: {msg}")
                 continue
             shuf_raw = st.get("shuffle", "true")
             order = str(st.get("order") or ("sequential" if shuf_raw in (False, "false") else "shuffle"))
@@ -1035,7 +1090,10 @@ def restore_all(target_mon: str = "") -> tuple[bool, str]:
             if ok:
                 _restore_ascii_meta(mon, st)
         elif mode in ("ncmatrix", "cmatrix"):
-            ok, msg = apply_ncmatrix(mon, st, outputs_data=outputs, sync_cleanup=True)
+            eff_st = dict(st)
+            if (eff_st.get("charset") or "katakana") == "katakana" and not has_katakana_font():
+                eff_st["charset"] = "ascii"
+            ok, msg = apply_ncmatrix(mon, eff_st, outputs_data=outputs, sync_cleanup=True, save=False)
         elif mode == "none":
             stop_output(mon)
             ok, msg = True, f"{mon}: stopped"

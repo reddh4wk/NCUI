@@ -4,6 +4,7 @@ from core.config import (
     BOX_STYLES,
     NOTIF_STYLES,
     THEME,
+    VOLUME_OVERDRIVE_STYLES,
     get_box_opacity_pct,
     get_hover_help_opacity_pct,
     get_hover_help_style,
@@ -15,6 +16,7 @@ from core.config import (
     get_toast_opacity_pct,
     get_toast_style,
     get_ui_transparency_pct,
+    get_volume_overdrive_style,
     get_waybar_sync_color,
     get_waybar_sync_opacity,
 )
@@ -285,6 +287,43 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
             Slider(hover_op_pct, "cc_pers:hover_help_op", min_val=0, max_val=100, width=26, show_pct=True, step=5),
         )
     cards.append(notif_box)
+
+    # =====================================================================
+    # BOX 3B — Audio Overdrive Bar Animation (100% -> 200%)
+    # =====================================================================
+    od_open, od_fold = FoldToggle(cc_panel, "pers_sec_vol_overdrive", default=False, uri_prefix="ui:state")
+    od_box = Box(
+        t("cc_personalization.box_vol_overdrive"),
+        icon="\uf028",
+        actions=[od_fold],
+        highlighted=False,
+    )
+    if not od_open:
+        od_box.add_row(f"  {Txt(t('cc_personalization.desc_sec_vol_overdrive'), role='schema')}")
+    else:
+        cur_od = get_volume_overdrive_style()
+        od_pills = " ".join(
+            SelectPill(t(f"cc_personalization.vol_od_{st}"), f"cc_pers:vol_od_style:{st}", selected=(cur_od == st))
+            for st in VOLUME_OVERDRIVE_STYLES
+        )
+        od_box.add_kv(t("cc_personalization.vol_od_style_lbl"), od_pills)
+        demo_vol = int(STATE.get("personalization", "vol_od_demo", 165) or 165)
+        od_box.add_kv(
+            t("cc_personalization.vol_od_preview_lbl"),
+            Slider(
+                demo_vol,
+                "cc_pers:vol_od_demo",
+                min_val=0,
+                max_val=200,
+                width=26,
+                show_pct=True,
+                step=5,
+                scroll_prefix="cc_pers:vol_od_scroll",
+                overdrive_threshold=100,
+                overdrive_style=cur_od,
+            ),
+        )
+    cards.append(od_box)
 
     # =====================================================================
     # BOX 3 — Monospace Typography, Window Radius & Layout Geometry

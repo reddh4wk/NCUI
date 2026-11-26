@@ -65,6 +65,7 @@ from core.config import (
     DEFAULT_THEME,
     NOTIF_STYLES,
     THEME,
+    VOLUME_OVERDRIVE_STYLES,
     _deep_merge,
     _load_toml,
     _parse_rgba_components,
@@ -96,6 +97,7 @@ from core.config import (
     set_toast_opacity_pct,
     set_toast_style,
     set_ui_transparency_pct,
+    set_volume_overdrive_style,
     set_waybar_sync_color,
     set_waybar_sync_opacity,
     sync_waybar_colors_from_theme,
@@ -702,6 +704,11 @@ def _save_theme_file(path: str, theme_dict: dict) -> tuple[bool, str]:
 def _sync_theme_aliases() -> None:
     sanitize_theme_dict(THEME)
     get_semantic_palette()
+    try:
+        from panels.cc_engine_zsh import sync_zsh_theme_if_enabled
+        sync_zsh_theme_if_enabled()
+    except Exception:
+        pass
 
 
 def _apply_full_preset(cc_panel, pid: str) -> bool:
@@ -804,7 +811,8 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
             if m_id not in ("scene", "slideshow", "ncmatrix", "solid"):
                 return False
             if m_id == "ncmatrix" and not is_ncmatrix_available():
-                return False
+                _set_pers_fb(False, t("cc_personalization.wp_optdep_ncmatrix"))
+                return True
             _media._cancel_pending_yt_dl()
             _media._cancel_pending_ascii_apply()
             _yazi._close_embedded_yazi(cancelled=True)
@@ -955,6 +963,9 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
             cs = act.split(":", 1)[1]
             if not cs:
                 return False
+            if cs == "katakana" and not _wp.has_katakana_font():
+                _set_pers_fb(False, t("cc_personalization.wp_optdep_katakana"))
+                return True
             STATE.set("desktop", "cm_charset", cs)
             _media.set_wp_user_touched(True)
             _media._stage_current_to_selected()
@@ -1417,6 +1428,29 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
         if cc_panel and cc_panel.shell:
             cc_panel.shell.dismiss_hover_help()
         _set_pers_fb(True, t("cc_personalization.hover_help_style_set", p0=t(f"cc_personalization.notif_style_{chosen}")))
+    elif act.startswith("vol_od_style:"):
+        st = act.split(":", 1)[1].strip().lower()
+        if st not in VOLUME_OVERDRIVE_STYLES:
+            return False
+        chosen = set_volume_overdrive_style(st)
+        _save_theme_file(_theme_path(), THEME)
+        _set_pers_fb(True, t("cc_personalization.vol_od_style_set", p0=t(f"cc_personalization.vol_od_{chosen}")))
+    elif act.startswith("vol_od_demo:"):
+        try:
+            val = max(0, min(200, int(round(float(act.split(":", 1)[1])))))
+        except (TypeError, ValueError):
+            return False
+        STATE.set("personalization", "vol_od_demo", val, immediate=False)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
+    elif act.startswith("vol_od_scroll:"):
+        cur = int(STATE.get("personalization", "vol_od_demo", 165) or 165)
+        step = 5 if act.rsplit(":", 1)[1] == "up" else -5
+        STATE.set("personalization", "vol_od_demo", max(0, min(200, cur + step)), immediate=False)
+        if cc_panel:
+            cc_panel.request_throttled_refresh()
+        return True
     elif act.startswith("set_color:"):
         parts = act.split(":", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:

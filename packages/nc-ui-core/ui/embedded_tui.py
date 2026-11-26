@@ -713,12 +713,7 @@ def _compute_single_tui_size(
         if has_footer:
             foot_probe = Box("", highlighted=False, open_top=True)
             chrome_px += _measure_box_gtk_px(shell, foot_probe)
-        if has_footer:
-            max_bottom_h = avail_total_h
-        else:
-            inner_pad, _ = get_layout_margins()
-            nav_bot_inset = max(0, bw + inner_pad - m_bot)
-            max_bottom_h = avail_total_h - nav_bot_inset
+        max_bottom_h = avail_total_h
         per_card_px = max_bottom_h - used_h
         target_widget_h = max(int(round(min_rows * ch + vert_chrome)), int(per_card_px - chrome_px))
         rows = max(min_rows, int((target_widget_h - vert_chrome) // ch))

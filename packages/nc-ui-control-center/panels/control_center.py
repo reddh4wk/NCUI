@@ -26,7 +26,7 @@ from ui.kit import ActionBtn, Box, InlineFilter, SelectPill, Txt, cancel_inline_
 _ALL_SECTION_BLUEPRINTS = {
     "sysinfo":         {"icon": "\uf129", "tabs": ["overview"]},
     "display":         {"icon": "\uf108", "tabs": ["monitors"]},
-    "personalization": {"icon": "\uf53f", "tabs": ["theme", "wallpaper"]},
+    "personalization": {"icon": "\uf53f", "tabs": ["theme", "wallpaper", "zsh"]},
     "waybar":          {"icon": "\uf009", "tabs": ["layout", "options"]},
     "apps":            {"icon": "\uf1b2", "tabs": ["floating", "mime", "autostart"]},
     "input":           {"icon": "\uf11c", "tabs": ["mouse", "keyboard", "macros", "shortcuts", "controllers"]},
@@ -107,6 +107,7 @@ _ENGINES = [
     ("sysinfo", "handle_cc_sysinfo_link", None),
     ("firewall", "handle_cc_firewall_link", None),
     ("personalization", "handle_cc_personalization_link", "handle_cc_personalization_prompt"),
+    ("zsh", "handle_cc_zsh_link", None),
     ("display", "handle_cc_display_link", "handle_cc_display_prompt"),
     ("network", "handle_cc_network_link", "handle_cc_network_prompt"),
     ("waybar", "handle_cc_waybar_link", "handle_cc_waybar_prompt"),

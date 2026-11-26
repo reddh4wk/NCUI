@@ -144,6 +144,8 @@ from panels.cc_engine_controllers_widgets import (
 )
 
 _DISCOVERY_CACHE: dict = {"ts": 0.0, "devices": []}
+_BT_CACHE: dict = {"ts": 0.0, "devices": [], "info": {}, "pending": False}
+_BT_CACHE_TTL = 10.0
 
 def _read_sysfs_str(path: str) -> str:
     try:
@@ -193,24 +195,32 @@ def _find_led_paths(uniq: str, family: str) -> list[str]:
     return found
 
 
-def _scan_paired_bt_controllers(connected_uniqs: set[str]) -> list[dict]:
-    if not probe.has_bin("bluetoothctl") or os.environ.get("NC_UI_OFFSCREEN") == "1":
-        return []
+def _has_bt_adapter() -> bool:
+    try:
+        return os.path.isdir("/sys/class/bluetooth") and bool(os.listdir("/sys/class/bluetooth"))
+    except OSError:
+        return False
+
+
+def _probe_bt_controllers_sync() -> tuple[list[dict], dict[str, str]]:
+    if not probe.has_bin("bluetoothctl") or not _has_bt_adapter() or os.environ.get("NC_UI_OFFSCREEN") == "1":
+        return [], {}
     ok, out = probe.run_cmd(["bluetoothctl", "devices"], timeout=0.9)
     if not ok or not out:
-        return []
-    out_list = []
+        return [], {}
+    out_list: list[dict] = []
+    info_map: dict[str, str] = {}
     for ln in out.splitlines():
         m = re.match(r"^Device\s+([0-9A-Fa-f:]{17})\s+(.+)$", ln.strip())
         if not m:
             continue
         mac, name = m.group(1).upper(), m.group(2).strip()
-        if mac.lower() in connected_uniqs:
-            continue
+        ok_i, info = probe.run_cmd(["bluetoothctl", "info", mac], timeout=0.6)
+        if ok_i and info:
+            info_map[mac] = info
         nl = name.lower()
         is_gp_name = any(k in nl for k in ("controller", "gamepad", "xbox", "dualsense", "dualshock", "wireless controller", "pro controller", "8bitdo", "joy-con", "steam"))
-        ok_i, info = probe.run_cmd(["bluetoothctl", "info", mac], timeout=0.6)
-        is_gp_icon = bool(ok_i and ("Icon: input-gaming" in info or "UUID: Human Interface Device" in info and is_gp_name))
+        is_gp_icon = bool(ok_i and ("Icon: input-gaming" in info or ("UUID: Human Interface Device" in info and is_gp_name)))
         if not (is_gp_name or is_gp_icon):
             continue
         is_conn = bool(ok_i and "Connected: yes" in info)
@@ -240,7 +250,39 @@ def _scan_paired_bt_controllers(connected_uniqs: set[str]) -> list[dict]:
             "battery": bat_pct,
             "battery_status": "",
         })
-    return out_list
+    return out_list, info_map
+
+
+def _schedule_bt_refresh_async(force: bool = False) -> None:
+    if not probe.has_bin("bluetoothctl") or not _has_bt_adapter() or os.environ.get("NC_UI_OFFSCREEN") == "1":
+        return
+    now = time.monotonic()
+    if _BT_CACHE["pending"]:
+        return
+    if not force and _BT_CACHE["ts"] > 0.0 and (now - _BT_CACHE["ts"]) < _BT_CACHE_TTL:
+        return
+    _BT_CACHE["pending"] = True
+
+    def _on_done(res) -> None:
+        devs, info_map = res if isinstance(res, tuple) else ([], {})
+        _BT_CACHE["ts"] = time.monotonic()
+        _BT_CACHE["devices"] = devs
+        _BT_CACHE["info"] = info_map
+        _BT_CACHE["pending"] = False
+        _DISCOVERY_CACHE["ts"] = 0.0
+
+    def _work():
+        try:
+            return _probe_bt_controllers_sync()
+        except Exception:
+            return [], {}
+
+    probe.run_async(_work, on_done=_on_done)
+
+
+def _scan_paired_bt_controllers(connected_uniqs: set[str], force: bool = False) -> list[dict]:
+    _schedule_bt_refresh_async(force=force)
+    return [dict(d) for d in (_BT_CACHE.get("devices") or []) if d.get("uniq", "").lower() not in connected_uniqs]
 
 
 def discover_controllers(force: bool = False) -> list[dict]:
@@ -280,10 +322,11 @@ def discover_controllers(force: bool = False) -> list[dict]:
             connected_uniqs.add(uniq_l)
         dev_id = f"{b['vendor']}_{b['product']}_{uniq_l.replace(':', '') or ev_h or 'pad'}"
         bt_mac = b["uniq"].upper() if (bus_kind == "bt" and re.match(r"^[0-9a-fA-F:]{17}$", b["uniq"])) else ""
-        # Enrich connected BT controllers (e.g. Xbox BLE uhid) with BlueZ GATT battery & real VID/PID
-        if bt_mac and (bat_pct is None or b["vendor"] == "0000") and probe.has_bin("bluetoothctl") and os.environ.get("NC_UI_OFFSCREEN") != "1":
-            ok_bt, bt_info = probe.run_cmd(["bluetoothctl", "info", bt_mac], timeout=0.6)
-            if ok_bt and bt_info:
+        # Enrich connected BT controllers from non-blocking async cache
+        if bt_mac and (bat_pct is None or b["vendor"] == "0000"):
+            _schedule_bt_refresh_async(force=force)
+            bt_info = (_BT_CACHE.get("info") or {}).get(bt_mac, "")
+            if bt_info:
                 if bat_pct is None:
                     bm = re.search(r"Battery Percentage:\s*0x[0-9a-fA-F]+\s*\((\d+)\)", bt_info)
                     if bm:
@@ -316,7 +359,7 @@ def discover_controllers(force: bool = False) -> list[dict]:
             "battery_status": bat_st,
         })
 
-    devices.extend(_scan_paired_bt_controllers(connected_uniqs))
+    devices.extend(_scan_paired_bt_controllers(connected_uniqs, force=force))
     _DISCOVERY_CACHE["ts"] = now
     _DISCOVERY_CACHE["devices"] = devices
     return list(devices)

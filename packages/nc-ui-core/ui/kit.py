@@ -4,7 +4,14 @@ import math
 import os
 import re
 import time
-from core.config import THEME, color_for_pct, get_hide_unavailable_settings, hex_to_rgba_f, strip_jsonc_comments
+from core.config import (
+    THEME,
+    color_for_pct,
+    get_hide_unavailable_settings,
+    get_volume_overdrive_style,
+    hex_to_rgba_f,
+    strip_jsonc_comments,
+)
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas, _ATOMIC_WIDGET_RE, rounded_rect_path
@@ -194,12 +201,13 @@ def RelevanceGlyph(score: int, show_pct: bool = True) -> str:
     return f"<span color='{col}'>\u25cf {sc:2d}%</span>"
 
 
-def SelectPill(label: str, uri: str, selected: bool = False, dirty: bool = False, style: str = "default", min_chars: int = 0) -> str:
+def SelectPill(label: str, uri: str, selected: bool = False, dirty: bool = False, style: str = "default", min_chars: int = 0, disabled: bool = False) -> str:
     """
     Selettore persistente di opzione/modalità/toggle (Golden Standard §2.2 / §3.1):
       - `selected=True, dirty=True`  -> `[● Opzione]` in `attention` su `attention_bg`.
       - `selected=True, dirty=False` -> `[● Opzione]` in `intent` su `intent_bg`.
       - `selected=False`             -> `[○ Opzione]` in `inactive`, ZERO sfondo.
+      - `disabled=True`              -> `[○ Opzione]` grigio disattivato (`inactive` / `structure`).
     Rimuove eventuali pallini duplicati passati per errore dentro `label`.
     """
     p = get_semantic_palette()
@@ -211,7 +219,9 @@ def SelectPill(label: str, uri: str, selected: bool = False, dirty: bool = False
     if eff_min > len(raw):
         raw = raw.rjust(eff_min)
     clean = Canvas.escape(raw.replace(" ", "\u00a0"))
-    if selected and dirty:
+    if disabled:
+        fg, bg, brk, dot = p["inactive"], "", p["structure"], f"{dots[1]}\u00a0"
+    elif selected and dirty:
         fg, bg, brk, dot = p["attention"], p["attention_bg"], p["attention_soft"], f"{dots[0]}\u00a0"
     elif selected:
         fg, bg, brk, dot = p["intent"], p["intent_bg"], p["intent_soft"], f"{dots[0]}\u00a0"
@@ -758,6 +768,23 @@ def _fmt_slider_val(val: float, is_float: bool) -> str:
     return "0" if s in ("", "-0") else s
 
 
+def _lerp_hex(h1: str, h2: str, t_frac: float) -> str:
+    t_c = max(0.0, min(1.0, float(t_frac)))
+    r1, g1, b1, _ = hex_to_rgba_f(h1, 1.0)
+    r2, g2, b2, _ = hex_to_rgba_f(h2, 1.0)
+    r = int(round((r1 + (r2 - r1) * t_c) * 255))
+    g = int(round((g1 + (g2 - g1) * t_c) * 255))
+    b = int(round((b1 + (b2 - b1) * t_c) * 255))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _overdrive_heat_hex(p: dict, heat: float) -> str:
+    h = max(0.0, min(1.0, float(heat)))
+    if h <= 0.5:
+        return _lerp_hex(p["attention"], p["interrupt"], h * 2.0)
+    return _lerp_hex(p["interrupt"], p["fault"], (h - 0.5) * 2.0)
+
+
 def Slider(
     value: float,
     action_prefix: str,
@@ -769,6 +796,8 @@ def Slider(
     step: float = 5.0,
     scroll_prefix: str = "",
     enabled: bool = True,
+    overdrive_threshold: float | None = None,
+    overdrive_style: str = "",
 ) -> str:
     """
     Barra di modulazione continua interattiva (Golden Standard §2.2 / §4.1.5 / §8):
@@ -776,13 +805,16 @@ def Slider(
         per `width >= 6` così uno `Slider` interattivo non è MAI confondibile con `ProgressBar`).
       - Usa `intent` (Ciano) quando `enabled=True`, e si spegne su `inactive` quando `enabled=False`
         (es. quando il toggle associato sulla stessa riga è `OFF`).
+      - Quando `overdrive_threshold` è impostato e `max_val > overdrive_threshold`, supporta
+        3 animazioni overdrive configurabili (`reverse_sweep`, `split_scale`, `thermal_core`).
       - Registra in `_SLIDER_META` gli URI di decremento/incremento per la modulazione element-hover.
     """
     asc = THEME["ascii"]
     p = get_semantic_palette()
     lo, hi = float(min_val), float(max_val)
     span = max(1e-6, hi - lo)
-    norm = max(0.0, min(1.0, (float(value) - lo) / span))
+    val_c = max(lo, min(hi, float(value)))
+    norm = max(0.0, min(1.0, (val_c - lo) / span))
     fill_n = int(round(norm * width))
     is_float = any(not float(x).is_integer() for x in (min_val, max_val, step))
 
@@ -791,6 +823,16 @@ def Slider(
     b_l, b_r = _pair(asc, "slider_brackets", "[", "]")
     s_fill = str(asc.get("slider_fill") or "#")[0]
     s_empty = str(asc.get("slider_empty") or "-")[0]
+
+    od_thresh = float(overdrive_threshold) if overdrive_threshold is not None else None
+    od_active = (od_thresh is not None and hi > od_thresh + 1e-6)
+    od_style = (overdrive_style or get_volume_overdrive_style()) if od_active else ""
+    od_span = max(1e-6, hi - od_thresh) if od_active else 1.0
+    over_frac = max(0.0, min(1.0, (val_c - od_thresh) / od_span)) if od_active else 0.0
+    is_over = od_active and val_c > od_thresh + 0.5
+    at_thresh = od_active and abs(val_c - od_thresh) <= 0.5
+    idx_100 = max(1, min(width - 2, int(round(((od_thresh - lo) / span) * max(1, width - 1))))) if (od_style == "split_scale" and width >= 3) else -1
+
     segments = []
     stp_f = float(step)
     can_snap = stp_f > 0.0 and (span / stp_f) >= 2.0
@@ -807,8 +849,78 @@ def Slider(
                 snapped = lo + round((raw_v - lo) / stp_f) * stp_f
                 raw_v = max(lo, min(hi, snapped))
         seg_val = _fmt_slider_val(raw_v, is_float)
-        ch = s_fill if (i + 1) <= fill_n else s_empty
-        col = c_fill if (i + 1) <= fill_n else c_empty
+
+        if not od_active:
+            ch = s_fill if (i + 1) <= fill_n else s_empty
+            col = c_fill if (i + 1) <= fill_n else c_empty
+        elif od_style == "split_scale" and idx_100 >= 1:
+            if i == idx_100:
+                ch = "\u2502"
+                col = (p["focus"] if val_c >= od_thresh - 0.5 else p["structure"]) if enabled else p["inactive"]
+            elif i < idx_100:
+                l_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
+                l_fill = int(round(l_norm * idx_100))
+                if val_c > lo + 0.5 and l_fill == 0:
+                    l_fill = 1
+                ch = s_fill if i < l_fill else s_empty
+                col = (p["intent"] if enabled else p["inactive"]) if i < l_fill else c_empty
+            else:
+                r_total = max(1, width - 1 - idx_100)
+                r_fill = int(round(over_frac * r_total))
+                if is_over and r_fill == 0:
+                    r_fill = 1
+                pos = i - idx_100
+                if is_over and pos <= r_fill:
+                    ch = s_fill
+                    col = _overdrive_heat_hex(p, pos / float(r_total)) if enabled else p["inactive"]
+                else:
+                    ch = s_empty
+                    col = c_empty
+        elif od_style == "thermal_core":
+            if is_over:
+                ch = s_fill
+                if not enabled:
+                    col = p["inactive"]
+                else:
+                    mid = (width - 1) / 2.0
+                    dist = abs(i - mid) / max(1.0, mid)
+                    if dist <= over_frac + 1e-6:
+                        heat = max(0.0, min(1.0, over_frac * (1.0 - 0.35 * dist)))
+                        col = _overdrive_heat_hex(p, heat)
+                    else:
+                        col = p["focus"]
+            elif at_thresh:
+                ch = s_fill
+                col = p["focus"] if enabled else p["inactive"]
+            else:
+                b_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
+                b_fill = int(round(b_norm * width))
+                ch = s_fill if (i + 1) <= b_fill else s_empty
+                col = c_fill if (i + 1) <= b_fill else c_empty
+        else:
+            # reverse_sweep (default): 0-99% cyan L->R, 100% white, 101-200% yellow->red R->L
+            if is_over:
+                ch = s_fill
+                if not enabled:
+                    col = p["inactive"]
+                else:
+                    over_n = max(1, int(round(over_frac * width)))
+                    start_i = width - over_n
+                    if i >= start_i:
+                        local_pos = (i - start_i) / float(max(1, over_n - 1))
+                        heat = max(0.0, min(1.0, (over_frac * 0.65) + (local_pos * 0.35)))
+                        col = _overdrive_heat_hex(p, heat)
+                    else:
+                        col = p["focus"]
+            elif at_thresh:
+                ch = s_fill
+                col = p["focus"] if enabled else p["inactive"]
+            else:
+                b_norm = max(0.0, min(1.0, (val_c - lo) / max(1e-6, od_thresh - lo)))
+                b_fill = int(round(b_norm * width))
+                ch = s_fill if (i + 1) <= b_fill else s_empty
+                col = c_fill if (i + 1) <= b_fill else c_empty
+
         segments.append(
             f"<a href='{Canvas.escape(action_prefix)}:{seg_val}'><span color='{col}' underline='none'>{Canvas.escape(ch)}</span></a>"
         )
@@ -816,7 +928,7 @@ def Slider(
     v_dec = _fmt_slider_val(max(lo, float(value) - float(step)), is_float)
     v_inc = _fmt_slider_val(min(hi, float(value) + float(step)), is_float)
     _SLIDER_META[action_prefix] = {
-        "cur": max(lo, min(hi, float(value))),
+        "cur": val_c,
         "min": lo,
         "max": hi,
         "step": float(step),
@@ -833,7 +945,14 @@ def Slider(
         bar_markup = f"{ActionBtn('-', f'{action_prefix}:{v_dec}', tone=step_tone)}\u00a0{bar_markup}\u00a0{ActionBtn('+', f'{action_prefix}:{v_inc}', tone=step_tone)}"
     if show_pct:
         pct_int = int(round(value)) if (not is_float and 0 <= min_val < max_val <= 200) else int(round(norm * 100.0))
-        pct_col = p["focus_val"] if enabled else p["inactive"]
+        if not enabled:
+            pct_col = p["inactive"]
+        elif is_over:
+            pct_col = _overdrive_heat_hex(p, over_frac)
+        elif at_thresh:
+            pct_col = p["focus"]
+        else:
+            pct_col = p["focus_val"]
         bar_markup += f"\u00a0<span color='{pct_col}'>{pct_int:3d}%</span>"
     return bar_markup
 

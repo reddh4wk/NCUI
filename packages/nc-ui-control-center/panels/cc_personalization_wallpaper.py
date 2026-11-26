@@ -26,6 +26,7 @@ except ImportError:
     get_ascii_cache_stats = lambda: {"count": 0, "bytes": 0}
     is_pillow_available = lambda: False
 from core.config import THEME, is_ncmatrix_available
+from core.wallpaper import has_katakana_font
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
@@ -1444,16 +1445,12 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
     mode_list = [
         SelectPill(t("cc_personalization.wp_mode_scene"), "cc_desk:mode:scene", selected=(wp_mode == "scene"), style="secondary"),
         SelectPill(t("cc_personalization.wp_mode_slideshow"), "cc_desk:mode:slideshow", selected=(wp_mode == "slideshow"), style="secondary"),
+        SelectPill(t("cc_personalization.wp_mode_ncmatrix"), "cc_desk:mode:ncmatrix", selected=(wp_mode == "ncmatrix" and ncm_avail), style="secondary", disabled=not ncm_avail),
+        SelectPill(t("cc_personalization.wp_mode_solid"), "cc_desk:mode:solid", selected=(wp_mode == "solid"), style="secondary"),
     ]
-    if ncm_avail:
-        mode_list.append(
-            SelectPill(t("cc_personalization.wp_mode_ncmatrix"), "cc_desk:mode:ncmatrix", selected=(wp_mode == "ncmatrix"), style="secondary")
-        )
-    mode_list.append(
-        SelectPill(t("cc_personalization.wp_mode_solid"), "cc_desk:mode:solid", selected=(wp_mode == "solid"), style="secondary")
-    )
     mode_pills = " ".join(mode_list)
-    cfg_box.add_kv(t("cc_personalization.wp_mode_row"), mode_pills)
+    mode_warn = Badge(t("ui.missing", p0="nc-matrix"), style="warn") if not ncm_avail else ""
+    cfg_box.add_kv(t("cc_personalization.wp_mode_row"), mode_pills, right_markup=mode_warn)
     cfg_box.add_row(" ")
 
     has_staged_sel = any(bool(preview_states.get(m, {}).get("staged")) for m in sel_mons)
@@ -1717,11 +1714,21 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
         cfg_box.add_section(t("cc_personalization.ncmatrix_native_wayland_shader_asci"))
         cfg_box.add_row(" ")
 
+        kata_ok = has_katakana_font()
+        if cm_cs == "katakana" and not kata_ok:
+            cm_cs = "ascii"
         cs_pills = " ".join([
-            SelectPill(t(f"cc_personalization.wp_charset_{cs}"), f"cc_desk:cm_charset:{cs}", selected=(cm_cs == cs), style="secondary")
+            SelectPill(
+                t(f"cc_personalization.wp_charset_{cs}"),
+                f"cc_desk:cm_charset:{cs}",
+                selected=(cm_cs == cs),
+                style="secondary",
+                disabled=(cs == "katakana" and not kata_ok),
+            )
             for cs in ("katakana", "ascii", "binary", "hex")
         ])
-        cfg_box.add_kv(t("cc_personalization.charset_mode"), cs_pills)
+        cs_warn = Badge(t("ui.missing", p0="otf-ipafont"), style="warn") if not kata_ok else ""
+        cfg_box.add_kv(t("cc_personalization.charset_mode"), cs_pills, right_markup=cs_warn)
 
         cm_col = str(STATE.get("desktop", "cm_color", "green") or "green").strip()
         cm_col_low = cm_col.lower()

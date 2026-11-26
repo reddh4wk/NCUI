@@ -48,7 +48,7 @@ def _alert_label(sid: str) -> str:
 def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
     devs = get_audio_devices(is_input=is_input)
     max_vol = get_max_volume()
-    vol_w = 30 if max_vol > 100 else 20
+    vol_w = 24 if max_vol > 100 else 20
     scope = "in" if is_input else "out"
     cards = feedback_cards("sound", "cc_audio.pipewire_audio_status")
 
@@ -58,10 +58,13 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
         highlighted=False,
     )
     if not is_input:
-        over_on = max_vol > 100
         top_box.add_kv(
             t("cc_audio.over_amplification"),
-            f"{SelectPill(t('cc_audio.100_safe'), 'cc_aud:max_vol:100', selected=not over_on)} {SelectPill(t('cc_audio.150_boost'), 'cc_aud:max_vol:150', selected=over_on)}",
+            " ".join([
+                SelectPill(t("cc_audio.100_safe"), "cc_aud:max_vol:100", selected=(max_vol == 100)),
+                SelectPill(t("cc_audio.150_boost"), "cc_aud:max_vol:150", selected=(max_vol == 150)),
+                SelectPill(t("cc_audio.200_overdrive"), "cc_aud:max_vol:200", selected=(max_vol == 200)),
+            ]),
         )
         def_sink = next((d for d in devs if d.get("is_default")), devs[0] if devs else None)
         if def_sink:
@@ -109,6 +112,7 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
             step_buttons=True,
             scroll_prefix=f"cc_aud:{scope}:scroll:{q_name}",
             enabled=not d["mute"],
+            overdrive_threshold=100,
         )
         def_b = SelectPill(t("cc_audio.default"), f"cc_aud:{scope}:def:{q_name}", selected=d["is_default"])
         mut_b = ActionBtn(t("audio.unmute") if d["mute"] else t("audio.mute"), f"cc_aud:{scope}:mute:{q_name}", tone="apply" if d["mute"] else "danger_soft")
@@ -162,6 +166,7 @@ def _build_io_standard(cc_panel, canvas: Canvas, is_input: bool) -> list:
                     step_buttons=True,
                     scroll_prefix=f"cc_aud:out:lfe_scroll:{q_name}",
                     enabled=not d["mute"],
+                    overdrive_threshold=100,
                 )
                 box.add_kv(t("cc_audio.subwoofer_lfe"), lfe_sl, requires=["pactl"])
         st_badge = StateBadge(d["state"] == "RUNNING", d["state"], d["state"])

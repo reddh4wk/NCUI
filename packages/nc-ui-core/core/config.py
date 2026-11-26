@@ -108,6 +108,7 @@ VALID_TABLE_RULES = ("\u2500", "\u2501", "\u2550", "\u2504")
 VALID_KV_SEPARATORS = (":", "\u203a", "\u2237")
 NOTIF_STYLES = ("tactical", "classic", "clean", "cyberpunk")
 HOVER_HELP_STYLES = NOTIF_STYLES
+VOLUME_OVERDRIVE_STYLES = ("reverse_sweep", "split_scale", "thermal_core")
 _NOTIF_STYLE_ALIASES = {
     "micro_tag": "tactical",
     "slim_ascii": "classic",
@@ -167,6 +168,7 @@ DEFAULT_THEME = {
         "sys_notif_style": "clean",
         "toast_style": "tactical",
         "hover_help_style": "cyberpunk",
+        "volume_overdrive_style": "reverse_sweep",
     },
     "colors": {
         "surface_bg": "#080a0f",
@@ -822,6 +824,20 @@ def get_hover_help_style() -> str:
 
 def set_hover_help_style(style: str) -> str:
     return _set_notif_style("hover_help_style", style, "cyberpunk")
+
+
+def get_volume_overdrive_style() -> str:
+    s = str((THEME.get("ascii") or {}).get("volume_overdrive_style") or "reverse_sweep").strip().lower()
+    return s if s in VOLUME_OVERDRIVE_STYLES else "reverse_sweep"
+
+
+def set_volume_overdrive_style(style: str) -> str:
+    clean = str(style or "").strip().lower()
+    if clean not in VOLUME_OVERDRIVE_STYLES:
+        clean = "reverse_sweep"
+    THEME.setdefault("ascii", {})["volume_overdrive_style"] = clean
+    _update_toml_key_in_section("ascii", "volume_overdrive_style", f'"{clean}"', target_files=_theme_toml_targets(), create_fallback=True)
+    return clean
 
 
 def get_capture_action() -> str:
