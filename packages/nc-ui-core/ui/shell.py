@@ -302,6 +302,14 @@ class ShellWindow(Gtk.Window):
         hbox_gap = max(0, inner_pad - s_right - s_left)
         return m_left, m_right, m_top, m_bot, hbox_gap
 
+    def _get_popup_margins(self) -> tuple[int, int, int, int]:
+        pad = int(self.geom.get("panel_padding", 10))
+        bw = int(self.geom.get("window_border_width", 1))
+        s_left, _s_right, _s_top_hdr, s_bot = self._get_box_ink_insets()
+        m_left = m_right = m_top = pad
+        m_bot = max(bw + 2, pad - max(0, s_bot - s_left))
+        return m_left, m_right, m_top, m_bot
+
     def _all_card_widgets(self) -> list:
         cards = []
         if self.mode == "settings" and self.header_listbox is not None:
@@ -347,10 +355,9 @@ class ShellWindow(Gtk.Window):
             mon_h = 1440
         _, outer_mar = get_layout_margins()
         wb_top = int(self.wb_look.get("top", 30 + outer_mar))
-        pad = int(self.geom.get("panel_padding", 10)) * 2
-        bw = int(self.geom.get("window_border_width", 1))
+        _ml, _mr, m_top, m_bot = self._get_popup_margins()
         max_win_w = max(380, mon_w - (2 * outer_mar))
-        max_win_h = max(240, mon_h - wb_top - outer_mar - pad - (2 * bw))
+        max_win_h = max(240, mon_h - wb_top - outer_mar - m_top - m_bot)
         return max_win_w, max_win_h
 
     def _measure_cc_box_px(self, item) -> int:
@@ -1060,8 +1067,7 @@ class ShellWindow(Gtk.Window):
         if self.mode == "settings":
             m_left, m_right, m_top, m_bot, hbox_gap = self._get_inner_box_margins()
         else:
-            pad = int(self.geom.get("panel_padding", 10))
-            m_left = m_right = m_top = m_bot = pad
+            m_left, m_right, m_top, m_bot = self._get_popup_margins()
             hbox_gap = 8
         outer_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         outer_vbox.set_margin_top(m_top)
@@ -1236,6 +1242,15 @@ class ShellWindow(Gtk.Window):
             self._last_nav_height_px = -1
             self._last_nav_state = None
             self._nav_sized = False
+            self._last_win_size = None
+            self._last_sw_size = None
+        else:
+            m_left, m_right, m_top, m_bot = self._get_popup_margins()
+            if getattr(self, "outer_vbox", None) is not None:
+                self.outer_vbox.set_margin_top(m_top)
+                self.outer_vbox.set_margin_bottom(m_bot)
+                self.outer_vbox.set_margin_start(m_left)
+                self.outer_vbox.set_margin_end(m_right)
             self._last_win_size = None
             self._last_sw_size = None
         self._adjust_scroll_height()
@@ -1533,8 +1548,7 @@ class ShellWindow(Gtk.Window):
                     self.resize(tot_w, tot_h)
             return False
 
-        pad = int(self.geom.get("panel_padding", 10)) * 2
-        bw = int(self.geom.get("window_border_width", 1))
+        _ml, _mr, m_top, m_bot = self._get_popup_margins()
         p_max = self.panel.get_max_height() if hasattr(self.panel, "get_max_height") else None
         _mw, max_popup_h = self._get_popup_bounds_px()
         max_h = min(int(p_max or self.geom["popup_max_height"]), max_popup_h)
@@ -1552,7 +1566,7 @@ class ShellWindow(Gtk.Window):
             self._last_sw_size = sw_sz
             self.scrolled_window.set_size_request(-1, list_h)
         tot_w = self._total_window_px()
-        tot_h = max(24, list_h + prompt_h + pad + (2 * bw))
+        tot_h = max(24, list_h + prompt_h + m_top + m_bot)
         win_sz = (tot_w, tot_h)
         if getattr(self, "_last_win_size", None) != win_sz:
             self._last_win_size = win_sz
@@ -2181,9 +2195,7 @@ class ShellWindow(Gtk.Window):
         if self.mode == "settings":
             _ml, m_right, _mt, m_bot, _gap = self._get_inner_box_margins()
         else:
-            pad = int(self.geom.get("panel_padding", 10))
-            m_right = pad
-            m_bot = pad
+            _ml, m_right, _mt, m_bot = self._get_popup_margins()
         prompt_off = (max(0, self.prompt_bar.get_allocated_height()) + 8) if (self.prompt_bar and self.prompt_bar.get_visible()) else 0
         sh_pad = int(ov_card._SH_PAD)
         self.toast_holder.set_margin_end(max(2, m_right + int(round(self.content_canvas.char_w)) - sh_pad))

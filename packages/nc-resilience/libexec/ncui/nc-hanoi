@@ -61,17 +61,14 @@ load_resilience_vault_identity() {
 }
 load_resilience_vault_identity
 
-# Palette pastello minimale
-C_RESET=$'\033[0m'
-C_BOLD=$'\033[1m'
-C_CYAN=$'\033[38;5;109m'
-C_GREEN=$'\033[38;5;115m'
-C_YELLOW=$'\033[38;5;222m'
-C_RED=$'\033[38;5;210m'
-C_SLATE=$'\033[38;5;110m'
-C_CTX=$'\033[38;5;251m'
-C_MUTED=$'\033[38;5;244m'
-C_MUTED_CMD=$'\033[38;5;103m'
+# Palette adattiva NC-UI (carica ~/.config/ncui/theme.toml + alias C_*)
+_NC_UI_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+if [[ -r "${_NC_UI_DIR}/nc-cli-ui.sh" ]]; then
+    # shellcheck source=nc-cli-ui.sh
+    source "${_NC_UI_DIR}/nc-cli-ui.sh"
+elif [[ -r "/usr/lib/ncui/sbin/nc-cli-ui.sh" ]]; then
+    source "/usr/lib/ncui/sbin/nc-cli-ui.sh"
+fi
 
 DEBUG_MODE=false
 debug_log() {
@@ -215,57 +212,43 @@ trap on_interrupt INT TERM
 # LIVELLO 1: HELPER VELOCI, INPUT INTERATTIVO, PARSING & TABELLE
 # ==============================================================================
 usage() {
-    echo -e "${C_SLATE}┌──────────────────────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_SLATE}│${C_RESET} ${C_BOLD}nc-hanoi${C_RESET} — Gestore Configurazioni e Backup Multi-Sistema (Source <-> NAS)    ${C_SLATE}│${C_RESET}"
-    echo -e "${C_SLATE}└──────────────────────────────────────────────────────────────────────────────┘${C_RESET}"
-    echo
-    echo -e " ${C_BOLD}SINTASSI:${C_RESET}"
-    echo -e "   nc-hanoi <azione> [opzioni...] [percorsi...]"
-    echo
-    echo -e " ${C_BOLD}AZIONI PRINCIPALI:${C_RESET}"
-    echo -e "   ${C_CYAN}-s, --sync${C_RESET} [opzioni]       Allinea il NAS con i file locali (Locale -> NAS)"
-    echo -e "   ${C_MUTED}                           Con ${C_CYAN}--reverse${C_MUTED} inverte il flusso (NAS -> Locale) includendo i .shared.${C_RESET}"
-    echo -e "   ${C_MUTED}                           Con ${C_CYAN}--reverse-forced${C_MUTED} forza l'intero NAS sul locale previa conferma AKNOWLEDGED.${C_RESET}"
-    echo -e "   ${C_CYAN}-a, --add${C_RESET} <path...>        Aggiunge o aggiorna file/cartelle nel delta del sistema attivo"
-    echo -e "   ${C_CYAN}-S, --share${C_RESET} <spec> <p..>   Configura i placeholder (.shared) per i file condivisi tra sistemi"
-    echo -e "   ${C_CYAN}-r, --restore${C_RESET} <src> [dst]  Ripristina file/cartelle dal NAS al sistema locale (NAS -> Locale)"
-    echo -e "   ${C_MUTED}                           Risolve automaticamente i placeholder .shared prelevando dalla sorgente.${C_RESET}"
-    echo -e "   ${C_CYAN}-H, --history${C_RESET} [filtro]     Esplora, confronta (diff/contenuto) e ripristina lo storico Torre di Hanoi"
-    echo -e "   ${C_CYAN}-u, --update${C_RESET}               Aggiorna questo stesso script prelevando la versione più recente dal NAS"
-    echo -e "   ${C_CYAN}-d, --diff${C_RESET} <path>          Mostra il diff testuale tra il file locale e la versione sul NAS"
-    echo -e "   ${C_CYAN}-l, --list, --status${C_RESET}       Mostra la lista dei file reali e dei placeholder (.shared) nel delta"
-    echo -e "   ${C_CYAN}-p, --prune${C_RESET} [--all]        Applica decadimento Torre di Hanoi e deduplicazione allo storico"
-    echo -e "   ${C_CYAN}--init${C_RESET}                     Inizializza/rigenera la master_key RSA-4096 in Linux/shared"
-    echo -e "   ${C_CYAN}--check${C_RESET}                    Scansione silenziosa per il riepilogo all'avvio della shell"
-    echo -e "   ${C_CYAN}--service${C_RESET} <azione>         Gestisce timer systemd e hook shell (enable | disable | status)"
-    echo
-    echo -e " ${C_BOLD}CONDIVISIONE E PLACEHOLDER (-S, --share):${C_RESET}"
-    echo -e "   Ogni file condiviso ha ${C_BOLD}un solo sistema sorgente${C_RESET} (che conserva il file reale)."
-    echo -e "   Negli altri sistemi viene scritto un placeholder ${C_BOLD}.shared${C_RESET} che punta alla sorgente:"
-    echo -e "     ${C_CYAN}-S host2,laptop${C_RESET}          Il sistema corrente è sorgente; crea placeholder in host2 e laptop"
-    echo -e "     ${C_CYAN}-S all${C_RESET}                   Il sistema corrente è sorgente; crea placeholder in tutti gli altri delta"
-    echo -e "     ${C_CYAN}-S host2:host1,laptop${C_RESET}    Imposta esplicitamente 'host2' come sorgente e crea placeholder in 'host1,laptop'"
-    echo -e "     ${C_CYAN}-S local${C_RESET}                 Rimuove i placeholder dagli altri delta (file esclusivo locale)"
-    echo
-    echo -e " ${C_BOLD}OPZIONI AGGIUNTIVE:${C_RESET}"
-    echo -e "   ${C_CYAN}--reverse${C_RESET}                  Usato con -s/--sync: applica il delta dal NAS al sistema locale"
-    echo -e "   ${C_CYAN}--reverse-forced${C_RESET}           Usato con -s/--sync: forza i file del NAS sul locale senza prompt singoli"
-    echo -e "   ${C_CYAN}-P, --profile <alias>${C_RESET}      Forza l'operazione su un profilo specifico (es. host1, host2, laptop)"
-    echo -e "   ${C_CYAN}-sec, --secure${C_RESET}             Cifra con chiave pubblica master_key (o password dedicata)"
-    echo -e "   ${C_CYAN}-D, --dir <cartella>${C_RESET}       Salva in una cartella custom sul NAS (fuori da delta, solo con -a)"
-    echo
-    echo -e " ${C_BOLD}ESEMPI:${C_RESET}"
-    echo -e "   ${C_MUTED}# Aggiungi zshrc da 'host1' (sorgente) e genera i placeholder in 'host2' e 'laptop':${C_RESET}"
-    echo -e "   nc-hanoi -a /etc/zsh/zshrc -S host2,laptop"
-    echo
-    echo -e "   ${C_MUTED}# Sincronizza verso il NAS (o dal NAS al locale post-golden image con --reverse / --reverse-forced):${C_RESET}"
-    echo -e "   nc-hanoi -s"
-    echo -e "   nc-hanoi -s --reverse"
-    echo -e "   nc-hanoi -s --reverse-forced"
-    echo
-    echo -e "   ${C_MUTED}# Esplora e revisiona le versioni storiche Hanoi di zshrc:${C_RESET}"
-    echo -e "   nc-hanoi -H zshrc"
-    echo
+    local prog="${0##*/}"
+    ui_header "${prog^^} — NC-UI BACKUP & SYNC" "Gestore Configurazioni e Backup Multi-Sistema (Source <-> NAS)"
+    printf "\n  %sUsage:%s  %s%s%s %s<azione> [opzioni...] [percorsi...]%s\n" \
+        "$CLR_SCHEMA" "$CLR_RESET" "$CLR_VAL" "$prog" "$CLR_RESET" "$CLR_INTENT" "$CLR_RESET"
+    ui_section "CMDS" "Azioni Principali"
+    ui_help_row "-s, --sync [opz]" "Allinea il NAS con i file locali (Locale -> NAS)" 25
+    printf "  %-25s %sCon --reverse inverte (NAS -> Locale); con --reverse-forced forza l'intero NAS.%s\n" "" "$CLR_DIM" "$CLR_RESET"
+    ui_help_row "-a, --add <path...>" "Aggiunge o aggiorna file/cartelle nel delta del sistema attivo" 25
+    ui_help_row "-S, --share <spec> <p..>" "Configura i placeholder (.shared) per i file condivisi tra sistemi" 25
+    ui_help_row "-r, --restore <src> [dst]" "Ripristina file/cartelle dal NAS al sistema locale (risolve .shared)" 25
+    ui_help_row "-H, --history [filtro]" "Esplora, confronta e ripristina lo storico Torre di Hanoi" 25
+    ui_help_row "-u, --update" "Aggiorna questo stesso script prelevando la versione dal NAS" 25
+    ui_help_row "-d, --diff <path>" "Mostra il diff testuale tra il file locale e la versione sul NAS" 25
+    ui_help_row "-l, --list, --status" "Mostra file reali e placeholder (.shared) nel delta" 25
+    ui_help_row "-p, --prune [--all]" "Applica decadimento Torre di Hanoi e deduplicazione allo storico" 25
+    ui_help_row "--init" "Inizializza/rigenera la master_key RSA-4096 in Linux/shared" 25
+    ui_help_row "--check" "Scansione silenziosa per il riepilogo all'avvio della shell" 25
+    ui_help_row "--service <azione>" "Gestisce timer systemd e hook shell (enable | disable | status)" 25
+    ui_section "SHARE" "Condivisione e Placeholder (-S, --share)"
+    printf "  %sOgni file condiviso ha un solo sistema sorgente (file reale) e .shared negli altri:%s\n" "$CLR_DIM" "$CLR_RESET"
+    ui_help_row "-S host2,laptop" "Sistema corrente sorgente; crea placeholder in host2 e laptop" 25
+    ui_help_row "-S all" "Sistema corrente sorgente; crea placeholder in tutti gli altri delta" 25
+    ui_help_row "-S host2:host1,laptop" "Imposta 'host2' come sorgente e crea placeholder in 'host1,laptop'" 25
+    ui_help_row "-S local" "Rimuove i placeholder dagli altri delta (file esclusivo locale)" 25
+    ui_section "OPTS" "Opzioni Aggiuntive"
+    ui_help_row "--reverse" "Con -s/--sync: applica il delta dal NAS al sistema locale" 25
+    ui_help_row "--reverse-forced" "Con -s/--sync: forza i file del NAS sul locale senza prompt singoli" 25
+    ui_help_row "-P, --profile <alias>" "Forza l'operazione su un profilo specifico (es. host1, host2)" 25
+    ui_help_row "-sec, --secure" "Cifra con chiave pubblica master_key (o password dedicata)" 25
+    ui_help_row "-D, --dir <cartella>" "Salva in cartella custom sul NAS (fuori da delta, solo con -a)" 25
+    ui_section "EX" "Esempi"
+    printf "  %s# Aggiungi zshrc da 'host1' (sorgente) e genera i placeholder in 'host2' e 'laptop':%s\n" "$CLR_DIM" "$CLR_RESET"
+    printf "  %s%s -a /etc/zsh/zshrc -S host2,laptop%s\n\n" "$CLR_VAL" "$prog" "$CLR_RESET"
+    printf "  %s# Sincronizza verso il NAS (o NAS -> Locale con --reverse / --reverse-forced):%s\n" "$CLR_DIM" "$CLR_RESET"
+    printf "  %s%s -s%s\n  %s%s -s --reverse%s\n  %s%s -s --reverse-forced%s\n\n" "$CLR_VAL" "$prog" "$CLR_RESET" "$CLR_VAL" "$prog" "$CLR_RESET" "$CLR_VAL" "$prog" "$CLR_RESET"
+    printf "  %s# Esplora e revisiona le versioni storiche Hanoi di zshrc:%s\n" "$CLR_DIM" "$CLR_RESET"
+    printf "  %s%s -H zshrc%s\n\n" "$CLR_VAL" "$prog" "$CLR_RESET"
     exit 0
 }
 
@@ -455,18 +438,15 @@ render_4col_table() {
     printf -v __sep2 '%*s' "$(( __w2 + 2 ))" ''; __sep2="${__sep2// /─}"
     printf -v __sep3 '%*s' "$(( __w3 + 2 ))" ''; __sep3="${__sep3// /─}"
 
-    echo -e "\n${C_SLATE}============================================================================================${C_RESET}"
-    echo -e " ${C_BOLD}${__title}${C_RESET}"
-    [[ -n "$__subtitle" ]] && echo -e " ${C_MUTED}${__subtitle}${C_RESET}"
-    echo -e "${C_SLATE}============================================================================================${C_RESET}"
-    printf " %b%s%*s │ %s%*s │ %s%*s │ %s%b\n" \
+    ui_header "${__title}" "${__subtitle:-}"
+    printf "  %b%s%*s │ %s%*s │ %s%*s │ %s%b\n" \
         "$C_MUTED" "$__h1" "$(( __w1 - ${#__h1} ))" "" "$__h2" "$(( __w2 - ${#__h2} ))" "" "$__h3" "$(( __w3 - ${#__h3} ))" "" "$__h4" "$C_RESET"
-    echo -e "${C_SLATE}${__sep1}┼${__sep2}┼${__sep3}┼──────────────────────────────────────${C_RESET}"
+    echo -e "  ${CLR_STRUCT}${__sep1}┼${__sep2}┼${__sep3}┼──────────────────────────────────${C_RESET}"
 
     local __out_buf="" __line_str __s1 __s2 __s3 __s4
     for (( __i=0; __i<__total_rows; __i++ )); do
         __s1="${__c1_str[$__i]}" __s2="${__c2_str[$__i]}" __s3="${__c3_str[$__i]}" __s4="${__c4_str[$__i]}"
-        printf -v __line_str " %b%s%*s%b │ %b%s%*s%b │ %b%s%*s%b │ %b\n" \
+        printf -v __line_str "  %b%s%*s%b │ %b%s%*s%b │ %b%s%*s%b │ %b\n" \
             "${__c1_col[$__i]}" "$__s1" "$(( __w1 - ${#__s1} ))" "" "$C_RESET" \
             "${__c2_col[$__i]}" "$__s2" "$(( __w2 - ${#__s2} ))" "" "$C_RESET" \
             "$C_MUTED" "$__s3" "$(( __w3 - ${#__s3} ))" "" "$C_RESET" \
@@ -474,7 +454,7 @@ render_4col_table() {
         __out_buf+="$__line_str"
     done
     printf '%s' "$__out_buf"
-    echo -e "${C_SLATE}============================================================================================${C_RESET}"
+    ui_rule 68
     return 0
 }
 
@@ -1584,23 +1564,21 @@ get_diff_summary() {
 
 render_full_diff() {
     local local_file="$1" nas_file="$2" disp_path="$3"
-    echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
-    echo -e " ${C_BOLD}DIFF:${C_RESET} ${disp_path}"
-    echo -e " ${C_MUTED}Legenda: [- Presente solo in Locale]  [+ Presente solo su NAS]${C_RESET}"
-    echo -e "${C_SLATE}------------------------------------------------------------------------------${C_RESET}"
-    printf " ${C_MUTED}%4s %4s │ %s${C_RESET}\n" "LOC" "NAS" "CONTENUTO"
-    echo -e "${C_SLATE}───────────┼──────────────────────────────────────────────────────────────────${C_RESET}"
+    ui_header "DIFF: ${disp_path}" "Legenda: [- Presente solo in Locale]  [+ Presente solo su NAS]"
+    printf "  ${C_MUTED}%4s %4s │ %s${C_RESET}\n" "LOC" "NAS" "CONTENUTO"
+    echo -e "  ${CLR_STRUCT}──────────┼─────────────────────────────────────────────────────────${C_RESET}"
     { diff -a -u -U 999999 "$local_file" "$nas_file" 2>/dev/null || true; } | awk \
         -v c_red="$C_RED" -v c_green="$C_GREEN" -v c_muted="$C_MUTED" -v c_ctx="$C_CTX" -v c_reset="$C_RESET" '
         NR <= 2 || /^@@/ || /^\\/ { next }
         {
             prefix = substr($0, 1, 1); content = substr($0, 2); sub(/\r$/, "", content)
-            if (prefix == "-") { old_ln++; printf " %s%4d    - │ - %s%s\n", c_red, old_ln, content, c_reset }
-            else if (prefix == "+") { new_ln++; printf " %s   + %4d │ + %s%s\n", c_green, new_ln, content, c_reset }
-            else { old_ln++; new_ln++; printf " %s%4d %4d │%s   %s%s\n", c_muted, old_ln, new_ln, c_ctx, content, c_reset }
+            if (prefix == "-") { old_ln++; printf "  %s%4d    - │ - %s%s\n", c_red, old_ln, content, c_reset }
+            else if (prefix == "+") { new_ln++; printf "  %s   + %4d │ + %s%s\n", c_green, new_ln, content, c_reset }
+            else { old_ln++; new_ln++; printf "  %s%4d %4d │%s   %s%s\n", c_muted, old_ln, new_ln, c_ctx, content, c_reset }
         }
     '
-    echo -e "${C_SLATE}==============================================================================${C_RESET}\n"
+    ui_rule 68
+    echo ""
     return 0
 }
 

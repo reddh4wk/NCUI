@@ -14,7 +14,7 @@ import threading
 import time
 
 from core import probe
-from core.config import resolve_ncmatrix_bin
+from core.config import THEME, resolve_ncmatrix_bin
 from core.paths import find_bin
 
 NC_DESKTOP_BASE = os.environ.get("NC_DESKTOP_BASE") or os.path.expanduser("~/.local/nc-desktop")
@@ -810,6 +810,17 @@ def _norm_cm_float(raw, lo: float, hi: float, default: float, step: float = 0.1)
     return fmt.format(0.0 if abs(v) < 1e-9 else v)
 
 
+def resolve_ncmatrix_color(col: str) -> str:
+    """Resolve 'theme' matrix color to active NC-UI intent hex; return other values verbatim."""
+    s = str(col or "green").strip()
+    if s.lower() == "theme":
+        hx = str(THEME.get("colors", {}).get("intent", "#00f0ff") or "#00f0ff").strip()
+        if re.fullmatch(r"#[0-9A-Fa-f]{6}", hx):
+            return hx.lower()
+        return "#00f0ff"
+    return s or "green"
+
+
 def apply_ncmatrix(
     mon: str,
     spec: dict,
@@ -827,6 +838,7 @@ def apply_ncmatrix(
     jp_raw = spec.get("japanese")
     cs = str(spec.get("charset") or ("ascii" if jp_raw in (False, "false", "0") else "katakana"))
     col = str(spec.get("color") or "green")
+    resolved_col = resolve_ncmatrix_color(col)
     spd = str(spec.get("speed") or "5")
     sz = str(spec.get("size") or "9")
     sp_rate = _norm_cm_float(spec.get("spawn_rate", "1.5"), 0.0, 3.0, 1.5, 0.1)
@@ -852,7 +864,7 @@ def apply_ncmatrix(
     try:
         with open(f"/tmp/nc-matrix_{mon}.conf", "w", encoding="utf-8") as cf:
             cf.write(
-                f"charset={cs}\ncolor={col}\nspeed={spd}\nspawn_rate={sp_rate}\n"
+                f"charset={cs}\ncolor={resolved_col}\nspeed={spd}\nspawn_rate={sp_rate}\n"
                 f"head_color={head_col}\nspeed_variance={spd_var}\n"
                 f"overlap_mode={overlap_m}\ndepth_parallax={parallax_m}\n"
                 f"glow={glow_v}\ndecay_mode={decay_m}\nshimmer={shimmer_m}\n"
@@ -892,7 +904,7 @@ def apply_ncmatrix(
             pass
         cmd = [
             ncmatrix_bin, "--wallpaper", "--output", mon,
-            "--charset", cs, "--color", col, "--speed", spd,
+            "--charset", cs, "--color", resolved_col, "--speed", spd,
             "--spawn-rate", sp_rate, "--head-color", head_col,
             "--speed-variance", spd_var, "--overlap", overlap_m,
             "--parallax", parallax_m, "--glow", glow_v,
@@ -947,6 +959,26 @@ def apply_ncmatrix(
 
 
 _KATAKANA_FONT_CACHE: bool | None = None
+
+
+def sync_ncmatrix_theme_wallpapers() -> int:
+    """Re-apply live theme color to all running nc-matrix monitors configured with color='theme'."""
+    if not os.path.isdir(STATE_DIR):
+        return 0
+    synced = 0
+    for sf in glob.glob(os.path.join(STATE_DIR, "*.json")):
+        mon = os.path.basename(sf)[:-5]
+        st = read_output_state(mon)
+        if (
+            isinstance(st, dict)
+            and str(st.get("mode") or "").lower() in ("ncmatrix", "cmatrix")
+            and str(st.get("color") or "").strip().lower() == "theme"
+            and get_running_ncmatrix_pid(mon) > 0
+        ):
+            ok, _ = apply_ncmatrix(mon, st, prev_is_ncm=True, prev_size=str(st.get("size") or "9"), save=False)
+            if ok:
+                synced += 1
+    return synced
 
 
 def has_katakana_font() -> bool:

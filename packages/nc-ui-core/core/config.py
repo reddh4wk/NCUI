@@ -1187,6 +1187,12 @@ def apply_waybar_palette(
     vr, vg, vb = _hex_to_rgb(wb_act)
     wr, wg, wb_c = _hex_to_rgb(wb_warn)
     cr, cg, cb = _hex_to_rgb(wb_crit)
+    tw_r = round(255 * 0.70 + ar * 0.30)
+    tw_g = round(255 * 0.70 + ag * 0.30)
+    tw_b = round(255 * 0.70 + ab * 0.30)
+    hr = round(pr * 0.86 + tw_r * 0.14)
+    hg = round(pg * 0.86 + tw_g * 0.14)
+    hb = round(pb * 0.86 + tw_b * 0.14)
     win_alpha = max(0.05, min(1.0, get_window_opacity()))
 
     def _set_css_prop(block: str, prop: str, val: str) -> str:
@@ -1232,17 +1238,35 @@ def apply_waybar_palette(
 
             new_css = re.sub(r"window#waybar\s*\{[^}]+\}", _repl_wb, css_content, count=1)
             if force_palette:
+                new_css = re.sub(r"(?:eventbox|widget):hover\s*>", "widget > box:hover >", new_css)
                 new_css = _sub_keyframes(
                     new_css,
                     "nc-glow-pulse",
-                    lambda body: re.sub(
-                        r"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?:0\.08|0\.62)\)",
-                        f"rgba({pr}, {pg}, {pb}, 0.62)",
-                        re.sub(
-                            r"rgba\(\s*0\s*,\s*255\s*,\s*(?:115|102)\s*,|rgba\(\s*166\s*,\s*227\s*,\s*161\s*,|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*(?=(?:0\.0|0\.16|0\.22|0\.44|0\.45|0\.90)\))",
-                            f"rgba({vr}, {vg}, {vb}, ",
-                            body,
-                        ),
+                    lambda _body: (
+                        f"\n    0% {{\n"
+                        f"        background-color: rgba({pr}, {pg}, {pb}, 0.62);\n"
+                        f"        background-image: radial-gradient(ellipse closest-side at center, rgba({ar}, {ag}, {ab}, 0.0) 0%, rgba({ar}, {ag}, {ab}, 0.0) 65%, rgba({ar}, {ag}, {ab}, 0.0) 100%);\n"
+                        f"        box-shadow:\n"
+                        f"            0 0 0 0 rgba({ar}, {ag}, {ab}, 0.0),\n"
+                        f"            inset 0 0 0 0 rgba({ar}, {ag}, {ab}, 0.0);\n"
+                        f"        text-shadow: 0 0 0 rgba({ar}, {ag}, {ab}, 0.0);\n"
+                        f"    }}\n"
+                        f"    50% {{\n"
+                        f"        background-color: rgba({ar}, {ag}, {ab}, 0.58);\n"
+                        f"        background-image: radial-gradient(ellipse closest-side at center, rgba({ar}, {ag}, {ab}, 0.90) 0%, rgba({ar}, {ag}, {ab}, 0.50) 65%, rgba({ar}, {ag}, {ab}, 0.12) 100%);\n"
+                        f"        box-shadow:\n"
+                        f"            0 0 2px 0 rgba({ar}, {ag}, {ab}, 0.70),\n"
+                        f"            inset 0 0 8px 0 rgba({ar}, {ag}, {ab}, 0.78);\n"
+                        f"        text-shadow: 0 0 8px rgba({ar}, {ag}, {ab}, 1.0);\n"
+                        f"    }}\n"
+                        f"    100% {{\n"
+                        f"        background-color: rgba({pr}, {pg}, {pb}, 0.62);\n"
+                        f"        background-image: radial-gradient(ellipse closest-side at center, rgba({ar}, {ag}, {ab}, 0.0) 0%, rgba({ar}, {ag}, {ab}, 0.0) 65%, rgba({ar}, {ag}, {ab}, 0.0) 100%);\n"
+                        f"        box-shadow:\n"
+                        f"            0 0 0 0 rgba({ar}, {ag}, {ab}, 0.0),\n"
+                        f"            inset 0 0 0 0 rgba({ar}, {ag}, {ab}, 0.0);\n"
+                        f"        text-shadow: 0 0 0 rgba({ar}, {ag}, {ab}, 0.0);\n"
+                        f"    }}"
                     ),
                 )
                 new_css = _sub_keyframes(
@@ -1262,32 +1286,32 @@ def apply_waybar_palette(
                     (r"#workspaces", {"background-color": f"rgba({pr}, {pg}, {pb}, 0.85)"}),
                     (r"#workspaces\s+button", {"color": schema_hex}),
                     (r"#workspaces\s+button:hover", {
-                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.22)",
+                        "background-color": f"rgba({hr}, {hg}, {hb}, 0.71)",
                         "color": focus_hex,
-                        "box-shadow": f"0 0 2.5px 0 rgba({ar}, {ag}, {ab}, 0.30), inset 0 0 5px rgba({ar}, {ag}, {ab}, 0.20)",
+                        "box-shadow": f"inset 0 0 0 1px rgba({tw_r}, {tw_g}, {tw_b}, 0.11)",
                     }),
                     (r"#clock,[\s\S]*?\.module-nc", {"color": wb_fg, "background-color": f"rgba({pr}, {pg}, {pb}, 0.62)"}),
-                    (r"#clock:hover,[\s\S]*?eventbox:hover\s*>\s*\.module-nc", {
-                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.22)",
+                    (r"#clock:hover,[\s\S]*?(?:eventbox|widget|box):hover\s*>\s*\.module-nc", {
+                        "background-color": f"rgba({hr}, {hg}, {hb}, 0.71)",
                         "color": focus_hex,
-                        "box-shadow": f"0 0 2.5px 0 rgba({ar}, {ag}, {ab}, 0.30), inset 0 0 6px rgba({ar}, {ag}, {ab}, 0.20)",
+                        "box-shadow": f"inset 0 0 0 1px rgba({tw_r}, {tw_g}, {tw_b}, 0.11)",
                     }),
                     (r"#window", {"color": wb_fg}),
                     (r"#custom-media", {"color": wb_fg}),
                     (r"#wireplumber\.muted", {"color": wb_crit, "background-color": f"rgba({cr}, {cg}, {cb}, 0.15)"}),
                     (r"#workspaces\s+button\.active,\s*#workspaces\s+button\.focused", {
                         "color": focus_hex,
-                        "background-color": f"rgba({vr}, {vg}, {vb}, 0.22)",
-                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({vr}, {vg}, {vb}, 0.44) 0%, rgba({vr}, {vg}, {vb}, 0.16) 65%, rgba({vr}, {vg}, {vb}, 0.0) 100%)",
-                        "box-shadow": f"0 0 2.5px 0 rgba({vr}, {vg}, {vb}, 0.45), inset 0 0 5px 0 rgba({vr}, {vg}, {vb}, 0.45)",
-                        "text-shadow": f"0 0 6px rgba({vr}, {vg}, {vb}, 0.90)",
+                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.58)",
+                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({ar}, {ag}, {ab}, 0.90) 0%, rgba({ar}, {ag}, {ab}, 0.52) 65%, rgba({ar}, {ag}, {ab}, 0.14) 100%)",
+                        "box-shadow": f"0 0 2px 0 rgba({ar}, {ag}, {ab}, 0.70), inset 0 0 8px 0 rgba({ar}, {ag}, {ab}, 0.75)",
+                        "text-shadow": f"0 0 8px rgba({ar}, {ag}, {ab}, 1.0)",
                     }),
                     (r"\.nc-glow,\s*#custom-notifications\.nc-glow,\s*\.module-nc-alert,\s*#custom-notifications\.module-nc-alert", {
                         "color": focus_hex,
-                        "background-color": f"rgba({vr}, {vg}, {vb}, 0.16)",
-                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({vr}, {vg}, {vb}, 0.30) 0%, rgba({vr}, {vg}, {vb}, 0.10) 65%, rgba({vr}, {vg}, {vb}, 0.0) 100%)",
-                        "box-shadow": f"0 0 2px 0 rgba({vr}, {vg}, {vb}, 0.35), inset 0 0 4px 0 rgba({vr}, {vg}, {vb}, 0.35)",
-                        "text-shadow": f"0 0 5px rgba({vr}, {vg}, {vb}, 0.70)",
+                        "background-color": f"rgba({ar}, {ag}, {ab}, 0.45)",
+                        "background-image": f"radial-gradient(ellipse closest-side at center, rgba({ar}, {ag}, {ab}, 0.78) 0%, rgba({ar}, {ag}, {ab}, 0.38) 65%, rgba({ar}, {ag}, {ab}, 0.10) 100%)",
+                        "box-shadow": f"0 0 2px 0 rgba({ar}, {ag}, {ab}, 0.60), inset 0 0 6px 0 rgba({ar}, {ag}, {ab}, 0.65)",
+                        "text-shadow": f"0 0 8px rgba({ar}, {ag}, {ab}, 0.95)",
                     }),
                     (r"#custom-ups\.online", {"color": wb_act}),
                     (r"#custom-ups\.on-battery", {
@@ -1325,6 +1349,28 @@ def apply_waybar_palette(
 
     if css_targets is not None or os.environ.get("NC_UI_OFFSCREEN") == "1":
         return True
+    if force_palette:
+        wb_conf = os.path.join(get_waybar_config_dir(), "config.jsonc")
+        if os.path.isfile(wb_conf):
+            try:
+                import json as _json
+                with open(wb_conf, "r", encoding="utf-8") as f:
+                    wb_data = _json.load(f)
+                if isinstance(wb_data, dict):
+                    changed_wb = False
+                    for mk, mv in wb_data.items():
+                        if isinstance(mv, dict) and mk.startswith("custom/") and mk != "custom/media":
+                            if mv.get("tooltip") is False:
+                                mv["tooltip"] = True
+                                mv["tooltip-format"] = ""
+                                changed_wb = True
+                    if changed_wb:
+                        tmp_wb = f"{wb_conf}.tmp.{os.getpid()}"
+                        with open(tmp_wb, "w", encoding="utf-8") as f:
+                            _json.dump(wb_data, f, indent=4)
+                        os.replace(tmp_wb, wb_conf)
+            except Exception:
+                pass
     try:
         subprocess.Popen(
             ["pkill", "-SIGUSR2", "waybar"],

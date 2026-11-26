@@ -73,7 +73,8 @@ def _normalize_user_plugin_meta(meta: dict, panel_id: str, fpath: str) -> dict:
     wb.setdefault("return-type", "json")
     wb.setdefault("interval", 2)
     wb.setdefault("on-click", f"nc-ctl popup {panel_id}")
-    wb["tooltip"] = False
+    wb["tooltip"] = True
+    wb["tooltip-format"] = ""
     out["waybar"] = wb
     return out
 
@@ -386,7 +387,8 @@ def _backfill_wb_modules(data: dict) -> dict:
                 for sub_k, sub_v in wb_def.items():
                     if sub_k != "max-length":
                         data[mod_id][sub_k] = sub_v
-            data[mod_id]["tooltip"] = False
+            data[mod_id]["tooltip"] = True
+            data[mod_id]["tooltip-format"] = ""
         elif mod_id not in active_mods and mod_id in data:
             data.pop(mod_id, None)
     return data
@@ -411,7 +413,11 @@ def _write_wb_config(data: dict, reload_bar: bool = False) -> None:
     managed_mods = set(KNOWN_WAYBAR_PLUGINS) | set(_discover_user_waybar_plugins())
     for k, v in data.items():
         if isinstance(v, dict) and k in managed_mods:
-            v["tooltip"] = False
+            if k.startswith("custom/") and k != "custom/media":
+                v["tooltip"] = True
+                v["tooltip-format"] = ""
+            else:
+                v["tooltip"] = False
 
     user_conf = _user_wb_conf()
     _WB_JSONC_CACHE.pop(user_conf, None)

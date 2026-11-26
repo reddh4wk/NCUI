@@ -11,25 +11,41 @@ import subprocess
 import sys
 import tomllib
 
+if __name__ == "__main__":
+    _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _cand in (_pkg_root, os.path.join(os.path.dirname(_pkg_root), "nc-ui-core")):
+        if os.path.isdir(_cand) and _cand not in sys.path:
+            sys.path.insert(0, _cand)
+
 from core import probe
-from core.config import get_config_dir
+from core.config import get_config_dir, get_surface_bg_hex
 from core.i18n import t
 from core.state import STATE
 from ui.canvas import Canvas
 from ui.kit import get_semantic_palette, hex_to_rgba_f, set_feedback
 
 ZSH_PRESET_IDS = (
-    "nightcity_tactical",
-    "netrunner_hud",
-    "cyberdeck_split",
-    "matrix_minimal",
-    "hardened_ops",
+    "nightcity_classic",
+    "powerline_tonal",
+    "minimal_arrow",
+    "ncui_bracket",
+    "cyberdeck_line",
 )
 
+_PRESET_ALIASES = {
+    "nightcity_tactical": "nightcity_classic",
+    "netrunner_hud": "ncui_bracket",
+    "cyberdeck_split": "cyberdeck_line",
+    "matrix_minimal": "minimal_arrow",
+    "hardened_ops": "powerline_tonal",
+}
+
+ACCENT_MODES = ("pure_mono", "error_accent")
 HIST_SIZE_OPTIONS = (5000, 10000, 50000)
 
 _DEFAULT_ZSH_CFG: dict = {
-    "preset": "nightcity_tactical",
+    "preset": "nightcity_classic",
+    "accent_mode": "error_accent",
     "show_git": True,
     "show_exit": True,
     "show_duration": True,
@@ -89,7 +105,10 @@ def _norm_cfg(raw: dict | None) -> dict:
     if not isinstance(raw, dict):
         return cfg
     pr = str(raw.get("preset") or cfg["preset"]).strip().lower()
+    pr = _PRESET_ALIASES.get(pr, pr)
     cfg["preset"] = pr if pr in ZSH_PRESET_IDS else cfg["preset"]
+    am = str(raw.get("accent_mode") or cfg["accent_mode"]).strip().lower()
+    cfg["accent_mode"] = am if am in ACCENT_MODES else cfg["accent_mode"]
     for bk in (
         "show_git", "show_exit", "show_duration", "show_clock", "show_context",
         "auto_sync_theme", "share_history", "hist_ignore_dups",
@@ -168,101 +187,152 @@ def is_zsh_theme_applied(cfg_dir: str | None = None, home_dir: str | None = None
 
 def _palette_hex() -> dict[str, str]:
     p = get_semantic_palette()
-    keys = ("intent", "focus", "focus_val", "schema", "structure", "vitality", "attention", "interrupt", "fault")
-    return {k: str(p.get(k) or "#00f0ff")[:7] for k in keys}
+    keys = (
+        "intent", "intent_soft", "intent_bg",
+        "focus", "focus_val", "schema", "structure", "structure_bg",
+        "fault",
+    )
+    out = {k: str(p.get(k) or "#00f0ff")[:7] for k in keys}
+    out["surface_bg"] = str(get_surface_bg_hex() or "#080a0f")[:7]
+    return out
 
 
-def _hex_to_ansi(hex_s: str, bold: bool = False) -> str:
+def _hex_to_ansi(hex_s: str, *, bg: bool = False, bold: bool = False) -> str:
     r, g, b, _ = hex_to_rgba_f(hex_s, 1.0)
-    b_seq = "1;" if bold else ""
-    return f"\033[{b_seq}38;2;{int(round(r * 255))};{int(round(g * 255))};{int(round(b * 255))}m"
+    code = 48 if bg else 38
+    b_seq = "1;" if (bold and not bg) else ""
+    return f"\033[{b_seq}{code};2;{int(round(r * 255))};{int(round(g * 255))};{int(round(b * 255))}m"
 
 
-def _render_preview_tokens(cfg: dict, *, git_branch: str = "main*", exit_code: int = 1, dur: str = "1.8s", clock: str = "09:22") -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Return `(line1_tokens, line2_tokens)` of `(text, palette_role)` for the active preset."""
+def _render_preview_tokens(
+    cfg: dict,
+    *,
+    git_branch: str = "main",
+    git_dirty: str = "*",
+    exit_code: int = 1,
+    dur: str = "1.8s",
+    clock: str = "09:54",
+    for_pango: bool = False,
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Return `(line1, line2)` tokens as `(text, fg_role, bg_role)` around the dominant theme color."""
     preset = cfg["preset"]
+    err_role = "fault" if cfg.get("accent_mode") == "error_accent" else "intent"
     show_git = bool(cfg["show_git"])
     show_exit = bool(cfg["show_exit"])
     show_dur = bool(cfg["show_duration"])
     show_clk = bool(cfg["show_clock"])
     show_ctx = bool(cfg["show_context"])
 
-    ctx_txt = "SSH" if show_ctx else ""
-    line1: list[tuple[str, str]] = []
-    line2: list[tuple[str, str]] = []
+    l1: list[tuple[str, str, str]] = []
+    l2: list[tuple[str, str, str]] = []
 
-    if preset == "nightcity_tactical":
-        line1.extend([("┌──(", "intent"), ("user", "focus"), ("@", "schema"), ("nightcity", "focus_val"), (")", "intent")])
-        if ctx_txt:
-            line1.extend([("─[", "structure"), (ctx_txt, "attention"), ("]", "structure")])
-        line1.extend([("─[", "structure"), ("~/ncui", "focus"), ("]", "structure")])
-        if show_git:
-            line1.extend([("─(", "structure"), (f"⎇ {git_branch}", "vitality"), (")", "structure")])
-        if show_dur:
-            line1.extend([(" ", "structure"), (dur, "attention")])
-        if show_exit:
-            line1.extend([(" ", "structure"), (f"✗{exit_code}", "fault")])
-        if show_clk:
-            line1.extend([(" ", "structure"), (clock, "schema")])
-        line2.extend([("└──", "intent"), ("❯ ", "fault" if show_exit else "intent"), ("git status", "focus_val")])
-    elif preset == "netrunner_hud":
-        line1.extend([("[", "structure"), ("● ", "intent"), ("user@nightcity", "focus"), ("] ", "structure")])
-        if ctx_txt:
-            line1.extend([("[", "structure"), (ctx_txt, "attention"), ("] ", "structure")])
-        line1.extend([("[", "structure"), ("~/ncui", "focus_val"), ("] ", "structure")])
-        if show_git:
-            line1.extend([("[", "structure"), (f"⎇ {git_branch}", "vitality"), ("] ", "structure")])
-        if show_dur:
-            line1.append((f"{dur} ", "attention"))
-        if show_exit:
-            line1.append((f"[{exit_code}] ", "fault"))
-        line1.extend([("❯ ", "intent"), ("nc-ctl", "focus_val")])
-    elif preset == "cyberdeck_split":
-        line1.extend([("── ", "structure"), ("user@nightcity", "intent"), (" ── ", "structure"), ("~/ncui", "focus"), (" ", "structure")])
-        if show_git:
-            line1.extend([("── ", "structure"), (f"⎇ {git_branch}", "vitality"), (" ", "structure")])
-        if ctx_txt:
-            line1.extend([("── ", "structure"), (ctx_txt, "attention"), (" ", "structure")])
-        line1.append(("────── ", "structure"))
-        if show_dur:
-            line1.append((f"{dur} ", "attention"))
-        if show_clk:
-            line1.append((f"{clock} ", "schema"))
-        line1.append(("──", "structure"))
-        line2.extend([("▸ ", "fault" if show_exit else "intent"), ("sudo nc-rescue sync", "focus_val")])
-    elif preset == "matrix_minimal":
-        line1.extend([("▏ ", "intent"), ("user", "focus"), (" ▕ ", "intent"), ("~/ncui", "focus_val")])
-        if show_git:
-            line1.append((f" ⎇ {git_branch}", "vitality"))
-        if show_dur:
-            line1.append((f" · {dur}", "attention"))
-        if show_exit:
-            line1.append((f" · {exit_code}", "fault"))
-        line1.extend([(" ❯ ", "intent"), ("ls -la", "focus_val")])
-    else:
-        # hardened_ops
+    if preset == "nightcity_classic":
+        l1.extend([("┌──(", "intent", ""), ("user@nightcity", "focus_val", ""), (")", "intent", "")])
         if show_ctx:
-            line1.extend([("[", "structure"), ("LIVE|SSH", "attention"), ("] ", "structure")])
-        line1.extend([("(", "schema"), ("user@nightcity", "focus"), (") [", "schema"), ("~/ncui", "focus_val"), ("]", "schema")])
+            l1.extend([("─[", "intent", ""), ("SSH", "intent_soft", ""), ("]", "intent", "")])
+        l1.extend([("─[", "intent", ""), ("~/ncui", "focus", ""), ("]", "intent", "")])
         if show_git:
-            line1.extend([(" (", "structure"), (f"⎇ {git_branch}", "vitality"), (")", "structure")])
+            l1.extend([("─(", "intent", ""), (f"⎇ {git_branch}", "schema", ""), (git_dirty, "intent", ""), (")", "intent", "")])
+        if show_dur:
+            l1.append((f" {dur}", "schema", ""))
         if show_exit:
-            line1.extend([(" [", "structure"), (f"EXIT {exit_code}", "fault"), ("]", "structure")])
-        if show_dur or show_clk:
-            tail = " ".join(x for x in (dur if show_dur else "", clock if show_clk else "") if x)
-            line1.append((f" {tail}", "schema"))
-        line2.extend([("❯ ", "intent"), ("nc-chroot", "focus_val")])
-    return line1, line2
+            l1.append((f" ✗{exit_code}", err_role, ""))
+        if show_clk:
+            l1.append((f" {clock}", "schema", ""))
+        l2.extend([("└─", "intent", ""), ("$ ", err_role if show_exit else "intent", ""), ("git status", "focus_val", "")])
+
+    elif preset == "powerline_tonal":
+        sep = "" if for_pango else ""
+        l1.append((" user@nightcity ", "focus", "structure_bg"))
+        if sep:
+            l1.append((sep, "structure_bg", "intent_bg"))
+        l1.append((" ~/ncui ", "intent", "intent_bg"))
+        prev_bg = "intent_bg"
+        if show_git:
+            if sep:
+                l1.append((sep, prev_bg, "intent"))
+            l1.append((f" ⎇ {git_branch}{git_dirty} ", "surface_bg", "intent"))
+            prev_bg = "intent"
+        tail_tags = []
+        if show_ctx:
+            tail_tags.append(("SSH", "intent_soft"))
+        if show_exit:
+            tail_tags.append((f"✗{exit_code}", err_role))
+        if tail_tags:
+            if sep:
+                l1.append((sep, prev_bg, "structure_bg"))
+            for idx, (tg, col_r) in enumerate(tail_tags):
+                l1.append((" " if idx == 0 else "·", "schema", "structure_bg"))
+                l1.append((tg, col_r, "structure_bg"))
+            l1.append((" ", "schema", "structure_bg"))
+            prev_bg = "structure_bg"
+        l1.append((f"{sep} " if sep else " ", prev_bg, ""))
+        if show_dur:
+            l1.append((f"{dur} ", "schema", ""))
+        if show_clk:
+            l1.append((f"{clock} ", "schema", ""))
+        l1.append(("ls", "focus_val", ""))
+
+    elif preset == "minimal_arrow":
+        l1.append(("➜ ", err_role if show_exit else "intent", ""))
+        if show_ctx:
+            l1.append(("SSH ", "schema", ""))
+        l1.append(("ncui ", "focus", ""))
+        if show_git:
+            l1.extend([("git:(", "schema", ""), (git_branch, "intent", ""), (git_dirty, "intent", ""), (") ", "schema", "")])
+        if show_dur:
+            l1.append((f"{dur} ", "schema", ""))
+        if show_exit:
+            l1.append((f"[{exit_code}] ", err_role, ""))
+        if show_clk:
+            l1.append((f"{clock} ", "schema", ""))
+        l1.append(("ls -la", "focus_val", ""))
+
+    elif preset == "ncui_bracket":
+        l1.extend([("[", "structure", ""), ("● ", "intent", ""), ("user@nightcity", "focus", ""), ("] ", "structure", "")])
+        if show_ctx:
+            l1.extend([("[", "structure", ""), ("SSH", "intent_soft", ""), ("] ", "structure", "")])
+        l1.extend([("[", "structure", ""), ("~/ncui", "focus_val", ""), ("] ", "structure", "")])
+        if show_git:
+            l1.extend([("[", "structure", ""), (f"⎇ {git_branch}", "schema", ""), (git_dirty, "intent", ""), ("] ", "structure", "")])
+        if show_dur:
+            l1.append((f"{dur} ", "schema", ""))
+        if show_exit:
+            l1.append((f"[{exit_code}] ", err_role, ""))
+        l1.extend([("❯ ", err_role if show_exit else "intent", ""), ("nc-ctl", "focus_val", "")])
+
+    else:
+        # cyberdeck_line
+        l1.extend([("── ", "structure", ""), ("user@nightcity", "intent", ""), (" ── ", "structure", ""), ("~/ncui", "focus", "")])
+        if show_git:
+            l1.extend([(" ── ", "structure", ""), (f"⎇ {git_branch}", "schema", ""), (git_dirty, "intent", "")])
+        if show_ctx:
+            l1.extend([(" ── ", "structure", ""), ("SSH", "intent_soft", "")])
+        l1.append((" ──────", "structure", ""))
+        if show_dur:
+            l1.append((f" {dur}", "schema", ""))
+        if show_clk:
+            l1.append((f" {clock}", "schema", ""))
+        l1.append((" ──", "structure", ""))
+        l2.extend([("▸ ", err_role if show_exit else "intent", ""), (f"[{exit_code}] " if show_exit else "", err_role, ""), ("sudo nc-rescue sync", "focus_val", "")])
+
+    return l1, l2
 
 
 def render_zsh_preview_lines(cfg: dict, canvas: Canvas) -> list[str]:
-    p = get_semantic_palette()
-    l1, l2 = _render_preview_tokens(cfg)
+    p = _palette_hex()
+    l1, l2 = _render_preview_tokens(cfg, for_pango=True)
     out = []
     for line in (l1, l2):
         if not line:
             continue
-        segs = [f"<span color='{p.get(role, p['focus_val'])}'>{Canvas.escape(txt)}</span>" for txt, role in line]
+        segs = []
+        for txt, fg_r, bg_r in line:
+            if not txt:
+                continue
+            fg_h = p.get(fg_r, p["focus_val"])
+            bg_attr = f" background='{p[bg_r]}'" if bg_r and bg_r in p else ""
+            segs.append(f"<span color='{fg_h}'{bg_attr}>{Canvas.escape(txt)}</span>")
         out.append("".join(segs))
     return out
 
@@ -271,11 +341,11 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
     norm = _norm_cfg(cfg)
     pal = _palette_hex()
     p_fn_map = {
-        "nightcity_tactical": "_ncui_prompt_nightcity",
-        "netrunner_hud": "_ncui_prompt_netrunner",
-        "cyberdeck_split": "_ncui_prompt_cyberdeck",
-        "matrix_minimal": "_ncui_prompt_matrix",
-        "hardened_ops": "_ncui_prompt_hardened",
+        "nightcity_classic": "_ncui_prompt_nightcity",
+        "powerline_tonal": "_ncui_prompt_powerline",
+        "minimal_arrow": "_ncui_prompt_minimal_arrow",
+        "ncui_bracket": "_ncui_prompt_ncui_bracket",
+        "cyberdeck_line": "_ncui_prompt_cyberdeck",
     }
     fn_name = p_fn_map[norm["preset"]]
     b_git = 1 if norm["show_git"] else 0
@@ -283,6 +353,7 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
     b_dur = 1 if norm["show_duration"] else 0
     b_clk = 1 if norm["show_clock"] else 0
     b_ctx = 1 if norm["show_context"] else 0
+    b_err_acc = 1 if norm["accent_mode"] == "error_accent" else 0
 
     lines = [
         "# Generated by NC-UI Zsh Theme Engine — synced with theme.toml",
@@ -291,13 +362,14 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         "zmodload zsh/datetime 2>/dev/null || true",
         "",
         f"typeset -g NCUI_C_INTENT='{pal['intent']}'",
+        f"typeset -g NCUI_C_INTSOFT='{pal['intent_soft']}'",
+        f"typeset -g NCUI_C_INTBG='{pal['intent_bg']}'",
         f"typeset -g NCUI_C_FOCUS='{pal['focus']}'",
         f"typeset -g NCUI_C_VAL='{pal['focus_val']}'",
         f"typeset -g NCUI_C_SCHEMA='{pal['schema']}'",
         f"typeset -g NCUI_C_STRUCT='{pal['structure']}'",
-        f"typeset -g NCUI_C_VITAL='{pal['vitality']}'",
-        f"typeset -g NCUI_C_ATTN='{pal['attention']}'",
-        f"typeset -g NCUI_C_INTR='{pal['interrupt']}'",
+        f"typeset -g NCUI_C_STRBG='{pal['structure_bg']}'",
+        f"typeset -g NCUI_C_SURF='{pal['surface_bg']}'",
         f"typeset -g NCUI_C_FAULT='{pal['fault']}'",
         "",
         f"typeset -gi NCUI_OPT_GIT={b_git}",
@@ -305,11 +377,17 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         f"typeset -gi NCUI_OPT_DUR={b_dur}",
         f"typeset -gi NCUI_OPT_CLK={b_clk}",
         f"typeset -gi NCUI_OPT_CTX={b_ctx}",
+        f"typeset -gi NCUI_OPT_ERR_ACCENT={b_err_acc}",
         "",
         "typeset -g _ncui_cmd_start=''",
         "typeset -g _ncui_cmd_dur=''",
-        "typeset -g _ncui_git_seg=''",
+        "typeset -g _ncui_git_br=''",
+        "typeset -g _ncui_git_dirty=''",
         "typeset -g _ncui_ctx_seg=''",
+        "",
+        "_ncui_err_col() {",
+        "    (( NCUI_OPT_ERR_ACCENT )) && printf '%s' \"$NCUI_C_FAULT\" || printf '%s' \"$NCUI_C_INTENT\"",
+        "}",
         "",
         "_ncui_preexec() {",
         "    if (( NCUI_OPT_DUR )); then",
@@ -326,8 +404,9 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         "    _ncui_cmd_start=''",
         "    if (( delta >= 2.0 )); then",
         "        if (( delta >= 60.0 )); then",
-        "            local mins=$(( int(delta) / 60 ))",
-        "            local secs=$(( int(delta) % 60 ))",
+        "            local -i total_s=${delta%.*}",
+        "            local -i mins=$(( total_s / 60 ))",
+        "            local -i secs=$(( total_s % 60 ))",
         "            _ncui_cmd_dur=\"${mins}m${secs}s\"",
         "        else",
         "            printf -v _ncui_cmd_dur '%.1fs' \"$delta\"",
@@ -336,19 +415,15 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         "}",
         "",
         "_ncui_update_git() {",
-        "    _ncui_git_seg=''",
+        "    _ncui_git_br=''",
+        "    _ncui_git_dirty=''",
         "    (( NCUI_OPT_GIT )) || return 0",
         "    command -v git >/dev/null 2>&1 || return 0",
         "    local br",
         "    br=\"$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)\" || return 0",
         "    [[ -n \"$br\" ]] || return 0",
-        "    local dirty=''",
-        "    [[ -n \"$(git status --porcelain --ignore-submodules -uno 2>/dev/null | head -n1)\" ]] && dirty='*'",
-        "    if [[ -n \"$dirty\" ]]; then",
-        "        _ncui_git_seg=\"%F{${NCUI_C_ATTN}}⎇ ${br}${dirty}%f\"",
-        "    else",
-        "        _ncui_git_seg=\"%F{${NCUI_C_VITAL}}⎇ ${br}%f\"",
-        "    fi",
+        "    _ncui_git_br=\"$br\"",
+        "    [[ -n \"$(git status --porcelain --ignore-submodules -uno 2>/dev/null | head -n1)\" ]] && _ncui_git_dirty='*'",
         "}",
         "",
         "_ncui_update_ctx() {",
@@ -365,62 +440,79 @@ def generate_ncui_zsh_theme(cfg: dict) -> str:
         "",
         "_ncui_prompt_nightcity() {",
         "    local rc=$1",
-        "    local ctx='' gitp='' rp_parts=()",
-        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_STRUCT}}─[%F{${NCUI_C_ATTN}}${_ncui_ctx_seg}%F{${NCUI_C_STRUCT}}]%f\"",
-        "    [[ -n \"$_ncui_git_seg\" ]] && gitp=\"%F{${NCUI_C_STRUCT}}─(${_ncui_git_seg}%F{${NCUI_C_STRUCT}})%f\"",
-        "    local arrow=\"%F{${NCUI_C_INTENT}}❯%f\"",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && arrow=\"%F{${NCUI_C_FAULT}}❯%f\"",
-        "    PROMPT=\"%F{${NCUI_C_INTENT}}┌──(%F{${NCUI_C_FOCUS}}%n%F{${NCUI_C_SCHEMA}}@%F{${NCUI_C_VAL}}%m%F{${NCUI_C_INTENT}})${ctx}%F{${NCUI_C_STRUCT}}─[%F{${NCUI_C_FOCUS}}%~%F{${NCUI_C_STRUCT}}]${gitp}%f\"$'\\n'\"%F{${NCUI_C_INTENT}}└──${arrow} %f\"",
-        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_ATTN}}${_ncui_cmd_dur}%f\")",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && rp_parts+=(\"%F{${NCUI_C_FAULT}}✗${rc}%f\")",
+        "    local ctx='' gitp='' rp_parts=() ec=\"$(_ncui_err_col)\"",
+        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_INTENT}}─[%F{${NCUI_C_INTSOFT}}${_ncui_ctx_seg}%F{${NCUI_C_INTENT}}]\"",
+        "    [[ -n \"$_ncui_git_br\" ]] && gitp=\"%F{${NCUI_C_INTENT}}─(%F{${NCUI_C_SCHEMA}}⎇ ${_ncui_git_br}%F{${NCUI_C_INTENT}}${_ncui_git_dirty}%F{${NCUI_C_INTENT}})\"",
+        "    local sym=\"%F{${NCUI_C_INTENT}}\\$%f\"",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && sym=\"%F{${ec}}\\$%f\"",
+        "    PROMPT=\"%F{${NCUI_C_INTENT}}┌──(%F{${NCUI_C_VAL}}%n@%m%F{${NCUI_C_INTENT}})${ctx}%F{${NCUI_C_INTENT}}─[%F{${NCUI_C_FOCUS}}%~%F{${NCUI_C_INTENT}}]${gitp}%f\"$'\\n'\"%F{${NCUI_C_INTENT}}└─${sym} %f\"",
+        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}${_ncui_cmd_dur}%f\")",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && rp_parts+=(\"%F{${ec}}✗${rc}%f\")",
         "    (( NCUI_OPT_CLK )) && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\")",
-        "    RPROMPT=\"${(j:  :)rp_parts}\"",
+        "    RPROMPT=\"${(j: :)rp_parts}\"",
         "}",
         "",
-        "_ncui_prompt_netrunner() {",
+        "_ncui_prompt_powerline() {",
         "    local rc=$1",
-        "    local ctx='' gitp='' ex='' dur=''",
-        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_ATTN}}${_ncui_ctx_seg}%F{${NCUI_C_STRUCT}}] \"",
-        "    [[ -n \"$_ncui_git_seg\" ]] && gitp=\"%F{${NCUI_C_STRUCT}}[${_ncui_git_seg}%F{${NCUI_C_STRUCT}}] \"",
-        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && dur=\"%F{${NCUI_C_ATTN}}${_ncui_cmd_dur} \"",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && ex=\"%F{${NCUI_C_FAULT}}[${rc}] \"",
-        "    PROMPT=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_INTENT}}● %F{${NCUI_C_FOCUS}}%n@%m%F{${NCUI_C_STRUCT}}] ${ctx}[%F{${NCUI_C_VAL}}%~%F{${NCUI_C_STRUCT}}] ${gitp}${dur}${ex}%F{${NCUI_C_INTENT}}❯ %f\"",
-        "    RPROMPT=\"$( (( NCUI_OPT_CLK )) && echo \"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\" )\"",
+        "    local ec=\"$(_ncui_err_col)\" prev_bg=\"${NCUI_C_STRBG}\" p=\"\" rp_parts=()",
+        "    p=\"%K{${NCUI_C_STRBG}}%F{${NCUI_C_FOCUS}} %n@%m \"",
+        "    p+=\"%K{${NCUI_C_INTBG}}%F{${prev_bg}}%F{${NCUI_C_INTENT}} %~ \"",
+        "    prev_bg=\"${NCUI_C_INTBG}\"",
+        "    if [[ -n \"$_ncui_git_br\" ]]; then",
+        "        p+=\"%K{${NCUI_C_INTENT}}%F{${prev_bg}}%F{${NCUI_C_SURF}} ⎇ ${_ncui_git_br}${_ncui_git_dirty} \"",
+        "        prev_bg=\"${NCUI_C_INTENT}\"",
+        "    fi",
+        "    local -a tail_segs=()",
+        "    [[ -n \"$_ncui_ctx_seg\" ]] && tail_segs+=(\"%F{${NCUI_C_INTSOFT}}${_ncui_ctx_seg}\")",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && tail_segs+=(\"%F{${ec}}✗${rc}\")",
+        "    if (( ${#tail_segs[@]} > 0 )); then",
+        "        p+=\"%K{${NCUI_C_STRBG}}%F{${prev_bg}} ${(j:%F{${NCUI_C_SCHEMA}} · :)tail_segs} \"",
+        "        prev_bg=\"${NCUI_C_STRBG}\"",
+        "    fi",
+        "    PROMPT=\"${p}%k%F{${prev_bg}}%f \"",
+        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}${_ncui_cmd_dur}%f\")",
+        "    (( NCUI_OPT_CLK )) && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\")",
+        "    RPROMPT=\"${(j: :)rp_parts}\"",
+        "}",
+        "",
+        "_ncui_prompt_minimal_arrow() {",
+        "    local rc=$1",
+        "    local ec=\"$(_ncui_err_col)\" ctx='' gitp='' rp_parts=() arr=\"%F{${NCUI_C_INTENT}}➜%f\"",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && arr=\"%F{${ec}}➜%f\"",
+        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_SCHEMA}}${_ncui_ctx_seg} \"",
+        "    [[ -n \"$_ncui_git_br\" ]] && gitp=\" %F{${NCUI_C_SCHEMA}}git:(%F{${NCUI_C_INTENT}}${_ncui_git_br}${_ncui_git_dirty}%F{${NCUI_C_SCHEMA}})\"",
+        "    PROMPT=\"${arr}  ${ctx}%F{${NCUI_C_FOCUS}}%1~${gitp} %f\"",
+        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}${_ncui_cmd_dur}%f\")",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && rp_parts+=(\"%F{${ec}}[${rc}]%f\")",
+        "    (( NCUI_OPT_CLK )) && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\")",
+        "    RPROMPT=\"${(j: :)rp_parts}\"",
+        "}",
+        "",
+        "_ncui_prompt_ncui_bracket() {",
+        "    local rc=$1",
+        "    local ec=\"$(_ncui_err_col)\" ctx='' gitp='' ex='' rp_parts=() cur=\"%F{${NCUI_C_INTENT}}❯%f\"",
+        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_INTSOFT}}${_ncui_ctx_seg}%F{${NCUI_C_STRUCT}}] \"",
+        "    [[ -n \"$_ncui_git_br\" ]] && gitp=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_SCHEMA}}⎇ ${_ncui_git_br}%F{${NCUI_C_INTENT}}${_ncui_git_dirty}%F{${NCUI_C_STRUCT}}] \"",
+        "    if (( NCUI_OPT_EXIT && rc != 0 )); then",
+        "        ex=\"%F{${ec}}[${rc}] \"",
+        "        cur=\"%F{${ec}}❯%f\"",
+        "    fi",
+        "    PROMPT=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_INTENT}}● %F{${NCUI_C_FOCUS}}%n@%m%F{${NCUI_C_STRUCT}}] ${ctx}[%F{${NCUI_C_VAL}}%~%F{${NCUI_C_STRUCT}}] ${gitp}${ex}${cur} %f\"",
+        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}${_ncui_cmd_dur}%f\")",
+        "    (( NCUI_OPT_CLK )) && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\")",
+        "    RPROMPT=\"${(j: :)rp_parts}\"",
         "}",
         "",
         "_ncui_prompt_cyberdeck() {",
         "    local rc=$1",
-        "    local gitp='' ctx='' dur='' clk='' arrow=\"%F{${NCUI_C_INTENT}}▸%f\"",
-        "    [[ -n \"$_ncui_git_seg\" ]] && gitp=\" %F{${NCUI_C_STRUCT}}── ${_ncui_git_seg}\"",
-        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\" %F{${NCUI_C_STRUCT}}── %F{${NCUI_C_ATTN}}${_ncui_ctx_seg}\"",
-        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && dur=\" %F{${NCUI_C_ATTN}}${_ncui_cmd_dur}\"",
+        "    local ec=\"$(_ncui_err_col)\" gitp='' ctx='' dur='' clk='' arrow=\"%F{${NCUI_C_INTENT}}▸%f\"",
+        "    [[ -n \"$_ncui_git_br\" ]] && gitp=\" %F{${NCUI_C_STRUCT}}── %F{${NCUI_C_SCHEMA}}⎇ ${_ncui_git_br}%F{${NCUI_C_INTENT}}${_ncui_git_dirty}\"",
+        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\" %F{${NCUI_C_STRUCT}}── %F{${NCUI_C_INTSOFT}}${_ncui_ctx_seg}\"",
+        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && dur=\" %F{${NCUI_C_SCHEMA}}${_ncui_cmd_dur}\"",
         "    (( NCUI_OPT_CLK )) && clk=\" %F{${NCUI_C_SCHEMA}}%D{%H:%M}\"",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && arrow=\"%F{${NCUI_C_FAULT}}▸ [${rc}]%f\"",
-        "    PROMPT=\"%F{${NCUI_C_STRUCT}}── %F{${NCUI_C_INTENT}}%n@%m %F{${NCUI_C_STRUCT}}── %F{${NCUI_C_FOCUS}}%~${gitp}${ctx} %F{${NCUI_C_STRUCT}}────${dur}${clk} %F{${NCUI_C_STRUCT}}──%f\"$'\n'\"${arrow} %f\"",
+        "    (( NCUI_OPT_EXIT && rc != 0 )) && arrow=\"%F{${ec}}▸ [${rc}]%f\"",
+        "    PROMPT=\"%F{${NCUI_C_STRUCT}}── %F{${NCUI_C_INTENT}}%n@%m %F{${NCUI_C_STRUCT}}── %F{${NCUI_C_FOCUS}}%~${gitp}${ctx} %F{${NCUI_C_STRUCT}}──────${dur}${clk} %F{${NCUI_C_STRUCT}}──%f\"$'\\n'\"${arrow} %f\"",
         "    RPROMPT=''",
-        "}",
-        "",
-        "_ncui_prompt_matrix() {",
-        "    local rc=$1",
-        "    local gitp='' dur='' ex='' ctx=''",
-        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_ATTN}}${_ncui_ctx_seg} \"",
-        "    [[ -n \"$_ncui_git_seg\" ]] && gitp=\" ${_ncui_git_seg}\"",
-        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && dur=\" %F{${NCUI_C_ATTN}}· ${_ncui_cmd_dur}\"",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && ex=\" %F{${NCUI_C_FAULT}}· ${rc}\"",
-        "    PROMPT=\"${ctx}%F{${NCUI_C_INTENT}}▏ %F{${NCUI_C_FOCUS}}%n %F{${NCUI_C_INTENT}}▕ %F{${NCUI_C_VAL}}%~${gitp}${dur}${ex} %F{${NCUI_C_INTENT}}❯ %f\"",
-        "    RPROMPT=\"$( (( NCUI_OPT_CLK )) && echo \"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\" )\"",
-        "}",
-        "",
-        "_ncui_prompt_hardened() {",
-        "    local rc=$1",
-        "    local ctx='' gitp='' ex='' rp_parts=()",
-        "    [[ -n \"$_ncui_ctx_seg\" ]] && ctx=\"%F{${NCUI_C_STRUCT}}[%F{${NCUI_C_ATTN}}${_ncui_ctx_seg}%F{${NCUI_C_STRUCT}}] \"",
-        "    [[ -n \"$_ncui_git_seg\" ]] && gitp=\" %F{${NCUI_C_STRUCT}}(${_ncui_git_seg}%F{${NCUI_C_STRUCT}})\"",
-        "    (( NCUI_OPT_EXIT && rc != 0 )) && ex=\" %F{${NCUI_C_STRUCT}}[%F{${NCUI_C_FAULT}}EXIT ${rc}%F{${NCUI_C_STRUCT}}]\"",
-        "    PROMPT=\"${ctx}%F{${NCUI_C_SCHEMA}}(%F{${NCUI_C_FOCUS}}%n@%m%F{${NCUI_C_SCHEMA}}) [%F{${NCUI_C_VAL}}%~%F{${NCUI_C_SCHEMA}}]${gitp}${ex}%f\"$'\n'\"%F{${NCUI_C_INTENT}}❯ %f\"",
-        "    (( NCUI_OPT_DUR )) && [[ -n \"$_ncui_cmd_dur\" ]] && rp_parts+=(\"%F{${NCUI_C_ATTN}}${_ncui_cmd_dur}%f\")",
-        "    (( NCUI_OPT_CLK )) && rp_parts+=(\"%F{${NCUI_C_SCHEMA}}%D{%H:%M}%f\")",
-        "    RPROMPT=\"${(j:  :)rp_parts}\"",
         "}",
         "",
         "_ncui_precmd() {",
@@ -499,7 +591,6 @@ def _patch_zshrc_source(theme_file: str, home_dir: str | None = None) -> tuple[b
             flags=re.S,
         )
     else:
-        # Comment out standalone PROMPT= lines outside our block so the NC-UI theme isn't overridden
         patched_lines = []
         for ln in orig.splitlines():
             if re.match(r"^\s*(?:export\s+)?PROMPT=", ln):
@@ -565,24 +656,26 @@ def handle_cc_zsh_link(cc_panel, uri: str) -> bool:
             return False
         cfg["preset"] = pid
         _set_editor_zsh_config(cfg)
-        return True
+    elif act.startswith("accent:"):
+        am = act.split(":", 1)[1].strip()
+        if am not in ACCENT_MODES:
+            return False
+        cfg["accent_mode"] = am
+        _set_editor_zsh_config(cfg)
     elif act.startswith("toggle:"):
         key = act.split(":", 1)[1].strip()
         if key == "plugin_autosuggestions" and not has_zsh_plugin("autosuggestions"):
             set_feedback("zsh", False, t("cc_zsh.optdep_autosuggestions"))
-            return True
-        if key == "plugin_syntax_highlighting" and not has_zsh_plugin("syntax_highlighting"):
+        elif key == "plugin_syntax_highlighting" and not has_zsh_plugin("syntax_highlighting"):
             set_feedback("zsh", False, t("cc_zsh.optdep_syntax_highlighting"))
-            return True
-        if key not in _DEFAULT_ZSH_CFG or not isinstance(_DEFAULT_ZSH_CFG[key], bool):
+        elif key not in _DEFAULT_ZSH_CFG or not isinstance(_DEFAULT_ZSH_CFG[key], bool):
             return False
-        cfg[key] = not bool(cfg.get(key))
-        _set_editor_zsh_config(cfg)
-        return True
+        else:
+            cfg[key] = not bool(cfg.get(key))
+            _set_editor_zsh_config(cfg)
     elif act.startswith("sync:"):
         cfg["auto_sync_theme"] = (act.split(":", 1)[1] == "1")
         _set_editor_zsh_config(cfg)
-        return True
     elif act.startswith("hist_size:"):
         try:
             hs = int(act.split(":", 1)[1])
@@ -592,12 +685,10 @@ def handle_cc_zsh_link(cc_panel, uri: str) -> bool:
             return False
         cfg["hist_size"] = hs
         _set_editor_zsh_config(cfg)
-        return True
     elif act == "reset":
         saved = load_saved_zsh_config()
         _set_editor_zsh_config(saved)
         set_feedback("zsh", True, t("cc_zsh.fb_reset"))
-        return True
     elif act == "apply":
         ok, info = apply_zsh_config(cfg)
         if ok:
@@ -605,28 +696,32 @@ def handle_cc_zsh_link(cc_panel, uri: str) -> bool:
             set_feedback("zsh", True, t("cc_zsh.fb_applied", p0=info))
         else:
             set_feedback("zsh", False, t("cc_zsh.fb_err", p0=info))
-        return True
     elif act == "launch_wizard":
         if not probe.has_bin("zsh"):
             set_feedback("zsh", False, t("cc_zsh.optdep_zsh"))
+        else:
+            from ui.embedded_tui import start_panel_terminal
+
+            def _on_exit() -> bool:
+                STATE.set("zsh", "draft_cfg", copy.deepcopy(load_saved_zsh_config()), immediate=False)
+                if cc_panel and getattr(cc_panel, "shell", None):
+                    cc_panel.shell.refresh_view()
+                return False
+
+            start_panel_terminal(
+                cc_panel,
+                t("cc_zsh.wizard_term_title"),
+                [sys.executable, os.path.abspath(__file__), "--wizard"],
+                icon="\uf120",
+                on_exit=_on_exit,
+            )
             return True
-        from ui.embedded_tui import start_panel_terminal
+    else:
+        return False
 
-        def _on_exit() -> bool:
-            STATE.set("zsh", "draft_cfg", copy.deepcopy(load_saved_zsh_config()), immediate=False)
-            if cc_panel and getattr(cc_panel, "shell", None):
-                cc_panel.shell.refresh_view()
-            return False
-
-        start_panel_terminal(
-            cc_panel,
-            t("cc_zsh.wizard_term_title"),
-            [sys.executable, os.path.abspath(__file__), "--wizard"],
-            icon="\uf120",
-            on_exit=_on_exit,
-        )
-        return True
-    return False
+    if cc_panel and getattr(cc_panel, "shell", None):
+        cc_panel.shell.refresh_view()
+    return True
 
 
 # =====================================================================
@@ -660,7 +755,14 @@ def _print_ansi_preview(cfg: dict, pal: dict[str, str], c_rst: str) -> None:
     for ln in (l1, l2):
         if not ln:
             continue
-        sys.stdout.write("    " + "".join(f"{_hex_to_ansi(pal.get(role, pal['focus_val']))}{txt}{c_rst}" for txt, role in ln) + "\n")
+        segs = []
+        for txt, fg_r, bg_r in ln:
+            if not txt:
+                continue
+            fg_seq = _hex_to_ansi(pal.get(fg_r, pal["focus_val"]))
+            bg_seq = _hex_to_ansi(pal[bg_r], bg=True) if bg_r and bg_r in pal else ""
+            segs.append(f"{bg_seq}{fg_seq}{txt}{c_rst}")
+        sys.stdout.write("    " + "".join(segs) + "\n")
 
 
 def run_zsh_wizard() -> int:
@@ -671,18 +773,15 @@ def run_zsh_wizard() -> int:
     c_val = _hex_to_ansi(pal["focus_val"])
     c_sch = _hex_to_ansi(pal["schema"])
     c_str = _hex_to_ansi(pal["structure"])
-    c_vit = _hex_to_ansi(pal["vitality"], bold=True)
-    c_att = _hex_to_ansi(pal["attention"], bold=True)
 
     cfg = copy.deepcopy(load_saved_zsh_config())
     try:
         sys.stdout.write(f"\n  {c_int}╔══════════════════════════════════════════════════════════════════╗{c_rst}\n")
-        sys.stdout.write(f"  {c_int}║{c_rst} {c_foc}NC-UI ZSH CYBERPUNK SETUP WIZARD{c_rst}                                 {c_int}║{c_rst}\n")
+        sys.stdout.write(f"  {c_int}║{c_rst} {c_foc}NC-UI ZSH MONOCHROME THEME WIZARD{c_rst}                                {c_int}║{c_rst}\n")
         sys.stdout.write(f"  {c_int}╚══════════════════════════════════════════════════════════════════╝{c_rst}\n")
         sys.stdout.write(f"  {c_sch}Answer step by step (Enter = keep default, 'q' or Ctrl+C = cancel).{c_rst}\n\n")
 
-        # Step 1: Cyberpunk Preset
-        sys.stdout.write(f"  {c_att}[1/5]{c_rst} {c_foc}Choose Cyberpunk Prompt Aesthetic:{c_rst}\n")
+        sys.stdout.write(f"  {c_int}[1/5]{c_rst} {c_foc}Choose Prompt Style (synced to NC-UI primary color):{c_rst}\n")
         cur_idx = str(ZSH_PRESET_IDS.index(cfg["preset"]) + 1)
         for i, pid in enumerate(ZSH_PRESET_IDS, start=1):
             mark = f"{c_int}●{c_rst}" if pid == cfg["preset"] else f"{c_sch}○{c_rst}"
@@ -692,22 +791,22 @@ def run_zsh_wizard() -> int:
         cfg["preset"] = ZSH_PRESET_IDS[int(pick) - 1]
         sys.stdout.write("\n")
 
-        # Step 2: Prompt Modules
-        sys.stdout.write(f"  {c_att}[2/5]{c_rst} {c_foc}Prompt Telemetry Modules:{c_rst}\n")
+        sys.stdout.write(f"  {c_int}[2/5]{c_rst} {c_foc}Prompt Modules & Accent Mode:{c_rst}\n")
+        am_def = "1" if cfg["accent_mode"] == "pure_mono" else "2"
+        am_pick = _ask_choice("Accent mode: 1=Pure Monochrome  2=Error Accent (red on exit != 0)", {"1", "2"}, am_def, c_int, c_foc, c_sch, c_rst)
+        cfg["accent_mode"] = "pure_mono" if am_pick == "1" else "error_accent"
         cfg["show_git"] = _ask_yes_no("Show Git branch & dirty state", cfg["show_git"], c_int, c_foc, c_sch, c_rst)
         cfg["show_exit"] = _ask_yes_no("Show non-zero exit code indicator", cfg["show_exit"], c_int, c_foc, c_sch, c_rst)
         cfg["show_duration"] = _ask_yes_no("Show execution duration for commands >= 2s", cfg["show_duration"], c_int, c_foc, c_sch, c_rst)
         cfg["show_clock"] = _ask_yes_no("Show right-side clock (RPROMPT)", cfg["show_clock"], c_int, c_foc, c_sch, c_rst)
-        cfg["show_context"] = _ask_yes_no("Show ROOT/SSH/CHROOT/RECOVERY/VENV context badges", cfg["show_context"], c_int, c_foc, c_sch, c_rst)
+        cfg["show_context"] = _ask_yes_no("Show ROOT/SSH/CHROOT/RECOVERY/VENV context", cfg["show_context"], c_int, c_foc, c_sch, c_rst)
         sys.stdout.write("\n")
 
-        # Step 3: Palette Auto-Sync
-        sys.stdout.write(f"  {c_att}[3/5]{c_rst} {c_foc}NC-UI Palette Synchronization:{c_rst}\n")
+        sys.stdout.write(f"  {c_int}[3/5]{c_rst} {c_foc}NC-UI Palette Synchronization:{c_rst}\n")
         cfg["auto_sync_theme"] = _ask_yes_no("Automatically re-color Zsh whenever NC-UI theme changes", cfg["auto_sync_theme"], c_int, c_foc, c_sch, c_rst)
         sys.stdout.write("\n")
 
-        # Step 4: Shell Behavior & Plugins
-        sys.stdout.write(f"  {c_att}[4/5]{c_rst} {c_foc}Shell Behavior & Optional Plugins:{c_rst}\n")
+        sys.stdout.write(f"  {c_int}[4/5]{c_rst} {c_foc}Shell Behavior & Optional Plugins:{c_rst}\n")
         h_map = {"1": 5000, "2": 10000, "3": 50000}
         h_def = next((k for k, v in h_map.items() if v == cfg["hist_size"]), "2")
         h_pick = _ask_choice("History size: 1=5000  2=10000  3=50000", {"1", "2", "3"}, h_def, c_int, c_foc, c_sch, c_rst)
@@ -727,8 +826,7 @@ def run_zsh_wizard() -> int:
             sys.stdout.write(f"  {c_sch}  (zsh-syntax-highlighting not installed — skipped){c_rst}\n")
         sys.stdout.write("\n")
 
-        # Step 5: Preview & Apply
-        sys.stdout.write(f"  {c_att}[5/5]{c_rst} {c_foc}Final Preview:{c_rst}\n")
+        sys.stdout.write(f"  {c_int}[5/5]{c_rst} {c_foc}Final Preview:{c_rst}\n")
         _print_ansi_preview(cfg, pal, c_rst)
         sys.stdout.write(f"\n  {c_str}Target theme:{c_rst} {c_val}{zsh_theme_file_path()}{c_rst}\n")
         sys.stdout.write(f"  {c_str}Target rc:   {c_rst} {c_val}{user_zshrc_path()}{c_rst}\n\n")
@@ -739,7 +837,7 @@ def run_zsh_wizard() -> int:
         if not ok:
             sys.stderr.write(f"\n  Error applying Zsh theme: {info}\n")
             return 1
-        sys.stdout.write(f"\n  {c_vit}✓ Applied!{c_rst} {c_val}Run 'source ~/.zshrc' or open a new terminal.{c_rst}\n")
+        sys.stdout.write(f"\n  {c_int}✓ Applied!{c_rst} {c_val}Run 'source ~/.zshrc' or open a new terminal.{c_rst}\n")
         return 0
     except KeyboardInterrupt:
         sys.stdout.write(f"\n  {c_sch}Wizard aborted — no changes written.{c_rst}\n")
@@ -748,7 +846,4 @@ def run_zsh_wizard() -> int:
 
 if __name__ == "__main__":
     if "--wizard" in sys.argv[1:]:
-        pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if pkg_root not in sys.path:
-            sys.path.insert(0, pkg_root)
         raise SystemExit(run_zsh_wizard())

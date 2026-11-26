@@ -709,6 +709,16 @@ def _sync_theme_aliases() -> None:
         sync_zsh_theme_if_enabled()
     except Exception:
         pass
+    try:
+        from panels.cc_engine_ecosystem import sync_ecosystem_themes_if_enabled
+        sync_ecosystem_themes_if_enabled()
+    except Exception:
+        pass
+    try:
+        from core.wallpaper import sync_ncmatrix_theme_wallpapers
+        sync_ncmatrix_theme_wallpapers()
+    except Exception:
+        pass
 
 
 def _apply_full_preset(cc_panel, pid: str) -> bool:
@@ -812,6 +822,8 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
                 return False
             if m_id == "ncmatrix" and not is_ncmatrix_available():
                 _set_pers_fb(False, t("cc_personalization.wp_optdep_ncmatrix"))
+                if cc_panel and getattr(cc_panel, "shell", None):
+                    cc_panel.shell.refresh_view()
                 return True
             _media._cancel_pending_yt_dl()
             _media._cancel_pending_ascii_apply()
@@ -965,6 +977,8 @@ def handle_cc_personalization_link(cc_panel, uri: str) -> bool:
                 return False
             if cs == "katakana" and not _wp.has_katakana_font():
                 _set_pers_fb(False, t("cc_personalization.wp_optdep_katakana"))
+                if cc_panel and getattr(cc_panel, "shell", None):
+                    cc_panel.shell.refresh_view()
                 return True
             STATE.set("desktop", "cm_charset", cs)
             _media.set_wp_user_touched(True)

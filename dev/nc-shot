@@ -299,7 +299,8 @@ def main() -> int:
                 win.scrolled_window.set_size_request(right_w_px, avail_body_h)
                 win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
             else:
-                pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
+                _ml, _mr, m_top, m_bot = win._get_popup_margins()
+                v_pad = m_top + m_bot
                 p_max = win.panel.get_max_height() if hasattr(win.panel, "get_max_height") else None
                 _mw, max_popup_h = win._get_popup_bounds_px()
                 max_h = min(int(p_max or THEME["geometry"]["popup_max_height"]), max_popup_h)
@@ -310,7 +311,7 @@ def main() -> int:
                 )
                 win.scrolled_window.set_max_content_height(max_h)
                 win.scrolled_window.set_size_request(right_w_px, list_h)
-                final_h = max(120, list_h + pad + (2 * bw))
+                final_h = max(120, list_h + v_pad)
         elif args.mode == "settings":
             _ml, _mr, m_top, m_bot, _gap = win._get_inner_box_margins()
             v_chrome = m_top + m_bot
@@ -322,9 +323,10 @@ def main() -> int:
             win.scrolled_window.set_size_request(right_w_px, max(120, content_h - hdr_nat_h))
             win.nav_scrolled.set_size_request(int(round(win.nav_canvas.total_px)), content_h)
         else:
-            pad = int(THEME["geometry"].get("panel_padding", 10)) * 2
-            final_h = max(list_nat_h + pad + (2 * bw), 240)
-            win.scrolled_window.set_size_request(right_w_px, max(200, final_h - pad - (2 * bw)))
+            _ml, _mr, m_top, m_bot = win._get_popup_margins()
+            v_pad = m_top + m_bot
+            final_h = max(list_nat_h + v_pad, 240)
+            win.scrolled_window.set_size_request(right_w_px, max(200, final_h - v_pad))
         root_widget.set_size_request(final_w, final_h)
         off.set_size_request(final_w, final_h)
         off.resize(final_w, final_h)

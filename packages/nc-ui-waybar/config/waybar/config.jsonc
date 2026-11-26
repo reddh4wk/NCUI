@@ -47,7 +47,8 @@
     },
     "custom/settings": {
         "format": "\uf013",
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl settings"
     },
     "custom/calendar": {
@@ -55,7 +56,8 @@
         "exec": "nc-bar-agent calendar",
         "return-type": "json",
         "interval": 1,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup calendar",
         "on-click-right": "nc-ctl settings datetime calendar"
     },
@@ -64,18 +66,21 @@
         "exec": "nc-bar-agent display",
         "return-type": "json",
         "interval": 10,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup display",
         "on-click-right": "nc-ctl settings display monitors"
     },
     "custom/cliphist": {
         "format": "\uf0ea",
         "on-click": "nc-ctl popup clipboard",
-        "tooltip": false
+        "tooltip": true,
+        "tooltip-format": ""
     },
     "custom/screenshot": {
         "format": "\uf030",
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup capture",
         "on-click-right": "nc-ctl action capture repeat"
     },
@@ -84,7 +89,8 @@
         "exec": "nc-bar-agent audio",
         "return-type": "json",
         "interval": 2,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup audio",
         "on-click-right": "pactl set-sink-mute @DEFAULT_SINK@ toggle",
         "on-scroll-up": "nc-ctl action audio vol-up",
@@ -95,7 +101,8 @@
         "exec": "nc-bar-agent network",
         "return-type": "json",
         "interval": 2,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup network",
         "on-click-right": "nc-ctl action network cycle-iface",
         "on-click-middle": "nc-ctl action network toggle-unit"
@@ -105,7 +112,8 @@
         "exec": "nc-bar-agent cpu",
         "return-type": "json",
         "interval": 2,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup cpu",
         "on-click-right": "nc-ctl settings power cpu_ram"
     },
@@ -114,7 +122,8 @@
         "exec": "nc-bar-agent ram",
         "return-type": "json",
         "interval": 3,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup ram",
         "on-click-right": "nc-ctl settings power cpu_ram"
     },
@@ -124,7 +133,8 @@
         "return-type": "json",
         "interval": 2,
         "hide-empty-text": true,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup gpu",
         "on-click-right": "nc-ctl settings power gpu"
     },
@@ -134,7 +144,8 @@
         "return-type": "json",
         "interval": 5,
         "hide-empty-text": true,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup ups",
         "on-click-right": "nc-ctl settings power ups"
     },
@@ -144,7 +155,8 @@
         "return-type": "json",
         "interval": 3,
         "hide-empty-text": true,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup printers",
         "on-click-right": "nc-ctl settings printers queue"
     },
@@ -153,7 +165,8 @@
         "exec": "nc-bar-agent kb_layout",
         "return-type": "json",
         "interval": 2,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup kb_layout",
         "on-click-right": "nc-ctl action kb_layout cycle"
     },
@@ -162,7 +175,8 @@
         "exec": "nc-bar-agent notifications",
         "return-type": "json",
         "interval": 5,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup notifications"
     },
     "custom/telegram": {
@@ -171,7 +185,8 @@
         "return-type": "json",
         "interval": 2,
         "hide-empty-text": true,
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "sh -c 'id=$(niri msg -j windows 2>/dev/null | jq -r \".[] | select((.app_id // \\\"\\\") | test(\\\"telegram\\\"; \\\"i\\\")) | .id\" | head -n1); if [ -n \"$id\" ]; then niri msg action focus-window --id \"$id\"; else nohup sh -c \"Telegram || telegram-desktop\" >/dev/null 2>&1 & fi'",
         "on-click-right": "pkill -f '(^|/)[Tt]elegram(-desktop)?([[:space:]]|$)' >/dev/null 2>&1 || true"
     },
@@ -190,7 +205,8 @@
     },
     "custom/session": {
         "format": "\uf011",
-        "tooltip": false,
+        "tooltip": true,
+        "tooltip-format": "",
         "on-click": "nc-ctl popup session",
         "on-click-right": "nc-ctl settings waybar options"
     }

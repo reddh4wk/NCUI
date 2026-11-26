@@ -14,32 +14,36 @@ tooltip {
     opacity: 0;
     background: transparent;
     border: none;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    min-height: 0;
 }
 
 @keyframes nc-glow-pulse {
     0% {
         background-color: rgba(23, 20, 29, 0.62);
-        background-image: radial-gradient(ellipse closest-side at center, rgba(46, 230, 138, 0.0) 0%, rgba(46, 230, 138, 0.0) 65%, rgba(46, 230, 138, 0.0) 100%);
+        background-image: radial-gradient(ellipse closest-side at center, rgba(255, 184, 0, 0.0) 0%, rgba(255, 184, 0, 0.0) 65%, rgba(255, 184, 0, 0.0) 100%);
         box-shadow:
-            0 0 0 0 rgba(46, 230, 138, 0.0),
-            inset 0 0 0 0 rgba(46, 230, 138, 0.0);
-        text-shadow: 0 0 0 rgba(46, 230, 138, 0.0);
+            0 0 0 0 rgba(255, 184, 0, 0.0),
+            inset 0 0 0 0 rgba(255, 184, 0, 0.0);
+        text-shadow: 0 0 0 rgba(255, 184, 0, 0.0);
     }
     50% {
-        background-color: rgba(46, 230, 138, 0.22);
-        background-image: radial-gradient(ellipse closest-side at center, rgba(46, 230, 138, 0.44) 0%, rgba(46, 230, 138, 0.16) 65%, rgba(46, 230, 138, 0.0) 100%);
+        background-color: rgba(255, 184, 0, 0.58);
+        background-image: radial-gradient(ellipse closest-side at center, rgba(255, 184, 0, 0.90) 0%, rgba(255, 184, 0, 0.50) 65%, rgba(255, 184, 0, 0.12) 100%);
         box-shadow:
-            0 0 2.5px 0 rgba(46, 230, 138, 0.45),
-            inset 0 0 5px 0 rgba(46, 230, 138, 0.45);
-        text-shadow: 0 0 6px rgba(46, 230, 138, 0.90);
+            0 0 2px 0 rgba(255, 184, 0, 0.70),
+            inset 0 0 8px 0 rgba(255, 184, 0, 0.78);
+        text-shadow: 0 0 8px rgba(255, 184, 0, 1.0);
     }
     100% {
         background-color: rgba(23, 20, 29, 0.62);
-        background-image: radial-gradient(ellipse closest-side at center, rgba(46, 230, 138, 0.0) 0%, rgba(46, 230, 138, 0.0) 65%, rgba(46, 230, 138, 0.0) 100%);
+        background-image: radial-gradient(ellipse closest-side at center, rgba(255, 184, 0, 0.0) 0%, rgba(255, 184, 0, 0.0) 65%, rgba(255, 184, 0, 0.0) 100%);
         box-shadow:
-            0 0 0 0 rgba(46, 230, 138, 0.0),
-            inset 0 0 0 0 rgba(46, 230, 138, 0.0);
-        text-shadow: 0 0 0 rgba(46, 230, 138, 0.0);
+            0 0 0 0 rgba(255, 184, 0, 0.0),
+            inset 0 0 0 0 rgba(255, 184, 0, 0.0);
+        text-shadow: 0 0 0 rgba(255, 184, 0, 0.0);
     }
 }
 
@@ -67,9 +71,9 @@ tooltip {
 
 #workspaces button:hover {
     background-image: none;
-    background-color: rgba(255, 184, 0, 0.22);
+    background-color: rgba(55, 50, 50, 0.71);
     color: #f7f5fa;
-    box-shadow: 0 0 2.5px 0 rgba(255, 184, 0, 0.30), inset 0 0 5px rgba(255, 184, 0, 0.20);
+    box-shadow: inset 0 0 0 1px rgba(255, 234, 178, 0.11);
 }
 
 #clock,
@@ -90,6 +94,8 @@ tooltip {
 #custom-calendar,
 #custom-notifications,
 #custom-session,
+#custom-kb_layout,
+#custom-spotify,
 .module-nc {
     padding: 0 16px;
     margin: 3px 4px;
@@ -118,30 +124,34 @@ tooltip {
 #custom-calendar:hover,
 #custom-notifications:hover,
 #custom-session:hover,
+#custom-kb_layout:hover,
+#custom-spotify:hover,
 .module-nc:hover,
-eventbox:hover > #clock,
-eventbox:hover > #cpu,
-eventbox:hover > #memory,
-eventbox:hover > #custom-telegram,
-eventbox:hover > #custom-cliphist,
-eventbox:hover > #custom-screenshot,
-eventbox:hover > #custom-settings,
-eventbox:hover > #custom-desktop,
-eventbox:hover > #custom-audio,
-eventbox:hover > #custom-netcycle,
-eventbox:hover > #custom-cpu,
-eventbox:hover > #custom-ram,
-eventbox:hover > #custom-gpu,
-eventbox:hover > #custom-ups,
-eventbox:hover > #custom-printers,
-eventbox:hover > #custom-calendar,
-eventbox:hover > #custom-notifications,
-eventbox:hover > #custom-session,
-eventbox:hover > .module-nc {
+widget > box:hover > #clock,
+widget > box:hover > #cpu,
+widget > box:hover > #memory,
+widget > box:hover > #custom-telegram,
+widget > box:hover > #custom-cliphist,
+widget > box:hover > #custom-screenshot,
+widget > box:hover > #custom-settings,
+widget > box:hover > #custom-desktop,
+widget > box:hover > #custom-audio,
+widget > box:hover > #custom-netcycle,
+widget > box:hover > #custom-cpu,
+widget > box:hover > #custom-ram,
+widget > box:hover > #custom-gpu,
+widget > box:hover > #custom-ups,
+widget > box:hover > #custom-printers,
+widget > box:hover > #custom-calendar,
+widget > box:hover > #custom-notifications,
+widget > box:hover > #custom-session,
+widget > box:hover > #custom-kb_layout,
+widget > box:hover > #custom-spotify,
+widget > box:hover > .module-nc {
     background-image: none;
-    background-color: rgba(255, 184, 0, 0.22);
+    background-color: rgba(55, 50, 50, 0.71);
     color: #f7f5fa;
-    box-shadow: 0 0 2.5px 0 rgba(255, 184, 0, 0.30), inset 0 0 6px rgba(255, 184, 0, 0.20);
+    box-shadow: inset 0 0 0 1px rgba(255, 234, 178, 0.11);
 }
 
 #window {
@@ -190,11 +200,11 @@ eventbox:hover > .module-nc {
 #workspaces button.focused {
     background-clip: padding-box;
     color: #f7f5fa;
-    background-color: rgba(46, 230, 138, 0.22);
-    background-image: radial-gradient(ellipse closest-side at center, rgba(46, 230, 138, 0.44) 0%, rgba(46, 230, 138, 0.16) 65%, rgba(46, 230, 138, 0.0) 100%);
+    background-color: rgba(255, 184, 0, 0.58);
+    background-image: radial-gradient(ellipse closest-side at center, rgba(255, 184, 0, 0.90) 0%, rgba(255, 184, 0, 0.52) 65%, rgba(255, 184, 0, 0.14) 100%);
     box-shadow:
-        0 0 2.5px 0 rgba(46, 230, 138, 0.45), inset 0 0 5px 0 rgba(46, 230, 138, 0.45);
-    text-shadow: 0 0 6px rgba(46, 230, 138, 0.90);
+        0 0 2px 0 rgba(255, 184, 0, 0.70), inset 0 0 8px 0 rgba(255, 184, 0, 0.75);
+    text-shadow: 0 0 8px rgba(255, 184, 0, 1.0);
 }
 
 .nc-glow,
@@ -203,10 +213,10 @@ eventbox:hover > .module-nc {
 #custom-notifications.module-nc-alert {
     background-clip: padding-box;
     color: #f7f5fa;
-    background-color: rgba(46, 230, 138, 0.16);
-    background-image: radial-gradient(ellipse closest-side at center, rgba(46, 230, 138, 0.30) 0%, rgba(46, 230, 138, 0.10) 65%, rgba(46, 230, 138, 0.0) 100%);
-    box-shadow: 0 0 2px 0 rgba(46, 230, 138, 0.35), inset 0 0 4px 0 rgba(46, 230, 138, 0.35);
-    text-shadow: 0 0 5px rgba(46, 230, 138, 0.70);
+    background-color: rgba(255, 184, 0, 0.45);
+    background-image: radial-gradient(ellipse closest-side at center, rgba(255, 184, 0, 0.78) 0%, rgba(255, 184, 0, 0.38) 65%, rgba(255, 184, 0, 0.10) 100%);
+    box-shadow: 0 0 2px 0 rgba(255, 184, 0, 0.60), inset 0 0 6px 0 rgba(255, 184, 0, 0.65);
+    text-shadow: 0 0 8px rgba(255, 184, 0, 0.95);
     animation-name: nc-glow-pulse;
     animation-duration: 2.4s;
     animation-timing-function: ease-in-out;

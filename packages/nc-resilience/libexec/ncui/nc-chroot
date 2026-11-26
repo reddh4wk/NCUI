@@ -38,49 +38,41 @@ load_chroot_resilience_config() {
     return 0
 }
 
-C_RESET="\033[0m"
-C_BOLD="\033[1m"
-C_SLATE="\033[38;5;110m"
-C_MINT="\033[38;5;114m"
-C_PEACH="\033[38;5;216m"
-C_ROSE="\033[38;5;203m"
-C_LAVENDER="\033[38;5;146m"
-C_MUTED="\033[38;5;245m"
+_NC_UI_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+if [[ -r "${_NC_UI_DIR}/nc-cli-ui.sh" ]]; then
+    # shellcheck source=nc-cli-ui.sh
+    source "${_NC_UI_DIR}/nc-cli-ui.sh"
+elif [[ -r "/usr/lib/ncui/sbin/nc-cli-ui.sh" ]]; then
+    source "/usr/lib/ncui/sbin/nc-cli-ui.sh"
+fi
 
-log_info() { echo -e " ${C_SLATE}[*]${C_RESET} $1"; }
-log_ok()   { echo -e " ${C_MINT}[+]${C_RESET} $1"; }
-log_warn() { echo -e " ${C_PEACH}[!]${C_RESET} $1"; }
-log_err()  { echo -e " ${C_ROSE}[-]${C_RESET} $1" >&2; }
+log_info() { msg_info "$*"; }
+log_ok()   { msg_ok "$*"; }
+log_warn() { msg_warn "$*"; }
+log_err()  { msg_err "$*"; }
 
 show_help() {
     local bin_name="${0##*/}"
-    cat <<EOF
-${C_BOLD}${C_SLATE}UTILIZZO:${C_RESET}
-  ${bin_name} [OPZIONI]
-  ${bin_name} [OPZIONI] [COMANDO [ARGOMENTI...]]
-
-${C_BOLD}${C_SLATE}DESCRIZIONE:${C_RESET}
-  Gestore per ambiente chroot NC-UI. Rileva dinamicamente
-  le partizioni LUKS, la relativa ESP e il nome del Volume Group LVM ospitato
-  (es. vg0, vg1), gestendo lo sblocco crittografico (no-keyring) e l'albero di mount.
-
-${C_BOLD}${C_SLATE}OPZIONI:${C_RESET}
-  ${C_MINT}-h, --help${C_RESET}                  Mostra questo messaggio di aiuto ed esce.
-  ${C_MINT}-d, --device <dev>${C_RESET}          Specifica esplicitamente il dispositivo LUKS (es. /dev/nvme1n1p2).
-  ${C_MINT}-g, --vg <vg_name>${C_RESET}          Specifica esplicitamente il Volume Group LVM (altrimenti auto-rilevato).
-  ${C_MINT}-m, --mount, --onlymount${C_RESET}    Prepara e monta l'albero in ${MNT_BASE} senza entrare in chroot.
-  ${C_MINT}-u, --umount${C_RESET}                Smonta l'albero, disattiva dinamicamente il VG e chiude LUKS.
-
-${C_BOLD}${C_SLATE}MODALITÀ OPERATIVE:${C_RESET}
-  ${C_LAVENDER}${bin_name}${C_RESET}                     Apre una shell interattiva (zsh/bash) ed esegue il teardown all'uscita.
-  ${C_LAVENDER}${bin_name} [comando...]${C_RESET}        Esegue il comando isolato dentro al chroot e smonta all'uscita.
-  ${C_LAVENDER}${bin_name} --onlymount${C_RESET}         Prepara solo lo storage/mountpoint; il teardown va invocato con -u.
-
-${C_BOLD}${C_SLATE}VARIABILI D'AMBIENTE (OVERRIDE):${C_RESET}
-  ${C_PEACH}NC_LUKS_DEV${C_RESET}    Dispositivo LUKS esplicito (salta il discovery automatico)
-  ${C_PEACH}NC_ESP_DEV${C_RESET}     Partizione EFI/ESP esplicita (salta il binding automatico)
-  ${C_PEACH}NC_VG_NAME${C_RESET}     Nome Volume Group LVM (default: auto-rilevato dal PV LUKS)
-EOF
+    ui_header "${bin_name^^} — NC-UI CHROOT ENGINE" "Generalized LUKS + LVM/Btrfs/Ext4 Chroot Manager"
+    printf "\n  %sUsage:%s  %s%s%s %s[OPZIONI] [COMANDO [ARGOMENTI...]]%s\n" \
+        "$CLR_SCHEMA" "$CLR_RESET" "$CLR_VAL" "$bin_name" "$CLR_RESET" "$CLR_INTENT" "$CLR_RESET"
+    printf "  %sRileva LUKS, ESP e VG LVM gestendo sblocco crittografico (no-keyring) e mount.%s\n" \
+        "$CLR_DIM" "$CLR_RESET"
+    ui_section "OPTS" "Opzioni"
+    ui_help_row "-h, --help" "Mostra questo messaggio di aiuto ed esce" 26
+    ui_help_row "-d, --device <dev>" "Specifica esplicitamente il dispositivo LUKS (es. /dev/nvme1n1p2)" 26
+    ui_help_row "-g, --vg <vg_name>" "Specifica esplicitamente il Volume Group LVM (altrimenti auto-rilevato)" 26
+    ui_help_row "-m, --mount, --onlymount" "Prepara e monta l'albero in ${MNT_BASE} senza entrare in chroot" 26
+    ui_help_row "-u, --umount" "Smonta l'albero, disattiva dinamicamente il VG e chiude LUKS" 26
+    ui_section "MODE" "Modalità Operative"
+    ui_help_row "${bin_name}" "Apre una shell interattiva (zsh/bash) ed esegue il teardown all'uscita" 26
+    ui_help_row "${bin_name} [comando...]" "Esegue il comando isolato dentro al chroot e smonta all'uscita" 26
+    ui_help_row "${bin_name} --onlymount" "Prepara solo lo storage/mountpoint; il teardown va invocato con -u" 26
+    ui_section "ENV" "Variabili d'Ambiente (Override)"
+    ui_help_row "NC_LUKS_DEV" "Dispositivo LUKS esplicito (salta il discovery automatico)" 26
+    ui_help_row "NC_ESP_DEV" "Partizione EFI/ESP esplicita (salta il binding automatico)" 26
+    ui_help_row "NC_VG_NAME" "Nome Volume Group LVM (default: auto-rilevato dal PV LUKS)" 26
+    echo ""
 }
 
 MOUNT_ONLY=0
@@ -212,9 +204,7 @@ _enter_existing_chroot() {
     load_state_file
     CLEANUP_ON_EXIT=0
     trap - EXIT INT TERM HUP
-    echo -e "\n${C_SLATE}==============================================================================${C_RESET}"
-    echo -e "${C_BOLD}${C_MINT} SESSIONE CHROOT SECONDARIA SU: ${MNT_BASE} ${C_RESET}"
-    echo -e "${C_SLATE}==============================================================================${C_RESET}"
+    ui_header "SESSIONE CHROOT SECONDARIA" "Target: ${MNT_BASE}"
     log_info "Chroot già montato: apertura shell secondaria (exit chiude solo questa sessione).\n"
     if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
         run_chroot_exec "$MNT_BASE" "${POSITIONAL_ARGS[@]}"
@@ -592,25 +582,25 @@ if [[ -z "$SELECTED_LUKS" ]]; then
     origin_real="" origin_c_desc=""
     [[ -n "$ORIGIN_LUKS_DEV" ]] && origin_real="$(readlink -f "$ORIGIN_LUKS_DEV" 2>/dev/null || printf '%s' "$ORIGIN_LUKS_DEV")"
     if (( TOTAL_CANDIDATES > 1 )); then
-        log_warn "Rilevati molteplici candidati LUKS:"
+        ui_section "LUKS" "Candidati crittografici rilevati"
         for i in "${!CANDIDATES[@]}"; do
             c_dev="${CANDIDATES[$i]}"
             c_real="$(readlink -f "$c_dev" 2>/dev/null || printf '%s' "$c_dev")"
             origin_tag=""
             if [[ -n "$origin_real" && "$c_real" == "$origin_real" ]]; then
-                origin_tag=" ${C_MINT}[Origin: ${ORIGIN_HOSTNAME:-host}]${C_RESET}"
+                origin_tag=" [Origin: ${ORIGIN_HOSTNAME:-host}]"
                 origin_c_desc="$c_dev"
             fi
-            printf "   ${C_BOLD}${C_LAVENDER}[%d]${C_RESET} %-16s ${C_MUTED}(%s)${C_RESET}%b\n" "$((i + 1))" "$c_dev" "$(get_device_desc "$c_dev")" "$origin_tag"
+            ui_opt "$((i + 1))" "${c_dev}${origin_tag}" "$(get_device_desc "$c_dev")"
         done
-        echo
+        printf '\n'
         prompt_luks=""
         if [[ -n "$origin_c_desc" ]]; then
-            prompt_luks=" \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per il sistema di origine (${ORIGIN_HOSTNAME:-host}: ${origin_c_desc}), oppure seleziona indice/dispositivo: "
+            prompt_luks="$(_rl_prompt "INVIO per sistema di origine (${ORIGIN_HOSTNAME:-host}: ${origin_c_desc}) o indice/device:")"
         else
-            prompt_luks=" \001${C_PEACH}\002[?]\001${C_RESET}\002 Seleziona un indice (1-${TOTAL_CANDIDATES}) o inserisci il percorso del dispositivo: "
+            prompt_luks="$(_rl_prompt "Seleziona indice (1-${TOTAL_CANDIDATES}) o percorso dispositivo:")"
         fi
-        read -r -e -p "$(echo -e "$prompt_luks")" USER_CHOICE </dev/tty || true
+        read -r -e -p "$prompt_luks" USER_CHOICE </dev/tty || true
         if [[ -z "$USER_CHOICE" ]]; then
             if [[ -n "$origin_c_desc" ]]; then
                 SELECTED_LUKS="$origin_c_desc"
@@ -630,7 +620,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
         s_real="$(readlink -f "$SINGLE_DEV" 2>/dev/null || printf '%s' "$SINGLE_DEV")"
         [[ -n "$origin_real" && "$s_real" == "$origin_real" ]] && s_origin_tag=" [Origin: ${ORIGIN_HOSTNAME:-host}]"
         log_ok "Candidato LUKS individuato: ${C_BOLD}${SINGLE_DEV}${C_RESET} ($(get_device_desc "$SINGLE_DEV"))${s_origin_tag}"
-        read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o digita un dispositivo alternativo: ")" USER_CONFIRM </dev/tty || true
+        read -r -e -p "$(_rl_prompt "Premi INVIO per confermare o digita un dispositivo alternativo:")" USER_CONFIRM </dev/tty || true
         if [[ -z "$USER_CONFIRM" ]]; then
             SELECTED_LUKS="$SINGLE_DEV"
         elif [[ -b "$USER_CONFIRM" ]]; then
@@ -641,7 +631,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
     else
         if [[ -n "$ORIGIN_LUKS_DEV" && -b "$ORIGIN_LUKS_DEV" ]]; then
             log_ok "Dispositivo LUKS di origine individuato: ${C_BOLD}${ORIGIN_LUKS_DEV}${C_RESET} (${ORIGIN_HOSTNAME:-host})"
-            read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Premi INVIO per confermare o inserisci un percorso alternativo: ")" USER_DEV </dev/tty || true
+            read -r -e -p "$(_rl_prompt "Premi INVIO per confermare o inserisci un percorso alternativo:")" USER_DEV </dev/tty || true
             if [[ -z "$USER_DEV" ]]; then
                 SELECTED_LUKS="$ORIGIN_LUKS_DEV"
             elif [[ -b "$USER_DEV" ]]; then
@@ -651,7 +641,7 @@ if [[ -z "$SELECTED_LUKS" ]]; then
             fi
         else
             log_warn "Nessun dispositivo LUKS rilevato automaticamente nel sistema."
-            read -r -e -p "$(echo -e " \001${C_PEACH}\002[?]\001${C_RESET}\002 Inserisci il percorso del dispositivo LUKS (es. /dev/sdd2) [INVIO per annullare]: ")" USER_DEV </dev/tty || true
+            read -r -e -p "$(_rl_prompt "Percorso dispositivo LUKS (es. /dev/sdd2) [INVIO per annullare]:")" USER_DEV </dev/tty || true
             if [[ -z "$USER_DEV" ]]; then
                 log_err "Operazione annullata dall'utente."; exit 0
             elif [[ -b "$USER_DEV" ]]; then

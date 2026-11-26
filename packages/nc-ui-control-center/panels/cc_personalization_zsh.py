@@ -6,6 +6,7 @@ from core.i18n import t
 from ui.canvas import Canvas
 from ui.kit import ActionBtn, Badge, Box, SelectPill, StateBadge, Txt, feedback_cards
 from panels.cc_engine_zsh import (
+    ACCENT_MODES,
     HIST_SIZE_OPTIONS,
     ZSH_PRESET_IDS,
     get_editor_zsh_config,
@@ -46,6 +47,17 @@ def build_cards(cc_panel, canvas: Canvas) -> list:
         for pid in ZSH_PRESET_IDS
     )
     p_box.add_kv(t("cc_zsh.lbl_preset"), preset_pills)
+
+    accent_pills = " ".join(
+        SelectPill(
+            t(f"cc_zsh.accent_{am}"),
+            f"cc_zsh:accent:{am}",
+            selected=(cfg["accent_mode"] == am),
+            dirty=(dirty and cfg["accent_mode"] == am),
+        )
+        for am in ACCENT_MODES
+    )
+    p_box.add_kv(t("cc_zsh.lbl_accent_mode"), accent_pills)
 
     prev_lines = render_zsh_preview_lines(cfg, canvas)
     for idx, pline in enumerate(prev_lines):

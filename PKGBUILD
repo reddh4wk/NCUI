@@ -272,6 +272,9 @@ package_nc-resilience() {
         "$_src/nc-resilience/libexec/ncui/nc-snap" \
         "$_src/nc-resilience/libexec/ncui/nc-vault" \
         "$pkgdir/usr/lib/ncui/sbin/"
+    install -m644 \
+        "$_src/nc-resilience/libexec/ncui/nc-cli-ui.sh" \
+        "$pkgdir/usr/lib/ncui/sbin/"
 
     local cli
     for cli in nc-chroot nc-golden nc-hanoi nc-rescue nc-snap nc-vault; do

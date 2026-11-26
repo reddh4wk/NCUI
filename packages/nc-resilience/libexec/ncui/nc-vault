@@ -13,37 +13,38 @@ MOUNTINFO_PATH="${NC_VAULT_MOUNTINFO:-/proc/self/mountinfo}"
 DMI_UUID_PATH="${NC_VAULT_DMI_UUID:-/sys/class/dmi/id/product_uuid}"
 RUN_DIR="${NC_VAULT_RUN_DIR:-/run/nc-vault}"
 
-if [[ -t 1 ]]; then
-    C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_SLATE=$'\033[38;5;110m'
-    C_MINT=$'\033[38;5;114m' C_PEACH=$'\033[38;5;216m' C_ROSE=$'\033[38;5;203m'
-else
-    C_RESET='' C_BOLD='' C_SLATE='' C_MINT='' C_PEACH='' C_ROSE=''
+_NC_UI_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+if [[ -r "${_NC_UI_DIR}/nc-cli-ui.sh" ]]; then
+    # shellcheck source=nc-cli-ui.sh
+    source "${_NC_UI_DIR}/nc-cli-ui.sh"
+elif [[ -r "/usr/lib/ncui/sbin/nc-cli-ui.sh" ]]; then
+    source "/usr/lib/ncui/sbin/nc-cli-ui.sh"
 fi
 
-log_info() { printf " %b[*]%b %s\n" "$C_SLATE" "$C_RESET" "$*"; }
-log_ok()   { printf " %b[+]%b %s\n" "$C_MINT"  "$C_RESET" "$*"; }
-log_warn() { printf " %b[!]%b %s\n" "$C_PEACH" "$C_RESET" "$*" >&2; }
-log_err()  { printf " %b[-]%b %s\n" "$C_ROSE"  "$C_RESET" "$*" >&2; }
+log_info() { msg_info "$*"; }
+log_ok()   { msg_ok "$*"; }
+log_warn() { msg_warn "$*"; }
+log_err()  { msg_err "$*"; }
 
 usage() {
     local prog="${0##*/}"
-    cat <<EOF
-Usage: ${prog} <ACTION>
-
-Actions:
-  status, --status      Human-readable vault status
-  status-env            Machine-readable KEY=VALUE vault status
-  mount                 Mount or initialize configured vault backend
-  remount               Unmount then re-mount vault backend
-  umount, -u            Unmount vault backend (auto-pushes SSH staging if active)
-  creds-stdin           Read 'user\\npass\\npersist(0|1)' on stdin, verify & mount SMB
-  ssh-push              Push staged local SSH vault directory back to remote
-  pkglist [label]       Export installed packages list to vault pkglists (default: snapshot)
-  pkglist-stdin         Export installed packages list to vault pkglists using stdin label
-  pkglist-tsv           List saved pkglists as TSV
-  config-stdin          Update [vault] / [identity] in ${CONF_FILE} and sync /etc/nc.profile
-  -h, --help            Show this help
-EOF
+    ui_header "${prog^^} — NC-UI MULTI-PROTOCOL VAULT" "SMB/CIFS, NFSv4, SSH Staging & Hardware Attestation"
+    printf "\n  %sUsage:%s  %s%s%s %s<ACTION>%s\n" \
+        "$CLR_SCHEMA" "$CLR_RESET" "$CLR_VAL" "$prog" "$CLR_RESET" "$CLR_INTENT" "$CLR_RESET"
+    ui_section "CMDS" "Actions"
+    ui_help_row "status, --status" "Human-readable vault status" 22
+    ui_help_row "status-env" "Machine-readable KEY=VALUE vault status" 22
+    ui_help_row "mount" "Mount or initialize configured vault backend" 22
+    ui_help_row "remount" "Unmount then re-mount vault backend" 22
+    ui_help_row "umount, -u" "Unmount vault backend (auto-pushes SSH staging if active)" 22
+    ui_help_row "creds-stdin" "Read 'user\\npass\\npersist(0|1)' on stdin, verify & mount SMB" 22
+    ui_help_row "ssh-push" "Push staged local SSH vault directory back to remote" 22
+    ui_help_row "pkglist [label]" "Export installed packages list to vault pkglists (default: snapshot)" 22
+    ui_help_row "pkglist-stdin" "Export installed packages list using stdin label" 22
+    ui_help_row "pkglist-tsv" "List saved pkglists as TSV" 22
+    ui_help_row "config-stdin" "Update [vault] / [identity] in ${CONF_FILE} & sync /etc/nc.profile" 22
+    ui_help_row "-h, --help" "Show this help" 22
+    echo ""
     exit 0
 }
 
@@ -585,15 +586,17 @@ cmd_status_env() {
 
 cmd_status() {
     compute_mount_counts
-    printf "Protocol     : %s\n" "$CFG_PROTOCOL"
-    printf "Target       : %s (%s)\n" "${CFG_HOST:-local}" "$ACTIVE_BASE"
-    printf "Visibility   : %s\n" "$CFG_MOUNT_VISIBILITY"
-    [[ -n "$CFG_PORT" ]] && printf "Port         : %s\n" "$CFG_PORT" || true
-    [[ "$CFG_PROTOCOL" == "smb" && "$CFG_SMB_VERSION" != "auto" ]] && printf "SMB Version  : %s\n" "$CFG_SMB_VERSION" || true
-    printf "State        : %s (%d/%d)\n" "$([[ "$MOUNTED_STATE" == "1" ]] && echo MOUNTED || echo UNMOUNTED)" "$MOUNTED_CNT" "$TOTAL_CNT"
-    printf "Trust Policy : %s\n" "$SYS_TRUST"
-    printf "Backup Root  : %s\n" "${ACTIVE_BASE}/${CFG_BACKUP_SUBDIR}"
-    printf "Pkglists Dir : %s\n" "${ACTIVE_BASE}/${CFG_PKGLIST_SUBDIR}"
+    ui_header "NC-UI VAULT STATUS" "Protocol: ${CFG_PROTOCOL^^} · Trust: ${SYS_TRUST}"
+    ui_kv "Protocol" "$CFG_PROTOCOL"
+    ui_kv "Target" "${CFG_HOST:-local}" "(${ACTIVE_BASE})"
+    ui_kv "Visibility" "$CFG_MOUNT_VISIBILITY"
+    [[ -n "$CFG_PORT" ]] && ui_kv "Port" "$CFG_PORT" || true
+    [[ "$CFG_PROTOCOL" == "smb" && "$CFG_SMB_VERSION" != "auto" ]] && ui_kv "SMB Version" "$CFG_SMB_VERSION" || true
+    ui_kv "State" "$([[ "$MOUNTED_STATE" == "1" ]] && echo MOUNTED || echo UNMOUNTED)" "(${MOUNTED_CNT}/${TOTAL_CNT})"
+    ui_kv "Trust Policy" "$SYS_TRUST"
+    ui_kv "Backup Root" "${ACTIVE_BASE}/${CFG_BACKUP_SUBDIR}"
+    ui_kv "Pkglists Dir" "${ACTIVE_BASE}/${CFG_PKGLIST_SUBDIR}"
+    echo ""
 }
 
 TMP_CREDS=""
@@ -699,9 +702,7 @@ cmd_mount_smb() {
         IFS= read -rs tty_pass || true
         printf '\n' >&2
         if [[ "$SYS_TRUST" == "TRUSTED" ]]; then
-            printf 'Save credentials to %s? [y/N]: ' "$CFG_SMB_CREDS" >&2
-            IFS= read -r tty_ans || true
-            [[ "${tty_ans,,}" == "y" || "${tty_ans,,}" == "yes" || "${tty_ans,,}" == "s" ]] && tty_persist="1"
+            ui_confirm "Save credentials to ${CFG_SMB_CREDS}?" "n" && tty_persist="1"
         fi
         printf '%s\n%s\n%s\n' "$tty_user" "$tty_pass" "$tty_persist" | cmd_creds_stdin
         return $?

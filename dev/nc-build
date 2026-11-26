@@ -2,8 +2,22 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"
+_CLI_UI="${REPO_DIR}/packages/nc-resilience/libexec/ncui/nc-cli-ui.sh"
+if [[ -r "$_CLI_UI" ]]; then
+    # shellcheck source=../packages/nc-resilience/libexec/ncui/nc-cli-ui.sh
+    source "$_CLI_UI"
+else
+    msg_step() { printf '  ⯈ %b\n' "$*"; }
+    msg_ok()   { printf '  ✓ %b\n' "$*"; }
+    msg_err()  { printf '  ✗ ERROR: %b\n' "$*" >&2; }
+    ui_header() { printf '\n  %s\n  %s\n' "$1" "${2:-}"; }
+    ui_section() { printf '\n  -- %s --\n' "${2:-$1}"; }
+    ui_help_row() { printf '  %-18s %s\n' "$1" "$2"; }
+    CLR_SCHEMA='' CLR_RESET='' CLR_VAL='' CLR_INTENT='' CLR_DIM=''
+fi
+
 if [[ ! -f "${REPO_DIR}/PKGBUILD" ]]; then
-    printf 'Errore: PKGBUILD non trovato in %s\n' "$REPO_DIR" >&2
+    msg_err "PKGBUILD non trovato in ${REPO_DIR}"
     exit 1
 fi
 
@@ -12,20 +26,17 @@ DO_MAIN=0
 DO_RECOVERY=0
 
 usage() {
-    cat <<'EOF'
-Uso: nc-build [opzioni]
-
-Rigenera i pacchetti split di NC-UI e li installa su sistema e/o recovery.
-
-Opzioni:
-  --main        Reinstalla i pacchetti compilati sul sistema host (pacman -U)
-  --recovery    Aggiorna i pacchetti nella recovery SquashFS e rigenera l'UKI
-  --all         Esegue entrambi (--main --recovery)
-  --no-build    Salta makepkg -f e riusa i .pkg.tar.zst gia' presenti
-  -h, --help    Mostra questo messaggio di aiuto
-
-Senza --main ne' --recovery, esegue il solo rebuild con makepkg -f.
-EOF
+    local prog="${0##*/}"
+    ui_header "${prog^^} — NC-UI PACKAGE BUILDER" "Rigenera e installa i pacchetti split su sistema e recovery"
+    printf "\n  %sUsage:%s  %s%s%s %s[opzioni]%s\n" \
+        "$CLR_SCHEMA" "$CLR_RESET" "$CLR_VAL" "$prog" "$CLR_RESET" "$CLR_INTENT" "$CLR_RESET"
+    ui_section "OPTS" "Opzioni"
+    ui_help_row "--main" "Reinstalla i pacchetti compilati sul sistema host (pacman -U)" 18
+    ui_help_row "--recovery" "Aggiorna i pacchetti nella recovery SquashFS e rigenera l'UKI" 18
+    ui_help_row "--all" "Esegue entrambi (--main --recovery)" 18
+    ui_help_row "--no-build" "Salta makepkg -f e riusa i .pkg.tar.zst gia' presenti" 18
+    ui_help_row "-h, --help" "Mostra questo messaggio di aiuto" 18
+    printf "\n  %sSenza --main ne' --recovery, esegue il solo rebuild con makepkg -f.%s\n\n" "$CLR_DIM" "$CLR_RESET"
 }
 
 while (($# > 0)); do
@@ -48,7 +59,7 @@ while (($# > 0)); do
             exit 0
             ;;
         *)
-            printf 'Opzione sconosciuta: %s\n\n' "$1" >&2
+            msg_err "Opzione sconosciuta: ${1}"
             usage >&2
             exit 2
             ;;
@@ -59,7 +70,7 @@ done
 cd "$REPO_DIR"
 
 if (( DO_BUILD )); then
-    printf '==> Rebuild pacchetti NC-UI in %s...\n' "$REPO_DIR"
+    msg_step "Rebuild pacchetti NC-UI in ${REPO_DIR}..."
     makepkg -f
 fi
 
@@ -68,23 +79,23 @@ PKGS=(nc-*.pkg.tar.zst)
 shopt -u nullglob
 
 if (( ${#PKGS[@]} == 0 )); then
-    printf 'Errore: nessun pacchetto nc-*.pkg.tar.zst trovato in %s\n' "$REPO_DIR" >&2
+    msg_err "Nessun pacchetto nc-*.pkg.tar.zst trovato in ${REPO_DIR}"
     exit 1
 fi
 
 if (( DO_MAIN || DO_RECOVERY )); then
-    printf '==> Copia di %d pacchetti in /var/cache/pacman/pkg/...\n' "${#PKGS[@]}"
+    msg_step "Copia di ${#PKGS[@]} pacchetti in /var/cache/pacman/pkg/..."
     sudo cp -f "${PKGS[@]}" /var/cache/pacman/pkg/
 fi
 
 if (( DO_MAIN )); then
-    printf '==> Installazione pacchetti su sistema host (pacman -U)...\n'
+    msg_step "Installazione pacchetti su sistema host (pacman -U)..."
     sudo pacman -U --noconfirm "${PKGS[@]}"
 fi
 
 if (( DO_RECOVERY )); then
-    printf '==> Aggiornamento recovery SquashFS e UKI (nc-rescue --sync-ncui)...\n'
+    msg_step "Aggiornamento recovery SquashFS e UKI (nc-rescue --sync-ncui)..."
     sudo env "NCUI_PKG_DIR=${REPO_DIR}" /usr/bin/nc-rescue --sync-ncui
 fi
 
-printf '[✓ OK] Operazione completata (%d pacchetti).\n' "${#PKGS[@]}"
+msg_ok "Operazione completata (${#PKGS[@]} pacchetti)."

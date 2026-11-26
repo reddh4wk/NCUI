@@ -18,207 +18,13 @@ UKI_STATE_FILE="${NC_RESCUE_UKI_STATE:-/etc/initcpio/.uki-state.sha256}"
 BOOT_COMMIT_FLAG="/run/recovery-committed-this-boot"
 RECOVERY_ORIGIN_FILE="${NC_RECOVERY_ORIGIN_FILE:-/etc/ncui/recovery-origin.env}"
 
-THEME_HEX_STRUCTURE="#3e465c"
-THEME_HEX_SCHEMA="#8b9bb8"
-THEME_HEX_INACTIVE="#596278"
-THEME_HEX_FOCUS="#ffffff"
-THEME_HEX_FOCUS_VAL="#dce6f7"
-THEME_HEX_INTENT="#00f0ff"
-THEME_HEX_VITALITY="#00f57a"
-THEME_HEX_ATTENTION="#ffe619"
-THEME_HEX_INTERRUPT="#ff2a9d"
-THEME_HEX_FAULT="#ff2442"
-THEME_BOX_TL="╭"
-THEME_BOX_TR="╮"
-THEME_BOX_BL="╰"
-THEME_BOX_BR="╯"
-THEME_BOX_H="─"
-THEME_BOX_V="│"
-
-_resolve_ncui_theme_file() {
-    local cand=""
-    if [[ -n "${NCUI_THEME_FILE:-}" && -r "${NCUI_THEME_FILE}" ]]; then
-        printf '%s' "$NCUI_THEME_FILE"
-        return 0
-    fi
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        cand="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)/.config/ncui/theme.toml"
-        [[ -r "$cand" ]] && { printf '%s' "$cand"; return 0; }
-    fi
-    if (( EUID != 0 )); then
-        cand="${XDG_CONFIG_HOME:-${HOME}/.config}/ncui/theme.toml"
-        [[ -r "$cand" ]] && { printf '%s' "$cand"; return 0; }
-    fi
-    local u _p uid _g _c h _s
-    while IFS=: read -r u _p uid _g _c h _s; do
-        if [[ "$uid" =~ ^[0-9]+$ ]] && (( uid >= 1000 && uid < 65000 )) && [[ -r "${h}/.config/ncui/theme.toml" ]]; then
-            printf '%s' "${h}/.config/ncui/theme.toml"
-            return 0
-        fi
-    done < /etc/passwd
-    cand="/usr/share/ncui/config/ncui/theme.toml"
-    [[ -r "$cand" ]] && { printf '%s' "$cand"; return 0; }
-    return 1
-}
-
-_hex_to_fg() {
-    local h="${1#\#}"
-    [[ "$h" =~ ^[0-9a-fA-F]{6}$ ]] || return 0
-    printf '\033[38;2;%d;%d;%dm' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"
-}
-
-_load_ncui_theme() {
-    local tf=""
-    tf="$(_resolve_ncui_theme_file 2>/dev/null || true)"
-    if [[ -n "$tf" && -r "$tf" ]]; then
-        local sec="" line k v
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            line="${line#"${line%%[![:space:]]*}"}"
-            [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
-            if [[ "$line" =~ ^\[([a-zA-Z0-9_.-]+)\] ]]; then
-                sec="${BASH_REMATCH[1]}"
-                continue
-            fi
-            if [[ "$sec" == "colors" && "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*\"(#[0-9a-fA-F]{6})\" ]]; then
-                k="${BASH_REMATCH[1]}"
-                v="${BASH_REMATCH[2]}"
-                case "$k" in
-                    structure) THEME_HEX_STRUCTURE="$v" ;;
-                    schema)    THEME_HEX_SCHEMA="$v" ;;
-                    inactive)  THEME_HEX_INACTIVE="$v" ;;
-                    focus)     THEME_HEX_FOCUS="$v" ;;
-                    focus_val) THEME_HEX_FOCUS_VAL="$v" ;;
-                    intent)    THEME_HEX_INTENT="$v" ;;
-                    vitality)  THEME_HEX_VITALITY="$v" ;;
-                    attention) THEME_HEX_ATTENTION="$v" ;;
-                    interrupt) THEME_HEX_INTERRUPT="$v" ;;
-                    fault)     THEME_HEX_FAULT="$v" ;;
-                esac
-            elif [[ "$sec" == "ascii.chars" && "$line" =~ ^(tl|tr|bl|br|h|v)[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
-                k="${BASH_REMATCH[1]}"
-                v="${BASH_REMATCH[2]}"
-                case "$k" in
-                    tl) THEME_BOX_TL="$v" ;;
-                    tr) THEME_BOX_TR="$v" ;;
-                    bl) THEME_BOX_BL="$v" ;;
-                    br) THEME_BOX_BR="$v" ;;
-                    h)  THEME_BOX_H="$v" ;;
-                    v)  THEME_BOX_V="$v" ;;
-                esac
-            fi
-        done < "$tf"
-    fi
-
-    if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
-        CLR_RESET=$'\033[0m'
-        CLR_BOLD=$'\033[1m'
-        CLR_STRUCT="$(_hex_to_fg "$THEME_HEX_STRUCTURE")"
-        CLR_SCHEMA="$(_hex_to_fg "$THEME_HEX_SCHEMA")"
-        CLR_DIM="$(_hex_to_fg "$THEME_HEX_INACTIVE")"
-        CLR_FOCUS="$(_hex_to_fg "$THEME_HEX_FOCUS")"
-        CLR_VAL="$(_hex_to_fg "$THEME_HEX_FOCUS_VAL")"
-        CLR_INTENT="$(_hex_to_fg "$THEME_HEX_INTENT")"
-        CLR_OK="$(_hex_to_fg "$THEME_HEX_VITALITY")"
-        CLR_WARN="$(_hex_to_fg "$THEME_HEX_ATTENTION")"
-        CLR_ERR="$(_hex_to_fg "$THEME_HEX_FAULT")"
-        CLR_INFO="$CLR_SCHEMA"
-        CLR_STEP="$CLR_INTENT"
-    else
-        CLR_RESET='' CLR_BOLD='' CLR_STRUCT='' CLR_SCHEMA='' CLR_DIM=''
-        CLR_FOCUS='' CLR_VAL='' CLR_INTENT='' CLR_OK='' CLR_WARN='' CLR_ERR=''
-        CLR_INFO='' CLR_STEP=''
-    fi
-}
-
-_load_ncui_theme
-
-msg_info() { printf " %s::%s %b\n" "$CLR_SCHEMA" "$CLR_RESET" "$*"; }
-msg_step() { printf " %s▸%s %s%b%s\n" "$CLR_INTENT" "$CLR_RESET" "$CLR_VAL" "$*" "$CLR_RESET"; }
-msg_ok()   { printf " %s✓%s %s%b%s\n" "$CLR_OK" "$CLR_RESET" "$CLR_VAL" "$*" "$CLR_RESET"; }
-msg_warn() { printf " %s!%s %s%b%s\n" "$CLR_WARN" "$CLR_RESET" "$CLR_WARN" "$*" "$CLR_RESET" >&2; }
-msg_err()  { printf " %s✗ ERROR:%s %b\n" "$CLR_ERR" "$CLR_RESET" "$*" >&2; }
-
-_repeat_char() {
-    local ch="$1" n="${2:-0}" i
-    (( n > 0 )) || return 0
-    for (( i = 0; i < n; i++ )); do
-        printf '%s' "$ch"
-    done
-}
-
-ui_header() {
-    local title="$1" subtitle="${2:-}" inner=66
-    local pad=$(( inner - 2 - ${#title} ))
-    (( pad < 1 )) && { title="${title:0:$(( inner - 3 ))}"; pad=1; }
-    printf "\n  %s%s" "$CLR_STRUCT" "$THEME_BOX_TL"
-    _repeat_char "$THEME_BOX_H" "$inner"
-    printf "%s%s\n" "$THEME_BOX_TR" "$CLR_RESET"
-    printf "  %s%s%s  %s%s%s%s%*s%s%s%s\n" \
-        "$CLR_STRUCT" "$THEME_BOX_V" "$CLR_RESET" \
-        "$CLR_BOLD" "$CLR_FOCUS" "$title" "$CLR_RESET" \
-        "$pad" "" "$CLR_STRUCT" "$THEME_BOX_V" "$CLR_RESET"
-    if [[ -n "$subtitle" ]]; then
-        local spad=$(( inner - 2 - ${#subtitle} ))
-        (( spad < 1 )) && { subtitle="${subtitle:0:$(( inner - 6 ))}..."; spad=$(( inner - 2 - ${#subtitle} )); }
-        (( spad < 1 )) && spad=1
-        printf "  %s%s%s  %s%s%s%*s%s%s%s\n" \
-            "$CLR_STRUCT" "$THEME_BOX_V" "$CLR_RESET" \
-            "$CLR_SCHEMA" "$subtitle" "$CLR_RESET" \
-            "$spad" "" "$CLR_STRUCT" "$THEME_BOX_V" "$CLR_RESET"
-    fi
-    printf "  %s%s" "$CLR_STRUCT" "$THEME_BOX_BL"
-    _repeat_char "$THEME_BOX_H" "$inner"
-    printf "%s%s\n" "$THEME_BOX_BR" "$CLR_RESET"
-}
-
-ui_section() {
-    local tag="$1" title="$2" width=68
-    local used=$(( 5 + ${#tag} + 3 + ${#title} + 1 ))
-    local fill=$(( width - used ))
-    (( fill < 4 )) && fill=4
-    printf "\n  %s" "$CLR_STRUCT"
-    _repeat_char "$THEME_BOX_H" 2
-    printf " %s%s%s %s·%s %s%s%s%s %s" \
-        "$CLR_INTENT" "$tag" "$CLR_RESET" \
-        "$CLR_STRUCT" "$CLR_RESET" \
-        "$CLR_BOLD" "$CLR_FOCUS" "$title" "$CLR_RESET" \
-        "$CLR_STRUCT"
-    _repeat_char "$THEME_BOX_H" "$fill"
-    printf "%s\n" "$CLR_RESET"
-}
-
-ui_kv() {
-    local key="$1" val="$2" extra="${3:-}"
-    if [[ -n "$extra" ]]; then
-        printf "  %s%-16s%s %s%s%s %s%s%s\n" \
-            "$CLR_SCHEMA" "$key" "$CLR_RESET" \
-            "$CLR_VAL" "$val" "$CLR_RESET" \
-            "$CLR_DIM" "$extra" "$CLR_RESET"
-    else
-        printf "  %s%-16s%s %s%s%s\n" \
-            "$CLR_SCHEMA" "$key" "$CLR_RESET" \
-            "$CLR_VAL" "$val" "$CLR_RESET"
-    fi
-}
-
-ui_opt() {
-    local key="$1" label="$2" note="${3:-}"
-    printf "    %s[%s%s%s]%s %s%s%s\n" \
-        "$CLR_STRUCT" "$CLR_INTENT" "$key" "$CLR_STRUCT" "$CLR_RESET" \
-        "$CLR_VAL" "$label" "$CLR_RESET"
-    if [[ -n "$note" ]]; then
-        printf "        %s%s%s\n" "$CLR_DIM" "$note" "$CLR_RESET"
-    fi
-}
-
-_rl_prompt() {
-    local txt="$1"
-    if [[ -n "$CLR_INTENT" ]]; then
-        printf '\001%s\002›\001%s\002 \001%s\002%s\001%s\002 ' "$CLR_INTENT" "$CLR_RESET" "$CLR_FOCUS" "$txt" "$CLR_RESET"
-    else
-        printf '  › %s ' "$txt"
-    fi
-}
+_NC_UI_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+if [[ -r "${_NC_UI_DIR}/nc-cli-ui.sh" ]]; then
+    # shellcheck source=nc-cli-ui.sh
+    source "${_NC_UI_DIR}/nc-cli-ui.sh"
+elif [[ -r "/usr/lib/ncui/sbin/nc-cli-ui.sh" ]]; then
+    source "/usr/lib/ncui/sbin/nc-cli-ui.sh"
+fi
 
 show_help() {
     local prog="${0##*/}"
@@ -1984,6 +1790,7 @@ _resolve_ncui_pkg_tier_interactive() {
             ui_opt "2" "Last-resort source fallback (rsync ${src_dir} -> /opt/ncui)"
         fi
         ui_opt "0" "Cancel"
+        printf '\n'
         local sel="" pkg_dir=""
         read -r -e -p "$(_rl_prompt "Select option:")" sel </dev/tty || sel="0"
         case "$sel" in
@@ -2738,27 +2545,26 @@ do_build_recovery_squashfs() {
         ui_kv "  Current" "$cur_sq" "(${cur_h}, ${cur_mt})"
         ui_kv "  Fallback" "$bak_sq" "(${bak_info})"
         msg_warn "Proceeding will demote current recovery.squashfs to recovery.squashfs.old (overwriting any existing .old)."
-        local rot_ans=""
-        read -r -e -p "$(_rl_prompt "Continue and rotate existing recovery to .old? [y/N]:")" rot_ans </dev/tty || rot_ans="n"
-        case "${rot_ans,,}" in
-            y|yes|s|si) ;;
-            *) msg_info "Build cancelled by user."; return 0 ;;
-        esac
+        if ! ui_confirm "Continue and rotate existing recovery to .old?" "n"; then
+            msg_info "Build cancelled by user."
+            return 0
+        fi
     else
         echo ""
         msg_info "First-time build: no existing recovery.squashfs found on ESP."
     fi
 
-    local profile_sel="1" ncui_profile="minimal_gui" want_desktop=1
+    local profile_sel="1" ncui_profile="full" want_desktop=1
     ui_section "01" "Recovery Profile"
-    ui_opt "1" "Minimal Wayland Desktop (niri + waybar + ghostty + core NC-UI)" "Est. SquashFS: ~1.1-1.5 GiB | ESP needed: ~1.9 GiB | work dir: ~4 GiB"
-    ui_opt "2" "Full Wayland Desktop (all NC-UI packages + optional deps + desktop)" "Est. SquashFS: ~1.7-2.2 GiB | ESP needed: ~2.6 GiB | work dir: ~6 GiB"
+    ui_opt "1" "Full Wayland Desktop (all NC-UI packages + optional deps + desktop)" "Est. SquashFS: ~1.7-2.2 GiB | ESP needed: ~2.6 GiB | work dir: ~6 GiB"
+    ui_opt "2" "Minimal Wayland Desktop (niri + waybar + ghostty + core NC-UI)" "Est. SquashFS: ~1.1-1.5 GiB | ESP needed: ~1.9 GiB | work dir: ~4 GiB"
     ui_opt "3" "Minimal Rescue Console (TTY only + core NC-UI CLI & resilience tools)" "Est. SquashFS: ~0.6-0.9 GiB | ESP needed: ~1.2 GiB | work dir: ~3 GiB"
+    printf '\n'
     read -r -e -p "$(_rl_prompt "Select profile [1-3] (Enter=1, Ctrl+C to cancel):")" profile_sel </dev/tty || profile_sel="1"
     profile_sel="${profile_sel:-1}"
     case "$profile_sel" in
-        1) ncui_profile="minimal_gui"; want_desktop=1 ;;
-        2) ncui_profile="full"; want_desktop=1 ;;
+        1) ncui_profile="full"; want_desktop=1 ;;
+        2) ncui_profile="minimal_gui"; want_desktop=1 ;;
         3) ncui_profile="console"; want_desktop=0 ;;
         *) msg_err "Invalid profile: ${profile_sel}"; exit 1 ;;
     esac
@@ -2784,6 +2590,7 @@ do_build_recovery_squashfs() {
         ui_opt "2" "Firefox$( (( has_ff )) || printf ' (unavailable)' )"
         ui_opt "3" "Chromium$( (( has_chr )) || printf ' (unavailable)' )"
         ui_opt "4" "None (skip browser — smaller image)"
+        printf '\n'
         read -r -e -p "$(_rl_prompt "Select browser [1-4 or custom pkg] (Enter=${def_br}):")" br_ans </dev/tty || br_ans=""
         br_ans="${br_ans:-$def_br}"
         case "$br_ans" in
@@ -2831,6 +2638,7 @@ do_build_recovery_squashfs() {
     ui_opt "3" "pikaur ($( (( has_pikaur )) && printf 'in repo' || printf 'AUR: pikaur' ))"
     ui_opt "4" "trizen ($( (( has_trizen )) && printf 'in repo' || printf 'AUR: trizen' ))"
     ui_opt "5" "None (do not install an AUR helper)"
+    printf '\n'
     read -r -e -p "$(_rl_prompt "Select AUR helper [1-5] (Enter=${def_aur}):")" aur_ans </dev/tty || aur_ans=""
     aur_ans="${aur_ans:-$def_aur}"
     case "${aur_ans,,}" in
@@ -2865,6 +2673,7 @@ do_build_recovery_squashfs() {
     ui_section "04" "Hardware Firmware & Drivers"
     ui_opt "1" "Current host hardware only" "${host_preview[*]:-none}"
     ui_opt "2" "Generic hardware (full linux-firmware, portable)" "+~400 MiB"
+    printf '\n'
     local hw_sel="" hw_mode="host"
     read -r -e -p "$(_rl_prompt "Select hardware target [1/2] (Enter=1):")" hw_sel </dev/tty || hw_sel="1"
     if [[ "${hw_sel:-1}" == "2" ]]; then
@@ -2872,25 +2681,17 @@ do_build_recovery_squashfs() {
         _detect_host_hw_pkgs "generic" "$kern_pkg" "$want_desktop"
     fi
 
-    local host_user="" import_ui=0 import_nm=0 imp_ans="" nm_ans=""
+    local host_user="" import_ui=0 import_nm=0
     host_user="$(_resolve_host_desktop_user 2>/dev/null || true)"
     if [[ -n "$host_user" ]]; then
         ui_section "05" "Host Settings Import"
-        read -r -e -p "$(_rl_prompt "Import NC-UI, Waybar & Niri settings from '${host_user}'? [Y/n]:")" imp_ans </dev/tty || imp_ans="y"
-        case "${imp_ans,,}" in
-            ""|y|yes|s|si) import_ui=1 ;;
-            *) import_ui=0 ;;
-        esac
+        ui_confirm "Import NC-UI, Waybar & Niri settings from '${host_user}'?" "y" && import_ui=1 || import_ui=0
         if [[ -d /etc/NetworkManager/system-connections ]]; then
-            read -r -e -p "$(_rl_prompt "Also import NetworkManager profiles? (ESP is UNENCRYPTED) [y/N]:")" nm_ans </dev/tty || nm_ans="n"
-            case "${nm_ans,,}" in
-                y|yes|s|si) import_nm=1 ;;
-                *) import_nm=0 ;;
-            esac
+            ui_confirm "Also import NetworkManager profiles? (ESP is UNENCRYPTED)" "n" && import_nm=1 || import_nm=0
         fi
     fi
 
-    ui_section "06" "Recovery Account Setup"
+    ui_section "06" "Recovery Identity & Account Setup"
     local rec_user="" rec_user_in=""
     while true; do
         read -r -e -p "$(_rl_prompt "Recovery username (Enter=${CFG_RECOVERY_USER}):")" rec_user_in </dev/tty || rec_user_in=""
@@ -2901,6 +2702,19 @@ do_build_recovery_squashfs() {
         msg_warn "Invalid username '${rec_user}'. Use lowercase [a-z_][a-z0-9_-]* (max 32 chars, not 'root' or system accounts)."
     done
     ui_kv "Account" "${rec_user}" "(groups: wheel,sudo + root)"
+
+    local def_rec_host="${CFG_HOSTNAME:-linux}-recovery" rec_host="" rec_host_in=""
+    while true; do
+        read -r -e -p "$(_rl_prompt "Recovery hostname (Enter=${def_rec_host}):")" rec_host_in </dev/tty || rec_host_in=""
+        rec_host_in="${rec_host_in#"${rec_host_in%%[![:space:]]*}"}"
+        rec_host_in="${rec_host_in%"${rec_host_in##*[![:space:]]}"}"
+        rec_host="${rec_host_in:-$def_rec_host}"
+        if [[ "$rec_host" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+            break
+        fi
+        msg_warn "Invalid hostname '${rec_host}'. Use letters, digits and internal hyphens (1-63 chars)."
+    done
+    ui_kv "Hostname" "${rec_host}"
 
     local pw1="" pw2=""
     while true; do
@@ -2933,7 +2747,7 @@ do_build_recovery_squashfs() {
     local req_esp_h
     req_esp_h="$(numfmt --to=iec-i --suffix=B "$req_esp_b" 2>/dev/null || echo "${req_esp_b}B")"
     ui_section "07" "Pre-Flight & Build Summary"
-    ui_kv "Profile" "$ncui_profile" "(kernel=${kern_pkg}, user=${rec_user})"
+    ui_kv "Profile" "$ncui_profile" "(kernel=${kern_pkg}, user=${rec_user}, host=${rec_host})"
     ui_kv "ESP Space" "free=${esp_free_h}" "(estimated needed=${req_esp_h})"
     if (( esp_free_b < req_esp_b )); then
         unset pw1
@@ -2956,12 +2770,11 @@ do_build_recovery_squashfs() {
         exit 1
     elif (( tmp_free_b < rec_tmp_b )); then
         msg_warn "Low free space in ${work_base} (${tmp_free_h}; >= ${rec_tmp_h} recommended)."
-        local tmp_ans=""
-        read -r -e -p "$(_rl_prompt "Continue anyway? [y/N]:")" tmp_ans </dev/tty || tmp_ans="n"
-        case "${tmp_ans,,}" in
-            y|yes|s|si) ;;
-            *) unset pw1; msg_info "Build cancelled."; return 0 ;;
-        esac
+        if ! ui_confirm "Continue anyway?" "n"; then
+            unset pw1
+            msg_info "Build cancelled."
+            return 0
+        fi
     fi
 
     local pkgs=(
@@ -3012,10 +2825,11 @@ do_build_recovery_squashfs() {
     _safe_rm_chroot_dir "$build_dir" || exit 1
     mkdir -p "$build_dir"
 
-    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (profile=${ncui_profile}, user=${rec_user}, kernel=${kern_pkg}${browser_pkg:+, browser=${browser_pkg}}${aur_helper:+, aur=${aur_helper}})..."
+    msg_step "Bootstrapping Live Recovery rootfs in ${build_dir} (profile=${ncui_profile}, user=${rec_user}, host=${rec_host}, kernel=${kern_pkg}${browser_pkg:+, browser=${browser_pkg}}${aur_helper:+, aur=${aur_helper}})..."
     _arch_pacstrap "$build_dir" "${pkgs[@]}"
 
-    printf '%s-recovery\n' "${CFG_HOSTNAME:-linux}" > "${build_dir}/etc/hostname"
+    printf '%s\n' "$rec_host" > "${build_dir}/etc/hostname"
+    printf '127.0.0.1\tlocalhost\n::1\t\tlocalhost\n127.0.1.1\t%s.localdomain %s\n' "$rec_host" "$rec_host" > "${build_dir}/etc/hosts"
     write_recovery_hook_files_into "$build_dir"
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --root="$build_dir" enable NetworkManager.service >/dev/null 2>&1 || true
@@ -3132,17 +2946,12 @@ do_edit_recovery_squashfs() {
         return 0
     fi
 
-    local ans=""
-    read -r -e -p "$(_rl_prompt "Changes detected inside recovery chroot. Commit to recovery.squashfs (rotating current to .old)? [y/N]:")" ans </dev/tty || ans="n"
-    case "${ans,,}" in
-        y|yes|s|si) ;;
-        *)
-            msg_info "Changes discarded cleanly."
-            _umount_edit_tree "$work_dir"
-            trap cleanup_rescue EXIT INT TERM HUP
-            return 0
-            ;;
-    esac
+    if ! ui_confirm "Changes detected inside recovery chroot. Commit to recovery.squashfs (rotating current to .old)?" "n"; then
+        msg_info "Changes discarded cleanly."
+        _umount_edit_tree "$work_dir"
+        trap cleanup_rescue EXIT INT TERM HUP
+        return 0
+    fi
 
     local cur_sz esp_free_b req_b cur_h esp_h req_h
     cur_sz="$(stat -c%s "$cur_sq" 2>/dev/null || echo 0)"
@@ -3220,7 +3029,7 @@ do_delete_recovery_artifacts() {
     [[ -f "$cur_sq" || -f "$cur_uki" ]] && ui_opt "2" "Delete active recovery image & UKI"
     [[ ( -f "$cur_sq" || -f "$cur_uki" ) && ( -f "$bak_sq" || -f "$bak_uki" ) ]] && ui_opt "3" "Delete ALL recovery copies (active + .old)"
     ui_opt "0" "Cancel"
-
+    printf '\n'
     local sel=""
     read -r -e -p "$(_rl_prompt "Select option:")" sel </dev/tty || sel="0"
     local del_cur=0 del_bak=0
@@ -3237,16 +3046,14 @@ do_delete_recovery_artifacts() {
         removes_last=1
     fi
 
-    local c1="" c2=""
+    local c2=""
     if (( removes_last == 1 )); then
         msg_warn "WARNING: This will leave ZERO bootable recovery SquashFS images on your ESP!"
-        read -r -e -p "$(_rl_prompt "Are you sure you want to delete the last recovery copy? [y/N]:")" c1 </dev/tty || c1="n"
-        [[ "${c1,,}" =~ ^(y|yes|s|si)$ ]] || { msg_info "Deletion cancelled."; return 0; }
+        ui_confirm "Are you sure you want to delete the last recovery copy?" "n" || { msg_info "Deletion cancelled."; return 0; }
         read -r -e -p "$(_rl_prompt "Type 'DELETE' to confirm permanent removal:")" c2 </dev/tty || c2=""
         [[ "$c2" == "DELETE" ]] || { msg_info "Confirmation mismatch; deletion cancelled."; return 0; }
     else
-        read -r -e -p "$(_rl_prompt "Confirm deletion of selected recovery artifact(s)? [y/N]:")" c1 </dev/tty || c1="n"
-        [[ "${c1,,}" =~ ^(y|yes|s|si)$ ]] || { msg_info "Deletion cancelled."; return 0; }
+        ui_confirm "Confirm deletion of selected recovery artifact(s)?" "n" || { msg_info "Deletion cancelled."; return 0; }
     fi
 
     (( del_cur == 1 )) && rm -f "$cur_sq" "$cur_uki"
@@ -3285,6 +3092,7 @@ do_manage_recovery() {
         ui_opt "5" "Rollback to .old backup (rollback-esp)"
         ui_opt "6" "Delete Recovery Image / .old backup (delete)"
         ui_opt "0" "Exit"
+        printf '\n'
         local ch=""
         read -r -e -p "$(_rl_prompt "Select action [0-6]:")" ch </dev/tty || break
         case "$ch" in

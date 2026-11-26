@@ -639,6 +639,8 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
         is_rainbow = (col_raw == "rainbow")
         if is_rainbow:
             rgb = _MATRIX_RGB["green"]
+        elif col_raw == "theme":
+            rgb = hex_to_rgba_f(THEME["colors"].get("intent", "#00f0ff"), fallback=_MATRIX_RGB["green"])[:3]
         elif col_raw.startswith("#") and len(col_raw) == 7:
             rgb = hex_to_rgba_f(col_raw, fallback=_MATRIX_RGB["green"])[:3]
         else:
@@ -905,6 +907,8 @@ class NiriDesktopPreviewMap(Gtk.EventBox):
             tag = t("cc_personalization.desktop_mode_matrix", p0=f"{cs}·{col_s.upper()}·{st.get('size', '9')}PT{sr_suf}")
             if col_low == "rainbow":
                 tag_rgb = (0.0, 0.94, 1.0)
+            elif col_low == "theme":
+                tag_rgb = hex_to_rgba_f(THEME["colors"].get("intent", "#00f0ff"), fallback=_MATRIX_RGB["green"])[:3]
             elif col_low.startswith("#"):
                 tr, tg, tb = hex_to_rgba_f(col_low, fallback=_MATRIX_RGB["green"])[:3]
                 tag_rgb = (0.88, 0.92, 0.99) if max(tr, tg, tb) < 0.25 else (tr, tg, tb)
@@ -1741,7 +1745,7 @@ def _build_wallpaper_standard(cc_panel, canvas: Canvas) -> list:
                 dirty=(has_staged_sel and cm_col_low == c),
                 style="secondary",
             )
-            for c in ("green", "cyan", "yellow", "white", "rainbow")
+            for c in ("green", "theme", "rainbow")
         ) + " " + InlineField(
             "cm_col_custom",
             "cc_desk:cm_col_custom",

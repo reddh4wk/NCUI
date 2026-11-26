@@ -1588,6 +1588,8 @@ def handle_cc_system_link(cc_panel, uri: str) -> bool:
             set_feedback("system", True, t("cc_system.rescue_chroot_ext_opened"))
         else:
             set_feedback("system", False, t("cc_system.rescue_chroot_ext_no_term"))
+        if cc_panel and getattr(cc_panel, "shell", None):
+            cc_panel.shell.refresh_view()
         return True
     elif act == "dc_golden_save":
         gb = resolve_sbin_helper("nc-golden")
